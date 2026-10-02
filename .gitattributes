@@ -1,0 +1,19 @@
+# 统一行尾为 LF（仓库内与工作区都是）：这个项目会被别人在不同平台上打开，
+# 行尾抖动只会制造无意义的 diff。
+# 注意 `* text=auto` 单独用是不够的 —— 它会在 Windows 检出时转成 CRLF，
+# 必须显式带上 eol=lf 才能让工作区也是 LF。
+* text=auto eol=lf
+
+*.md   text eol=lf
+*.mjs  text eol=lf
+*.js   text eol=lf
+*.py   text eol=lf
+*.txt  text eol=lf
+*.json text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# 生成的产物不做 diff（它们由 scripts/generate.mjs 从 plugin/core.mjs 派生，
+# 真正的审阅对象是 core.mjs；drift 由新鲜度门禁负责抓）
+plugin/schemas.generated.mjs linguist-generated=true
+dynamic/leion-pro.host.js    linguist-generated=true

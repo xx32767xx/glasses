@@ -1,0 +1,43 @@
+# 真实 Cordis 组合：用检出里真实的 dsh-tools / dsh-system-prompt 加载正式插件
+# ============================================================================
+# 目的：让 plugin/index.mjs 注册进**真实的 ToolRuntime**，而不是测试台复刻的检查器，
+#       并通过**真实的工具执行流水线**跑几次调用；再用**真实的 timer 服务**验证 ASR 收件箱
+#       （外部写一行 → 自动翻译 → 字幕上屏）这条不需要 agent 介入的同传路径。
+#
+# 用法：
+#   node tests/live/run.mjs                         # 一键（会自动建立 vendor junction）
+#   cd tests/live; node <检出>/vendor/cordis/bin.js # 手动（loader 从 cwd 读 cordis.yml）
+#
+# 注意 Windows 上的坑：loader 走 ESM 动态 import，绝对路径**必须**写成 file:// URL，
+# 写成 D:/... 会得到 ERR_UNSUPPORTED_ESM_URL_SCHEME。
+#
+# 这里用编译产物的绝对路径而不是包名，是因为本项目零依赖（没有 node_modules），
+# 包名只能在检出树内部解析；而 @deepseek-ai/cordis-plugin-* 由 tests/live/links.mjs
+# 建立的 junction 提供，所以可以用包名。
+
+# 第一行就挂 console logger：否则"模块解析失败"这类错误只进 logger 服务，
+# 在 console 导出器开始观察之前就丢了，表现成"插件似乎没生效但没有任何错误"。
+- name: '@deepseek-ai/cordis-plugin-logger-console'
+
+# 真实 timer 服务：插件的 inject 里有 'timer'（ASR 收件箱轮询用它）。
+# 在真实部署里它由 @deepseek-ai/dsh-base 挂着，所以这里必须补上，否则插件会停在 PENDING。
+- name: '@deepseek-ai/cordis-plugin-timer'
+
+- name: 'file:///D:/DeepSeekHarness/deepseek-harness/packages/core/system-prompt/lib/index.js'
+
+- name: 'file:///D:/DeepSeekHarness/deepseek-harness/packages/core/tools/lib/index.js'
+
+# 被验证的对象：正式插件包（按绝对路径加载源码）
+- name: 'file:///E:/GlassesHarness/plugin/index.mjs'
+  config:
+    transport: 'mock'
+    # 打开 ASR 收件箱：这就是"不需要 agent 介入"的自动同传路径
+    inboxPath: 'E:/GlassesHarness/.tmp/live-inbox.jsonl'
+    inboxPollMs: 150
+
+# 假 llm 与假 fs：让 leion_translate 与收件箱都能在真实流水线里跑成功（不联网、不需要 key）
+- name: 'file:///E:/GlassesHarness/tests/live/fake-llm.mjs'
+- name: 'file:///E:/GlassesHarness/tests/live/fake-fs.mjs'
+
+# 观察者：检查注册结果并驱动真实调用
+- name: 'file:///E:/GlassesHarness/tests/live/probe.mjs'

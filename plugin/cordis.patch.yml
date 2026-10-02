@@ -1,0 +1,19 @@
+# dsh-plugin-leion-pro 的组合包 patch 层
+# ============================================================================
+# 这一层在 profile 把它列进 dsh.profile.bundles 时应用（dsh plugin --profile <name> add <本目录>）。
+# 此时插件行按**包名**引用，所以 Node 的模块解析能在 profile 里找到已安装的代码。
+
+- insert:
+    - id: leion-pro
+      name: 'dsh-plugin-leion-pro'
+      # 无真机默认走 mock；下面三项按需打开：
+      #   transport: 'file'  → 把当前字幕帧写成 JSON 给真机桥
+      #   inboxPath          → 打开 ASR 收件箱：外部语音识别按行写文本，自动翻译上屏
+      #                        （这才是"同传"模式；不打开就只是 agent 调用的翻译工具）
+      #   modelId            → 翻译用的模型；留空则自动选第一个 provider 并发现模型
+      # config:
+      #   transport: 'file'
+      #   sinkPath: 'E:/GlassesHarness/.tmp/subtitle-bus.json'
+      #   inboxPath: 'E:/GlassesHarness/.tmp/asr-inbox.jsonl'
+      #   inboxPollMs: 700
+      #   modelId: 'deepseek-chat'

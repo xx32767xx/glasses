@@ -1,0 +1,24 @@
+# 开发用 overlay：按**绝对路径**直接加载插件源码，无需装进 profile。
+# ============================================================================
+# 用法（在检出根目录跑）：
+#   pnpm dsh web --patch E:\GlassesHarness\plugin\cordis.local.patch.yml
+#
+# 注意：patch 文件只贡献配置，不改变 loader 解析模块路径用的 profile 目录，
+# 所以这里的 name 必须是绝对路径。首次使用前请先跑 node scripts/generate.mjs。
+
+- insert:
+    - id: leion-pro
+      name: 'E:/GlassesHarness/plugin/index.mjs'
+      config:
+        transport: 'mock'
+        # 接真机桥时改成 'file' 并给出字幕总线文件的绝对路径：
+        # transport: 'file'
+        # sinkPath: 'E:/GlassesHarness/.tmp/subtitle-bus.json'
+        #
+        # 打开 ASR 收件箱 = 自动同传：外部语音识别按行写文本，插件轮询后自动翻译上屏。
+        # 需要 timer 服务（由 dsh-base 挂着，正常都在）。
+        # inboxPath: 'E:/GlassesHarness/.tmp/asr-inbox.jsonl'
+        # inboxPollMs: 700
+        #
+        # 翻译用的模型；留空则自动选第一个 provider 并尝试发现模型。
+        # modelId: 'deepseek-chat'

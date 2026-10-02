@@ -1,0 +1,10 @@
+# 测试期产生的临时文件（字幕总线、探针脚本等）
+.tmp/
+
+# 依赖（本项目零依赖，但以防万一）
+node_modules/
+
+# 编辑器 / 系统
+.vscode/
+.DS_Store
+Thumbs.db
