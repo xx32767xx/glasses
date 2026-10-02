@@ -2,6 +2,13 @@
 .tmp/
 
 # 依赖（本项目零依赖，但以防万一）
+#
+# ⚠️ 不要在仓库内创建 node_modules 里的 junction！
+#    真实 Cordis 组合（tests/live、scripts/demo）需要在 cwd 的 node_modules 下解析
+#    @deepseek-ai/cordis-plugin-*，但那些 vendor 包彼此也互相链接 —— 放进仓库就形成
+#    符号链接环：`git status --ignored` 会刷几百行"路径过长"警告，而 `git clean -xdf`
+#    有顺着链接删到检出文件的风险。
+#    所以组合目录一律建在系统临时区，见 lib/loader-links.mjs 与 tests/live/run.mjs。
 node_modules/
 
 # 编辑器 / 系统

@@ -23,25 +23,31 @@ node tests/live/run.mjs        # 或 npm run verify:live
 | `probe.mjs` | 观察者：断言 7 个工具已注册，驱动 selftest / 双向翻译 / display / 非法参数 / **桥端到端** |
 | `fake-llm.mjs` | 假 `llm` 服务，让 `leion_translate` 能在真实流水线里跑成功（不联网、不需要 key） |
 | `fake-fs.mjs` | 基于真实 node:fs 的 `fs` 服务，让收件箱真的读写文件 |
-| `links.mjs` · `setup.mjs` | 为 loader 建立 vendor junction（幂等） |
-| `run.mjs` | 一键跑：确保 junction → spawn loader → 传播退出码 |
+| `run.mjs` | 一键跑：建临时组合目录 → 支起 junction → spawn loader → 传播退出码 |
 
 ## 三个会让人卡半天的坑
 
-1. **Windows 上绝对路径必须是 `file://` URL。**
+1. **组合目录必须建在仓库之外（系统临时区）。**
+   loader 要在 cwd 的 `node_modules/@deepseek-ai/` 下解析 `cordis-plugin-*`，所以组合目录
+   必须有那些 junction；而那些 vendor 包**彼此也互相链接** —— 放进仓库就形成**符号链接环**：
+   `git status --ignored` 会刷几百行"路径过长"警告，而 `git clean -xdf` 有顺着链接删到
+   检出文件的风险。所以 `run.mjs` 用 `mkdtempSync` 在系统临时区建组合目录，只把
+   `cordis.yml` 拷进去；验证代码仍留在仓库里。
+
+2. **Windows 上绝对路径必须是 `file://` URL。**
    写 `D:/...` 会得到 `ERR_UNSUPPORTED_ESM_URL_SCHEME`；要写 `file:///D:/...`。相对路径
    （`./probe.mjs`）解析也不确定，所以统一用 `file://` 绝对 URL。
 
-2. **加载失败默认是看不见的。**
+3. **加载失败默认是看不见的。**
    模块解析失败时 loader 只把它报给 logger 服务；组合里没有 console logger 的话，这条报告会在
    导出器开始观察之前丢失，表现成「插件好像没生效但没有任何错误」。所以第一行就是 logger-console。
 
-3. **插件 `inject` 里写了什么服务，组合里就必须有，否则它会停在 PENDING。**
+4. **插件 `inject` 里写了什么服务，组合里就必须有，否则它会停在 PENDING。**
    这个坑真的踩到了：给插件加上 `inject: ['timer']`（收件箱轮询要用）之后，没挂 timer 的组合里
    插件直接 PENDING，探针 30 秒超时。所以 `cordis.yml` 里有 `@deepseek-ai/cordis-plugin-timer`
    —— 真实部署里它由 `@deepseek-ai/dsh-base` 挂着，所以这个依赖是安全的。
 
-4. **探针不能假设自己的 `apply` 晚于插件。**
+5. **探针不能假设自己的 `apply` 晚于插件。**
    探针和插件都只 `inject: ['tools']`，谁先 apply 没有保证。所以探针监听 `tools/change` 等工具
    出现，而不是一上来就断言（早先的版本就在这里误报过「工具没注册」——其实是探针跑太快然后
    `process.exit` 了）。
