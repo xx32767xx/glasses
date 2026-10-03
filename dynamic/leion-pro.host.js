@@ -384,10 +384,37 @@ function createInterpreter(ctx, rawConfig) {
     return { ok: true, providerId, modelId }
   }
 
+  /**
+   * 把 finish 分片的"原因"归一化成 { kind, failure }。
+   *
+   * ⚠️ 真实形状是**对象**，不是字符串（packages/llm/llm/src/types.ts 的 FinishReasonMap）：
+   *     { kind: 'stop' } / { kind: 'tool-calls' } / { kind: 'max-tokens' }
+   *     { kind: 'aborted' | 'error', failure: LlmFailure }
+   * 而 failure 挂在 **reason 上**，不在 chunk 上。
+   * 早期版本把它当字符串比对，于是每一句正确译文都被当成"流没正常结束"丢掉了。
+   */
+  function readFinish(reason, chunk) {
+    if (reason === null || reason === undefined) return { kind: null, failure: null }
+    // 宽容：万一某个适配器直接给字符串
+    if (typeof reason === 'string') return { kind: reason, failure: chunk.failure ?? null }
+    const failure = reason.failure ?? chunk.failure ?? null
+    return { kind: typeof reason.kind === 'string' ? reason.kind : null, failure }
+  }
+
+  /** 把 LlmFailure 渲染成一行可读文本。 */
+  function describeFailure(failure) {
+    if (failure === null || failure === undefined) return ''
+    if (typeof failure === 'string') return failure
+    const code = failure.code === undefined || failure.code === null ? '' : String(failure.code)
+    const message = failure.message === undefined || failure.message === null ? '' : String(failure.message)
+    if (code !== '' && message !== '') return code + '：' + message
+    return code !== '' ? code : message
+  }
+
   /** 跑一次模型流（不含重试策略），把碎片拼成一句译文。 */
   async function runStream(llm, options, onDelta) {
     let assembled = ''
-    let finishReason = null
+    let finishKind = null
     let finishFailure = null
     let lastEmit = 0
 
@@ -402,20 +429,22 @@ function createInterpreter(ctx, rawConfig) {
           }
         }
       } else if (chunk.type === 'finish') {
-        finishReason = chunk.reason
-        // 流失败被统一归一化成终止分片；把原因带出来，否则只剩一个 'error' 没法排查。
-        finishFailure = chunk.failure === undefined || chunk.failure === null
-          ? null
-          : String(chunk.failure.code ?? '') + (chunk.failure.message === undefined ? '' : ' ' + String(chunk.failure.message))
+        const parsed = readFinish(chunk.reason, chunk)
+        finishKind = parsed.kind
+        finishFailure = parsed.failure
       }
     }
 
     const finalText = assembled.trim()
-    if (finishReason !== 'stop') {
+    // 没有 finish 分片时按 'stop' 处理 —— 与 harness 自己的 BlockAssembler 一致
+    // （assembler.ts：`return this._finish ?? { kind: 'stop' }`）。
+    if (finishKind === null) finishKind = 'stop'
+
+    if (finishKind !== 'stop') {
+      const detail = describeFailure(finishFailure)
       return {
         ok: false,
-        failure: '模型流没有正常结束（finish=' + String(finishReason)
-          + (finishFailure === null ? '' : '，' + finishFailure) + '），已丢弃可能不完整的译文',
+        failure: '模型流没有正常结束（finish=' + finishKind + (detail === '' ? '' : '，' + detail) + '），已丢弃可能不完整的译文',
         partial: finalText,
       }
     }
@@ -557,15 +586,25 @@ function createInterpreter(ctx, rawConfig) {
         if (item.from !== undefined) args.from = item.from
         if (item.to !== undefined) args.to = item.to
         const result = await runTranslate(args)
-        if (result.ok === true) inbox.processed += 1
-        else {
+        if (result.ok === true) {
+          inbox.processed += 1
+          // 自动同传这条路上没有人在看工具的返回值，所以把每一句打进日志 ——
+          // 否则 transport 配成 'file' 时，整个 daemon 是完全静默的，出问题只能靠猜。
+          console.log('[leion-pro] ' + result.from + '→' + result.to + '  ' + result.translation)
+        } else {
           inbox.errors += 1
           inbox.lastError = result.failure
+          // 失败必须说出来：静默的 daemon 是最难排查的东西。
+          console.log('[leion-pro] ✗ 翻译失败：' + result.failure)
+          if (result.partial !== null && result.partial !== undefined && result.partial !== '') {
+            console.log('[leion-pro]   半截译文（已丢弃）：' + result.partial)
+          }
         }
       }
     } catch (error) {
       inbox.errors += 1
       inbox.lastError = String(error && error.message ? error.message : error)
+      console.log('[leion-pro] ✗ 处理收件箱时抛异常：' + inbox.lastError)
     } finally {
       pumping = false
     }

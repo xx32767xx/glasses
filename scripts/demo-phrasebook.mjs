@@ -62,7 +62,8 @@ export function apply(ctx) {
       const pieces = text.match(/.{1,8}/gu) ?? []
       return (async function* generate() {
         for (const piece of pieces) yield { type: 'text-delta', index: 0, text: piece }
-        yield { type: 'finish', reason: 'stop' }
+        // 真实形状：finish 的原因是对象（FinishReasonMap），不是字符串
+        yield { type: 'finish', reason: { kind: 'stop' } }
       })()
     },
   })

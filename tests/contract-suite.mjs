@@ -20,16 +20,26 @@ function cannedTranslation(options) {
 
 export function makeFakeLlm({ finish = 'stop' } = {}) {
   const calls = []
+  const state = { lastFinishReason: null }
   return {
     calls,
+    state,
     listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
     listModels: async () => [{ id: 'deepseek-chat' }],
     stream(options) {
       calls.push(options)
       const pieces = cannedTranslation(options).match(/.{1,12}/gu) ?? []
+      // ⚠️ finish 的原因是**对象**（FinishReasonMap），不是字符串：
+      //    { kind: 'stop' } / { kind: 'max-tokens' } / { kind: 'error', failure }
+      // 早期这个假适配器发的是字符串 'stop'，于是真实世界里"把对象当字符串比对"的
+      // bug 被测试台放过了 —— 每一句正确译文都被误判成"流没正常结束"丢掉了。
+      const reason = finish === 'error' || finish === 'aborted'
+        ? { kind: finish, failure: { code: 'TEST_FAILURE', message: '假适配器制造的故障' } }
+        : { kind: finish }
+      state.lastFinishReason = reason
       return (async function* generate() {
         for (const piece of pieces) yield { type: 'text-delta', index: 0, text: piece }
-        yield { type: 'finish', reason: finish }
+        yield { type: 'finish', reason }
       })()
     },
   }
@@ -60,15 +70,18 @@ export function makeEffortRejectingLlm() {
       const text = cannedTranslation(options)
       return (async function* generate() {
         if (rejects) {
+          // 真实形状：failure 挂在 reason 上，不在 chunk 上
           yield {
             type: 'finish',
-            reason: 'error',
-            failure: { code: 'UNSUPPORTED_REASONING_EFFORT', message: '该路由不接受显式推理强度' },
+            reason: {
+              kind: 'error',
+              failure: { code: 'UNSUPPORTED_REASONING_EFFORT', message: '该路由不接受显式推理强度' },
+            },
           }
           return
         }
         for (const piece of text.match(/.{1,12}/gu) ?? []) yield { type: 'text-delta', index: 0, text: piece }
-        yield { type: 'finish', reason: 'stop' }
+        yield { type: 'finish', reason: { kind: 'stop' } }
       })()
     },
   }
@@ -316,6 +329,35 @@ export async function runContractSuite(adapter, { it, check, assert }) {
     check('屏幕恢复成上一帧', status.lastFrame.text === '上一句：会议改到下午三点了。',
       JSON.stringify(status.lastFrame))
     check('恢复了 1 次', status.restored === 1, String(status.restored))
+  })
+
+  await it('finish 的原因是对象 {kind:"stop"} —— 不能被当成"流没正常结束"丢掉', async () => {
+    // 回归测试：早期版本把 reason 当字符串比对（reason !== 'stop'），
+    // 于是真实环境里每一句完全正确的译文都被丢弃、眼镜上什么都不显示。
+    const shaped = makeFakeLlm()
+    const shapedBox = await adapter.create({ llm: shaped, fs: makeFakeFs(new Map()) })
+    const result = await shapedBox.tools.get('leion_translate').execute({ text: 'A reunião é às três da tarde.' })
+    check('译文被接受', result.ok === true, JSON.stringify(result).slice(0, 240))
+    check('译文内容有长度', typeof result.translation === 'string' && result.translation.length > 5, result.translation)
+    check('假适配器发的确实是真实的对象形状', typeof shaped.state.lastFinishReason === 'object',
+      JSON.stringify(shaped.state.lastFinishReason))
+    check('kind 是 stop', shaped.state.lastFinishReason.kind === 'stop', JSON.stringify(shaped.state.lastFinishReason))
+  })
+
+  await it('finish 原因非 stop（{kind:"max-tokens"}）时仍然丢弃译文', async () => {
+    const truncated = await adapter.create({ llm: makeFakeLlm({ finish: 'max-tokens' }), fs: makeFakeFs(new Map()) })
+    const result = await truncated.tools.get('leion_translate').execute({ text: 'A reunião é às três.' })
+    check('未成功', result.ok === false, JSON.stringify(result).slice(0, 200))
+    check('原因写清了是 max-tokens', String(result.failure).includes('max-tokens'), result.failure)
+    check('没有编造失败码', !String(result.failure).includes('undefined'), result.failure)
+  })
+
+  await it('finish 原因是 error 时把 failure 的 code 与 message 带出来', async () => {
+    const failed = await adapter.create({ llm: makeFakeLlm({ finish: 'error' }), fs: makeFakeFs(new Map()) })
+    const result = await failed.tools.get('leion_translate').execute({ text: 'A reunião é às três.' })
+    check('未成功', result.ok === false)
+    check('带出了 code', String(result.failure).includes('TEST_FAILURE'), result.failure)
+    check('带出了 message', String(result.failure).includes('假适配器制造的故障'), result.failure)
   })
 
   await it('翻译调用显式关闭推理强度（思考 token 会吃掉译文预算）', async () => {

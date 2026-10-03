@@ -24,7 +24,8 @@ export function apply(ctx) {
         yield { type: 'block-start', index: 0, blockType: 'text' }
         for (const piece of pieces) yield { type: 'text-delta', index: 0, text: piece }
         yield { type: 'block-end', index: 0, block: { type: 'text', text } }
-        yield { type: 'finish', reason: 'stop' }
+        // 真实形状：finish 的原因是对象（FinishReasonMap），不是字符串
+        yield { type: 'finish', reason: { kind: 'stop' } }
       })()
     },
   })
