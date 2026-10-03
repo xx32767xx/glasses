@@ -8,5 +8,8 @@
     <string name="disconnect">断开</string>
     <string name="start_listen">开始听写</string>
     <string name="stop_listen">停止听写</string>
+    <string name="hint_manual">手输一句话（不依赖语音识别）</string>
+    <string name="send">发送</string>
+    <string name="diagnose">诊断语音识别环境</string>
     <string name="panel_placeholder">（等待字幕…）</string>
 </resources>

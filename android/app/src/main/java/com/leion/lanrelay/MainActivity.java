@@ -2,14 +2,19 @@ package com.leion.lanrelay;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
+import android.content.pm.ServiceInfo;
 import android.graphics.Paint;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.speech.RecognitionListener;
+import android.speech.RecognitionService;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
 import android.util.TypedValue;
@@ -19,6 +24,7 @@ import android.widget.EditText;
 import android.widget.TextView;
 
 import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 虚拟眼镜（开发者模式）。
@@ -49,9 +55,12 @@ public class MainActivity extends Activity implements LanClient.Listener {
     private TextView status;
     private EditText host;
     private EditText secret;
+    private EditText manualText;
     private Button connectButton;
     private Button langButton;
     private Button micButton;
+    private Button sendButton;
+    private Button diagnoseButton;
 
     private LanClient client;
     private SpeechRecognizer recognizer;
@@ -70,6 +79,8 @@ public class MainActivity extends Activity implements LanClient.Listener {
     /** 每开始/取消一轮就 +1；回调里对不上就丢弃（上一轮的残留回调不该影响这一轮）。 */
     private int generation = 0;
     private int retryCount = 0;
+    /** 正在跑"不指定语种"的诊断识别（那种结果要单独解释，不走正常重试逻辑）。 */
+    private boolean diagnosticRun = false;
 
     private String listenLanguage = "pt-BR";
     private int cols = 40;
@@ -87,9 +98,12 @@ public class MainActivity extends Activity implements LanClient.Listener {
         status = findViewById(R.id.status);
         host = findViewById(R.id.host);
         secret = findViewById(R.id.secret);
+        manualText = findViewById(R.id.manualText);
         connectButton = findViewById(R.id.connectButton);
         langButton = findViewById(R.id.langButton);
         micButton = findViewById(R.id.micButton);
+        sendButton = findViewById(R.id.sendButton);
+        diagnoseButton = findViewById(R.id.diagnoseButton);
 
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         host.setText(prefs.getString(KEY_HOST, ""));
@@ -100,6 +114,20 @@ public class MainActivity extends Activity implements LanClient.Listener {
         connectButton.setOnClickListener(v -> toggleConnection());
         langButton.setOnClickListener(v -> toggleLanguage());
         micButton.setOnClickListener(v -> toggleListening());
+        sendButton.setOnClickListener(v -> sendManualText());
+        diagnoseButton.setOnClickListener(v -> diagnose());
+
+        // 识别器**在 onCreate 就建好**，而不是等到要用的那一刻才建。
+        // createSpeechRecognizer 内部是异步绑定系统识别服务的；绑好之前调用
+        // startListening()，某些设备会直接回 ERROR_CLIENT（代码 5）。
+        // 提前创建等于把这步绑定做在用户还没按按钮的时候。
+        try {
+            recognizer = SpeechRecognizer.createSpeechRecognizer(this);
+            recognizer.setRecognitionListener(recognitionListener);
+        } catch (Exception error) {
+            recognizer = null;
+            setStatus("创建语音识别器失败：" + error.getClass().getSimpleName() + "（仍可用下方手输框验证链路）");
+        }
 
         renderPanel(new String[] { "（等待字幕…）" });
         applyPanelMetrics();
@@ -235,8 +263,13 @@ public class MainActivity extends Activity implements LanClient.Listener {
             return;
         }
         if (recognizer == null) {
-            recognizer = SpeechRecognizer.createSpeechRecognizer(this);
-            recognizer.setRecognitionListener(recognitionListener);
+            ensureRecognizer();
+        }
+        if (recognizer == null) {
+            wantListening = false;
+            updateMicButton();
+            setStatus("语音识别器不可用（创建就失败了）。用下方「手输一句话」仍可验证整条链路。");
+            return;
         }
 
         generation += 1;
@@ -324,6 +357,100 @@ public class MainActivity extends Activity implements LanClient.Listener {
         return "pt-BR".equals(listenLanguage) ? "葡语" : "中文";
     }
 
+    private void ensureRecognizer() {
+        if (recognizer != null) {
+            return;
+        }
+        try {
+            recognizer = SpeechRecognizer.createSpeechRecognizer(this);
+            recognizer.setRecognitionListener(recognitionListener);
+        } catch (Exception error) {
+            recognizer = null;
+        }
+    }
+
+    /**
+     * 手输一句话直接送走 —— 刻意不经过语音识别。
+     *
+     * 为什么需要它：语音识别是这条链路上最容易受设备环境影响的环节（国产 ROM 缺服务、
+     * 缺语种数据、被别的应用占麦克风…）。有了这个入口，"手机 → 电脑 → 翻译 → 字幕"
+     * 这条主链路的验证就与语音识别解耦了：语音坏了也能确认后面全是好的。
+     *
+     * 送出的语种按当前选择（听葡语 → 当葡语原文；听中文 → 当中文原文）。
+     */
+    private void sendManualText() {
+        String text = manualText.getText().toString().trim();
+        if (text.isEmpty()) {
+            setStatus("先在手输框里写一句话。");
+            return;
+        }
+        if (client == null || !client.isRunning()) {
+            setStatus("先点「连接」，连上电脑再发送。");
+            return;
+        }
+        client.sendText(text, listenLanguage);
+        manualText.setText("");
+        setStatus("已送走（当作「" + langLabel() + "」原文）：" + text);
+    }
+
+    /**
+     * 诊断语音识别环境。
+     *
+     * 目的是把"代码 5"从猜测变成事实：这台设备到底声明了哪个识别服务、它是不是被禁用了、
+     * 系统默认给它的是哪个；然后再做一次**不指定语种**的识别测试 ——
+     * 如果不指定语种能识别，说明问题在语种参数；如果照样失败，说明服务本身不可用。
+     */
+    private void diagnose() {
+        StringBuilder report = new StringBuilder("【语音识别环境】\n");
+        report.append("isRecognitionAvailable：")
+                .append(SpeechRecognizer.isRecognitionAvailable(this) ? "是" : "否").append('\n');
+
+        String defaultService = Settings.Secure.getString(getContentResolver(), "voice_recognition_service");
+        report.append("系统默认服务：")
+                .append(defaultService == null || defaultService.isEmpty() ? "(未设置)" : defaultService)
+                .append('\n');
+
+        // 注意：SERVICE_INTERFACE 常量在 RecognitionService 上，不在 SpeechRecognizer 上
+        List<ResolveInfo> declared = getPackageManager().queryIntentServices(
+                new Intent(RecognitionService.SERVICE_INTERFACE), 0);
+        report.append("设备声明的识别服务：").append(declared.size()).append(" 个");
+        for (ResolveInfo info : declared) {
+            ServiceInfo service = info.serviceInfo;
+            if (service == null) {
+                continue;
+            }
+            int setting = getPackageManager().getComponentEnabledSetting(
+                    new ComponentName(service.packageName, service.name));
+            String state = setting == PackageManager.COMPONENT_ENABLED_STATE_ENABLED ? "已启用"
+                    : setting == PackageManager.COMPONENT_ENABLED_STATE_DISABLED ? "已禁用" : "默认";
+            report.append('\n').append("  · ").append(service.packageName).append("（").append(state).append("）");
+        }
+
+        report.append("\n\n现在做一次**不指定语种**的识别测试：请对着手机说一句话…");
+        setStatus(report.toString());
+
+        ensureRecognizer();
+        if (recognizer == null) {
+            setStatus(report + "\n\n诊断中止：识别器创建失败，这台设备基本没有可用的识别服务。"
+                    + "\n（用「手输一句话」仍可验证整条链路）");
+            return;
+        }
+        diagnosticRun = true;
+        generation += 1;
+        listenState = STATE_STARTING;
+        // 关键：这个 intent **不带 EXTRA_LANGUAGE**
+        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        try {
+            recognizer.startListening(intent);
+        } catch (Exception error) {
+            diagnosticRun = false;
+            listenState = STATE_IDLE;
+            setStatus(report + "\n\n诊断中止：startListening 直接抛异常 "
+                    + error.getClass().getSimpleName());
+        }
+    }
+
     private void updateMicButton() {
         micButton.setText(wantListening ? R.string.stop_listen : R.string.start_listen);
     }
@@ -333,6 +460,10 @@ public class MainActivity extends Activity implements LanClient.Listener {
         public void onReadyForSpeech(Bundle params) {
             listenState = STATE_LISTENING;
             retryCount = 0;                       // 真的开始收音了，退避计数归零
+            if (diagnosticRun) {
+                setStatus("诊断：已经开始收音了，请说一句话…（这次**不指定语种**）");
+                return;
+            }
             if (wantListening) {
                 setStatus("正在听（" + langLabel() + "）…说完一句就自动送走");
             }
@@ -343,17 +474,40 @@ public class MainActivity extends Activity implements LanClient.Listener {
             ArrayList<String> texts = results == null
                     ? null
                     : results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
-            if (texts != null && !texts.isEmpty()) {
-                String text = texts.get(0) == null ? "" : texts.get(0).trim();
-                if (!text.isEmpty() && client != null) {
-                    client.sendText(text, listenLanguage);
-                }
+            String text = (texts == null || texts.isEmpty() || texts.get(0) == null)
+                    ? "" : texts.get(0).trim();
+
+            if (diagnosticRun) {
+                diagnosticRun = false;
+                listenState = STATE_IDLE;
+                setStatus("诊断结论：**不指定语种**能识别（识别到「" + text + "」）。\n"
+                        + "→ 说明设备的识别服务是好的，问题出在语种参数上："
+                        + "这台设备的识别服务不接受 zh-CN / pt-BR 这类写法，或者没装对应语种数据。\n"
+                        + "→ 下一步：到 设置 → 系统 → 语言和输入法 → 语音输入 里下载中文与葡语的语音包。");
+                return;
+            }
+
+            if (!text.isEmpty() && client != null) {
+                client.sendText(text, listenLanguage);
             }
             onSessionEnded(200);
         }
 
         @Override
         public void onError(int error) {
+            // 诊断那次单独解释，不走正常重试逻辑
+            if (diagnosticRun) {
+                diagnosticRun = false;
+                listenState = STATE_IDLE;
+                setStatus("诊断结论：**不指定语种**也失败 —— " + errorName(error) + "（代码 " + error + "）\n"
+                        + "→ 说明问题不在语种参数上，而是这台设备的识别服务本身不可用"
+                        + "（国产 ROM 常见：没有 Google 语音服务，或识别服务被禁用/被裁剪）。\n"
+                        + "→ 可尝试：装「Google 语音服务」并设为默认；或换一台设备；"
+                        + "或改走「电脑端 Whisper / 云 ASR」这条路。\n"
+                        + "→ 同时：用「手输一句话」可以把前面整条链路先验证完。");
+                return;
+            }
+
             // 我们自己 cancel() 之后，识别服务常常会回一个 ERROR_CLIENT。
             // 那时已经没有会话在跑了（STATE_IDLE），这种回声必须丢掉 —— 否则会一路刷屏，
             // 而且看起来就像"一按就开始出错"。
@@ -381,7 +535,9 @@ public class MainActivity extends Activity implements LanClient.Listener {
                 }
                 updateMicButton();
                 setStatus("听写已停止：" + label + "\n" + errorHint(error)
-                        + "\n（本次请求的语种是 " + listenLanguage + "）");
+                        + "\n（本次请求的语种是 " + listenLanguage + "）"
+                        + "\n点「诊断语音识别环境」可以进一步确认是设备还是参数的问题；"
+                        + "或者用下面的手输框先把链路验证完。");
                 return;
             }
 

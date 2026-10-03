@@ -95,6 +95,41 @@
             android:text="@string/start_listen"
             android:textSize="18sp" />
 
+        <!--
+          不依赖语音识别的输入通道：手输一句话直接送走。
+          它的意义是"把链路验证和语音识别解耦" —— 语音识别是这台设备最容易出问题的环节，
+          它坏了不该堵住"手机→电脑→翻译→字幕"这条主链路的验证。
+        -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:orientation="horizontal">
+
+            <EditText
+                android:id="@+id/manualText"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:hint="@string/hint_manual"
+                android:inputType="text"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/sendButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="@string/send" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/diagnoseButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/diagnose" />
+
         <TextView
             android:id="@+id/status"
             android:layout_width="match_parent"
