@@ -123,30 +123,33 @@ def _load_wav(path):
     return _resample_linear(_to_mono(data), rate, TARGET_RATE)
 
 
-def _load_with_av(path):
-    """用 PyAV 解码 m4a / mp3 / opus 等压缩格式，交给它自带的 ffmpeg。
+def _frames_of(result):
+    """PyAV 19 的 AudioResampler.resample() 返回列表（旧版本返回单帧），两种都兼容。"""
+    if result is None:
+        return []
+    return list(result) if isinstance(result, (list, tuple)) else [result]
 
-    PyAV 19 的 AudioResampler.resample() 返回的是一个列表（旧版本返回单帧），
-    这里两种都兼容，免得以后升级又炸。
+
+def decode_with_av(source, container_format=None):
+    """用 PyAV 解码任意音频（文件路径、BytesIO 都行），返回 16k 单声道 float32。
+
+    source 是 file-like 时最好传 container_format（例如 'wav'）—— 从流里嗅探格式不如从
+    文件路径可靠。faster-whisper 自己走的就是 PyAV，但它在 PyAV 19 上会炸（见文件头说明），
+    所以这里我们直接用它，只做解码这一件事。
     """
     import av
     import numpy as np
 
-    def frames_of(result):
-        if result is None:
-            return []
-        return list(result) if isinstance(result, (list, tuple)) else [result]
-
-    container = av.open(str(path))
+    container = av.open(source, format=container_format)
     try:
         stream = container.streams.audio[0]
         resampler = av.audio.resampler.AudioResampler(
             format="fltp", layout="mono", rate=TARGET_RATE)
         chunks = []
         for frame in container.decode(stream):
-            for piece in frames_of(resampler.resample(frame)):
+            for piece in _frames_of(resampler.resample(frame)):
                 chunks.append(piece.to_ndarray().reshape(-1))
-        for piece in frames_of(resampler.resample(None)):      # 收尾：把重采样器里剩的吐出来
+        for piece in _frames_of(resampler.resample(None)):      # 收尾：把重采样器里剩的吐出来
             chunks.append(piece.to_ndarray().reshape(-1))
     finally:
         container.close()
@@ -161,7 +164,7 @@ def load_audio(path):
     path = Path(path)
     if path.suffix.lower() == ".wav":
         return _load_wav(path)
-    return _load_with_av(path)
+    return decode_with_av(path)
 
 
 def main():
