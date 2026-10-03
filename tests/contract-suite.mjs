@@ -411,6 +411,9 @@ export async function runContractSuite(adapter, { it, check, assert }) {
       ptPrompt.slice(-260))
     check('译成巴葡时带上了"不用葡葡"的对照格式', ptPrompt.includes('不用'), ptPrompt.slice(-160))
     check('译成中文时不带葡语术语表（省上下文）', !toZh[0].includes('ônibus'), toZh[0].slice(-160))
+    check('译成中文时不带"用巴葡表达"那条规则（在反方向上毫无意义）',
+      !toZh[0].includes('欧洲葡语'), toZh[0].slice(0, 400))
+    check('译成巴葡时才有那条规则', ptPrompt.includes('欧洲葡语'), ptPrompt.slice(0, 400))
     check('策略里的规则条数进了提示词', ptPrompt.includes('AR 屏幕只有 3 行'), ptPrompt.slice(0, 400))
   })
 

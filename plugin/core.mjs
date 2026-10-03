@@ -262,7 +262,12 @@ export function translationSystem(policy, from, to) {
     '把用户给你的话翻译成' + target + '。',
     '硬性要求：',
   ]
-  policy.translationRules.forEach((rule, index) => {
+  // 「用巴葡表达」这类规则只在**产出巴葡**时才成立：译成中文时它毫无意义，
+  // 甚至可能把模型往错的方向推。所以策略数据把它们分成通用的与巴葡专用的两组。
+  const rules = to === PT
+    ? policy.translationRules.concat(policy.ptBrRules)
+    : policy.translationRules
+  rules.forEach((rule, index) => {
     lines.push((index + 1) + '. ' + rule)
   })
   // 只有"译成巴葡"时才附术语表：译成中文时这些词用不上，白白占上下文。

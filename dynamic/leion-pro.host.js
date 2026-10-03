@@ -37,11 +37,13 @@ const POLICY = {
   },
   "translationRules": [
     "只输出译文本身。不要解释、不要加引号、不要标注语种、不要重复原文。",
-    "使用巴西葡语的自然口语表达；不要使用葡萄牙本土（欧洲葡语）的用词和语序。",
     "数字、时间、金额、人名、公司名、产品名必须原样保留 —— 译错数字比译错语法严重得多。",
     "这是同传，保持与原文相同的语序节奏，不要合并、不要扩写。",
     "AR 屏幕只有 3 行，译文要简洁：可以省掉客套话和重复，但不许做摘要式改写（那会丢信息）。",
     "原文若有口误或语气词，按最合理的意图翻译。"
+  ],
+  "ptBrRules": [
+    "使用巴西葡语的自然口语表达；不要使用葡萄牙本土（欧洲葡语）的用词和语序。"
   ],
   "terminology": [
     {
@@ -399,7 +401,12 @@ function translationSystem(policy, from, to) {
     '把用户给你的话翻译成' + target + '。',
     '硬性要求：',
   ]
-  policy.translationRules.forEach((rule, index) => {
+  // 「用巴葡表达」这类规则只在**产出巴葡**时才成立：译成中文时它毫无意义，
+  // 甚至可能把模型往错的方向推。所以策略数据把它们分成通用的与巴葡专用的两组。
+  const rules = to === PT
+    ? policy.translationRules.concat(policy.ptBrRules)
+    : policy.translationRules
+  rules.forEach((rule, index) => {
     lines.push((index + 1) + '. ' + rule)
   })
   // 只有"译成巴葡"时才附术语表：译成中文时这些词用不上，白白占上下文。
