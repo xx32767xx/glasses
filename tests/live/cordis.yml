@@ -35,9 +35,10 @@
     inboxPath: 'E:/GlassesHarness/.tmp/live-inbox.jsonl'
     inboxPollMs: 150
 
-# 假 llm 与假 fs：让 leion_translate 与收件箱都能在真实流水线里跑成功（不联网、不需要 key）
+# 假 llm 与真实 node:fs 的 fs 服务：让 leion_translate 与收件箱都能在真实流水线里跑成功
+# （假 llm 让验证不联网、不需要 key；fs 服务是共用的 lib/fs-node.mjs）
 - name: 'file:///E:/GlassesHarness/tests/live/fake-llm.mjs'
-- name: 'file:///E:/GlassesHarness/tests/live/fake-fs.mjs'
+- name: 'file:///E:/GlassesHarness/lib/fs-node.mjs'
 
 # 观察者：检查注册结果并驱动真实调用
 - name: 'file:///E:/GlassesHarness/tests/live/probe.mjs'

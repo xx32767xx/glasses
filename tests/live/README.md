@@ -22,7 +22,7 @@ node tests/live/run.mjs        # 或 npm run verify:live
 | `cordis.yml` | 组合：console logger + timer + system-prompt + tools + 被验证的插件（带收件箱配置）+ 假 llm + 假 fs + 探针 |
 | `probe.mjs` | 观察者：断言 7 个工具已注册，驱动 selftest / 双向翻译 / display / 非法参数 / **桥端到端** |
 | `fake-llm.mjs` | 假 `llm` 服务，让 `leion_translate` 能在真实流水线里跑成功（不联网、不需要 key） |
-| `fake-fs.mjs` | 基于真实 node:fs 的 `fs` 服务，让收件箱真的读写文件 |
+| `../../lib/fs-node.mjs` | 基于真实 node:fs 的 `fs` 服务，让收件箱真的读写文件（与演示/常驻进程共用同一个实现） |
 | `run.mjs` | 一键跑：建临时组合目录 → 支起 junction → spawn loader → 传播退出码 |
 
 ## 三个会让人卡半天的坑

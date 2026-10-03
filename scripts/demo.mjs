@@ -25,7 +25,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CHECKOUT } from '../lib/real-tools.mjs'
-import { ensureLoaderLinks, fileUrl } from '../lib/loader-links.mjs'
+import { ensureLoaderLinks } from '../lib/loader-links.mjs'
+import { buildComposition as buildCompositionYaml, repoFile } from '../lib/composition.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
 
@@ -34,9 +35,6 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
  * 组合目录必须建在系统临时区 —— 见下面 main() 里的说明。
  */
 const DATA_DIR = join(ROOT, '.tmp', 'demo')
-
-/** 检出里那些包用 file:// 绝对 URL 引用（本项目零依赖，包名解析不到它们）。 */
-const pkg = relative => fileUrl(join(CHECKOUT, ...relative.split('/')))
 
 function parseArgs(argv) {
   const options = { live: false, delay: 1500, pauseMs: 700 }
@@ -67,66 +65,37 @@ const HELP = `一键演示：亮亮视野 Leion Pro · 中↔巴葡双向同传�
 演示流程：自检 → 用真实的 ASR 桥重放 14 句中葡剧本 → 逐帧画出眼镜屏幕 → 汇总统计
 `
 
-/** 生成组合文件。--live 时挂真实 llm 链路，否则挂离线例句表。 */
+/**
+ * 生成组合文件。
+ * 组合本体（真实 dsh 包 + 交付的插件）与 scripts/harness-side.mjs 共用同一份生成逻辑
+ * （lib/composition.mjs），这里只多挂一个演示驱动。
+ */
 function buildComposition(options) {
   const busPath = join(DATA_DIR, 'subtitle-bus.json').replace(/\\/g, '/')
   const inboxPath = join(DATA_DIR, 'asr-inbox.jsonl').replace(/\\/g, '/')
 
-  const llmRows = options.live
-    ? `
-# ── 真实翻译链路：与你 dsh web 里跑的是同一套适配器 ──────────────────────────
-# provider 路由名是 deepseek-official；apiKey 逐请求从凭据存储解析
-# （$DSH_HOME/.credentials.yaml 或环境里的 DEEPSEEK_API_KEY）。
-- name: '${pkg('packages/llm/llm/lib/index.js')}'
-- name: '${pkg('packages/credentials/credentials-local/lib/index.js')}'
-- name: '${pkg('packages/settings/settings-file/lib/index.js')}'
-- name: '${pkg('packages/llm/llm-deepseek/lib/index.js')}'
-`
-    : `
-# ── 离线翻译链路：例句表驱动的假适配器（不联网、零成本、可复现） ─────────────
-- name: '${fileUrl(join(ROOT, 'scripts', 'demo-phrasebook.mjs'))}'
-`
-
-  return `# 由 scripts/demo.mjs 生成 —— 请勿手改（改 scripts/demo.mjs）
-#
-# 这是一个**真实的 Cordis 组合**：下面每一行 dsh 包都是检出里的真实实现，
-# 不是测试替身。唯一的替身是 ${options.live ? '（无，--live 用的是真适配器）' : '离线例句表适配器'}。
-#
-# Windows 提示：loader 走 ESM 动态 import，绝对路径必须是 file:// URL。
-
-# 先挂 console logger：否则"模块解析失败/依赖没就绪"这类错误只进 logger 服务就丢了
-- name: '@deepseek-ai/cordis-plugin-logger-console'
-
-# 真实 timer 服务：插件的 inject 里有 'timer'（ASR 收件箱轮询用它）。
-# 真实部署里它由 @deepseek-ai/dsh-base 挂着，所以这里必须补上，否则插件会停在 PENDING。
-- name: '@deepseek-ai/cordis-plugin-timer'
-
-- name: '${pkg('packages/core/system-prompt/lib/index.js')}'
-- name: '${pkg('packages/core/tools/lib/index.js')}'
-${llmRows}
-# ── 本项目交付的插件（正式包，走绝对路径加载源码） ──────────────────────────
-- name: '${fileUrl(join(ROOT, 'plugin', 'index.mjs'))}'
-  config:
-    # 进：ASR 收件箱。这就是"同传"而不是"翻译工具"的开关。
-    inboxPath: '${inboxPath}'
-    inboxPollMs: 150
-    # 出：字幕总线。演示用它把"眼镜屏幕"画出来（mock 通道只打一行日志）。
-    transport: 'file'
-    sinkPath: '${busPath}'
-
-# 收件箱要真的读写文件：最小组合里没有 fs 服务，用 node:fs 补一个
-- name: '${fileUrl(join(ROOT, 'tests', 'live', 'fake-fs.mjs'))}'
-
-# 演示驱动
-- name: '${fileUrl(join(ROOT, 'scripts', 'demo-driver.mjs'))}'
+  return buildCompositionYaml({
+    mode: options.live ? 'live' : 'offline',
+    header: '# 一键演示组合（由 scripts/demo.mjs 生成）',
+    pluginConfig: {
+      // 进：ASR 收件箱。这就是"同传"而不是"翻译工具"的开关。
+      inboxPath,
+      inboxPollMs: 150,
+      // 出：字幕总线。演示用它把"眼镜屏幕"画出来（mock 通道只打一行日志）。
+      transport: 'file',
+      sinkPath: busPath,
+    },
+    extraRows: [
+      `- name: '${repoFile('scripts', 'demo-driver.mjs')}'
   config:
     busPath: '${busPath}'
     inboxPath: '${inboxPath}'
     transcript: '${join(ROOT, 'bridge', 'sample-transcript.txt').replace(/\\/g, '/')}'
     replayDelayMs: ${options.delay}
     pauseMs: ${options.pauseMs}
-    mode: '${options.live ? 'live' : 'offline'}'
-`
+    mode: '${options.live ? 'live' : 'offline'}'`,
+    ],
+  })
 }
 
 async function main() {

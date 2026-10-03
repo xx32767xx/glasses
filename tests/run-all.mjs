@@ -20,6 +20,7 @@ import { check, loadHostHalf } from './fake-sandbox.mjs'
 import { dynamicAdapter, formalAdapter, FORMAL_PATH } from './host-adapters.mjs'
 import { runContractSuite, makeFakeLlm, makeFakeFs, SAMPLE_ARGS } from './contract-suite.mjs'
 import { runBridgeSuite } from './bridge-suite.mjs'
+import { runRelaySuite } from './relay-suite.mjs'
 import { runLive } from './live/run.mjs'
 
 let passed = 0
@@ -135,7 +136,12 @@ await it('渲染结果一致（同 args/同 value 下 render 输出逐字段相�
 heading('ASR 桥（把语音识别结果变成收件箱里的一行一句话）')
 await runBridgeSuite(helpers)
 
-// ── 5. 真实 Cordis 组合（真实 ToolRuntime + 真实执行流水线） ─────────────────
+// ── 5. 局域网转发（手机 ↔ 电脑） ────────────────────────────────────────────
+
+heading('局域网转发（手机 ↔ 电脑，跑在真实 HTTP 上）')
+await runRelaySuite(helpers)
+
+// ── 6. 真实 Cordis 组合（真实 ToolRuntime + 真实执行流水线） ─────────────────
 
 heading('真实 Cordis 组合（真实 ToolRuntime，不是复刻的检查器）')
 await it('plugin/index.mjs 装进真实组合后能被真实流水线注册与执行', async () => {

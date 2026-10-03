@@ -11,6 +11,8 @@
     "verify": "node scripts/generate.mjs --check && node tests/run-all.mjs",
     "verify:live": "node tests/live/run.mjs",
     "bridge": "node bridge/asr-bridge.mjs",
-    "demo": "node bridge/asr-bridge.mjs --inbox .tmp/asr-inbox.jsonl --engine replay --replay bridge/sample-transcript.txt --truncate"
+    "demo": "node bridge/asr-bridge.mjs --inbox .tmp/asr-inbox.jsonl --engine replay --replay bridge/sample-transcript.txt --truncate",
+    "harness-side": "node scripts/harness-side.mjs",
+    "relay": "node relay/lan-relay.mjs"
   }
 }

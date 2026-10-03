@@ -80,7 +80,7 @@ export function apply(ctx) {
       if (!selfText.includes('自检')) fail('渲染内容里没有「自检」，render 可能没生效')
       if (!selfText.includes('显示通道：OK')) fail('自检的显示通道没通过')
       if (!selfText.includes('翻译路由：OK')) fail('自检的翻译路由没通过（假 llm 服务没生效？）')
-      if (!selfText.includes('收件箱：OK')) fail('自检的收件箱没通过（timer / fake-fs 没生效？）')
+      if (!selfText.includes('收件箱：OK')) fail('自检的收件箱没通过（timer / fs 服务没生效？）')
 
       // 2) 双向翻译：schema 最复杂的工具，让真实的 output.schema 校验器去审它
       const ptText = await call('leion_translate', { text: 'A reunião de hoje passou para as três da tarde.' }, 'live-probe-zh', signal)

@@ -299,6 +299,10 @@ export function createInterpreter(ctx, rawConfig) {
       lang: input.lang === undefined ? 'unknown' : input.lang,
       text,
       lines: fitSubtitle(text, config.cols, config.lines),
+      // 把显示预算也放进帧里：这样任何下游（真机桥、局域网转发、手机 App）
+      // 都能从数据本身知道"眼镜有多大"，不必各自硬编码或各自配一份。
+      cols: config.cols,
+      lineBudget: config.lines,
       at: new Date().toISOString(),
     }
   }

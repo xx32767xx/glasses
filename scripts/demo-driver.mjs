@@ -39,10 +39,18 @@ export function apply(ctx, config) {
     mode: 'offline',
   }, config ?? {})
 
-  let finished = false
+  /**
+   * 两个标志位刻意分开：
+   *   started —— 防重入：tools/change 会多次触发，run() 只能进一次；
+   *   aborted —— 防重复报错：fail() 只报第一次。
+   * 合成一个的话，run() 一开始就把它置位，后面的失败检查会全部变成空操作，
+   * 演示就会在"其实失败了"的情况下报成功。
+   */
+  let started = false
+  let aborted = false
   const fail = message => {
-    if (finished) return
-    finished = true
+    if (aborted) return
+    aborted = true
     console.error('\n[demo] ❌ ' + message)
     process.exit(1)
   }
@@ -65,6 +73,7 @@ export function apply(ctx, config) {
   let lastRaw = ''
   let lastText = ''
   let settleTimer = null
+  let pendingSettleFrame = null
   let lastSettled = ''
 
   function renderSettled(frame, original) {
@@ -78,6 +87,19 @@ export function apply(ctx, config) {
     console.log(drawFrame(frame, 40))
     console.log(`   [${frame.speaker} / ${frame.lang}]  ${channel}`)
     if (original !== undefined && original !== frame.text) console.log(`   原文：${original}`)
+  }
+
+  /** 把"待定稿"的那一帧真的渲染出来（收尾时必须做，否则最后一句会丢）。 */
+  function settlePending() {
+    if (settleTimer !== null) {
+      clearTimeout(settleTimer)
+      settleTimer = null
+    }
+    const frame = pendingSettleFrame
+    pendingSettleFrame = null
+    if (frame === null || frame.text === lastSettled) return
+    lastSettled = frame.text
+    renderSettled(frame, pendingOriginals.shift())
   }
 
   async function tickBus() {
@@ -98,30 +120,36 @@ export function apply(ctx, config) {
     }
     if (!Array.isArray(frame.lines) || typeof frame.text !== 'string') return
     if (frame.text === lastText) return
+
+    const previousText = lastText
     lastText = frame.text
 
-    // 流式增量：插件在翻译过程中会推好几次，这里先轻量地显示"正在成形"
-    if (settleTimer !== null) {
-      clearTimeout(settleTimer)
-    } else if (lastSettled !== '') {
-      stats.partials += 1
-      process.stdout.write(`   ⋯ ${frame.text.replace(/\s+/g, ' ').slice(0, 60)}\n`)
+    // 流式增量是"同一条译文在变长"，所以**前缀关系**说明这还是同一句：只更新待定稿内容。
+    // 否则说明下一句已经来了 —— 必须先把上一句真正画出来，否则上一句会被顶掉（丢帧）。
+    const sameUtterance = previousText !== ''
+      && previousText !== lastSettled
+      && (frame.text.startsWith(previousText) || previousText.startsWith(frame.text))
+
+    if (pendingSettleFrame !== null) {
+      if (sameUtterance) {
+        stats.partials += 1
+        process.stdout.write(`   ⋯ ${frame.text.replace(/\s+/g, ' ').slice(0, 60)}\n`)
+      } else {
+        settlePending()
+      }
     }
 
     // 250ms 内没有新内容，就认为这一句定稿了（演示用启发式，不是插件的语义）
-    settleTimer = setTimeout(() => {
-      settleTimer = null
-      if (frame.text === lastSettled) return
-      lastSettled = frame.text
-      renderSettled(frame, pendingOriginals.shift())
-    }, 250)
+    pendingSettleFrame = frame
+    if (settleTimer !== null) clearTimeout(settleTimer)
+    settleTimer = setTimeout(settlePending, 250)
   }
 
   // ── 主流程 ─────────────────────────────────────────────────────────────────
 
   async function run() {
     if (leionNames().length < EXPECTED.length) return
-    finished = true
+    started = true
 
     try {
       console.log('')
@@ -182,7 +210,7 @@ export function apply(ctx, config) {
       await sleep(600)
 
       clearInterval(renderTimer)
-      if (settleTimer !== null) clearTimeout(settleTimer)
+      settlePending()      // 关键：把还没定稿渲的那一帧补上，不能直接取消它
 
       const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1)
       console.log('\n[4/4] 演示结束')
