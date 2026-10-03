@@ -11,7 +11,7 @@
 
 ```powershell
 node scripts/generate.mjs        # 从核心逻辑生成两个产物
-node tests/run-all.mjs           # 109 项断言：新鲜度门禁 + 两个包装版本各跑一遍 + 一致性对比
+node tests/run-all.mjs           # 126 项断言：新鲜度门禁 + 两个包装版本各跑一遍 + 一致性对比
                                  # + ASR 桥契约 + 局域网契约 + 真实 Cordis 组合
 
 # A) 不需要麦克风、不需要手机：重放一段中葡对照的剧本，看整条同传链路
@@ -37,8 +37,9 @@ node scripts/build-apk.mjs             # 构建安卓 App → android/README.md 
 
 | 路径 | 是什么 |
 |---|---|
-| `plugin/core.mjs` | **业务逻辑唯一来源**：排版、语种判定、翻译管线、ASR 收件箱、transport seam、7 个工具规格 |
+| `plugin/core.mjs` | **业务逻辑唯一来源**：排版、语种判定、翻译管线、ASR 收件箱、两个接缝、7 个工具规格 |
 | `plugin/index.mjs` | **正式插件**入口：`export name / inject / apply(ctx, config)`，零第三方依赖 |
+| `policy/br-pt.json` | **巴葡口径唯一来源**：术语表、口语特征、字幕纪律（提示词与技能文档都从它生成） |
 | `plugin/schemas.generated.mjs` | 生成：由 core 的 DSL 经真实 `defineTool` 编译出的原始 schema |
 | `plugin/cordis.patch.yml` · `cordis.local.patch.yml` | 装进 profile 用 / 开发 `--patch` 用 |
 | `dynamic/leion-pro.host.js` | 生成：**动态插件**，可直接粘贴给创造模式的 `cordis_define` |
@@ -51,7 +52,7 @@ node scripts/build-apk.mjs             # 构建安卓 App → android/README.md 
 | `lib/artifacts.mjs` · `scripts/generate.mjs` | 产物生成（测试与 CLI 共用同一份实现） |
 | `lib/composition.mjs` · `lib/fs-node.mjs` · `lib/keepalive.mjs` | 组合生成与两个共用的小插件 |
 | `lib/real-tools.mjs` · `lib/loader-links.mjs` | 加载检出里真实的构建产物 / 建 loader junction |
-| `tests/` | 沙箱复刻 + 两个适配器 + 契约套件 + 桥套件 + 局域网套件（109 项） |
+| `tests/` | 沙箱复刻 + 两个适配器 + 契约套件 + 桥套件 + 局域网套件 + 翻译后端接缝（126 项） |
 | `tests/live/` | **真实 Cordis 组合**：真实 `ToolRuntime` + 真实执行流水线 + 真实 `timer` + 真实 `output.schema` 校验 |
 | `skills/leion-interpreter/SKILL.md` | **同传操作规范**：巴葡 vs 葡葡用词差异表、字幕长度纪律、调用顺序 |
 | `docs/01-架构与方案.md` | **给老师的方案**：分层、接缝论证、验证状态、真机/ASR 接入路径、路线图 |
@@ -108,6 +109,15 @@ node scripts/build-apk.mjs             # 构建安卓 App → android/README.md 
 6. **状态是实例级的，不是模块级的** —— 正式插件可能被多个 agent preset 同时挂载，模块级状态会让两条会话的字幕互相串。
 7. **收件箱只吃「以换行结束」的完整行**，且翻译**串行**执行 —— 前者让外部程序可以随时 flush，后者避免字幕互相穿插。
 8. **坏行只计数不中断** —— 一条写坏的 JSON 不该让整条同传停摆。
+9. **两个接缝，不是一处** —— `transport`（字幕怎么出去）和 `translator`（译文从哪来）。前者让"换眼镜"只改一处，后者让"换翻译位置"只改一个配置：
+
+   ```
+   config.translator:
+     'harness-llm'   电脑上的 harness + 云端模型（现状）
+     'http'          POST 到外部端点 ← 把模型搬到手机/眼镜端时用这条，插件不改代码
+     'none'          不做翻译，收件箱文字直接当字幕 ← 插件退化成纯显示通道
+   ```
+10. **巴葡口径是数据，不是代码** —— 术语表与规则在 `policy/br-pt.json`，提示词和技能文档都从它生成。这不只是去重：将来翻译搬到端侧小模型时，那份数据能改用作"禁用词约束"或"后处理替换表"，而提示词搬到小模型上根本执行不了。
 
 ---
 
@@ -130,7 +140,7 @@ node scripts/build-apk.mjs             # 构建安卓 App → android/README.md 
 | 事项 | 状态 |
 |---|---|
 | schema DSL / 参数校验 / 输出校验 | ✅ 用**真实** `defineTool` + `validateJsonSchemaValue` |
-| 7 个工具契约、排版、双向语向、节流、异常 | ✅ 83 项断言，两个版本各跑一遍，全绿 |
+| 7 个工具契约、排版、双向语向、节流、异常 | ✅ 126 项断言，两个版本各跑一遍，全绿 |
 | ASR 收件箱（半行/坏行/强制语种/stop-drain-reset） | ✅ 离线契约 + **真实 timer 端到端** |
 | **ASR 桥**（断句 / 停顿断句 / UTF-8 重音 / 协议不被破坏 / replay 端到端） | ✅ 19 项契约 + 实测 CLI |
 | 两个版本一致性（含 schema 与 render） | ✅ 逐字段对比 |

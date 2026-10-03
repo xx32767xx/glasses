@@ -22,19 +22,35 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
 const ANDROID_DIR = join(ROOT, 'android')
 const APK = join(ANDROID_DIR, 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk')
 
-/** 在 ~/.gradle/wrapper/dists 里找已下载的 gradle 发行版。 */
-function findCachedGradle() {
+/** 在 ~/.gradle/wrapper/dists 里找已下载的 gradle 发行版。
+ *  目录层级不固定（dists/<发行版>/<哈希>/gradle-8.6/bin/），所以递归找，不猜层数。 */
+function findCachedGradle(maxDepth = 5) {
   const dists = join(homedir(), '.gradle', 'wrapper', 'dists')
   if (!existsSync(dists)) return null
-  for (const entry of readdirSync(dists)) {
-    const bin = join(dists, entry)
-    if (!statSync(bin).isDirectory()) continue
-    for (const version of readdirSync(bin)) {
-      const candidate = join(bin, version, 'bin', process.platform === 'win32' ? 'gradle.bat' : 'gradle')
-      if (existsSync(candidate)) return candidate
+  const exe = process.platform === 'win32' ? 'gradle.bat' : 'gradle'
+  const walk = (dir, depth) => {
+    if (depth > maxDepth) return null
+    let entries
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return null
     }
+    // 先看这一层有没有 bin/gradle —— 命中就返回，不再往下钻
+    for (const entry of entries) {
+      if (entry.isDirectory() && entry.name === 'bin') {
+        const candidate = join(dir, 'bin', exe)
+        if (existsSync(candidate)) return candidate
+      }
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue
+      const found = walk(join(dir, entry.name), depth + 1)
+      if (found !== null) return found
+    }
+    return null
   }
-  return null
+  return walk(dists, 0)
 }
 
 function resolveGradle() {
@@ -55,14 +71,17 @@ if (gradle === null) {
   console.error('      1) 用 Android Studio 打开 android/ 目录，直接点 Run（最省事）')
   console.error('      2) 装一个 gradle 并放进 PATH')
   console.error('      3) 设环境变量 GRADLE_BIN 指向 gradle 可执行文件')
+  console.error('      找过的地方：$GRADLE_BIN、PATH，以及 ' + join(homedir(), '.gradle', 'wrapper', 'dists'))
   process.exit(1)
 }
 console.log('[apk] 用 gradle：' + gradle)
 
-const result = spawnSync(gradle, ['assembleDebug', '--console=plain'], {
+// 注意：Windows 上直接 spawn 一个 .bat 需要 shell；而 shell + 参数数组的组合会触发
+// Node 的 DEP0190 警告（参数只做拼接、不做转义），所以整条命令按一个字符串传。
+const result = spawnSync(`"${gradle}" assembleDebug --console=plain`, {
   cwd: ANDROID_DIR,
   stdio: 'inherit',
-  shell: process.platform === 'win32',
+  shell: true,
 })
 
 if (result.status !== 0) {

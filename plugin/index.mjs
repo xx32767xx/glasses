@@ -22,6 +22,7 @@
  */
 
 import { TOOL_SCHEMAS } from './schemas.generated.mjs'
+import { POLICY } from './policy.generated.mjs'
 import {
   CONFIG_DEFAULTS,
   buildToolSpecs,
@@ -42,7 +43,8 @@ export const inject = ['tools', 'timer']
 export function apply(ctx, config) {
   // 配置错误要响亮：不合法就在加载时抛，不要留到运行期。validateConfig 同时填默认值。
   const resolved = validateConfig(config === undefined || config === null ? {} : config)
-  const rt = createInterpreter(ctx, resolved)
+  // policy 由生成物提供（唯一来源是 policy/br-pt.json）：巴葡口径只在那一处维护。
+  const rt = createInterpreter(ctx, resolved, { policy: POLICY })
 
   for (const spec of buildToolSpecs(rt)) {
     const compiled = TOOL_SCHEMAS[spec.name]

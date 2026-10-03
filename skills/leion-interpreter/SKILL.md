@@ -9,23 +9,29 @@ description: 中↔巴西葡萄牙语（巴葡）双向同声传译的操作规�
 
 ## 硬约束：**巴葡 ≠ 葡葡**
 
+<!-- BEGIN GENERATED br-pt-policy (由 scripts/generate.mjs 从 policy/br-pt.json 生成，勿手改) -->
 用户要的是 **巴西葡萄牙语（pt-BR）**，不是葡萄牙本土葡语。这是评分点，不是风格偏好。以下是必须遵守的差异：
 
 | 中文 | 巴葡 ✅ | 葡葡 ❌ |
 |---|---|---|
 | 公交车 | ônibus | autocarro |
+| 地铁 | metrô | metro |
+| 火车 | trem | comboio |
+| 车票 | passagem | bilhete |
+| 高速公路 | rodovia | autoestrada |
+| 摩托车 | moto | mota |
 | 手机 | celular | telemóvel |
 | 冰箱 | geladeira | frigorífico |
-| 计划（动词） | planejar | planear |
-| 团队 | time | equipa |
-| 火车 | trem | comboio |
+| 果汁 | suco | sumo |
 | 冰淇淋 | sorvete | gelado |
-| 收银台 | caixa | caixa（同）/ 但 "caixa" 前缀用 "caixa rápido" |
-| 你 | você（默认） | tu（巴葡口语也用 você） |
+| 早餐 | café da manhã | pequeno-almoço |
+| 团队 | time | equipa |
+| 计划（动词） | planejar | planear |
+| 你 | você | tu |
 
 巴葡口语特征：
 - 日常会话用 **você**，不用 tu（除非南部/特定地区）。
-- 复数第三人称常用 **a gente** 代替 nós：「我们去」→ *a gente vai*。
+- 复数第一人称常用 **a gente** 代替 nós：「我们去」→ *a gente vai*。
 - 进行时用 **estar + gerúndio**：「正在开会」→ *está tendo reunião*（葡葡用 a + infinitivo：*está a ter*）。
 - 属格用 **de**：「你的书」→ *o seu livro*，不用 *o livro de ti*。
 - 语序偏 SVO，口语常省略主语代词。
@@ -37,6 +43,7 @@ description: 中↔巴西葡萄牙语（巴葡）双向同声传译的操作规�
 - **数字必须原样保留**：时间、金额、房间号、电话号码。译错数字比译错语法严重得多。
 - **专有名词不翻译**：人名、公司名、产品名、地址路名保持原文（可加注音）。
 - 不要为了塞进 3 行而做二次摘要——**摘要会丢数字**，这是同传事故。
+<!-- END GENERATED br-pt-policy -->
 
 ## 佩戴者视角（决定字幕归属）
 

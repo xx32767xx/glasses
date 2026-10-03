@@ -35,6 +35,13 @@ export function dynamicAdapter() {
   return {
     label: '动态插件（创造模式沙箱）',
     file: 'dynamic/leion-pro.host.js',
+    /** 两种包装目标的能力差异：测试据此走不同断言，而不是假装它们一样。 */
+    capabilities: {
+      // 沙箱里 fetch / setTimeout 都是"调用即抛"的陷阱（这正是它的设计），
+      // 所以 translator:'http' 在动态包里必须**明确失败**，不能假装能用。
+      fetch: false,
+      nativeTimers: false,
+    },
     /** 动态包没有 config 通道，配置只能通过产物里的 CONFIG_OVERRIDE 注入点进去。 */
     configChannel: 'source',
     async create({ llm, fs, config }) {
@@ -123,6 +130,7 @@ export function formalAdapter() {
   return {
     label: '正式插件（ctx.tools.register 路径）',
     file: 'plugin/index.mjs',
+    capabilities: { fetch: true, nativeTimers: true },
     /** 正式插件有 config 通道：cordis.yml 里那一行的 config 直接作为 apply 的第二个参数。 */
     configChannel: 'apply',
     async create({ llm, fs, config }) {

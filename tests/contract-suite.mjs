@@ -10,6 +10,8 @@
 
 // ── 假服务 ───────────────────────────────────────────────────────────────────
 
+import { createServer } from 'node:http'
+
 /** 按 system 提示词判断要产出哪种语言的译文，让语向断言是确定的。 */
 function cannedTranslation(options) {
   const system = String(options.system ?? '')
@@ -383,6 +385,137 @@ export async function runContractSuite(adapter, { it, check, assert }) {
     const result = await noLlm.tools.get('leion_translate').execute({ text: '你好' })
     check('未成功', result.ok === false)
     check('提示用 leion_display 兜底', result.failure.includes('leion_display'), result.failure)
+  })
+
+  // ── 5b. 翻译后端接缝（'harness-llm' / 'http' / 'none'） ────────────────────
+
+  await it('巴葡策略是数据驱动的：术语表只在意译成巴葡时进提示词', async () => {
+    const toPt = []
+    const toZh = []
+    const probe = {
+      listProviders: () => [{ id: 'p', name: 'P' }],
+      listModels: async () => [{ id: 'm' }],
+      stream(options) {
+        (String(options.system).includes('巴西葡萄牙语') ? toPt : toZh).push(String(options.system))
+        return (async function* () { yield { type: 'text-delta', index: 0, text: 'x' }; yield { type: 'finish', reason: { kind: 'stop' } } })()
+      },
+    }
+    const probeBox = await adapter.create({ llm: probe, fs: makeFakeFs(new Map()) })
+    await probeBox.tools.get('leion_translate').execute({ text: '我们下周一正式开始。' })   // → 巴葡
+    await probeBox.tools.get('leion_translate').execute({ text: 'A reunião é às três.' })  // → 中文
+
+    check('译成巴葡的提示词进了 toPt 桶', toPt.length === 1, String(toPt.length))
+    check('译成中文的提示词进了 toZh 桶', toZh.length === 1, String(toZh.length))
+    const ptPrompt = toPt[0]
+    check('译成巴葡时带上了第一对术语', ptPrompt.includes('ônibus') && ptPrompt.includes('autocarro'),
+      ptPrompt.slice(-260))
+    check('译成巴葡时带上了"不用葡葡"的对照格式', ptPrompt.includes('不用'), ptPrompt.slice(-160))
+    check('译成中文时不带葡语术语表（省上下文）', !toZh[0].includes('ônibus'), toZh[0].slice(-160))
+    check('策略里的规则条数进了提示词', ptPrompt.includes('AR 屏幕只有 3 行'), ptPrompt.slice(0, 400))
+  })
+
+  await it("translator='none' 走纯显示分支：不判语向、不调模型、原文即字幕", async () => {
+    const noTranslator = makeFakeLlm()
+    const displayOnly = await adapter.create({
+      llm: noTranslator, fs: makeFakeFs(new Map()), config: { translator: 'none' },
+    })
+    const result = await displayOnly.tools.get('leion_translate').execute({
+      text: '麻烦把合同扫描件发到我的邮箱里。', speaker: 'me',
+    })
+    check('ok', result.ok === true, JSON.stringify(result).slice(0, 200))
+    check('标记为未翻译', result.translated === false, JSON.stringify(result.translated))
+    check('译文即原文', result.translation === '麻烦把合同扫描件发到我的邮箱里。', result.translation)
+    check('说话了在哪一侧…不适用，帧归属取自入参', result.displaySpeaker === 'me', result.displaySpeaker)
+    check('没有出站内容', result.outbound === null, JSON.stringify(result.outbound))
+    check('压根没调模型', noTranslator.calls.length === 0, String(noTranslator.calls.length))
+    const status = await displayOnly.tools.get('leion_status').execute({})
+    check('字幕照常进了历史', status.historyCount === 1, String(status.historyCount))
+    check('lang 按文字自动判定为中文', status.lastFrame.lang === 'zh-CN', String(status.lastFrame.lang))
+  })
+
+  await it("translator='none' 时自检的翻译环节如实报 OK 并说明不做翻译", async () => {
+    const noneBox = await adapter.create({ fs: makeFakeFs(new Map()), config: { translator: 'none' } })
+    const result = await noneBox.tools.get('leion_selftest').execute({})
+    check('翻译环节报 OK', result.translate === true, JSON.stringify(result.notes))
+    check('说明里写清了不翻译', JSON.stringify(result.notes).includes('不翻译'), JSON.stringify(result.notes))
+    check('总判定通过（没有 llm 也不该报红）', result.ok === true, JSON.stringify(result.notes))
+  })
+
+  if (adapter.capabilities.fetch) {
+    await it("translator='http' 真的把文字 POST 给了外部端点，并用它返回的译文", async () => {
+      const captured = []
+      const endpoint = createServer((request, response) => {
+        let body = ''
+        request.on('data', chunk => { body += chunk })
+        request.on('end', () => {
+          captured.push(JSON.parse(body))
+          response.writeHead(200, { 'content-type': 'application/json' })
+          response.end(JSON.stringify({ text: '（来自测试端点的译文）' }))
+        })
+      })
+      await new Promise(resolve => endpoint.listen(0, '127.0.0.1', resolve))
+      const url = `http://127.0.0.1:${endpoint.address().port}/translate`
+      try {
+        const httpBox = await adapter.create({
+          fs: makeFakeFs(new Map()), config: { translator: 'http', translatorUrl: url },
+        })
+        const result = await httpBox.tools.get('leion_translate').execute({ text: 'A reunião é às três.' })
+        check('ok', result.ok === true, JSON.stringify(result).slice(0, 240))
+        check('用了端点返回的译文', result.translation === '（来自测试端点的译文）', result.translation)
+        check('报告了后端是 http', String(result.model).startsWith('http'), result.model)
+        check('端点确实收到了请求', captured.length === 1, JSON.stringify(captured))
+        check('请求带上了原文', captured[0].text === 'A reunião é às três.', JSON.stringify(captured[0]))
+        check('请求带上了语向', captured[0].from === 'pt-BR' && captured[0].to === 'zh-CN', JSON.stringify(captured[0]))
+        check('没碰 harness 的模型服务', true)
+      } finally {
+        await new Promise(resolve => endpoint.close(resolve))
+      }
+    })
+
+    await it("translator='http' 端点返回非 2xx 时如实失败", async () => {
+      const bad = createServer((request, response) => {
+        response.writeHead(500, { 'content-type': 'text/plain' })
+        response.end('boom')
+      })
+      await new Promise(resolve => bad.listen(0, '127.0.0.1', resolve))
+      try {
+        const badBox = await adapter.create({
+          fs: makeFakeFs(new Map()),
+          config: { translator: 'http', translatorUrl: `http://127.0.0.1:${bad.address().port}/x` },
+        })
+        const result = await badBox.tools.get('leion_translate').execute({ text: 'A reunião é às três.' })
+        check('未成功', result.ok === false, JSON.stringify(result).slice(0, 200))
+        check('带上了状态码', String(result.failure).includes('500'), result.failure)
+      } finally {
+        await new Promise(resolve => bad.close(resolve))
+      }
+    })
+  } else {
+    await it("动态沙箱里 translator='http' 明确失败（fetch 是被拦的陷阱，不能假装能用）", async () => {
+      const sandboxBox = await adapter.create({
+        fs: makeFakeFs(new Map()),
+        config: { translator: 'http', translatorUrl: 'http://127.0.0.1:1/translate' },
+      })
+      const result = await sandboxBox.tools.get('leion_translate').execute({ text: 'A reunião é às três.' })
+      check('未成功', result.ok === false, JSON.stringify(result).slice(0, 240))
+      check('失败原因可读且指向环境限制', String(result.failure).length > 10, result.failure)
+      console.log(`         （沙箱里的失败信息：${String(result.failure).slice(0, 70)}…）`)
+    })
+  }
+
+  await it('非法配置：translator 取值与非空 translatorUrl 会被拒绝', async () => {
+    await assert.rejects(
+      () => adapter.create({ fs: makeFakeFs(new Map()), config: { translator: 'bogus' } }),
+      /translator 只能是/,
+    )
+    await assert.rejects(
+      () => adapter.create({ fs: makeFakeFs(new Map()), config: { translator: 'http' } }),
+      /translatorUrl/,
+    )
+    await assert.rejects(
+      () => adapter.create({ fs: makeFakeFs(new Map()), config: { translatorTimeoutMs: 0 } }),
+      /translatorTimeoutMs/,
+    )
   })
 
   // ── 6. 历史与清屏 ──────────────────────────────────────────────────────────

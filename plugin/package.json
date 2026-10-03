@@ -14,6 +14,7 @@
     "index.mjs",
     "core.mjs",
     "schemas.generated.mjs",
+    "policy.generated.mjs",
     "cordis.patch.yml",
     "README.md"
   ],

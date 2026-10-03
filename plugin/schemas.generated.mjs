@@ -175,6 +175,14 @@ export const TOOL_SCHEMAS = {
         "to": {
           "type": "string",
           "description": "目标语种；缺省取 from 的反向"
+        },
+        "speaker": {
+          "type": "string",
+          "description": "这帧归属谁；只在 translator='none'（不翻译）时起作用",
+          "enum": [
+            "them",
+            "me"
+          ]
         }
       },
       "required": [
@@ -213,6 +221,9 @@ export const TOOL_SCHEMAS = {
           "type": "string"
         },
         "forced": {
+          "type": "boolean"
+        },
+        "translated": {
           "type": "boolean"
         },
         "preview": {

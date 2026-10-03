@@ -33,9 +33,31 @@ plugin/
 | `partialThrottleMs` | `400` | 流式字幕最短刷新间隔，防止逐字刷屏 |
 | `providerId` / `modelId` | `''` | 翻译用的模型路由；留空则选第一个 provider 并尝试自动发现模型 |
 | `maxTokens` / `temperature` | `400` / `0.2` | 翻译调用参数 |
+| `reasoningEffort` | `'off'` | 推理强度。缺省关掉是刻意的：翻译不需要思考，而思考 token 会吃光输出预算 |
+| `translator` | `'harness-llm'` | **翻译后端**：`'harness-llm'` 用 harness 的模型服务 / `'http'` POST 到外部端点 / `'none'` 不做翻译（收件箱文字直接当字幕） |
+| `translatorUrl` | `''` | `translator: 'http'` 时必填，端侧模型只要暴露这个 HTTP 服务就能接进来 |
+| `translatorTimeoutMs` | `15000` | `translator: 'http'` 的超时 |
 | `inboxPath` | `''` | **ASR 收件箱**：非空则开启自动同传（轮询该文件） |
 | `inboxPollMs` | `700` | 收件箱轮询间隔；配了 `inboxPath` 时必须 ≥ 100 |
 | `inboxFrom` | `''` | 强制收件行的源语种（`'zh-CN'` / `'pt-BR'`）；留空逐行自动判定 |
+
+### 翻译后端是个接缝
+
+```
+config.translator:
+  'harness-llm'   ctx.llm（现状：电脑上的 harness + 云端模型）
+  'http'          POST {text,from,to} → {text} 或 {translation}
+                  ↑ 将来把模型搬到端侧（手机/眼镜）时用这一条：端侧暴露个 HTTP 服务即可，插件不改代码
+  'none'          不做翻译：收件箱里的文字就是最终字幕，插件退化成纯显示通道
+```
+
+`'none'` 模式下不判语向、不调模型，帧的归属由收件行的 `speaker` 字段决定（缺省 `them`）。
+
+### 巴葡口径来自数据，不写死在这里
+
+`policy/br-pt.json` 是巴葡口径的唯一来源；提示词由 `translationSystem()` 从它生成，
+术语表只在"译成巴葡"时进提示词。改口径改那个文件，然后 `node scripts/generate.mjs`。
+详见 [`../policy/README.md`](../policy/README.md)。
 
 ### ASR 收件箱的协议（外部桥只要做一件事：追加一行）
 

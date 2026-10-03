@@ -1,7 +1,8 @@
 /**
  * leion-pro —— 亮亮视野 (LLVision) Leion Pro / GLXSS ME AR 眼镜 · Cordis 动态插件 Host 半
- * ⚠️ 本文件由 scripts/generate.mjs 从 plugin/core.mjs 生成，**请勿手改**。
- *    改逻辑 → 改 plugin/core.mjs → node scripts/generate.mjs
+ * ⚠️ 本文件由 scripts/generate.mjs 从 plugin/core.mjs 与 policy/br-pt.json 生成，
+ *    **请勿手改**。改逻辑 → plugin/core.mjs；改巴葡口径 → policy/br-pt.json；
+ *    然后 node scripts/generate.mjs
  * ============================================================================
  *
  * 这是什么
@@ -19,9 +20,120 @@
  *   - 可用全局只有：ctx（受限）、harness、console、btoa/atob/TextEncoder/TextDecoder；
  *   - 外部能力一律走 Cordis 服务：ctx.get('llm') / ctx.get('fs') ...
  *
- * 下面是 plugin/core.mjs 的内联内容（业务逻辑唯一来源）
+ * 下面是 policy/br-pt.json 的内联内容（巴葡策略唯一来源）
  * ============================================================================
  */
+
+const POLICY = {
+  "variety": {
+    "code": "pt-BR",
+    "name": "巴西葡萄牙语",
+    "fullName": "巴西葡萄牙语（português do Brasil）",
+    "counterpart": {
+      "code": "zh-CN",
+      "name": "简体中文"
+    },
+    "why": "用户要的是巴西葡语，不是葡萄牙本土葡语。这是硬约束，不是风格偏好。"
+  },
+  "translationRules": [
+    "只输出译文本身。不要解释、不要加引号、不要标注语种、不要重复原文。",
+    "使用巴西葡语的自然口语表达；不要使用葡萄牙本土（欧洲葡语）的用词和语序。",
+    "数字、时间、金额、人名、公司名、产品名必须原样保留 —— 译错数字比译错语法严重得多。",
+    "这是同传，保持与原文相同的语序节奏，不要合并、不要扩写。",
+    "AR 屏幕只有 3 行，译文要简洁：可以省掉客套话和重复，但不许做摘要式改写（那会丢信息）。",
+    "原文若有口误或语气词，按最合理的意图翻译。"
+  ],
+  "terminology": [
+    {
+      "zh": "公交车",
+      "br": "ônibus",
+      "ptpt": "autocarro"
+    },
+    {
+      "zh": "地铁",
+      "br": "metrô",
+      "ptpt": "metro"
+    },
+    {
+      "zh": "火车",
+      "br": "trem",
+      "ptpt": "comboio"
+    },
+    {
+      "zh": "车票",
+      "br": "passagem",
+      "ptpt": "bilhete"
+    },
+    {
+      "zh": "高速公路",
+      "br": "rodovia",
+      "ptpt": "autoestrada"
+    },
+    {
+      "zh": "摩托车",
+      "br": "moto",
+      "ptpt": "mota"
+    },
+    {
+      "zh": "手机",
+      "br": "celular",
+      "ptpt": "telemóvel"
+    },
+    {
+      "zh": "冰箱",
+      "br": "geladeira",
+      "ptpt": "frigorífico"
+    },
+    {
+      "zh": "果汁",
+      "br": "suco",
+      "ptpt": "sumo"
+    },
+    {
+      "zh": "冰淇淋",
+      "br": "sorvete",
+      "ptpt": "gelado"
+    },
+    {
+      "zh": "早餐",
+      "br": "café da manhã",
+      "ptpt": "pequeno-almoço"
+    },
+    {
+      "zh": "团队",
+      "br": "time",
+      "ptpt": "equipa"
+    },
+    {
+      "zh": "计划（动词）",
+      "br": "planejar",
+      "ptpt": "planear"
+    },
+    {
+      "zh": "你",
+      "br": "você",
+      "ptpt": "tu"
+    }
+  ],
+  "speakingFeatures": [
+    "日常会话用 **você**，不用 tu（除非南部/特定地区）。",
+    "复数第一人称常用 **a gente** 代替 nós：「我们去」→ *a gente vai*。",
+    "进行时用 **estar + gerúndio**：「正在开会」→ *está tendo reunião*（葡葡用 a + infinitivo：*está a ter*）。",
+    "属格用 **de**：「你的书」→ *o seu livro*，不用 *o livro de ti*。",
+    "语序偏 SVO，口语常省略主语代词。"
+  ],
+  "subtitleDiscipline": [
+    "**一条话一帧**：不要把一个长句拆成多次推送，也不要合并两句话。",
+    "**宁可简洁**：译文超过约 90 个字符时，优先保留核心信息 + 数字，删掉客套话。",
+    "**数字必须原样保留**：时间、金额、房间号、电话号码。译错数字比译错语法严重得多。",
+    "**专有名词不翻译**：人名、公司名、产品名、地址路名保持原文（可加注音）。",
+    "不要为了塞进 3 行而做二次摘要——**摘要会丢数字**，这是同传事故。"
+  ]
+}
+
+// ============================================================================
+// 下面是 plugin/core.mjs 的内联内容（业务逻辑唯一来源）
+// ============================================================================
 
 /**
  * leion-pro · 核心逻辑 —— 全项目唯一来源
@@ -77,6 +189,23 @@ const CONFIG_DEFAULTS = {
   reasoningEffort: 'off',
 
   /**
+   * 翻译后端 —— 这一步是接缝，不是硬编码。
+   *
+   *   'harness-llm'  用 harness 的模型服务（ctx.llm）。现状，也是本项目的默认。
+   *   'http'         POST 到任意翻译端点。**把模型搬到端侧（手机/眼镜）时用这一条**：
+   *                  端侧只要暴露一个 HTTP 服务，插件配置一行就能接上，不用改代码。
+   *   'none'         插件不做翻译：收件箱里的文字**就是最终字幕**，只做排版与推送。
+   *                  翻译在别处完成后推进来，插件退化成纯显示通道。
+   *
+   * 有了这个开关，"翻译放在哪一层"变成配置，而不是重写。
+   */
+  translator: 'harness-llm',
+  /** translator: 'http' 时的端点 URL（POST，收 {text,from,to}，回 {text} 或 {translation}）。 */
+  translatorUrl: '',
+  /** translator: 'http' 的超时（毫秒）。 */
+  translatorTimeoutMs: 15000,
+
+  /**
    * ASR 收件箱：外部语音识别程序把文本按行追加到这个文件，插件轮询它并自动出字幕。
    * 留空 = 关闭自动同传（此时仍可手动调 leion_translate，或用 leion_inbox 的 drain）。
    * 打开这一项，中↔巴葡同传就从「agent 调工具」变成「外部 ASR 一写就上屏」。
@@ -128,6 +257,15 @@ function validateConfig(raw) {
   }
   if (!['', 'off', 'low', 'high', 'max'].includes(config.reasoningEffort)) {
     throw new Error(`leion-pro: reasoningEffort 只能是 '' / 'off' / 'low' / 'high' / 'max'，收到 ${JSON.stringify(config.reasoningEffort)}`)
+  }
+  if (!['harness-llm', 'http', 'none'].includes(config.translator)) {
+    throw new Error(`leion-pro: translator 只能是 'harness-llm' / 'http' / 'none'，收到 ${JSON.stringify(config.translator)}`)
+  }
+  if (config.translator === 'http' && (typeof config.translatorUrl !== 'string' || config.translatorUrl === '')) {
+    throw new Error("leion-pro: translator 'http' 需要 translatorUrl 指向翻译端点")
+  }
+  if (!Number.isInteger(config.translatorTimeoutMs) || config.translatorTimeoutMs <= 0) {
+    throw new Error(`leion-pro: translatorTimeoutMs 必须是正整数，收到 ${JSON.stringify(config.translatorTimeoutMs)}`)
   }
   if (typeof config.inboxPath !== 'string') {
     throw new Error(`leion-pro: inboxPath 必须是字符串，收到 ${JSON.stringify(config.inboxPath)}`)
@@ -240,19 +378,37 @@ function opposite(lang) {
   return 'unknown'
 }
 
-/** 翻译用的 system 提示词。巴葡口径是硬约束，不是风格偏好。 */
-function translationSystem(from, to) {
-  const target = to === PT ? '巴西葡萄牙语（português do Brasil）' : '简体中文'
-  return [
+/**
+ * 翻译用的 system 提示词 —— **由 policy 数据生成**，不在这里手写。
+ *
+ * 为什么数据化：巴葡口径（"不是葡葡"）是本项目最大的质量资产，而它以前散在两个地方 ——
+ * 插件这里是 5 句原则、skills/leion-interpreter/SKILL.md 里是一张术语表，两者会漂移。
+ * 现在唯一来源是 policy/br-pt.json；提示词与技能文档都从它生成。
+ * 附带好处：将来翻译搬到端侧时，同一份数据能拿去做"禁用词约束"或"后处理替换表"，
+ * 而不是靠一段小模型根本执行不了的提示词。
+ *
+ * @param policy 由 plugin/policy.generated.mjs（生成物）提供
+ */
+function translationSystem(policy, from, to) {
+  if (policy === undefined || policy === null) {
+    throw new Error('translationSystem 需要 policy（见 policy/br-pt.json 与 plugin/policy.generated.mjs）')
+  }
+  const target = to === PT ? policy.variety.fullName : policy.variety.counterpart.name
+  const lines = [
     '你是资深的中巴同声传译译员，服务于现场口译场景。',
     '把用户给你的话翻译成' + target + '。',
     '硬性要求：',
-    '1. 只输出译文本身。不要解释、不要加引号、不要标注语种、不要重复原文。',
-    '2. 使用巴西葡语的自然口语表达；不要使用葡萄牙本土（欧洲葡语）的用词和语序。',
-    '3. 数字、人名、公司名、产品名等专有名词原样保留。',
-    '4. 这是同传，保持与原文相同的语序节奏，不要合并、不要扩写、不要总结。',
-    '5. 原文若有口误或语气词，按最合理的意图翻译。',
-  ].join('\n')
+  ]
+  policy.translationRules.forEach((rule, index) => {
+    lines.push((index + 1) + '. ' + rule)
+  })
+  // 只有"译成巴葡"时才附术语表：译成中文时这些词用不上，白白占上下文。
+  if (to === PT && policy.terminology.length > 0) {
+    lines.push('用词必须按巴葡（括号里是葡葡，不要用）：' + policy.terminology
+      .map(entry => entry.br + '（不用 ' + entry.ptpt + '）')
+      .join('、'))
+  }
+  return lines.join('\n')
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -295,12 +451,20 @@ function createTransport(ctx, config) {
 }
 
 /**
- * 建一个解释器实例：持有 transport、字幕历史、计数，并暴露 6 个业务操作。
+ * 建一个解释器实例：持有 transport、翻译后端、字幕历史、计数，并暴露业务操作。
  * @param ctx 受限 ctx（只需要 get）
  * @param rawConfig 用户配置（会被 validateConfig 校验并填默认值）
+ * @param deps 必须提供 { policy } —— 巴葡策略数据，见 policy/br-pt.json 与
+ *             plugin/policy.generated.mjs（生成物）。两个包装目标各自把 policy 传进来：
+ *             正式包 import 生成模块，动态包由生成器内联成常量。
  */
-function createInterpreter(ctx, rawConfig) {
+function createInterpreter(ctx, rawConfig, deps) {
   const config = validateConfig(rawConfig)
+  if (deps === undefined || deps === null || deps.policy === undefined) {
+    throw new Error('leion-pro: 缺少 policy。它由 plugin/policy.generated.mjs 提供；'
+      + '如果你刚改过 policy/br-pt.json，先跑 node scripts/generate.mjs')
+  }
+  const policy = deps.policy
   const transport = createTransport(ctx, config)
   const state = {
     frames: [],
@@ -473,7 +637,7 @@ function createInterpreter(ctx, rawConfig) {
     const base = {
       provider: route.providerId,
       model: route.modelId,
-      system: translationSystem(from, to),
+      system: translationSystem(policy, from, to),
       messages,
       maxTokens: config.maxTokens,
       temperature: config.temperature,
@@ -532,10 +696,16 @@ function createInterpreter(ctx, rawConfig) {
     if (typeof parsed !== 'object' || parsed === null || typeof parsed.text !== 'string') {
       throw new Error('JSON 行必须包含字符串字段 text')
     }
+    if (parsed.speaker !== undefined && parsed.speaker !== 'them' && parsed.speaker !== 'me') {
+      throw new Error("speaker 只能是 'them' / 'me' 或省略")
+    }
     return {
       text: parsed.text,
       from: typeof parsed.from === 'string' ? parsed.from : undefined,
       to: typeof parsed.to === 'string' ? parsed.to : undefined,
+      // speaker 只有 translator: 'none'（纯显示通道）时才用得上：那种模式下
+      // 插件不做语向判定，帧归属于谁必须由写入方告知。
+      speaker: typeof parsed.speaker === 'string' ? parsed.speaker : undefined,
     }
   }
 
@@ -679,6 +849,111 @@ function createInterpreter(ctx, rawConfig) {
     },
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // 翻译后端接缝
+  //
+  // 这是"翻译放在哪一层"的开关。三种实现都只要满足同一个契约：
+  //     translate({ text, from, to, onDelta }) → { ok, text, failure?, ... }
+  // 上层（收件箱 / 工具）完全不知道译文是谁产出的。
+  //
+  // 之所以要这个接缝：现在译文来自电脑上的 harness + 云端模型；将来可能搬到手机端
+  // 甚至眼镜端。搬的时候只换这一个后端，上面的语向判定、排版、字幕纪律一行不动。
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /** POST 到外部翻译端点。端侧模型只要暴露这样一个 http 服务就能接进来。 */
+  async function translateViaHttp(args) {
+    let timer = null
+    try {
+      if (typeof fetch !== 'function') {
+        return { ok: false, failure: 'translator "http" 需要 fetch，但这个运行环境里没有' }
+      }
+      const controller = typeof AbortController === 'function' ? new AbortController() : null
+      // 注意：动态插件沙箱里 setTimeout 是"调用即抛"的陷阱，所以整段都包在 try 里。
+      if (controller !== null) {
+        timer = setTimeout(() => controller.abort(), config.translatorTimeoutMs)
+      }
+      const response = await fetch(config.translatorUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: String(args.text), from: args.from, to: args.to }),
+        ...(controller === null ? {} : { signal: controller.signal }),
+      })
+      const raw = await response.text()
+      if (response.ok !== true) {
+        return { ok: false, failure: 'HTTP 翻译端点返回 ' + response.status + '：' + raw.slice(0, 200) }
+      }
+      let parsed
+      try {
+        parsed = JSON.parse(raw)
+      } catch {
+        return { ok: false, failure: 'HTTP 翻译端点没返回 JSON：' + raw.slice(0, 200) }
+      }
+      const text = typeof parsed.text === 'string' ? parsed.text
+        : typeof parsed.translation === 'string' ? parsed.translation
+          : null
+      if (text === null) {
+        return { ok: false, failure: 'HTTP 翻译端点返回的 JSON 里既没有 text 也没有 translation：' + raw.slice(0, 200) }
+      }
+      const trimmed = text.trim()
+      if (trimmed === '') return { ok: false, failure: 'HTTP 翻译端点返回了空译文' }
+      return { ok: true, text: trimmed, provider: 'http', model: config.translatorUrl }
+    } catch (error) {
+      const aborted = error !== null && typeof error === 'object' && error.name === 'AbortError'
+      return {
+        ok: false,
+        failure: aborted
+          ? 'HTTP 翻译端点超时（' + config.translatorTimeoutMs + 'ms）'
+          : 'HTTP 翻译端点失败：' + String(error && error.message ? error.message : error),
+      }
+    } finally {
+      if (timer !== null) {
+        try {
+          clearTimeout(timer)
+        } catch {
+          // 沙箱里 clearTimeout 也是陷阱；这里没有别的办法，忽略即可
+        }
+      }
+    }
+  }
+
+  const translator = (() => {
+    if (config.translator === 'none') {
+      return {
+        kind: 'none',
+        describe: () => '不翻译（收件箱里的文字就是最终字幕）',
+        async translate(args) {
+          // 直通：原文即字幕。语向不参与，因为压根没有翻译这一步。
+          return { ok: true, skipped: true, text: String(args.text).trim() }
+        },
+      }
+    }
+    if (config.translator === 'http') {
+      return {
+        kind: 'http',
+        describe: () => 'HTTP 翻译端点 ' + config.translatorUrl,
+        async translate(args) {
+          return await translateViaHttp(args)
+        },
+      }
+    }
+    return {
+      kind: 'harness-llm',
+      describe: () => 'harness 的模型服务（ctx.llm）',
+      async translate(args) {
+        const llm = ctx.get('llm')
+        if (llm === undefined) {
+          return {
+            ok: false,
+            failure: 'ctx 里没有 llm 服务。三个办法：把 config.translator 设成 '
+              + "'http'（用外部翻译端点）或 'none'（本部署不做翻译，收件箱文字直接当字幕）；"
+              + '或者用 leion_display 自己翻译后推送',
+          }
+        }
+        return await streamTranslation(llm, args.text, args.from, args.to, args.onDelta)
+      },
+    }
+  })()
+
   const api = {
     config,
     device: DEVICE,
@@ -718,13 +993,39 @@ function createInterpreter(ctx, rawConfig) {
       }
     },
 
-    /** 双向同传主操作：判语向 → 流式翻译 → 排版 → 推送。 */
+    /**
+     * 双向同传主操作：判语向 → 翻译（走后端接缝）→ 排版 → 推送。
+     *
+     * translator 为 'none' 时走纯显示分支：不做语向判定、不调任何模型，
+     * 收件箱里的文字就是最终字幕（翻译已在别处完成）。
+     */
     async translate(args) {
-      const llm = ctx.get('llm')
-      if (llm === undefined) {
-        return { ok: false, failure: 'ctx 里没有 llm 服务，翻译无法进行；请改用 leion_display 自己翻译后推送' }
-      }
       const source = String(args.text)
+
+      if (translator.kind === 'none') {
+        // 纯显示通道：谁说的话由调用方给出（缺省"对方"），语种按文字自动判定。
+        const lang = args.from !== undefined && args.from !== '' ? args.from : detectLang(source)
+        const frame = buildFrame({
+          text: source,
+          speaker: args.speaker === undefined || args.speaker === '' ? 'them' : args.speaker,
+          lang: lang === 'unknown' ? 'unknown' : lang,
+        })
+        await pushFrame(frame)
+        return {
+          ok: true,
+          translated: false,
+          from: lang,
+          to: lang,
+          source,
+          translation: source,
+          displaySpeaker: frame.speaker,
+          model: '(不翻译)',
+          forced: false,
+          preview: drawFrame(frame, config.cols),
+          outbound: null,
+        }
+      }
+
       const from = args.from !== undefined && args.from !== '' ? args.from : detectLang(source)
       if (from === 'unknown') {
         return { ok: false, failure: "判不出源语种。请显式传 from='zh-CN' 或 from='pt-BR'" }
@@ -738,10 +1039,14 @@ function createInterpreter(ctx, rawConfig) {
 
       state.translating = true
       let partialsPushed = 0
-      const result = await streamTranslation(llm, source, from, to, async partial => {
-        if (partial === '') return
-        state.partials += 1
-        partialsPushed += 1
+      const result = await translator.translate({
+        text: source,
+        from,
+        to,
+        onDelta: async partial => {
+          if (partial === '') return
+          state.partials += 1
+          partialsPushed += 1
         const frame = buildFrame({ text: partial, speaker: displaySpeaker, lang: to })
         try {
           // 增量只上屏、不进双语历史：历史是「现场说过什么」的记录，
@@ -750,6 +1055,7 @@ function createInterpreter(ctx, rawConfig) {
         } catch (error) {
           state.lastError = String(error && error.message ? error.message : error)
         }
+        },
       })
       state.translating = false
 
@@ -834,15 +1140,33 @@ function createInterpreter(ctx, rawConfig) {
       const detect = detectLang('会议在下午三点') === ZH
         && detectLang('A reunião é às três da tarde') === PT
 
+      // 翻译这一环按**后端接缝**分情况检查：三种后端各有各的"就绪"含义。
       let translateOk = false
-      const llm = ctx.get('llm')
-      if (llm === undefined) {
-        notes.push('ctx 里没有 llm 服务：leion_translate 不可用，只能自己翻译后走 leion_display')
+      if (translator.kind === 'none') {
+        // 纯显示通道：不需要任何模型，天然就绪 —— 如实报 OK 并说明本部署不做翻译。
+        translateOk = true
+        notes.push('本部署不翻译（translator=none）：收件箱里的文字直接当字幕显示')
+      } else if (translator.kind === 'http') {
+        if (typeof fetch !== 'function') {
+          notes.push('translator=http 但当前环境没有 fetch')
+        } else if (typeof config.translatorUrl !== 'string' || config.translatorUrl === '') {
+          notes.push('translator=http 但没配 translatorUrl')
+        } else {
+          // 只报配置就绪，不做真实探测：多数端侧翻译端点只接受 POST，
+          // 用 GET 去探反而会误报失败。真正的失败会在第一句话时暴露出来。
+          translateOk = true
+          notes.push('翻译后端：HTTP 端点 ' + config.translatorUrl + '（未探测，首句即验证）')
+        }
       } else {
-        const route = await resolveRoute(llm)
-        translateOk = route.ok === true
-        if (route.ok === true) notes.push('翻译路由：' + route.providerId + '/' + route.modelId)
-        else notes.push(route.failure)
+        const llm = ctx.get('llm')
+        if (llm === undefined) {
+          notes.push("ctx 里没有 llm 服务。如果翻译在别处做，把 config.translator 设成 'http' 或 'none'")
+        } else {
+          const route = await resolveRoute(llm)
+          translateOk = route.ok === true
+          if (route.ok === true) notes.push('翻译路由：' + route.providerId + '/' + route.modelId)
+          else notes.push(route.failure)
+        }
       }
 
       // 收件箱：未配置不算失败（报 null），配置了就真的去探一次。
@@ -1013,6 +1337,7 @@ function buildToolSpecs(rt) {
         text: { type: 'string', required: true, description: '原文。通常来自 ASR，也可以是直接键入的一句话' },
         from: { type: 'string', description: "源语种；缺省自动判定。'zh-CN' | 'pt-BR'" },
         to: { type: 'string', description: '目标语种；缺省取 from 的反向' },
+        speaker: { type: 'string', description: "这帧归属谁；只在 translator='none'（不翻译）时起作用", enum: ['them', 'me'] },
       },
       outputSchemaDsl: outputSchema({
         from: { type: 'string' },
@@ -1022,6 +1347,7 @@ function buildToolSpecs(rt) {
         displaySpeaker: { type: 'string' },
         model: { type: 'string' },
         forced: { type: 'boolean' },
+        translated: { type: 'boolean' },
         preview: { type: 'string' },
         partial: nullable({ type: 'string' }),
         restoredDisplay: { type: 'boolean' },
@@ -1198,7 +1524,11 @@ return {
   inject: ['tools', 'timer'],
 
   apply(ctx) {
-    const rt = createInterpreter(ctx, Object.assign({}, CONFIG_DEFAULTS, CONFIG_OVERRIDE))
+    const rt = createInterpreter(
+      ctx,
+      Object.assign({}, CONFIG_DEFAULTS, CONFIG_OVERRIDE),
+      { policy: POLICY },
+    )
     for (const spec of buildToolSpecs(rt)) {
       harness.registerTool(ctx, harness.defineTool({
         name: spec.name,
