@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">虚拟眼镜</string>
+    <string name="title">虚拟眼镜 · 开发者模式</string>
+    <string name="hint_host">http://192.168.1.108:8788</string>
+    <string name="hint_secret">共享密钥</string>
+    <string name="connect">连接</string>
+    <string name="disconnect">断开</string>
+    <string name="start_listen">开始听写</string>
+    <string name="stop_listen">停止听写</string>
+    <string name="panel_placeholder">（等待字幕…）</string>
+</resources>

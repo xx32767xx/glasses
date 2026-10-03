@@ -13,6 +13,7 @@
     "bridge": "node bridge/asr-bridge.mjs",
     "demo": "node bridge/asr-bridge.mjs --inbox .tmp/asr-inbox.jsonl --engine replay --replay bridge/sample-transcript.txt --truncate",
     "harness-side": "node scripts/harness-side.mjs",
-    "relay": "node relay/lan-relay.mjs"
+    "relay": "node relay/lan-relay.mjs",
+    "apk": "node scripts/build-apk.mjs"
   }
 }

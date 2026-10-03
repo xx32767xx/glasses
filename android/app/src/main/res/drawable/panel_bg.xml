@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 虚拟眼镜屏幕的边框：让它看起来像一块"设备屏幕"，而不是一段普通文字 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="#11181C" />
+    <stroke android:width="2dp" android:color="#3A4750" />
+    <corners android:radius="10dp" />
+</shape>

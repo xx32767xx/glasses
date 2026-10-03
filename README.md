@@ -11,23 +11,25 @@
 
 ```powershell
 node scripts/generate.mjs        # 从核心逻辑生成两个产物
-node tests/run-all.mjs           # 83 项断言：新鲜度门禁 + 两个包装版本各跑一遍 + 一致性对比
-                                 # + ASR 桥契约 + 真实 Cordis 组合（真实 ToolRuntime + 真实 timer）
+node tests/run-all.mjs           # 109 项断言：新鲜度门禁 + 两个包装版本各跑一遍 + 一致性对比
+                                 # + ASR 桥契约 + 局域网契约 + 真实 Cordis 组合
 
-# 不需要麦克风、不需要 ASR：重放一段中葡对照的转写，看整条同传链路
+# A) 不需要麦克风、不需要手机：重放一段中葡对照的剧本，看整条同传链路
 node bridge/asr-bridge.mjs --inbox E:/GlassesHarness/.tmp/asr-inbox.jsonl `
   --engine replay --replay bridge/sample-transcript.txt --truncate
+
+# B) 老师演示：真实 harness 组合跑完整链路，把"眼镜屏幕"逐帧画出来
+node scripts/demo.mjs                  # 离线例句表：不联网、零成本、可复现
+node scripts/demo.mjs --live           # 真实模型翻译（走已配置的 DeepSeek 凭据）
+
+# C) 手机端真跑（两个终端 + 手机装 App）
+node scripts/harness-side.mjs          # 终端 1：harness 侧（加 --offline 则不联网）
+node relay/lan-relay.mjs               # 终端 2：局域网转发（会打印地址与密钥）
+node scripts/build-apk.mjs             # 构建安卓 App → android/README.md 有完整步骤
 ```
 
 想立刻在 harness 里看到 7 个眼镜工具 → 看 [`docs/02-创造模式加载指南.md`](docs/02-创造模式加载指南.md)。
 **要点：必须新建一个「创造模式」会话**（已产出内容的会话不能切 preset）。
-
-只想跑真实组合那一层：
-
-```powershell
-node tests/live/run.mjs          # 用检出里真实的 dsh-tools 组成真实 Cordis 应用，
-                                 # 含「桥写行 → 真实 timer → 真实流水线 → 字幕」端到端
-```
 
 ---
 
@@ -43,9 +45,13 @@ node tests/live/run.mjs          # 用检出里真实的 dsh-tools 组成真实 
 | `bridge/asr-bridge.mjs` | **ASR 桥**（harness 之外）：把语音识别结果变成收件箱里的一行一句话 |
 | `bridge/whisper_stream.py` | 可选的本地 Whisper 引擎（faster-whisper + 麦克风）⚠️ 未在本机验证 |
 | `bridge/sample-transcript.txt` | 中葡对照的样例转写，用于无麦克风演示 |
+| `relay/lan-relay.mjs` | **局域网转发**：手机 ↔ 电脑，4 个端点 + 共享密钥（见下） |
+| `scripts/harness-side.mjs` | 常驻的 harness 侧进程（真实组合 + 插件，文件模式） |
+| `android/` | **安卓 App「虚拟眼镜」**：麦克风 + 听写 + 40×3 字幕面板（零第三方依赖） |
 | `lib/artifacts.mjs` · `scripts/generate.mjs` | 产物生成（测试与 CLI 共用同一份实现） |
-| `lib/real-tools.mjs` | 加载检出里**真实的** `@deepseek-ai/dsh-tools`；拿不到就报错，**拒绝降级** |
-| `tests/` | 沙箱复刻 + 两个适配器 + 20 项契约套件 + 19 项桥契约 + 83 项总验证 |
+| `lib/composition.mjs` · `lib/fs-node.mjs` · `lib/keepalive.mjs` | 组合生成与两个共用的小插件 |
+| `lib/real-tools.mjs` · `lib/loader-links.mjs` | 加载检出里真实的构建产物 / 建 loader junction |
+| `tests/` | 沙箱复刻 + 两个适配器 + 契约套件 + 桥套件 + 局域网套件（109 项） |
 | `tests/live/` | **真实 Cordis 组合**：真实 `ToolRuntime` + 真实执行流水线 + 真实 `timer` + 真实 `output.schema` 校验 |
 | `skills/leion-interpreter/SKILL.md` | **同传操作规范**：巴葡 vs 葡葡用词差异表、字幕长度纪律、调用顺序 |
 | `docs/01-架构与方案.md` | **给老师的方案**：分层、接缝论证、验证状态、真机/ASR 接入路径、路线图 |

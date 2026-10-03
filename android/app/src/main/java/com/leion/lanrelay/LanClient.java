@@ -1,0 +1,239 @@
+package com.leion.lanrelay;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+
+/**
+ * 与电脑上的局域网转发进程通信。
+ *
+ * 只做四件事，和 relay/lan-relay.mjs 的四个端点一一对应：
+ *   hello()      握手：验证共享密钥 + 取回显示预算（cols / lineBudget）
+ *   长轮询循环     /frame?since=&lt;seq&gt;：有新字幕就回调；没有就挂住等
+ *   sendText()   把识别出的文字 POST 给 /say（异步，不阻塞界面）
+ *   status()     /status，诊断用
+ *
+ * 为什么用长轮询而不是 WebSocket：安卓这边只需要一个普通 HTTP GET 循环，
+ * 不用引任何第三方库，也不用处理 WebSocket 握手与重连。字幕本来就是低频事件，
+ * 长轮询在没有新帧时是挂住的，不会空转。
+ *
+ * 注意：所有回调都发生在**后台线程**上，调用方（Activity）必须自己切回主线程。
+ */
+public class LanClient {
+
+    /** 回调接口。实现方负责切回主线程。 */
+    public interface Listener {
+        /** 一条人类可读的状态/进度信息。 */
+        void onStatus(String message);
+
+        /** 握手成功：拿到了设备名与显示预算。 */
+        void onHello(String device, int cols, int lineBudget);
+
+        /** 收到一帧新字幕。lines 已经按显示预算折好行，直接画即可。 */
+        void onFrame(String speaker, String lang, String[] lines);
+
+        /** 出错了（网络不通、密钥错、被拒绝等）。 */
+        void onError(String message);
+    }
+
+    private final String baseUrl;
+    private final String secret;
+    private final Listener listener;
+
+    private volatile boolean running = false;
+    private Thread pollThread;
+    private long seq = 0;
+
+    public LanClient(String baseUrl, String secret, Listener listener) {
+        String trimmed = baseUrl == null ? "" : baseUrl.trim();
+        while (trimmed.endsWith("/")) {
+            trimmed = trimmed.substring(0, trimmed.length() - 1);
+        }
+        this.baseUrl = trimmed;
+        this.secret = secret == null ? "" : secret.trim();
+        this.listener = listener;
+    }
+
+    public void start() {
+        if (running) {
+            return;
+        }
+        running = true;
+        pollThread = new Thread(this::pollLoop, "lan-poll");
+        pollThread.setDaemon(true);
+        pollThread.start();
+    }
+
+    public void stop() {
+        running = false;
+        if (pollThread != null) {
+            pollThread.interrupt();
+            pollThread = null;
+        }
+    }
+
+    public boolean isRunning() {
+        return running;
+    }
+
+    /** 把手写/识别出的一句话交给电脑。整个过程在后台线程里做，界面不会卡。 */
+    public void sendText(final String text, final String from) {
+        if (text == null || text.trim().isEmpty()) {
+            return;
+        }
+        Thread thread = new Thread(() -> {
+            try {
+                JSONObject body = new JSONObject();
+                body.put("text", text.trim());
+                if (from != null && !from.isEmpty()) {
+                    body.put("from", from);
+                }
+                JSONObject response = request("/say", "POST", body, 8000);
+                listener.onStatus("已送到电脑：" + text.trim()
+                        + "（收件箱第 " + response.optInt("inboxLines", 0) + " 行）");
+            } catch (Exception error) {
+                listener.onError("发送失败：" + describe(error));
+            }
+        }, "lan-say");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    /** 诊断：把 /status 的计数读回来。 */
+    public void fetchStatus() {
+        Thread thread = new Thread(() -> {
+            try {
+                JSONObject json = request("/status", "GET", null, 8000);
+                listener.onStatus("电脑侧：字幕 " + json.optInt("frames", 0)
+                        + " 帧 / 收到 " + json.optInt("says", 0)
+                        + " 句 / 收件箱 " + json.optInt("inboxLines", 0)
+                        + " 行（拒绝 " + json.optInt("rejected", 0) + " 次）");
+            } catch (Exception error) {
+                listener.onError("取状态失败：" + describe(error));
+            }
+        }, "lan-status");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    // ── 内部 ──────────────────────────────────────────────────────────────
+
+    private void pollLoop() {
+        // 1) 握手：顺便验证密钥拿错没拿错
+        try {
+            JSONObject hello = request("/hello", "GET", null, 8000);
+            int cols = hello.optInt("cols", 40);
+            int lineBudget = hello.optInt("lineBudget", 3);
+            seq = hello.optLong("seq", 0);
+            listener.onHello(hello.optString("device", "?"), cols, lineBudget);
+            listener.onStatus("已连接：" + hello.optString("device", "?")
+                    + " · " + cols + " 列 × " + lineBudget + " 行");
+        } catch (Exception error) {
+            running = false;
+            listener.onError("连接失败：" + describe(error));
+            return;
+        }
+
+        // 2) 长轮询：没有新帧时服务端会把请求挂住（约 25 秒），所以这不是忙等
+        while (running) {
+            try {
+                JSONObject response = request("/frame?since=" + seq, "GET", null, 35000);
+                if (response.optBoolean("changed", false)) {
+                    seq = response.optLong("seq", seq);
+                    JSONObject frame = response.optJSONObject("frame");
+                    if (frame != null) {
+                        JSONArray lines = frame.optJSONArray("lines");
+                        int count = lines == null ? 0 : lines.length();
+                        String[] out = new String[count];
+                        for (int i = 0; i < count; i++) {
+                            out[i] = lines.optString(i, "");
+                        }
+                        listener.onFrame(
+                                frame.optString("speaker", "them"),
+                                frame.optString("lang", "?"),
+                                out);
+                    }
+                }
+            } catch (Exception error) {
+                if (!running) {
+                    break;
+                }
+                listener.onError("取字幕失败：" + describe(error));
+                try {
+                    Thread.sleep(2000);
+                } catch (InterruptedException ignored) {
+                    break;
+                }
+            }
+        }
+    }
+
+    /** 一次请求。非 2xx 一律抛异常（把服务端的错误正文带出来，便于排查）。 */
+    private JSONObject request(String path, String method, JSONObject body, int readTimeoutMs)
+            throws IOException, org.json.JSONException {
+        HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + path).openConnection();
+        try {
+            connection.setRequestMethod(method);
+            connection.setRequestProperty("X-Leion-Secret", secret);
+            connection.setConnectTimeout(5000);
+            connection.setReadTimeout(readTimeoutMs);
+            connection.setUseCaches(false);
+
+            if (body != null) {
+                byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
+                connection.setDoOutput(true);
+                connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+                connection.setFixedLengthStreamingMode(bytes.length);
+                try (OutputStream out = connection.getOutputStream()) {
+                    out.write(bytes);
+                }
+            }
+
+            int code = connection.getResponseCode();
+            InputStream stream = (code >= 200 && code < 300)
+                    ? connection.getInputStream()
+                    : connection.getErrorStream();
+            String text = readAll(stream);
+
+            if (code < 200 || code >= 300) {
+                String hint = "";
+                if (code == 401) {
+                    hint = "（共享密钥不对）";
+                }
+                throw new IOException("HTTP " + code + hint + " " + text);
+            }
+            return new JSONObject(text);
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    private static String readAll(InputStream stream) throws IOException {
+        if (stream == null) {
+            return "";
+        }
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        byte[] chunk = new byte[4096];
+        int read;
+        while ((read = stream.read(chunk)) > 0) {
+            buffer.write(chunk, 0, read);
+        }
+        stream.close();
+        return buffer.toString("UTF-8");
+    }
+
+    private static String describe(Exception error) {
+        String message = error.getMessage();
+        if (message == null || message.isEmpty()) {
+            return error.getClass().getSimpleName();
+        }
+        return message;
+    }
+}
