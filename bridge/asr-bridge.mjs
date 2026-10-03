@@ -208,6 +208,13 @@ const HELP = `asr-bridge —— 把语音识别结果送进 leion-pro 的 ASR �
   --command <cmd>             engine=command/whisper 时执行的命令（其 stdout 被转发）
   --replay <file>             engine=replay 时读的转写文本（一行一句）
   --replay-delay-ms <n>       replay 每行之间的间隔，缺省 1200（模拟真人说话节奏）
+  --whisper-model <尺寸>      engine=whisper 时的模型：tiny/base/small/medium/large-v3，缺省 small
+  --whisper-device <设备>     cpu 或 cuda，缺省 cpu
+  --whisper-compute <类型>    int8（CPU）/ float16（GPU），缺省 int8
+                              ⚠️ 缺省组合在本机实测是最慢的一档（小句 RTF 1.4，延迟约 2.6 秒）。
+                                 有 NVIDIA 显卡时建议 --whisper-device cuda --whisper-compute float16，
+                                 实测同样的句子只要 0.1~0.25 秒（延迟约 0.8~1.0 秒）。
+                                 数字与测法见 docs/04-语音识别验证.md。
 
 格式
   --format text|json          text=一行原文（插件自动判语向）；json=带标记，缺省 text
@@ -239,6 +246,7 @@ export function parseArgs(argv) {
   const takesValue = new Set([
     'inbox', 'engine', 'command', 'replay', 'replay-delay-ms', 'format',
     'from', 'to', 'speaker', 'flush-on-pause-ms',
+    'whisper-model', 'whisper-device', 'whisper-compute',
   ])
   const flags = new Set(['truncate', 'dry-run', 'quiet', 'help'])
 
@@ -265,10 +273,21 @@ export function parseArgs(argv) {
     throw new Error(`--engine 只能是 stdin / command / replay / whisper，收到 ${JSON.stringify(options.engine)}`)
   }
   if ((options.engine === 'command' || options.engine === 'whisper') && options.command === undefined) {
-    options.command = options.engine === 'whisper'
-      ? `python "${join(HERE, 'whisper_stream.py')}"${options.from === undefined ? '' : ` --language ${options.from === 'zh-CN' ? 'zh' : 'pt'}`}`
-      : undefined
-    if (options.command === undefined) throw new Error('--engine command 需要 --command <cmd>')
+    if (options.engine === 'whisper') {
+      // whisper 的三个调参选项接到脚本的对应参数上。为什么值得单独开这几个口子：
+      // 缺省（small/CPU/int8）在开发机上实测是**最慢**的一档，而它恰好是最容易被
+      // 当成"Whisper 就是这么慢"而放弃的组合 —— 换成 GPU 后同样的小句快了一个数量级。
+      // 注意：只有自动拼出来的命令才追加这些参数；用户自己写了 --command 就原样执行，
+      // 免得"你以为跑的是你的命令，其实被塞了两个参数"。
+      let command = `python "${join(HERE, 'whisper_stream.py')}"`
+      if (options.from !== undefined) command += ` --language ${options.from === 'zh-CN' ? 'zh' : 'pt'}`
+      if (options['whisper-model'] !== undefined) command += ` --model ${options['whisper-model']}`
+      if (options['whisper-device'] !== undefined) command += ` --device ${options['whisper-device']}`
+      if (options['whisper-compute'] !== undefined) command += ` --compute-type ${options['whisper-compute']}`
+      options.command = command
+    } else {
+      throw new Error('--engine command 需要 --command <cmd>')
+    }
   }
   if (options.engine === 'replay' && options.replay === undefined) {
     throw new Error('--engine replay 需要 --replay <file>')

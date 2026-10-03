@@ -238,6 +238,24 @@ export async function runBridgeSuite({ it, check, assert }) {
     check('把语种转成了 --language pt', options.command.includes('--language pt'), options.command)
   })
 
+  await it('parseArgs：whisper 的模型/设备/精度能透传到 Python 脚本', async () => {
+    const options = parseArgs([
+      '--inbox', 'a.jsonl', '--engine', 'whisper', '--from', 'pt-BR',
+      '--whisper-model', 'medium', '--whisper-device', 'cuda', '--whisper-compute', 'float16',
+    ])
+    check('模型透传', options.command.includes('--model medium'), options.command)
+    check('设备透传', options.command.includes('--device cuda'), options.command)
+    check('精度透传', options.command.includes('--compute-type float16'), options.command)
+  })
+
+  await it('parseArgs：用户自己写了 --command 时不被塞进 whisper 参数', async () => {
+    const options = parseArgs([
+      '--inbox', 'a.jsonl', '--engine', 'whisper', '--command', 'my-asr --flag',
+      '--whisper-device', 'cuda',
+    ])
+    check('原样执行用户的命令', options.command === 'my-asr --flag', options.command)
+  })
+
   await it('parseArgs：--help 不需要 --inbox', async () => {
     const options = parseArgs(['--help'])
     check('help 被置位', options.help === true)

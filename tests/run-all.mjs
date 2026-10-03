@@ -15,6 +15,8 @@
 
 import { readFileSync, existsSync } from 'node:fs'
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { buildArtifacts } from '../lib/artifacts.mjs'
 import { check, loadHostHalf } from './fake-sandbox.mjs'
 import { dynamicAdapter, formalAdapter, FORMAL_PATH } from './host-adapters.mjs'
@@ -44,6 +46,8 @@ function heading(text) {
 }
 
 const helpers = { it, check, assert }
+
+const repoRoot = fileURLToPath(new URL('../', import.meta.url))
 
 // mock 传输通道会把每一帧字幕打到 host 日志（正式路径用真 console.log）。
 // 收起来统一汇报，别让 20 行设备日志淹掉测试报告。
@@ -147,6 +151,26 @@ heading('真实 Cordis 组合（真实 ToolRuntime，不是复刻的检查器）
 await it('plugin/index.mjs 装进真实组合后能被真实流水线注册与执行', async () => {
   const code = await runLive()
   check('真实组合验证的退出码为 0', code === 0, `退出码 ${code}（子进程输出见上）`)
+})
+
+// ── 7. 语音分段与音频读入（Python 侧） ──────────────────────────────────────
+// 这一层完全在 JS 之外：把连续音频切成"一句一句"。它不需要加载 Whisper 模型就能测
+// （用合成正弦波当说话、噪声当环境），所以放在全量验证里代价很低，却能钉住一类
+// **静默失败** —— 高噪声下自适应门槛失效时程序不报错，只是再也不切句。
+
+heading('语音分段与音频读入（Python 侧，不加载模型）')
+await it('tests/python-suite.py 全部通过', async () => {
+  const script = fileURLToPath(new URL('./python-suite.py', import.meta.url))
+  const result = await new Promise(resolve => {
+    const child = spawn('python', [script], { cwd: repoRoot, stdio: 'inherit' })
+    child.on('error', () => resolve({ missing: true }))
+    child.on('close', code => resolve({ code }))
+  })
+  if (result.missing) {
+    console.log('     ⚠️ 没找到 python，跳过这一节（装 python + numpy 后会跑起来）')
+    return
+  }
+  check('python-suite.py 退出码为 0', result.code === 0, `退出码 ${result.code}（输出见上）`)
 })
 
 // ── 结果 ─────────────────────────────────────────────────────────────────────

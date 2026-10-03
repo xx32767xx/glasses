@@ -15,3 +15,9 @@ node_modules/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Python（本仓库只有 bridge/ 下几个可选脚本；别把字节码和模型缓存提交进来）
+__pycache__/
+*.pyc
+# Whisper 模型缓存（几百 MB）：把 HF_HOME 指到 .tmp/hf 就会落在这里，见 docs/04
+.tmp/hf/
