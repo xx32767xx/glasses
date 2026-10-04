@@ -121,13 +121,18 @@ public class LanClient {
      * @param sampleRate 采样率。安卓不保证都能用 16 kHz，所以如实上报，
      *                   电脑侧的识别进程会按这个数字重采样（猜错会让识别全乱）
      * @param fresh      true = 这是一次新录音的第一块，让继电器先把旧音频清掉
+     * @param lang       当前在听哪种语言（zh-CN / pt-BR）。每块都发，
+     *                   所以录音中切换语种下一句就生效
      * @return 继电器的回执，含累计秒数（界面用它显示"已上传多久"）
      */
-    public JSONObject sendAudio(byte[] pcm, int sampleRate, boolean fresh)
+    public JSONObject sendAudio(byte[] pcm, int sampleRate, boolean fresh, String lang)
             throws IOException, org.json.JSONException {
         StringBuilder path = new StringBuilder("/audio?rate=").append(sampleRate);
         if (fresh) {
             path.append("&fresh=1");
+        }
+        if (lang != null && !lang.isEmpty()) {
+            path.append("&lang=").append(lang);
         }
         return requestRaw(path.toString(), pcm, 10000);
     }

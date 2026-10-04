@@ -38,7 +38,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createInboxWriter } from '../bridge/asr-bridge.mjs'
 import {
-  LIVE_DIR, defaultAudioIn, defaultAudioRate, defaultBus, defaultInbox, defaultSecret,
+  LIVE_DIR, defaultAudioIn, defaultAudioLang, defaultAudioRate, defaultBus, defaultInbox, defaultSecret,
 } from '../lib/paths.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
@@ -62,6 +62,9 @@ const MAX_AUDIO_BYTES = 1024 * 1024
 /** 允许的录音采样率：16 kHz 是 Whisper 要的，44.1/48 kHz 是安卓降级时的常见值。 */
 const ALLOWED_RATES = [16000, 44100, 48000]
 
+/** 允许的语种标记（与收件箱行的 from 字段同一套取值）。 */
+const LANGS = ['zh-CN', 'pt-BR']
+
 /**
  * 显示预算的兜底值：只有在还没收到任何字幕帧时才用得上。
  * 收到帧之后一律用帧里的 cols / lineBudget —— 那是插件配置的唯一来源，
@@ -83,6 +86,7 @@ const HELP = `lan-relay —— 手机 ↔ 电脑 的局域网转发进程
   --bus <path>          字幕总线文件（缺省 <data-dir>/subtitle-bus.json）
   --audio <path>        手机上传的原始音频落盘位置（缺省 <data-dir>/audio-in.pcm）
   --audio-rate <path>   采样率旁文件（缺省 <data-dir>/audio-in.rate）
+  --audio-lang <path>   语种旁文件（缺省 <data-dir>/audio-in.lang）
   --poll-hold-ms <n>    长轮询最长挂起时间（缺省 25000）
   --bus-poll-ms <n>     字幕总线轮询间隔（缺省 60）
   --quiet               少打印
@@ -92,7 +96,7 @@ const HELP = `lan-relay —— 手机 ↔ 电脑 的局域网转发进程
   GET  /hello              带密钥 → { device, cols, lineBudget, seq }
   POST /say                {"text":"...","from":"pt-BR"} → 追加进收件箱
   POST /audio              原始音频（PCM S16LE 单声道）→ 追加到 --audio 文件
-                             ?rate=16000 采样率；?fresh=1 表示这是一次新录音的开头（先清空）
+                             ?rate=16000 采样率；?lang=pt-BR 语种；?fresh=1 表示新录音开头（先清空）
   GET  /frame?since=<seq>  长轮询取字幕帧
   GET  /status             诊断
 
@@ -101,7 +105,7 @@ const HELP = `lan-relay —— 手机 ↔ 电脑 的局域网转发进程
 
 export function parseArgs(argv) {
   const options = { port: 8788, host: '0.0.0.0', pollHoldMs: 25000, busPollMs: 60, quiet: false }
-  const takesValue = new Set(['port', 'host', 'secret', 'data-dir', 'inbox', 'bus', 'audio', 'audio-rate', 'poll-hold-ms', 'bus-poll-ms'])
+  const takesValue = new Set(['port', 'host', 'secret', 'data-dir', 'inbox', 'bus', 'audio', 'audio-rate', 'audio-lang', 'poll-hold-ms', 'bus-poll-ms'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -120,6 +124,7 @@ export function parseArgs(argv) {
     else if (key === 'bus') options.bus = value
     else if (key === 'audio') options.audio = value
     else if (key === 'audio-rate') options.audioRate = value
+    else if (key === 'audio-lang') options.audioLang = value
     else options[key] = value
   }
   if (options.help === true) return options
@@ -136,6 +141,7 @@ export function parseArgs(argv) {
   options.bus = options.bus ?? defaultBus(options.dataDir)
   options.audio = options.audio ?? defaultAudioIn(options.dataDir)
   options.audioRate = options.audioRate ?? defaultAudioRate(options.dataDir)
+  options.audioLang = options.audioLang ?? defaultAudioLang(options.dataDir)
   return options
 }
 
@@ -193,6 +199,7 @@ export async function startRelay(rawOptions = {}) {
   options.bus = options.bus ?? defaultBus(options.dataDir)
   options.audio = options.audio ?? defaultAudioIn(options.dataDir)
   options.audioRate = options.audioRate ?? defaultAudioRate(options.dataDir)
+  options.audioLang = options.audioLang ?? defaultAudioLang(options.dataDir)
   const secret = await resolveSecret(options)
   await mkdir(options.dataDir, { recursive: true })
 
@@ -220,6 +227,7 @@ export async function startRelay(rawOptions = {}) {
     audioBytes: 0,
     audioChunks: 0,
     audioRateValue: null,
+    audioLangValue: null,
     /** 音频写入也要串行化：追加写交错会把 PCM 数据搅碎，识别必然出错 */
     audioChain: Promise.resolve(),
     closed: false,
@@ -384,6 +392,15 @@ export async function startRelay(rawOptions = {}) {
           })
           return
         }
+        // 手机当前在听哪种语言。缺省沿用 pt-BR（主用途：对方说葡语）。
+        const lang = url.searchParams.get('lang') ?? request.headers['x-leion-lang'] ?? 'pt-BR'
+        if (!LANGS.includes(lang)) {
+          send(response, 400, {
+            ok: false,
+            error: `lang 只能是 ${LANGS.join(' / ')}，收到 ${JSON.stringify(lang)}`,
+          })
+          return
+        }
         const fresh = ['1', 'true', 'yes'].includes(String(url.searchParams.get('fresh') ?? '').toLowerCase())
 
         const chunks = []
@@ -426,6 +443,11 @@ export async function startRelay(rawOptions = {}) {
             await writeFile(options.audioRate, String(rate) + '\n', 'utf-8')
             state.audioRateValue = rate
           }
+          // 语种同理：只有变了才写，避免每秒一次无谓的写盘
+          if (state.audioLangValue !== lang) {
+            await writeFile(options.audioLang, lang + '\n', 'utf-8')
+            state.audioLangValue = lang
+          }
         })
         try {
           await state.audioChain
@@ -442,6 +464,7 @@ export async function startRelay(rawOptions = {}) {
           totalBytes: state.audioBytes,
           chunks: state.audioChunks,
           rate: state.audioRateValue ?? rate,
+          lang: state.audioLangValue ?? lang,
           seconds: state.audioRateValue ? state.audioBytes / 2 / state.audioRateValue : 0,
           fresh,
         })
@@ -506,6 +529,7 @@ export async function startRelay(rawOptions = {}) {
           audioBytes: state.audioBytes,
           audioChunks: state.audioChunks,
           audioRate: state.audioRateValue,
+          audioLang: state.audioLangValue,
           ...info(),
         })
         return

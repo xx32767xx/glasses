@@ -257,6 +257,7 @@ export async function runRelaySuite({ it, check, assert }) {
 
   const audioPath = join(TMP, 'audio-in.pcm')
   const audioRatePath = join(TMP, 'audio-in.rate')
+  const audioLangPath = join(TMP, 'audio-in.lang')
   const readAudio = async () => {
     try {
       return await readFile(audioPath)
@@ -287,9 +288,10 @@ export async function runRelaySuite({ it, check, assert }) {
     return { status: response.status, json, text }
   }
 
-  const postAudio = async (buffer, { rate = 16000, fresh = false, secret = relay.secret } = {}) => {
+  const postAudio = async (buffer, { rate = 16000, fresh = false, lang = undefined, secret = relay.secret } = {}) => {
     const query = new URLSearchParams({ rate: String(rate) })
     if (fresh) query.set('fresh', '1')
+    if (lang !== undefined) query.set('lang', lang)
     return callRaw(`/audio?${query}`, buffer, { secret })
   }
 
@@ -321,6 +323,31 @@ export async function runRelaySuite({ it, check, assert }) {
     check('200', result.status === 200, String(result.status))
     const text = (await readFile(audioRatePath, 'utf-8')).trim()
     check('旁文件里是 44100', text === '44100', text)
+  })
+
+  await it('语种写进旁文件（手机上切「听葡语/听中文」靠它生效）', async () => {
+    const result = await postAudio(pcm(100), { lang: 'zh-CN' })
+    check('200', result.status === 200, String(result.status))
+    check('回执里带当前语种', result.json.lang === 'zh-CN', String(result.json.lang))
+    const text = (await readFile(audioLangPath, 'utf-8')).trim()
+    check('旁文件里是 zh-CN', text === 'zh-CN', text)
+    // 切回去也要能生效（录音中途切换）
+    const back = await postAudio(pcm(100), { lang: 'pt-BR' })
+    check('再切回 pt-BR 也写进去了', (await readFile(audioLangPath, 'utf-8')).trim() === 'pt-BR',
+          (await readFile(audioLangPath, 'utf-8')).trim())
+    check('回执跟着变', back.json.lang === 'pt-BR', String(back.json.lang))
+  })
+
+  await it('不带 lang 时缺省当成 pt-BR（主用途是对方说葡语）', async () => {
+    const result = await postAudio(pcm(100))
+    check('200', result.status === 200, String(result.status))
+    check('缺省语种是 pt-BR', result.json.lang === 'pt-BR', String(result.json.lang))
+  })
+
+  await it('非法语种返回 400', async () => {
+    const result = await postAudio(pcm(100), { lang: 'en-US' })
+    check('400', result.status === 400, String(result.status))
+    check('说明了允许值', String(result.json.error).includes('pt-BR'), String(result.json.error))
   })
 
   await it('非法采样率返回 400（不猜、不静默改成 16k）', async () => {

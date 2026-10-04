@@ -26,7 +26,9 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "bridge"))
 
-from whisper_stream import PcmFollower, UtteranceSegmenter, looks_like_hallucination   # noqa: E402
+from whisper_stream import (   # noqa: E402
+    PcmFollower, UtteranceSegmenter, looks_like_hallucination, whisper_language_of,
+)
 from whisper_transcribe import TARGET_RATE, load_audio                    # noqa: E402
 
 passed = 0
@@ -264,6 +266,16 @@ def main():
     check("44.1k 的 1 秒被重采样成 16k 的 1 秒（约 16000 个采样）",
           abs(resampled - TARGET_RATE) <= block_samples,
           f"重采样后 {resampled} 个采样（期望约 {TARGET_RATE}）")
+
+    # 语种标记 → Whisper 码。手机说的是 pt-BR / zh-CN，Whisper 要的是 pt / zh；
+    # 认不出来时要返回 None（让 Whisper 自己判），而不是猜一个错的语种。
+    heading("语种标记转换 · whisper_language_of")
+    check("pt-BR → pt", whisper_language_of("pt-BR") == "pt", str(whisper_language_of("pt-BR")))
+    check("zh-CN → zh", whisper_language_of("zh-CN") == "zh", str(whisper_language_of("zh-CN")))
+    check("大小写与空白都能忍", whisper_language_of("  PT-br ") == "pt", str(whisper_language_of("  PT-br ")))
+    check("认不出来返回 None（交给 Whisper 自动判定，不瞎猜）",
+          whisper_language_of("klingon") is None, str(whisper_language_of("klingon")))
+    check("None / 空值不炸", whisper_language_of(None) is None and whisper_language_of("") is None)
 
     # ── 结果 ────────────────────────────────────────────────────────────────
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")

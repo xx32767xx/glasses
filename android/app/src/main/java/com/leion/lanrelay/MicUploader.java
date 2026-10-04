@@ -56,9 +56,22 @@ public class MicUploader {
     private AudioRecord record;
     private int sampleRate;
 
+    /**
+     * 当前在听哪种语言（由 Activity 在切换按钮时更新）。
+     * volatile：录音线程每块都读它，主线程随时可能改。
+     */
+    private volatile String language = "pt-BR";
+
     public MicUploader(LanClient client, Listener listener) {
         this.client = client;
         this.listener = listener;
+    }
+
+    /** 设置当前语种。录音中调用也安全：下一块音频就会带上新语种。 */
+    public void setLanguage(String lang) {
+        if (lang != null && !lang.isEmpty()) {
+            this.language = lang;
+        }
     }
 
     public boolean isRunning() {
@@ -249,7 +262,7 @@ public class MicUploader {
         System.arraycopy(data, 0, payload, 0, length);
         try {
             // 回执里带"累计秒数"，需要时可用来做界面显示；这里确认没抛异常就够
-            client.sendAudio(payload, sampleRate, fresh);
+            client.sendAudio(payload, sampleRate, fresh, language);
             return true;
         } catch (Exception error) {
             running = false;

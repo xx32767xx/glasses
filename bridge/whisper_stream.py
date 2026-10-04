@@ -69,6 +69,18 @@ HALLUCINATION_SAMPLES = (
 TARGET_RATE = 16000          # Whisper 内部固定按 16 kHz 工作
 
 
+def whisper_language_of(tag):
+    """把收件箱/手机用的语种标记转成 Whisper 认的语种码。
+
+    手机说的是 `pt-BR` / `zh-CN`，Whisper 要的是 `pt` / `zh`。
+    认不出来就返回 None（交给 Whisper 自己判定，而不是猜一个错的）。
+    """
+    if not isinstance(tag, str):
+        return None
+    code = tag.strip().split("-")[0].strip().lower()
+    return code if code in ("pt", "zh", "en", "es") else None
+
+
 # ── 参数 ─────────────────────────────────────────────────────────────────────
 
 def parse_args():
@@ -381,7 +393,6 @@ class Stats:
 
 class PcmFollower:
     """读一个被外部进程不断追加的裸 PCM 文件，按块产出 float32 音频。
-
     为什么要单独一个类、而且不直接 open() 了事：
       · **文件可能被截断重来**（手机重新开始录音时 relay 会清空它）。此时必须把读指针
         退回 0，否则会永远读不到新数据，表现成"录音上传没反应"。
@@ -392,11 +403,14 @@ class PcmFollower:
         所以不足一帧的尾巴要留在缓冲里，等下次读齐再处理。
       · **说话人半句就停止录音时**，数据流就断在那里，没有尾部静音，切句器会一直等下去。
         所以要能按需补静音（见 idle_silence_blocks）。
+      · **语种会中途变**（手机上切「听葡语/听中文」）。所以还要读语种旁文件，
+        让下一句就用新语种识别 —— 而不是要求用户停止录音、重开一次。
     """
 
     def __init__(self, path, fallback_rate, np, block_samples, follow_rate_path=None):
         self.path = Path(path)
         self.rate_path = Path(follow_rate_path) if follow_rate_path else self.path.with_suffix('.rate')
+        self.lang_path = self.path.with_suffix('.lang')
         self.fallback_rate = fallback_rate
         self.np = np
         self.block_samples = block_samples
@@ -405,6 +419,8 @@ class PcmFollower:
         self.rate = fallback_rate
         self.resample_pos = 0.0          # 重采样用的连续位置（跨块保持，避免接缝处跳变）
         self.rate_notice = None
+        self.language = None             # 当前语种（Whisper 码）；None = 让 Whisper 自己判
+        self.lang_notice = None
 
     def read_rate(self):
         """读采样率旁文件。没有就沿用上一轮的值（relay 还没写过）。"""
@@ -421,6 +437,18 @@ class PcmFollower:
             self.resample_pos = 0.0
             self.rate_notice = value
         return self.rate
+
+    def read_language(self, default=None):
+        """读语种旁文件。返回当前该用的 Whisper 语种码（读不到就返回 default）。"""
+        try:
+            tag = self.lang_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return self.language if self.language is not None else default
+        code = whisper_language_of(tag)
+        if code is not None and code != self.language:
+            self.language = code
+            self.lang_notice = (tag, code)
+        return self.language if self.language is not None else default
 
     def _resample(self, samples):
         """把任意采样率线性插值到 16 kHz。够用：这是给人听的语音，不是音频制品。"""
@@ -518,10 +546,14 @@ def main():
         print(f"[whisper_stream] 预热完成：{time.perf_counter() - warm_start:.2f}s"
               f"（这段固定开销如果不提前付，会砸在第一句字幕上）", file=sys.stderr)
 
+    # 当前语种放在可变容器里：手机中途切「听葡语/听中文」时要能改，
+    # 而且下一句就生效（Whisper 的 language 是逐次调用给的，所以切换很便宜）。
+    active = {"language": args.language}
+
     def handle(utterance):
         seconds = len(utterance) / float(args.samplerate)
         start = time.perf_counter()
-        text, empty, reason = transcribe(model, utterance, args.language,
+        text, empty, reason = transcribe(model, utterance, active["language"],
                                         args.min_logprob, args.no_speech_prob)
         elapsed = time.perf_counter() - start
         stats.add(seconds, elapsed, empty)   # 每段都记：短段的固定开销正是同传的敌人
@@ -565,8 +597,16 @@ def main():
             follow_rate_path=args.follow_rate,
         )
         rate = follower.read_rate()
+        # 手机可能已经把"在听哪种语言"发过来了（手机上切按钮时随音频一起发）。
+        # 有就以它为准 —— 它比命令行上的 --language 新。
+        language = follower.read_language(default=args.language)
+        if language is not None:
+            active["language"] = language
+        # 启动这次读取也填了 lang_notice；不清掉的话，循环第一轮会把同一件事再报一遍
+        follower.lang_notice = None
         print(f"[whisper_stream] 尾随 {args.follow}（{rate} Hz，"
-              f"目标 {TARGET_RATE} Hz）；Ctrl-C 结束", file=sys.stderr, flush=True)
+              f"目标 {TARGET_RATE} Hz，语种 {active['language'] or '自动判定'}）；Ctrl-C 结束",
+              file=sys.stderr, flush=True)
         print("[whisper_stream] 等手机开始录音上传…", file=sys.stderr, flush=True)
 
         # 说话人半句就松开按钮时，数据流断在那里、没有尾部静音，切句器会一直等。
@@ -575,6 +615,7 @@ def main():
         idle_limit = max(1, int(round(args.silence_ms / args.block_ms)))
         idle_blocks = 0
         last_notice = None
+        last_lang_tag = None
         # --stop-after-idle：连续多久没新音频就收尾。
         # 为什么需要它：手机停止录音后文件就不再增长，尾随循环会永远等下去。
         # 有了它，识别进程能在录音结束后自己把最后一句吐出来并退出。
@@ -587,6 +628,16 @@ def main():
                     last_notice = follower.rate_notice
                     print(f"[whisper_stream] 采样率变为 {last_notice} Hz，已开始重采样",
                           file=sys.stderr, flush=True)
+                # 手机切了语种就跟着切 —— 下一句立刻生效，不用停止录音
+                language = follower.read_language(default=active["language"])
+                if follower.lang_notice is not None and follower.lang_notice[0] != last_lang_tag:
+                    tag, code = follower.lang_notice
+                    last_lang_tag = tag
+                    active["language"] = code
+                    print(f"[whisper_stream] 语种变为 {tag}（Whisper 码 {code}），下一句起生效",
+                          file=sys.stderr, flush=True)
+                elif language != active["language"]:
+                    active["language"] = language
                 if blocks:
                     idle_blocks = 0
                     for block in blocks:
