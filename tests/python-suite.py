@@ -29,9 +29,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "bridge"))
 
 from whisper_stream import (   # noqa: E402
-    PcmFollower, SPEECH_RMS_FLOOR, UtteranceSegmenter, decide_no_speech,
-    looks_like_hallucination, normalize_peak, parse_args, prompt_for, rms_of,
-    whisper_language_of,
+    PcmFollower, SPEECH_RMS_FLOOR, SUGGESTED_PROMPTS, UtteranceSegmenter,
+    decide_no_speech, looks_like_hallucination, looks_like_prompt_echo,
+    normalize_peak, parse_args, rms_of, whisper_language_of,
 )
 from whisper_transcribe import TARGET_RATE, load_audio                    # noqa: E402
 
@@ -340,7 +340,6 @@ def main():
         check("子进程不超时", False, "60 秒没结束")
 
     # ── 11. 准确率相关的几个改动（都是"拿真实录音测出来"才加的）──────────────
-    #
     # 背景：用户反馈"语音转文字的偏差很大"。用他自己那段录音做对照实验后发现，
     # 主要问题不是模型大小（small/medium/large-v3 结果几乎一样），而是：
     #   · 切得太碎 —— 0.03~0.27 秒的碎片送进识别只会产出胡话（「你以後」这种）；
@@ -348,6 +347,7 @@ def main():
     #   · 缺提示词 —— 中文上容易输出繁体、也更容易胡猜；
     #   · beam=1 —— 贪心解码比束搜索差一截，而 GPU 上束搜索很便宜。
     heading("准确率 · 归一化 / 提示词 / 默认值")
+    args = parse_args([])
 
     check("峰值归一化把峰值抬到 0.9",
           abs(float(np.max(np.abs(normalize_peak(tone(0.5) * 0.2)))) - 0.9) < 1e-5,
@@ -357,15 +357,33 @@ def main():
     check("归一化不改变波形形状（只是整体缩放）",
           bool(np.allclose(normalize_peak(tone(0.2) * 0.3) / 0.9, tone(0.2) * 0.3 / (0.3 * float(np.max(np.abs(tone(0.2))))), atol=1e-5)))
 
-    check("中文提示词要求普通话 + 简体（压掉繁体输出）",
-          "简体" in (prompt_for("zh", None) or "") and "普通话" in (prompt_for("zh", None) or ""),
-          str(prompt_for("zh", None)))
-    check("葡语提示词是巴葡口吻", "Brasil" in (prompt_for("pt", None) or ""), str(prompt_for("pt", None)))
-    check("认不出语种就不发提示词（别硬塞一个错的）",
-          prompt_for("xx", None) is None, str(prompt_for("xx", None)))
-    check("显式给的提示词优先", prompt_for("zh", "自定义") == "自定义")
+    # ⚠️ 提示词**不再默认发**。曾经默认发一句「…请用简体中文输出。」，
+    # 结果它在 0.5 秒级的短片段上被模型**回显成字幕**（用户看到的正是这个）：
+    #   [识别] → 请用简体中文输出。 请用简体中文输出。
+    # 而分离测试显示：正常长度的句子上给不给提示词内容一样（只差句号），
+    # 不给提示词时那些短片段会输出空并被丢弃 —— 比"假字幕"好得多。
+    check("缺省不发提示词（避免被回显成假字幕）",
+          args.initial_prompt is None, str(args.initial_prompt))
+    check("推荐提示词仍然留着，供需要压繁体时复制（中文）",
+          "简体" in SUGGESTED_PROMPTS["zh"] and "普通话" in SUGGESTED_PROMPTS["zh"],
+          SUGGESTED_PROMPTS["zh"])
+    check("推荐提示词里有葡语版（巴葡口吻）",
+          "Brasil" in SUGGESTED_PROMPTS["pt"], SUGGESTED_PROMPTS["pt"])
 
-    args = parse_args([])
+    # 回显过滤：这条闸必须真的拦得住 —— 按实测复现出来的两个真实样本
+    PROMPT = SUGGESTED_PROMPTS["zh"]
+    check("整句回显被认出（复现出来的真实输出）",
+          looks_like_prompt_echo("请用简体中文输出。", PROMPT), "「请用简体中文输出。」没被认出")
+    check("重复两次的回显也被认出",
+          looks_like_prompt_echo("请用简体中文输出。 请用简体中文输出。", PROMPT))
+    check("带前缀的回显也被认出（短提示词那版复现出来的）",
+          looks_like_prompt_echo("您好 简体中文。", "简体中文。"))
+    check("正常字幕不会被误判成回显",
+          not looks_like_prompt_echo("你好，简单介绍一下你自己。", PROMPT))
+    check("正常字幕在**没发提示词**时也不会被误判",
+          not looks_like_prompt_echo("你好", None))
+    check("空文本不炸", not looks_like_prompt_echo("", PROMPT) and not looks_like_prompt_echo("你好", ""))
+
     check("缺省用束搜索 beam=5（准确率明显更好，GPU 上很便宜）",
           args.beam_size == 5, str(args.beam_size))
     check("缺省做峰值归一化", args.no_normalize is False, str(args.no_normalize))

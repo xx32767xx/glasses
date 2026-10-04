@@ -169,9 +169,12 @@ def parse_args(argv=None):
                         help="不做峰值归一化。缺省**做** —— 手机远距离录音电平偏低，"
                              "实测归一化能把「测试语音」纠正成「这是一条测试语音」")
     parser.add_argument("--initial-prompt", default=None,
-                        help="给模型的提示词（引导语种/字形）。缺省按语种自动选："
-                             "中文用「以下是普通话的句子，请用简体中文输出。」（顺带压掉繁体输出）。"
-                             "想完全不发提示词就传 --initial-prompt ''")
+                        help="给模型的提示词（可选）。**缺省不发** —— 实测它会在 0.5 秒级的"
+                             "短片段上被回显成假字幕（字幕变成「请用简体中文输出。」），"
+                             "而在正常长度的句子上几乎不影响结果，所以默认关掉。"
+                             "想压掉繁体输出可以用："
+                             "--initial-prompt \"以下是普通话的句子，请用简体中文输出。\""
+                             "（回显会被自动过滤）")
     parser.add_argument("--rms-threshold", type=float, default=0.01, help="判定「有语音」的能量阈值（配合 --no-adaptive 使用）")
     parser.add_argument("--adaptive", dest="adaptive", action="store_true", default=True,
                         help="自动估计环境噪声并据此定阈值（缺省开）")
@@ -399,23 +402,74 @@ def looks_like_hallucination(text: str) -> bool:
     return any(sample in lowered for sample in HALLUCINATION_SAMPLES)
 
 
-# 各语种的"提示词"。这不是可有可无的润色 —— 实测它是准确率的关键之一：
-#   · 中文：明确要求普通话 + 简体，能压掉"输出成繁体"和一部分胡猜
-#     （Whisper 在中文上很容易吐繁体，早期 base/tiny 尤其明显）。
-#   · 葡语：给个巴葡口吻的引子，避免它按葡葡习惯拼词。
-# 实测（用户那段 14.7 秒录音，small + beam5）：
-#   不带提示词 → 「这测试语音」「真是不行」；带提示词 + 归一化 → 「这是一条测试语音。」全对。
-LANGUAGE_PROMPTS = {
+# ⚠️ 关于 initial_prompt（曾经默认开着，现在默认关）
+#
+# 我一度默认发一句「以下是普通话的句子，请用简体中文输出。」，想压掉中文上常见的繁体输出。
+# 后来用户报了个更严重的问题：字幕变成了「请用简体中文输出。」——
+# **提示词被模型回显成了字幕**。这是 initial_prompt 的经典副作用：
+# 片段太短或太模糊时，Whisper 会把提示词当成"要接着写的文本"照抄出来。
+#
+# 我构造 0.5 秒的短片段复现了它，并做了分离测试：
+#   · 长指令式提示词 → 三个短片段全部回显成「请用简体中文输出。」
+#   · 不给提示词     → 三个短片段都输出空 → 被丢弃（**不会显示假字幕**）
+#   · 短名词式提示词 → 仍然回显（「您好 简体中文。」）
+#   · 而一个 2.5 秒的正常句子：给不给提示词，识别内容**一样**（只差一个句号）
+#
+# 结论：**代价明确（假字幕）、收益不明显**，所以不再默认启用。
+# 想用就自己传（并注意回显过滤会兜住它）：
+#     --initial-prompt "以下是普通话的句子，请用简体中文输出。"
+#
+# 推荐的两个（供需要时复制）：
+#   中文 → 以下是普通话的句子，请用简体中文输出。
+#   葡语 → A seguir, frases em português do Brasil.
+SUGGESTED_PROMPTS = {
     "zh": "以下是普通话的句子，请用简体中文输出。",
     "pt": "A seguir, frases em português do Brasil.",
 }
 
 
-def prompt_for(language, explicit):
-    """显式给的优先；没给就用该语种的缺省提示词。"""
-    if explicit:
-        return explicit
-    return LANGUAGE_PROMPTS.get(language or "", None)
+def looks_like_prompt_echo(text, prompt):
+    """这段识别结果是不是在回显提示词？
+
+    两条判据，缺一不可（第二条是测试逼出来的）：
+      1. 去掉标点空白后，输出是提示词的子串，或提示词整体出现在输出里。
+      2. 输出被切成若干块后，**每一块**都出自提示词 —— 对应"同一句回显两遍"的情况。
+         实测样本：`请用简体中文输出。 请用简体中文输出。`
+         它整体不是提示词的子串（提示词前面还有"以下是普通话的句子"），
+         只靠第一条会漏掉。
+
+    为什么必须有这道闸：回显出来的是一句**看起来完全正常的字幕**，
+    但它跟用户说的话毫无关系 —— 比"没有字幕"糟得多。
+    """
+    if not prompt or not text:
+        return False
+    punctuation = "。，,．.！!？?、：:；; 　\n"
+
+    def strip(value):
+        for char in punctuation:
+            value = value.replace(char, "")
+        return value
+
+    text_clean = strip(text)
+    prompt_clean = strip(prompt)
+    if not text_clean or not prompt_clean:
+        return False
+    if text_clean in prompt_clean or prompt_clean in text_clean:
+        return True
+
+    pieces = []
+    current = ""
+    for char in text:
+        if char in punctuation:
+            if current:
+                pieces.append(current)
+            current = ""
+        else:
+            current += char
+    if current:
+        pieces.append(current)
+    meaningful = [piece for piece in pieces if len(piece) >= 2]
+    return bool(meaningful) and all(piece in prompt_clean for piece in meaningful)
 
 
 def normalize_peak(audio, target=0.9):
@@ -515,6 +569,11 @@ def transcribe(model, audio, language, min_logprob, no_speech_prob,
             continue
         if looks_like_hallucination(text):
             dropped = "命中幻听惯用语"
+            continue
+        if looks_like_prompt_echo(text, initial_prompt):
+            # 回显出来的是一句"看起来完全正常的字幕"，但它跟用户说的话毫无关系。
+            # 这比没有字幕糟得多 —— 用户会以为眼镜在乱翻译。
+            dropped = "回显了提示词（initial_prompt 的经典副作用）"
             continue
         kept.append(text)
     return " ".join(kept).strip(), kept == [], dropped, (overrode and kept != [])
@@ -747,7 +806,7 @@ def main():
             model, utterance, active["language"],
             args.min_logprob, args.no_speech_prob,
             beam_size=args.beam_size,
-            initial_prompt=prompt_for(active["language"], args.initial_prompt),
+            initial_prompt=args.initial_prompt,     # 缺省 None = 不发提示词（见 SUGGESTED_PROMPTS 说明）
             do_normalize=not args.no_normalize,
         )
         elapsed = time.perf_counter() - start
