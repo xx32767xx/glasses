@@ -33,7 +33,7 @@
 ## ⚠️ 先记住这一条：改了电脑侧代码，必须重启进程
 
 **Node 进程启动时就把代码读进内存了，改文件不会影响已经在跑的进程。**
-所以 `git pull`、或者我改了继电器/识别/插件之后，这三个终端都要 Ctrl-C 重启。
+所以 `git pull`、或者我改了继电器/识别/插件之后，都要重启（用 `start-all` 的话就是 Ctrl-C 再跑一次）。
 APK 装了新版也要重装（`adb install -r ...`）。
 
 这条不是理论 —— 踩过两次，而且两次的症状都完全不像"代码没生效"：
@@ -47,23 +47,50 @@ APK 装了新版也要重装（`adb install -r ...`）。
 并把当前帧一起给它；手机那边也会自己把序号拉回来。所以现在重启转发进程不会再让手机失聪。
 但"重启进程"这个纪律仍然要守 —— 否则你测的还是旧代码。
 
-## 一、先在电脑上起进程（终端）
+第一条现在也防住了：`start-all` 起之前会先探一下 8788，被占着就直接拦住并告诉你怎么找出来杀掉。
+
+## 一、先在电脑上起进程
+
+**推荐：一条命令起齐三个进程**（转发 + 识别 + 大脑），日志带颜色前缀汇总在一个终端：
 
 ```powershell
-# 终端 1：harness 侧（真实 Cordis 组合 + 插件）
-node scripts/harness-side.mjs              # 真实模型翻译（用你已配的 DeepSeek 凭据）
-node scripts/harness-side.mjs --offline    # 或：离线例句表，不联网、零成本
-
-# 终端 2：局域网转发（会打印收到手机的音频/文字/字幕）
-node relay/lan-relay.mjs
-
-# 终端 3：把手机传来的音频变成文字
-node bridge/asr-bridge.mjs --inbox var/live/asr-inbox.jsonl ^
-  --whisper-follow var/live/audio-in.pcm --whisper-device cuda --whisper-compute float16
-
-# 终端 4（可选，强烈建议）：调试窗口 —— 一眼看出断在哪一环
-node scripts/debug-window.mjs --url http://127.0.0.1:8788 --secret <密钥>
+node scripts/start-all.mjs
 ```
+
+它会：先检查 8788 有没有被旧的转发进程占着（占着就直接告诉你，不会让你白测）；
+把三个进程的输出汇总打印；Ctrl-C 一次停掉全部（含识别进程起的 python 子进程）；
+顺手清掉上次留下的音频与收件箱（否则启动会先冒一句旧字幕）。
+常用开关：`--cpu`（没 N 卡时用 CPU 识别）、`--offline`（不联网）、`--open-window`（另弹一个调试窗口）。
+
+启动后会打印手机要填的地址和密钥，例如：
+
+```
+  手机上填：地址 http://<电脑IP>:8788  密钥 ee4b42190b9a
+  地址看上面 [转发] 那几行（选标着 WLAN/以太网的那个，别选 VMware 虚拟网卡）
+```
+
+**再另开一个终端放调试窗口**（只读，随时 Ctrl-C，不影响链路）：
+
+```powershell
+node scripts/debug-window.mjs --url http://127.0.0.1:8788 --secret <上面那个密钥>
+```
+
+### 想分开起（调试某个环节时用）
+
+```powershell
+node relay/lan-relay.mjs                                        # [转发]
+node bridge/asr-bridge.mjs --inbox var/live/asr-inbox.jsonl ^
+  --whisper-follow var/live/audio-in.pcm --whisper-device cuda --whisper-compute float16   # [识别]
+node scripts/harness-side.mjs                                   # [大脑]（加 --offline 则不联网）
+```
+
+三个进程各自负责什么、缺哪个会怎样：
+
+| 前缀 | 干什么 | 不跑会怎样 |
+|---|---|---|
+| `[转发]` | 收发室：手机 ↔ 电脑，落盘音频、递回字幕 | 手机**根本连不上** |
+| `[识别]` | 耳朵：音频 → 文字（Whisper，用 GPU） | 音频在涨、收件箱不动 → 没字幕 |
+| `[大脑]` | 大脑：文字 → 判语向 → 调模型翻译 → 排成 40×3 | 收件箱在涨、字幕不动 → 没字幕 |
 
 ### 调试窗口长什么样
 

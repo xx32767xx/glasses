@@ -166,6 +166,54 @@ function looksVirtual(name) {
   return /vmware|virtualbox|hyper-v|vethernet|wsl|loopback|tap|tun|docker|zerotier|tailscale/i.test(name)
 }
 
+/**
+ * 启动横幅。
+ *
+ * **单独抽成纯函数**，不是为了好看，是为了能被测试：这段横幅原来直接写在 main() 里，
+ * 而测试套件只调用 startRelay()（库入口），从不走 main() —— 于是横幅里一个写错的变量名
+ * （`${secret}` 而实际叫 `relay.secret`）能在测试全绿的情况下**让转发进程一启动就崩**。
+ * 真的发生了，是靠手动跑一次才发现。现在它被测试逐行盯着。
+ */
+export function formatBanner(options, relay, addresses = []) {
+  const lines = []
+  const real = addresses.filter(a => !looksVirtual(a.name))
+  const virtual = addresses.filter(a => looksVirtual(a.name))
+  lines.push('')
+  lines.push('─'.repeat(68))
+  lines.push('  亮亮眼镜 · 局域网转发已启动')
+  lines.push('─'.repeat(68))
+  lines.push(`  收件箱（手机的文字进这里）  ${options.inbox}`)
+  lines.push(`  字幕总线（字幕从这里出去）  ${options.bus}`)
+  lines.push(`  录音上传（手机音频落这里）  ${options.audio}`)
+  lines.push(`  共享密钥（手机上要填这个）  ${relay.secret}`)
+  lines.push('')
+  lines.push('  手机端「录音上传」还需要另一个进程把音频变成文字（识别在电脑上跑）：')
+  lines.push(`      node bridge/asr-bridge.mjs --inbox "${options.inbox}" --whisper-follow "${options.audio}" \\`)
+  lines.push('        --whisper-device cuda --whisper-compute float16')
+  lines.push('  （不要写成 python … | node … 管道：PowerShell 会缓冲 stdout，而识别进程一直不退出，')
+  lines.push('    于是桥一行都收不到。见 bridge/whisper_stream.py 头部说明。）')
+  lines.push('')
+  lines.push('  想看链路走到哪一步（另开一个终端，只读不改）：')
+  lines.push(`      node scripts/debug-window.mjs --url http://127.0.0.1:${relay.port} --secret ${relay.secret}`)
+  lines.push('')
+  lines.push('  手机上的地址填（要和电脑在同一个 WiFi）：')
+  if (real.length > 0) {
+    for (const a of real) lines.push(`      http://${a.address}:${relay.port}      ← ${a.name}`)
+  } else {
+    lines.push('      （没找到真实网卡地址，检查 WiFi 是否连着）')
+  }
+  if (virtual.length > 0) {
+    lines.push('  这些是虚拟网卡，手机连不上，别填：')
+    for (const a of virtual) lines.push(`      ${a.address}  (${a.name})`)
+  }
+  lines.push('')
+  lines.push('  自检（在电脑浏览器或 curl 里试）：')
+  lines.push(`      curl "http://127.0.0.1:${relay.port}/status?secret=${relay.secret}"`)
+  lines.push('─'.repeat(68))
+  lines.push('')
+  return lines.join('\n')
+}
+
 /** 读出（或生成并保存）共享密钥。 */
 export async function resolveSecret(options) {
   if (typeof options.secret === 'string' && options.secret !== '') return options.secret
@@ -650,42 +698,7 @@ async function main() {
   const relay = await startRelay(options)
   const log = options.quiet ? () => {} : (...args) => console.log(...args)
 
-  console.log('')
-  console.log('─'.repeat(68))
-  console.log('  亮亮眼镜 · 局域网转发已启动')
-  console.log('─'.repeat(68))
-  console.log(`  收件箱（手机的文字进这里）  ${options.inbox}`)
-  console.log(`  字幕总线（字幕从这里出去）  ${options.bus}`)
-  console.log(`  录音上传（手机音频落这里）  ${options.audio}`)
-  console.log(`  共享密钥（手机上要填这个）  ${relay.secret}`)
-  console.log('')
-  console.log('  手机端「录音上传」还需要另一个进程把音频变成文字（识别在电脑上跑）：')
-  console.log(`      node bridge/asr-bridge.mjs --inbox "${options.inbox}" --whisper-follow "${options.audio}" \\`)
-  console.log('        --whisper-device cuda --whisper-compute float16')
-  console.log('  （不要写成 python … | node … 管道：PowerShell 会缓冲 stdout，而识别进程一直不退出，')
-  console.log('    于是桥一行都收不到。见 bridge/whisper_stream.py 头部说明。）')
-  console.log('')
-  console.log('  想看链路走到哪一步（另开一个终端，只读不改）：')
-  console.log(`      node scripts/debug-window.mjs --url http://127.0.0.1:${options.port} --secret ${secret}`)
-  console.log('')
-  const addresses = lanAddresses()
-  const real = addresses.filter(a => !looksVirtual(a.name))
-  const virtual = addresses.filter(a => looksVirtual(a.name))
-  console.log('  手机上的地址填（要和电脑在同一个 WiFi）：')
-  if (real.length > 0) {
-    for (const a of real) console.log(`      http://${a.address}:${relay.port}      ← ${a.name}`)
-  } else {
-    console.log('      （没找到真实网卡地址，检查 WiFi 是否连着）')
-  }
-  if (virtual.length > 0) {
-    console.log('  这些是虚拟网卡，手机连不上，别填：')
-    for (const a of virtual) console.log(`      ${a.address}  (${a.name})`)
-  }
-  console.log('')
-  console.log('  自检（在电脑浏览器或 curl 里试）：')
-  console.log(`      curl "http://127.0.0.1:${relay.port}/status?secret=${relay.secret}"`)
-  console.log('─'.repeat(68))
-  console.log('')
+  process.stdout.write(formatBanner(options, relay, lanAddresses()) + '\n')
   log('[relay] 等待手机连接…（Ctrl-C 结束）')
 
   const shutdown = async () => {

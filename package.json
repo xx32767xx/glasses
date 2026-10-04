@@ -15,6 +15,9 @@
     "bridge": "node bridge/asr-bridge.mjs",
     "demo": "node bridge/asr-bridge.mjs --inbox var/demo/asr-inbox.jsonl --engine replay --replay bridge/sample-transcript.txt --truncate",
     "harness-side": "node scripts/harness-side.mjs",
+    "start": "node scripts/start-all.mjs",
+    "debug": "node scripts/debug-window.mjs",
+    "fake-phone": "node scripts/fake-phone.mjs",
     "relay": "node relay/lan-relay.mjs",
     "apk": "node scripts/build-apk.mjs"
   }

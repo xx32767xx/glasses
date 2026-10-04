@@ -24,6 +24,7 @@ import { runContractSuite, makeFakeLlm, makeFakeFs, SAMPLE_ARGS } from './contra
 import { runBridgeSuite } from './bridge-suite.mjs'
 import { runRelaySuite } from './relay-suite.mjs'
 import { runDebugSuite } from './debug-suite.mjs'
+import { runStartAllSuite } from './start-all-suite.mjs'
 import { runLive } from './live/run.mjs'
 
 let passed = 0
@@ -151,7 +152,12 @@ await runRelaySuite(helpers)
 heading('调试窗口（判断"断在哪一环"，纯函数 + 真读文件）')
 await runDebugSuite(helpers)
 
-// ── 7. 真实 Cordis 组合（真实 ToolRuntime + 真实执行流水线） ─────────────────
+// ── 7. 一键启动脚本（拼出来的命令对不对）───────────────────────────────────
+
+heading('一键启动（start-all：命令行拼接与前置检查）')
+await runStartAllSuite(helpers)
+
+// ── 8. 真实 Cordis 组合（真实 ToolRuntime + 真实执行流水线） ─────────────────
 
 heading('真实 Cordis 组合（真实 ToolRuntime，不是复刻的检查器）')
 await it('plugin/index.mjs 装进真实组合后能被真实流水线注册与执行', async () => {

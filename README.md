@@ -28,17 +28,28 @@ node bridge/asr-bridge.mjs --inbox var/demo/asr-inbox.jsonl `
 node scripts/demo.mjs                  # 离线例句表：不联网、零成本、可复现
 node scripts/demo.mjs --live           # 真实模型翻译（走已配置的 DeepSeek 凭据）
 
-# C) 手机端真跑（三个终端 + 手机装 App）
-node scripts/harness-side.mjs          # 终端 1：harness 侧（加 --offline 则不联网）
-node relay/lan-relay.mjs               # 终端 2：局域网转发（会打印地址与密钥）
+# C) 手机端真跑：**一条命令起齐三个进程**
+node scripts/start-all.mjs             # 转发 + 识别 + 大脑，日志带前缀汇总在一个终端
+                                       # Ctrl-C 一次停掉全部；起之前会检查端口有没有被旧进程占着
+                                       # --cpu 用 CPU 识别 / --offline 不联网 / --open-window 另开调试窗口
 node scripts/build-apk.mjs             # 构建安卓 App → android/README.md 有完整步骤
+node scripts/debug-window.mjs          # 另开一个终端：实时显示断在哪一环（只读，不影响链路）
 
-# D) 手机上"对着说话出字幕"（录音上传；这台设备的系统识别服务不可用，只能走这条）
-node bridge/asr-bridge.mjs --inbox var/live/asr-inbox.jsonl --from pt-BR `
-  --whisper-follow var/live/audio-in.pcm --whisper-device cuda --whisper-compute float16
-#   ↑ 终端 3：把手机传来的音频变成文字。手机 App 里点「开始录音上传」。
-#     没有手机也能验：node scripts/fake-phone.mjs --wav <16k wav> --url http://127.0.0.1:8788 --secret <密钥>
+# 没有手机也能验整条路：
+python bridge/make_long_wav.py var/audio/zh/20261004_002001.m4a var/audio/zh/short-16k.wav --times 3 --gap 1
+node scripts/fake-phone.mjs --wav var/audio/zh/short-16k.wav --url http://127.0.0.1:8788 --secret <密钥>
 ```
+
+三个进程分别是什么（`start-all` 会用这三种前缀给日志标色）：
+
+| 前缀 | 进程 | 干什么 |
+|---|---|---|
+| `[转发]` | `relay/lan-relay.mjs` | 收发室：手机 ↔ 电脑，落盘音频、递回字幕 |
+| `[识别]` | `bridge/asr-bridge.mjs --whisper-follow` | 耳朵：音频 → 文字（Whisper，用 GPU） |
+| `[大脑]` | `scripts/harness-side.mjs` | 大脑：文字 → 判语向 → 调模型翻译 → 排版成 40×3 |
+
+缺任何一个，手机上都是"什么都没发生" —— 所以配套给了**调试窗口**，
+它把四个环节的证据并排显示并直接给出结论。见 `docs/05-数据通路.md`。
 
 想立刻在 harness 里看到 7 个眼镜工具 → 看 [`docs/02-创造模式加载指南.md`](docs/02-创造模式加载指南.md)。
 **要点：必须新建一个「创造模式」会话**（已产出内容的会话不能切 preset）。
@@ -63,6 +74,7 @@ node bridge/asr-bridge.mjs --inbox var/live/asr-inbox.jsonl --from pt-BR `
 | `bridge/sample-transcript.txt` | 中葡对照的样例转写，用于无麦克风演示 |
 | `relay/lan-relay.mjs` | **局域网转发**：手机 ↔ 电脑，5 个端点 + 共享密钥（含 `POST /audio` 录音上传，见下） |
 | `scripts/harness-side.mjs` | 常驻的 harness 侧进程（真实组合 + 插件，文件模式） |
+| `scripts/start-all.mjs` | **一键启动**：一次起齐"转发 + 识别 + 大脑"，日志带前缀汇总、Ctrl-C 全停、先查端口有没有被旧进程占着 |
 | `scripts/fake-phone.mjs` | **假手机**：没有手机时按同样的协议逐块上传音频，用来验证「录音上传」那条路 |
 | `scripts/debug-window.mjs` | **调试窗口**：实时显示"音频/收件箱/字幕总线/转发进程"四个环节，并直接判断**断在哪一环** |
 | `android/` | **安卓 App「虚拟眼镜」**：录音上传（识别在电脑上做）+ 40×3 字幕面板（零第三方依赖） |

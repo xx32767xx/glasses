@@ -1,0 +1,353 @@
+/**
+ * start-all.mjs —— 一条命令起齐整条链路
+ * ============================================================================
+ *   node scripts/start-all.mjs
+ *
+ * 它起三个进程（外加一个可选）：
+ *
+ *   [转发]    relay/lan-relay.mjs                              收发室：手机 ↔ 电脑
+ *   [识别]    bridge/asr-bridge.mjs --whisper-follow …          耳朵：音频 → 文字
+ *   [大脑]    scripts/harness-side.mjs                          大脑：文字 → 翻译 → 字幕
+ *   [窗口]    scripts/debug-window.mjs（--open-window 另开一个窗口）  仪表盘：只看
+ *
+ * 为什么要有它：
+ *   四个终端各自记一条又长又容易记错的命令，本身就是出错来源 ——
+ *   尤其"以为重启了其实还是旧进程"这种坑（踩过两次，症状还都完全不像"代码没生效"）。
+ *   所以这里顺手做了三件事：
+ *     1. **启动前先查 8788 有没有被占** —— 占着就说明有旧的转发进程没关，直接指出来并退出；
+ *     2. 每个进程的输出带前缀汇总到一个终端（也能在 var/logs/ 里翻回去看）；
+ *     3. Ctrl-C 一次停掉全部（含孙进程 —— 桥会再起一个 python，得连它一起收）。
+ *
+ * 常用参数
+ *   --cpu                 识别用 CPU（缺省 cuda/float16；没有 N 卡时用这个）
+ *   --offline             大脑用离线例句表（不联网、零成本，只认得剧本那 14 句）
+ *   --no-transcriber      只起转发 + 大脑（用手输文字那条路时够用）
+ *   --data-dir <path>     数据目录（缺省 var/live）
+ *   --port <n>            转发端口（缺省 8788）
+ *   --open-window         另外弹一个窗口跑调试窗口（Windows）
+ *   --quiet-logs          不把日志写进 var/logs/
+ */
+
+import { spawn } from 'node:child_process'
+import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { connect } from 'node:net'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { ROOT, LOGS_DIR, defaultAudioIn, defaultBus, defaultInbox, defaultSecret } from '../lib/paths.mjs'
+import { DEFAULT_DATA_DIR } from '../relay/lan-relay.mjs'
+
+const HELP = `start-all —— 一条命令起齐整条链路
+
+  node scripts/start-all.mjs [选项]
+
+  --cpu                 识别用 CPU（缺省 cuda + float16；没有 N 卡时用这个）
+  --whisper-model <尺寸> tiny/base/small/medium/large-v3（缺省 small）
+  --offline             大脑用离线例句表（不联网、零成本，只认得剧本那 14 句）
+  --no-transcriber      只起转发 + 大脑（手输文字那条路不需要识别）
+  --data-dir <path>     数据目录（缺省 var/live）
+  --inbox <path>        收件箱（缺省 <data-dir>/asr-inbox.jsonl）
+  --bus <path>          字幕总线（缺省 <data-dir>/subtitle-bus.json）
+  --audio <path>        手机音频落盘位置（缺省 <data-dir>/audio-in.pcm）
+  --port <n>            转发端口（缺省 8788）
+  --cols <n>            显示宽度（缺省 40）
+  --lines <n>           显示行数（缺省 3）
+  --open-window         另外弹一个窗口跑调试窗口（Windows；那个窗口是全屏重画的，混在一起会打架）
+  --quiet-logs          不写 var/logs/
+  --help
+`
+
+/** 每个进程一个短标签，用来给日志加前缀。 */
+const STEPS = {
+  relay: { tag: '转发', color: '\x1b[36m' },      // 青
+  asr: { tag: '识别', color: '\x1b[35m' },        // 紫
+  brain: { tag: '大脑', color: '\x1b[33m' },      // 黄
+}
+const RESET = '\x1b[0m'
+const DIM = '\x1b[2m'
+
+export function parseArgs(argv) {
+  const options = {
+    dataDir: DEFAULT_DATA_DIR,
+    port: 8788,
+    cols: 40,
+    lines: 3,
+    offline: false,
+    transcriber: true,
+    whisperModel: 'small',
+    device: 'cuda',
+    computeType: 'float16',
+    openWindow: false,
+    writeLogs: true,
+  }
+  const takesValue = new Set(['data-dir', 'inbox', 'bus', 'audio', 'port', 'cols', 'lines', 'whisper-model'])
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index]
+    if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
+    const key = token.slice(2)
+    if (key === 'help') { options.help = true; continue }
+    if (key === 'cpu') { options.device = 'cpu'; options.computeType = 'int8'; continue }
+    if (key === 'offline') { options.offline = true; continue }
+    if (key === 'no-transcriber') { options.transcriber = false; continue }
+    if (key === 'open-window') { options.openWindow = true; continue }
+    if (key === 'quiet-logs') { options.writeLogs = false; continue }
+    if (!takesValue.has(key)) throw new Error(`未知选项 --${key}（用 --help 看用法）`)
+    const value = argv[index + 1]
+    if (value === undefined || value.startsWith('--')) throw new Error(`--${key} 需要一个值`)
+    index += 1
+    if (key === 'port' || key === 'cols' || key === 'lines') options[key] = Number(value)
+    else if (key === 'data-dir') options.dataDir = value      // 注意：命令行是 data-dir，属性是 dataDir
+    else if (key === 'whisper-model') options.whisperModel = value
+    else options[key] = value
+  }
+  for (const key of ['port', 'cols', 'lines']) {
+    if (!Number.isInteger(options[key]) || options[key] <= 0) {
+      throw new Error(`--${key} 必须是正整数，收到 ${JSON.stringify(options[key])}`)
+    }
+  }
+  options.inbox = options.inbox ?? defaultInbox(options.dataDir)
+  options.bus = options.bus ?? defaultBus(options.dataDir)
+  options.audio = options.audio ?? defaultAudioIn(options.dataDir)
+  return options
+}
+
+/**
+ * 算出要起哪些进程、各自的命令行。
+ * 单独抽成纯函数是为了能被测试 —— 命令行拼错是这类脚本最常见的错。
+ */
+export function buildSteps(options) {
+  const steps = []
+
+  steps.push({
+    key: 'relay',
+    ...STEPS.relay,
+    script: join(ROOT, 'relay', 'lan-relay.mjs'),
+    args: ['--data-dir', options.dataDir, '--port', String(options.port)],
+  })
+
+  if (options.transcriber) {
+    steps.push({
+      key: 'asr',
+      ...STEPS.asr,
+      script: join(ROOT, 'bridge', 'asr-bridge.mjs'),
+      args: [
+        '--inbox', options.inbox,
+        '--whisper-follow', options.audio,
+        '--whisper-model', options.whisperModel,
+        '--whisper-device', options.device,
+        '--whisper-compute', options.computeType,
+      ],
+    })
+  }
+
+  const brainArgs = ['--data-dir', options.dataDir, '--cols', String(options.cols), '--lines', String(options.lines)]
+  if (options.offline) brainArgs.push('--offline')
+  steps.push({
+    key: 'brain',
+    ...STEPS.brain,
+    script: join(ROOT, 'scripts', 'harness-side.mjs'),
+    args: brainArgs,
+  })
+
+  return steps
+}
+
+/**
+ * 端口是否已被占用（用来提前发现"旧的转发进程还活着"）。
+ *
+ * ⚠️ 这里**不能**用"试着 listen 一下，看会不会 EADDRINUSE"那种写法：
+ * Windows 上 libuv 默认开了 SO_REUSEADDR，于是 bind 到一个别人正在监听的端口**也会成功** ——
+ * 探测永远返回"空闲"，这个守卫就形同虚设（实测就是这样漏过去的）。
+ * 所以改成**连接探测**：能连上就说明有人在听。
+ */
+export function portInUse(port, timeoutMs = 800) {
+  return new Promise(resolve => {
+    const socket = connect({ host: '127.0.0.1', port })
+    let settled = false
+    const finish = value => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolve(value)
+    }
+    socket.setTimeout(timeoutMs)
+    socket.once('connect', () => finish(true))       // 有人监听
+    socket.once('timeout', () => finish(false))      // 没人应答（防火墙丢包等）
+    socket.once('error', () => finish(false))        // ECONNREFUSED 等 = 没人在听
+  })
+}
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2))
+  if (options.help) { process.stdout.write(HELP); return 0 }
+
+  // ── 起之前先查端口：这是"以为重启了其实还是旧进程"的头号来源 ──────────────
+  if (await portInUse(options.port)) {
+    console.error('')
+    console.error(`❌ 端口 ${options.port} 已经被占用 —— 很可能有一个**旧的转发进程**还在跑。`)
+    console.error('   不先处理掉的话，手机连的是那个旧进程，你会以为新代码没生效。')
+    console.error('')
+    console.error('   在 Windows 上这样找出来并杀掉：')
+    console.error(`       netstat -ano | findstr :${options.port}      # 最后一列是 PID`)
+    console.error('       taskkill /PID <那个PID> /T /F')
+    console.error('')
+    console.error('   然后重新跑本脚本。')
+    return 1
+  }
+
+  const steps = buildSteps(options)
+
+  // ── 开一次新会话：把上一次留下的手机音频清掉 ──────────────────────────────
+  // 不清的话，识别进程一启动就会把**上次录的音频**从头转一遍，于是先冒出一句旧字幕 ——
+  // 和"收件箱里旧内容被重放"是同一类困扰（那个由 harness-side 负责清）。
+  // 实测就是这样：启动后立刻出现一句上次录音的译文，看着像"刚收到手机的话"。
+  let staleAudioSeconds = 0
+  if (options.transcriber && existsSync(options.audio)) {
+    try {
+      const size = statSync(options.audio).size
+      staleAudioSeconds = size / 2 / 16000          // 只用于提示，按 16k 估算即可
+      if (size > 0) writeFileSync(options.audio, Buffer.alloc(0))
+    } catch { /* 清不掉就算了，不该因为清理失败而起不来 */ }
+  }
+
+  let logs = null
+  if (options.writeLogs) {
+    mkdirSync(LOGS_DIR, { recursive: true })
+    logs = {}
+    for (const step of steps) {
+      const stream = createWriteStream(join(LOGS_DIR, `${step.key}.log`), { flags: 'w' })
+      stream.write(`# ${new Date().toISOString()}  node ${step.script} ${step.args.join(' ')}\n`)
+      logs[step.key] = stream
+    }
+  }
+
+  console.log('')
+  console.log('─'.repeat(72))
+  console.log('  亮亮眼镜 · 一键启动')
+  console.log('─'.repeat(72))
+  for (const step of steps) {
+    console.log(`  ${step.color}${step.tag}${RESET}  ${(step.script.replace(ROOT, '.')).replace(/\\/g, '/')} ${step.args.join(' ')}`)
+  }
+  console.log('')
+  console.log(`  翻译后端    ${options.offline ? '离线例句表（只认得剧本 14 句）' : '真实模型（deepseek-official）'}`)
+  console.log(`  识别模型    ${options.transcriber ? `${options.whisperModel} / ${options.device} / ${options.computeType}` : '未启动（--no-transcriber）'}`)
+  console.log(`  数据目录    ${options.dataDir}`)
+  if (staleAudioSeconds > 0) {
+    console.log(`  已清旧音频  ${staleAudioSeconds.toFixed(1)}s（上次录音留下的；不清的话启动会先冒一句旧字幕）`)
+  }
+  if (logs) console.log(`  日志文件    ${LOGS_DIR.replace(ROOT, '.').replace(/\\/g, '/')}\\{relay,asr,brain}.log`)
+  console.log('')
+  console.log(`  ${DIM}Ctrl-C 一次停掉全部（含识别进程起的 python 子进程）${RESET}`)
+  console.log('─'.repeat(72))
+  console.log('')
+
+  const children = []
+  let shuttingDown = false
+
+  for (const step of steps) {
+    const child = spawn(process.execPath, [step.script, ...step.args], {
+      cwd: ROOT,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      // 让子进程的 stdout 不被父进程的缓冲拖住（低延迟链条上这点很重要）
+      env: process.env,
+    })
+    child.step = step
+    children.push(child)
+
+    const prefix = `${step.color}[${step.tag}]${RESET} `
+    const relay = (stream, line) => {
+      // 空行不打前缀，免得刷出一堆只有前缀的行
+      if (line.trim() === '') { stream.write('\n'); return }
+      stream.write(prefix + line + '\n')
+      if (logs && logs[step.key]) logs[step.key].write(line + '\n')
+    }
+    // 按行拆：子进程可能一次吐多行，也可能一行分几次到
+    let carry = ''
+    for (const [stream, sink] of [[child.stdout, process.stdout], [child.stderr, process.stderr]]) {
+      stream.setEncoding('utf-8')
+      stream.on('data', chunk => {
+        carry += chunk
+        const lines = carry.split('\n')
+        carry = lines.pop() ?? ''
+        for (const line of lines) relay(sink, line)
+      })
+    }
+
+    child.on('exit', (code, signal) => {
+      if (shuttingDown) return
+      // 任何一个环节挂掉，整条链路就废了 —— 直接说清楚是哪一个，然后收摊
+      console.error('')
+      console.error(`${prefix}⚠️ 这个环节退出了（code=${code ?? '-'} signal=${signal ?? '-'}）。`)
+      console.error(`${prefix}   整条链路少一环就没法同传，所以现在把其他进程也停掉。`)
+      void shutdown(1)
+    })
+    child.on('error', error => {
+      console.error(`${prefix}无法启动：${String(error && error.message ? error.message : error)}`)
+    })
+  }
+
+  /** 停掉全部。Windows 上必须用 taskkill /T，否则孙进程（识别起的 python）会留下来占着文件。 */
+  function killTree(child) {
+    if (child.exitCode !== null || child.signalCode !== null) return
+    if (process.platform === 'win32') {
+      try {
+        spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+        return
+      } catch { /* 落到下面用 kill */ }
+    }
+    try { child.kill('SIGTERM') } catch { /* 已经死了 */ }
+  }
+
+  async function shutdown(code) {
+    if (shuttingDown) return
+    shuttingDown = true
+    console.log('')
+    console.log('  正在停止全部进程…')
+    for (const child of children) killTree(child)
+    await sleep(600)
+    if (logs) for (const stream of Object.values(logs)) stream.end()
+    console.log('  已全部停止。')
+    process.exit(code)
+  }
+
+  process.on('SIGINT', () => { void shutdown(0) })
+  process.on('SIGTERM', () => { void shutdown(0) })
+
+  // 等一小会儿，把转发进程打印的地址与密钥抓出来汇总一下（它写在 var/live/relay-secret.txt）
+  await sleep(1500)
+  const secretPath = defaultSecret(options.dataDir)
+  if (existsSync(secretPath)) {
+    const secret = readFileSync(secretPath, 'utf-8').trim()
+    console.log('')
+    console.log('─'.repeat(72))
+    console.log(`  手机上填：地址 http://<电脑IP>:${options.port}  密钥 ${secret}`)
+    console.log(`  地址看上面 [转发] 那几行（选标着 WLAN/以太网的那个，别选 VMware 虚拟网卡）`)
+    console.log('')
+    console.log(`  想看链路走到哪一步（另开一个终端）：`)
+    console.log(`      node scripts/debug-window.mjs --url http://127.0.0.1:${options.port} --secret ${secret}`)
+    console.log('─'.repeat(72))
+    console.log('')
+  }
+
+  if (options.openWindow && process.platform === 'win32') {
+    const debugArgs = ['scripts', 'debug-window.mjs', '--url', `http://127.0.0.1:${options.port}`]
+    const secret = existsSync(secretPath) ? readFileSync(secretPath, 'utf-8').trim() : ''
+    if (secret) debugArgs.push('--secret', secret)
+    spawn('cmd', ['/c', 'start', '调试窗口', process.execPath, ...debugArgs],
+      { cwd: ROOT, detached: true, stdio: 'ignore' }).unref()
+    console.log('  已另开一个「调试窗口」。')
+    console.log('')
+  }
+
+  // 保持前台：子进程的输出靠上面的管道持续打出来
+  await new Promise(() => {})
+  return 0
+}
+
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().then(code => process.exit(code)).catch(error => {
+    console.error('[start-all] ❌ ' + String(error && error.message ? error.message : error))
+    process.exit(1)
+  })
+}

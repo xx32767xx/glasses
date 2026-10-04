@@ -12,7 +12,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { startRelay } from '../relay/lan-relay.mjs'
+import { startRelay, formatBanner } from '../relay/lan-relay.mjs'
 import { VAR_DIR } from '../lib/paths.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -405,6 +405,48 @@ export async function runRelaySuite({ it, check, assert }) {
     check('没有比 since 更新的帧时不谎报 changed', current.json.changed === false,
           JSON.stringify(current.json))
     check('这种情况下也不带 reset', current.json.reset === undefined, JSON.stringify(current.json))
+  })
+
+  // ── 7. 启动横幅（CLI 入口的那段，库入口测不到）─────────────────────────────
+  //
+  // 这一节是被一次真实崩溃逼出来的：横幅里写了个不存在的变量名（`${secret}`，
+  // 而实际是 `relay.secret`），结果**转发进程一启动就崩**，而套件全绿 ——
+  // 因为套件只调用 startRelay()，从不走 main()。
+  // 所以把横幅抽成纯函数（formatBanner）并在这里逐项验证。
+
+  await it('启动横幅能正常渲染（崩溃过的那段，现在逐行盯着）', async () => {
+    const text = formatBanner(
+      { inbox: 'X/asr-inbox.jsonl', bus: 'X/subtitle-bus.json', audio: 'X/audio-in.pcm' },
+      { secret: 'abc123', port: 8788 },
+      [{ name: 'WLAN', address: '192.168.1.5' }, { name: 'VMware Network Adapter VMnet1', address: '192.168.73.1' }],
+    )
+    check('真的出了内容', text.length > 200, String(text.length))
+    check('报了收件箱路径', text.includes('X/asr-inbox.jsonl'))
+    check('报了字幕总线路径', text.includes('X/subtitle-bus.json'))
+    check('报了录音上传路径', text.includes('X/audio-in.pcm'))
+    check('**报了真实密钥**（写成 undefined 会被这条抓住）',
+      text.includes('abc123') && !text.includes('undefined'), '密钥没渲染对')
+    check('给了调试窗口的命令，且带真密钥',
+      text.includes('debug-window.mjs') && text.includes('--secret abc123'), '调试窗口提示不对')
+    check('给了识别进程的命令，用的是 --whisper-follow 而不是管道',
+      text.includes('--whisper-follow') && text.includes('asr-bridge.mjs --inbox'), '缺 --whisper-follow 形式')
+    // 注意别用 `!text.includes('| node')` 去判 —— 横幅里那句**提醒不要写管道**的说明
+    // 本身就含 `| node`，会误判。所以盯旧写法的特征串（python + whisper_stream.py --follow）。
+    check('没有再推荐 python | node 那种旧写法',
+      !text.includes('whisper_stream.py --follow') && !/^\s*python .*whisper_stream/m.test(text),
+      '仍然出现了旧管道写法的命令')
+    check('真实网卡被标出来', text.includes('192.168.1.5') && text.includes('WLAN'), '缺真实网卡')
+    check('虚拟网卡被单独提醒', text.includes('虚拟网卡') && text.includes('192.168.73.1'), '缺虚拟网卡提醒')
+    check('给了 curl 自检命令', text.includes('/status?secret=abc123'), '缺自检命令')
+  })
+
+  await it('没找到真实网卡时横幅也不会崩，而是给出提示', async () => {
+    const text = formatBanner(
+      { inbox: 'a', bus: 'b', audio: 'c' },
+      { secret: 's', port: 1 },
+      [{ name: 'VMware Network Adapter VMnet8', address: '1.2.3.4' }],
+    )
+    check('提到没找到真实网卡', text.includes('没找到真实网卡'), text.slice(0, 200))
   })
 
   await relay.close()
