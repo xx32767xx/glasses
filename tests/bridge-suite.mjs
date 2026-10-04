@@ -17,9 +17,10 @@ import {
   parseArgs,
   runBridge,
 } from '../bridge/asr-bridge.mjs'
+import { VAR_DIR } from '../lib/paths.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const TMP = join(ROOT, '.tmp', 'bridge')
+const TMP = join(VAR_DIR, 'test', 'bridge')
 const inboxIn = name => join(TMP, name)
 
 /** 可控时钟：让「停顿即断句」可以被确定性地测试，而不是靠 sleep 赌时间。 */

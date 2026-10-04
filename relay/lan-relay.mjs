@@ -37,11 +37,15 @@ import { networkInterfaces } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createInboxWriter } from '../bridge/asr-bridge.mjs'
+import { LIVE_DIR, defaultBus, defaultInbox, defaultSecret } from '../lib/paths.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
 
-/** 默认数据目录：和 scripts/harness-side.mjs 指向同一对文件，两边靠它对接。 */
-export const DEFAULT_DATA_DIR = join(ROOT, '.tmp', 'live')
+/**
+ * 默认数据目录：和 scripts/harness-side.mjs 指向同一对文件，两边靠它对接。
+ * 具体路径来自 lib/paths.mjs —— 那是唯一的来源，别在这里再写字面量。
+ */
+export const DEFAULT_DATA_DIR = LIVE_DIR
 
 /** 每次请求体上限。字幕/一句话都很短，超过这个大小基本不是正常客户端。 */
 const MAX_BODY_BYTES = 8 * 1024
@@ -62,7 +66,7 @@ const HELP = `lan-relay —— 手机 ↔ 电脑 的局域网转发进程
   --port <n>            监听端口（缺省 8788）
   --host <addr>         监听地址（缺省 0.0.0.0，即允许局域网访问）
   --secret <value>      共享密钥；缺省自动生成并保存到 --data-dir/relay-secret.txt
-  --data-dir <path>     收件箱与字幕总线所在目录（缺省 .tmp/live）
+  --data-dir <path>     收件箱与字幕总线所在目录（缺省 var/live）
   --inbox <path>        收件箱文件（缺省 <data-dir>/asr-inbox.jsonl）
   --bus <path>          字幕总线文件（缺省 <data-dir>/subtitle-bus.json）
   --poll-hold-ms <n>    长轮询最长挂起时间（缺省 25000）
@@ -110,8 +114,8 @@ export function parseArgs(argv) {
     }
   }
   options.dataDir = options.dataDir ?? DEFAULT_DATA_DIR
-  options.inbox = options.inbox ?? join(options.dataDir, 'asr-inbox.jsonl')
-  options.bus = options.bus ?? join(options.dataDir, 'subtitle-bus.json')
+  options.inbox = options.inbox ?? defaultInbox(options.dataDir)
+  options.bus = options.bus ?? defaultBus(options.dataDir)
   return options
 }
 
@@ -137,7 +141,7 @@ function looksVirtual(name) {
 /** 读出（或生成并保存）共享密钥。 */
 export async function resolveSecret(options) {
   if (typeof options.secret === 'string' && options.secret !== '') return options.secret
-  const path = join(options.dataDir, 'relay-secret.txt')
+  const path = defaultSecret(options.dataDir)
   try {
     const existing = (await readFile(path, 'utf-8')).trim()
     if (existing !== '') return existing
@@ -165,8 +169,8 @@ export async function startRelay(rawOptions = {}) {
     port: 0, host: '127.0.0.1', pollHoldMs: 25000, busPollMs: 60,
     dataDir: DEFAULT_DATA_DIR, quiet: true,
   }, rawOptions)
-  options.inbox = options.inbox ?? join(options.dataDir, 'asr-inbox.jsonl')
-  options.bus = options.bus ?? join(options.dataDir, 'subtitle-bus.json')
+  options.inbox = options.inbox ?? defaultInbox(options.dataDir)
+  options.bus = options.bus ?? defaultBus(options.dataDir)
   const secret = await resolveSecret(options)
   await mkdir(options.dataDir, { recursive: true })
 

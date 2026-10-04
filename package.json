@@ -8,11 +8,12 @@
     "generate": "node scripts/generate.mjs",
     "check": "node scripts/generate.mjs --check",
     "test": "node tests/run-all.mjs",
+    "test:py": "python tests/python-suite.py",
     "verify": "node scripts/generate.mjs --check && node tests/run-all.mjs",
     "verify:live": "node tests/live/run.mjs",
     "show-prompt": "node scripts/show-prompt.mjs",
     "bridge": "node bridge/asr-bridge.mjs",
-    "demo": "node bridge/asr-bridge.mjs --inbox .tmp/asr-inbox.jsonl --engine replay --replay bridge/sample-transcript.txt --truncate",
+    "demo": "node bridge/asr-bridge.mjs --inbox var/demo/asr-inbox.jsonl --engine replay --replay bridge/sample-transcript.txt --truncate",
     "harness-side": "node scripts/harness-side.mjs",
     "relay": "node relay/lan-relay.mjs",
     "apk": "node scripts/build-apk.mjs"

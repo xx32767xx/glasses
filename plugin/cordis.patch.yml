@@ -13,7 +13,7 @@
       #   modelId            → 翻译用的模型；留空则自动选第一个 provider 并发现模型
       # config:
       #   transport: 'file'
-      #   sinkPath: 'E:/GlassesHarness/.tmp/subtitle-bus.json'
-      #   inboxPath: 'E:/GlassesHarness/.tmp/asr-inbox.jsonl'
+      #   sinkPath: 'E:/GlassesHarness/var/live/subtitle-bus.json'
+      #   inboxPath: 'E:/GlassesHarness/var/live/asr-inbox.jsonl'
       #   inboxPollMs: 700
       #   modelId: 'deepseek-chat'

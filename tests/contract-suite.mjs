@@ -11,6 +11,7 @@
 // ── 假服务 ───────────────────────────────────────────────────────────────────
 
 import { createServer } from 'node:http'
+import { TEST_DIR } from '../lib/paths.mjs'
 
 /** 按 system 提示词判断要产出哪种语言的译文，让语向断言是确定的。 */
 function cannedTranslation(options) {
@@ -111,8 +112,12 @@ const SAMPLE_ARGS = {
   leion_translate: { text: 'A reunião de hoje é às três.' },
 }
 
-/** 收件箱测试用的假路径：只是 Map 里的键，不会真的落盘。 */
-const INBOX_SANDBOX = 'E:/GlassesHarness/.tmp/'
+/**
+ * 收件箱测试用的假路径：只是 Map 里的键，不会真的落盘。
+ * 以前这里写死了 'E:/GlassesHarness/.tmp/' —— 不落盘所以不会崩，但换个机器看就很别扭，
+ * 而且会让人以为仓库必须放在 E 盘。现在从 lib/paths.mjs 推导。
+ */
+const INBOX_SANDBOX = TEST_DIR.replace(/\\/g, '/') + '/'
 const inboxPathOf = name => INBOX_SANDBOX + name
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))

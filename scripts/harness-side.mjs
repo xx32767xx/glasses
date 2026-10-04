@@ -8,8 +8,8 @@
  * 它起一个**真实的 Cordis 组合**（真的 dsh-tools / dsh-system-prompt / timer，
  * 以及本项目交付的 plugin/index.mjs），配置成文件模式：
  *
- *     收件箱  .tmp/live/asr-inbox.jsonl    ← 手机的文字从这里进来
- *     字幕总线 .tmp/live/subtitle-bus.json  → 字幕从这里出去
+ *     收件箱  var/live/asr-inbox.jsonl    ← 手机的文字从这里进来
+ *     字幕总线 var/live/subtitle-bus.json  → 字幕从这里出去
  *
  * 配合 relay/lan-relay.mjs 就构成完整的手机 ↔ 电脑链路：
  *
@@ -33,6 +33,7 @@ import { join } from 'node:path'
 import { CHECKOUT } from '../lib/real-tools.mjs'
 import { ensureLoaderLinks } from '../lib/loader-links.mjs'
 import { buildComposition, LIVE_DATA_DIR, repoFile } from '../lib/composition.mjs'
+import { defaultBus, defaultInbox } from '../lib/paths.mjs'
 
 const HELP = `harness-side —— 常驻的 harness 侧进程（给手机 + 局域网转发用）
 
@@ -40,7 +41,7 @@ const HELP = `harness-side —— 常驻的 harness 侧进程（给手机 + 局�
 
 选项
   --offline             用离线例句表翻译，不联网、零成本（只认得剧本里那 14 句）
-  --data-dir <path>     收件箱与字幕总线所在目录（缺省 .tmp/live）
+  --data-dir <path>     收件箱与字幕总线所在目录（缺省 var/live）
   --inbox <path>        收件箱文件（缺省 <data-dir>/asr-inbox.jsonl）
   --bus <path>          字幕总线文件（缺省 <data-dir>/subtitle-bus.json）
   --cols <n>            AR 显示宽度（缺省 40；眼镜到手后按实测改）
@@ -79,8 +80,8 @@ export function parseArgs(argv) {
       throw new Error(`${key} 必须是正整数，收到 ${JSON.stringify(options[key])}`)
     }
   }
-  options.inbox = options.inbox ?? join(options.dataDir, 'asr-inbox.jsonl')
-  options.bus = options.bus ?? join(options.dataDir, 'subtitle-bus.json')
+  options.inbox = options.inbox ?? defaultInbox(options.dataDir)
+  options.bus = options.bus ?? defaultBus(options.dataDir)
   return options
 }
 

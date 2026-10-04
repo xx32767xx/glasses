@@ -15,8 +15,10 @@
  */
 
 import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { createBridgeSink } from '../bridge/asr-bridge.mjs'
 import { drawFrame } from '../plugin/core.mjs'
+import { DEMO_DIR, ROOT, defaultBus, defaultInbox } from '../lib/paths.mjs'
 
 export const name = 'leion-demo-driver'
 export const inject = ['tools']
@@ -30,10 +32,13 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const textOf = result => result.content.map(b => (b.type === 'text' ? b.text : '')).join('')
 
 export function apply(ctx, config) {
+  // 这三个缺省值以前写死了 'E:/GlassesHarness/...' —— 仓库换个盘、或者把项目交给别人，
+  // 只要有一处漏了 config 就会静默指向一个不存在的绝对路径。现在一律从 lib/paths.mjs
+  // 推导，在任何机器上、任何目录下都成立。
   const cfg = Object.assign({
-    busPath: 'E:/GlassesHarness/.tmp/demo/subtitle-bus.json',
-    inboxPath: 'E:/GlassesHarness/.tmp/demo/asr-inbox.jsonl',
-    transcript: 'E:/GlassesHarness/bridge/sample-transcript.txt',
+    busPath: defaultBus(DEMO_DIR),
+    inboxPath: defaultInbox(DEMO_DIR),
+    transcript: join(ROOT, 'bridge', 'sample-transcript.txt'),
     replayDelayMs: 1500,
     pauseMs: 700,
     mode: 'offline',

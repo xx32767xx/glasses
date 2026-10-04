@@ -7,7 +7,7 @@
  *   node scripts/demo.mjs --delay 800    # 加快节奏
  *
  * 它做的事：
- *   1. 在工作区内的 .tmp/demo/ 生成一个真实的 Cordis 组合（cordis.yml）；
+ *   1. 在工作区内的 var/demo/ 写演示数据（收件箱与字幕总线）；
  *   2. 组合里挂的是**真的** dsh-tools / dsh-system-prompt / cordis-plugin-timer，
  *      以及本项目交付的 plugin/index.mjs；--live 时再挂真的 dsh-llm + deepseek 适配器；
  *   3. 用 vendor/cordis 的 loader 起进程，由 scripts/demo-driver.mjs 驱动整场演示。
@@ -15,7 +15,8 @@
  * 结果是：**没有真机、没有麦克风**，也能把「ASR → 收件箱 → 翻译 → 排版 → 眼镜」这条
  * 双向同传链路完整跑一遍，并且把眼镜屏幕上显示的内容画出来。
  *
- * 组合文件是生成的（含绝对路径），所以不进版本库：它落在 .tmp/ 里。
+ * 组合文件（cordis.yml）是现场生成的，落在系统临时区（含绝对路径，所以不进版本库）；
+ * 演示数据落在 var/demo/，方便事后翻看。
  */
 
 import { mkdir, rm, writeFile } from 'node:fs/promises'
@@ -27,6 +28,7 @@ import { fileURLToPath } from 'node:url'
 import { CHECKOUT } from '../lib/real-tools.mjs'
 import { ensureLoaderLinks } from '../lib/loader-links.mjs'
 import { buildComposition as buildCompositionYaml, repoFile } from '../lib/composition.mjs'
+import { DEMO_DIR, defaultBus, defaultInbox } from '../lib/paths.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
 
@@ -34,7 +36,7 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
  * 数据目录（收件箱与字幕总线）留在工作区里，方便你事后翻看；
  * 组合目录必须建在系统临时区 —— 见下面 main() 里的说明。
  */
-const DATA_DIR = join(ROOT, '.tmp', 'demo')
+const DATA_DIR = DEMO_DIR
 
 function parseArgs(argv) {
   const options = { live: false, delay: 1500, pauseMs: 700 }
@@ -71,8 +73,8 @@ const HELP = `一键演示：亮亮视野 Leion Pro · 中↔巴葡双向同传�
  * （lib/composition.mjs），这里只多挂一个演示驱动。
  */
 function buildComposition(options) {
-  const busPath = join(DATA_DIR, 'subtitle-bus.json').replace(/\\/g, '/')
-  const inboxPath = join(DATA_DIR, 'asr-inbox.jsonl').replace(/\\/g, '/')
+  const busPath = defaultBus(DATA_DIR).replace(/\\/g, '/')
+  const inboxPath = defaultInbox(DATA_DIR).replace(/\\/g, '/')
 
   return buildCompositionYaml({
     mode: options.live ? 'live' : 'offline',
@@ -130,7 +132,7 @@ async function main() {
 
   await writeFile(join(composeDir, 'cordis.yml'), buildComposition(options))
   console.log(`[demo] 组合已生成（系统临时区）：${composeDir}\\cordis.yml`)
-  console.log(`[demo] 数据目录（收件箱 / 字幕总线）：.tmp/demo/`)
+  console.log(`[demo] 数据目录（收件箱 / 字幕总线）：var/demo/`)
   console.log(`[demo] 翻译后端：${options.live ? '真实模型' : '离线例句表'}`)
   if (options.live) {
     console.log('[demo] ⚠️  --live 会调用真实模型接口（约 14 次短请求），会产生少量费用')

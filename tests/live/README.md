@@ -19,11 +19,18 @@ node tests/live/run.mjs        # 或 npm run verify:live
 
 | 文件 | 作用 |
 |---|---|
-| `cordis.yml` | 组合：console logger + timer + system-prompt + tools + 被验证的插件（带收件箱配置）+ 假 llm + 假 fs + 探针 |
+| `composition.mjs` | **现场生成**组合的 cordis.yml：console logger + timer + system-prompt + tools + 被验证的插件（带收件箱配置）+ 假 llm + 假 fs + 探针 |
 | `probe.mjs` | 观察者：断言 7 个工具已注册，驱动 selftest / 双向翻译 / display / 非法参数 / **桥端到端** |
 | `fake-llm.mjs` | 假 `llm` 服务，让 `leion_translate` 能在真实流水线里跑成功（不联网、不需要 key） |
 | `../../lib/fs-node.mjs` | 基于真实 node:fs 的 `fs` 服务，让收件箱真的读写文件（与演示/常驻进程共用同一个实现） |
-| `run.mjs` | 一键跑：建临时组合目录 → 支起 junction → spawn loader → 传播退出码 |
+| `run.mjs` | 一键跑：建临时组合目录 → 生成 cordis.yml → 支起 junction → spawn loader → 传播退出码 |
+
+> **为什么组合是生成的，而不是仓库里放一个写死的 `cordis.yml`：**
+> 那个文件得写死本仓库的绝对路径（`file:///E:/GlassesHarness/...`）**和 DSH 检出的绝对路径**
+> （`file:///D:/DeepSeekHarness/...`）。而这两件事在别处都是动态探出来的（`lib/paths.mjs` 的
+> `ROOT`、`lib/real-tools.mjs` 的 `CHECKOUT`）。仓库换个目录、或者检出挪个位置，这个验证就会以
+> "模块解析失败"的样子挂掉，而报错完全指不到真正的原因。现在路径一律从代码里取。
+> 想手动跑：`run.mjs` 会把生成的组合目录路径打出来，cd 进去执行 `<检出>/vendor/cordis/bin.js` 即可。
 
 ## 三个会让人卡半天的坑
 
@@ -32,7 +39,7 @@ node tests/live/run.mjs        # 或 npm run verify:live
    必须有那些 junction；而那些 vendor 包**彼此也互相链接** —— 放进仓库就形成**符号链接环**：
    `git status --ignored` 会刷几百行"路径过长"警告，而 `git clean -xdf` 有顺着链接删到
    检出文件的风险。所以 `run.mjs` 用 `mkdtempSync` 在系统临时区建组合目录，只把
-   `cordis.yml` 拷进去；验证代码仍留在仓库里。
+   **现场生成的** `cordis.yml` 写进去；验证代码仍留在仓库里。
 
 2. **Windows 上绝对路径必须是 `file://` URL。**
    写 `D:/...` 会得到 `ERR_UNSUPPORTED_ESM_URL_SCHEME`；要写 `file:///D:/...`。相对路径
@@ -44,7 +51,7 @@ node tests/live/run.mjs        # 或 npm run verify:live
 
 4. **插件 `inject` 里写了什么服务，组合里就必须有，否则它会停在 PENDING。**
    这个坑真的踩到了：给插件加上 `inject: ['timer']`（收件箱轮询要用）之后，没挂 timer 的组合里
-   插件直接 PENDING，探针 30 秒超时。所以 `cordis.yml` 里有 `@deepseek-ai/cordis-plugin-timer`
+   插件直接 PENDING，探针 30 秒超时。所以生成的组合里有 `@deepseek-ai/cordis-plugin-timer`
    —— 真实部署里它由 `@deepseek-ai/dsh-base` 挂着，所以这个依赖是安全的。
 
 5. **探针不能假设自己的 `apply` 晚于插件。**

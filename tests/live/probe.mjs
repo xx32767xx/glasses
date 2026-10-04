@@ -27,11 +27,17 @@ const EXPECTED = [
   'leion_history', 'leion_inbox', 'leion_clear', 'leion_selftest',
 ]
 
-/** 与 cordis.yml 里插件 config 的 inboxPath 保持一致。 */
-const INBOX = 'E:/GlassesHarness/.tmp/live-inbox.jsonl'
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-export function apply(ctx) {
+export function apply(ctx, config) {
+  // 收件箱路径从组合的 config 里拿（由 tests/live/composition.mjs 注入，值来自 lib/paths.mjs）。
+  // 以前这里写死了 'E:/GlassesHarness/.tmp/live-inbox.jsonl'，还得靠注释提醒"要和 cordis.yml
+  // 保持一致" —— 两处各存一份、靠人记着同步，迟早漂移。现在只有一处。
+  const inboxPath = config?.inboxPath
+  if (typeof inboxPath !== 'string' || inboxPath === '') {
+    console.error('[probe] ❌ 组合的 config 里没有 inboxPath（见 tests/live/composition.mjs）')
+    process.exit(1)
+  }
   let finished = false
 
   const fail = message => {
@@ -112,12 +118,12 @@ export function apply(ctx) {
       //    插件用真实 timer 轮询、用真实流水线翻译。
       const inboxStatus = await call('leion_inbox', { action: 'status' }, 'live-probe-inbox', signal)
       if (!inboxStatus.includes('运行中：是')) fail('收件箱没有自动启动，status 报：' + inboxStatus)
-      await rm(INBOX, { force: true })
-      await mkdir(dirname(INBOX), { recursive: true })
+      await rm(inboxPath, { force: true })
+      await mkdir(dirname(inboxPath), { recursive: true })
 
       // 5a) 桥的直接写入路径（json 格式，带语种与说话人标记）
       const writer = await createInboxWriter({
-        inboxPath: INBOX, format: 'json', tags: { from: 'pt-BR', speaker: 'them' }, truncate: true,
+        inboxPath, format: 'json', tags: { from: 'pt-BR', speaker: 'them' }, truncate: true,
       })
       await writer.write('A reunião de hoje passou para as três da tarde.')
       await writer.close()
@@ -136,7 +142,7 @@ export function apply(ctx) {
       if (assembled.length !== 1) fail('停顿断句没有交出整句：' + JSON.stringify(assembled))
       console.log('[probe] 桥把逐词到达、不换行的 ASR 输出合成一句：' + assembled[0])
 
-      const writer2 = await createInboxWriter({ inboxPath: INBOX, format: 'text' })
+      const writer2 = await createInboxWriter({ inboxPath, format: 'text' })
       for (const line of assembled) await writer2.write(line)
       await writer2.close()
 
@@ -154,7 +160,7 @@ export function apply(ctx) {
 
       // 收尾：停掉轮询，别让子进程挂着
       await call('leion_inbox', { action: 'stop' }, 'live-probe-stop', signal)
-      await rm(INBOX, { force: true })
+      await rm(inboxPath, { force: true })
 
       clearTimeout(guard)
       console.log('[probe] ✅ 真实 Cordis 组合里全部检查通过')

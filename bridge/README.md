@@ -28,7 +28,7 @@ ASR 的输出来得很碎：有的逐词打、有的用 `\r` 就地刷新同一�
 
 ```powershell
 # 1) 演示：不需要麦克风、不需要 ASR —— 重放一段中葡对照的转写
-node bridge/asr-bridge.mjs --inbox E:/GlassesHarness/.tmp/asr-inbox.jsonl `
+node bridge/asr-bridge.mjs --inbox E:/GlassesHarness/var/demo/asr-inbox.jsonl `
   --engine replay --replay bridge/sample-transcript.txt --truncate
 
 # 2) 任何会往 stdout 打字的 ASR（whisper.cpp / 云 SDK 的 CLI / 自写脚本）

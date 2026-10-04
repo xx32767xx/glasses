@@ -1,4 +1,9 @@
-# 测试期产生的临时文件（字幕总线、探针脚本等）
+# 运行时数据（收件箱、字幕总线、模型缓存、测试音频、日志）
+# 布局与用途见 lib/paths.mjs 与 docs/05-数据通路.md
+var/
+
+# 旧位置。改造时数据从 .tmp/ 搬到了 var/，这里继续忽略是为了防呆：
+# 万一搬迁中途留下残file（比如几 GB 的模型缓存），也不会被误提交进来。
 .tmp/
 
 # 依赖（本项目零依赖，但以防万一）
@@ -16,8 +21,6 @@ node_modules/
 .DS_Store
 Thumbs.db
 
-# Python（本仓库只有 bridge/ 下几个可选脚本；别把字节码和模型缓存提交进来）
+# Python（本仓库只有 bridge/ 下几个可选脚本；别把字节码提交进来）
 __pycache__/
 *.pyc
-# Whisper 模型缓存（几百 MB）：把 HF_HOME 指到 .tmp/hf 就会落在这里，见 docs/04
-.tmp/hf/

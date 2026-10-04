@@ -13,9 +13,10 @@ import { join } from 'node:path'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { startRelay } from '../relay/lan-relay.mjs'
+import { VAR_DIR } from '../lib/paths.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const TMP = join(ROOT, '.tmp', 'relay-suite')
+const TMP = join(VAR_DIR, 'test', 'relay-suite')
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 

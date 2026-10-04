@@ -21,23 +21,26 @@
  */
 
 import { spawn } from 'node:child_process'
-import { copyFileSync, mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { CHECKOUT } from '../../lib/real-tools.mjs'
 import { ensureLoaderLinks } from '../../lib/loader-links.mjs'
+import { buildLiveComposition } from './composition.mjs'
 
 /** 本目录（组合模板与探针所在处，留在仓库里）。 */
 export const LIVE_DIR = fileURLToPath(new URL('.', import.meta.url)).replace(/[\\/]$/, '')
 
 /**
- * 建一个临时组合目录并把 cordis.yml 拷进去。
- * cordis.yml 里的路径都是绝对 file:// URL，所以换到临时目录也照样能解析。
+ * 建一个临时组合目录，并把 cordis.yml **现场生成**进去。
+ * 为什么是生成而不是拷贝一个仓库里的文件：那个文件得写死本仓库与 DSH 检出的绝对路径，
+ * 换个盘或挪一下检出就崩，而且报错指向不了真正的原因（见 composition.mjs 的说明）。
+ * 组合里的路径都是绝对 file:// URL，所以放进临时目录也照样解析得对。
  */
 export function makeComposeDir() {
   const dir = mkdtempSync(join(tmpdir(), 'leion-live-'))
-  copyFileSync(join(LIVE_DIR, 'cordis.yml'), join(dir, 'cordis.yml'))
+  writeFileSync(join(dir, 'cordis.yml'), buildLiveComposition(), 'utf-8')
   return dir
 }
 
@@ -53,6 +56,7 @@ export function runLive() {
     return Promise.resolve(1)
   }
   console.log(`[live] 组合目录建在系统临时区（不进仓库）：${composeDir}`)
+  console.log(`[live] 组合文件：${join(composeDir, 'cordis.yml')}（想手动跑就 cd 进去执行 vendor/cordis/bin.js）`)
   if (created > 0) console.log(`[live] 已建立 ${created} 个 vendor junction`)
 
   const bin = join(CHECKOUT, 'vendor', 'cordis', 'bin.js')

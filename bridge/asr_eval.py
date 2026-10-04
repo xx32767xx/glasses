@@ -26,10 +26,10 @@ asr_eval.py —— 用带标准答案的葡语音频，测出"识别得准不准
 
 用法
     # 第一步：把 parquet 里的音频抽成一小批 wav + 参考文本（只做一次）
-    python bridge/asr_eval.py --parquet .tmp/asr-eval/pt_br_validation.parquet --extract
+    python bridge/asr_eval.py --parquet var/cache/fleurs/pt_br_validation.parquet --extract
 
     # 第二步：拿抽出来的这批音频测某个模型
-    python bridge/asr_eval.py --set .tmp/asr-eval/pt --model small --device cuda --compute-type float16
+    python bridge/asr_eval.py --set var/audio/pt-eval --model small --device cuda --compute-type float16
 """
 
 import argparse

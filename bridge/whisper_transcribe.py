@@ -39,7 +39,7 @@ whisper_transcribe.py —— 用 faster-whisper 转写音频文件，并测出�
         set HF_ENDPOINT=https://hf-mirror.com
     另外：如果当前目录受沙箱限制、不允许删除文件，HuggingFace 的缓存清理会失败，
     这时把缓存放到可写目录：
-        set HF_HOME=E:\\GlassesHarness\\.tmp\\hf
+        set HF_HOME=E:\\GlassesHarness\\var\\cache\\hf
 """
 
 import argparse

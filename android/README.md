@@ -106,7 +106,7 @@ adb install -r android\app\build\outputs\apk\debug\app-debug.apk
 
 ### ② 提示"共享密钥不对"
 
-密钥在转发进程启动时打印，也存在 `.tmp/live/relay-secret.txt`。
+密钥在转发进程启动时打印，也存在 `var/live/relay-secret.txt`。
 两边必须完全一致（注意别把空格带进去）。
 
 ### ③ 点了"开始听写"没反应，或提示没有语音识别服务
@@ -122,7 +122,7 @@ adb install -r android\app\build\outputs\apk\debug\app-debug.apk
 在电脑上看**终端 1**（harness 侧）的输出：
 
 - 如果没有任何反应 → 收件箱没被读到。检查两个进程指向的是不是同一对文件
-  （默认都是 `.tmp/live/`）
+  （默认都是 `var/live/`）
 - 如果报"翻译路由：FAIL" → 模型没配好。用 `--offline` 先确认链路是通的
 - 如果报"例句表里没有这一句" → 你在用 `--offline`（它只认得那 14 句剧本）。
   换成不带 `--offline` 的真实模型模式

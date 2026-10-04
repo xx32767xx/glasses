@@ -170,9 +170,9 @@ def main():
 
     # ── 8. 音频读入（wav 路径，不依赖 PyAV）─────────────────────────────────
     # 刻意不用 tempfile：受限沙箱下系统临时区可能不允许写/删（本机就是），
-    # 而仓库里的 .tmp/ 确定可写，而且已被 .gitignore 忽略。
+    # 而仓库里的 var/ 确定可写，而且已被 .gitignore 忽略。
     heading("音频读入 · 标准库读 wav")
-    scratch = ROOT / ".tmp" / "python-suite"
+    scratch = ROOT / "var" / "test" / "python-suite"
     scratch.mkdir(parents=True, exist_ok=True)
     target = scratch / "check.wav"
     samples = tone(0.5)

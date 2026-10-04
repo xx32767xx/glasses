@@ -16,7 +16,7 @@ python tests/python-suite.py     # 另 20 项：语音分段器（不加载模�
                                  # + ASR 桥契约 + 局域网契约 + 真实 Cordis 组合
 
 # A) 不需要麦克风、不需要手机：重放一段中葡对照的剧本，看整条同传链路
-node bridge/asr-bridge.mjs --inbox E:/GlassesHarness/.tmp/asr-inbox.jsonl `
+node bridge/asr-bridge.mjs --inbox var/demo/asr-inbox.jsonl `
   --engine replay --replay bridge/sample-transcript.txt --truncate
 
 # B) 老师演示：真实 harness 组合跑完整链路，把"眼镜屏幕"逐帧画出来
@@ -54,15 +54,18 @@ node scripts/build-apk.mjs             # 构建安卓 App → android/README.md 
 | `scripts/harness-side.mjs` | 常驻的 harness 侧进程（真实组合 + 插件，文件模式） |
 | `android/` | **安卓 App「虚拟眼镜」**：麦克风 + 听写 + 40×3 字幕面板（零第三方依赖） |
 | `lib/artifacts.mjs` · `scripts/generate.mjs` | 产物生成（测试与 CLI 共用同一份实现） |
+| `lib/paths.mjs` | **运行时路径与文件名的唯一来源**（数据不能乱删的分层就是它定的，见 `docs/05`） |
 | `lib/composition.mjs` · `lib/fs-node.mjs` · `lib/keepalive.mjs` | 组合生成与两个共用的小插件 |
 | `lib/real-tools.mjs` · `lib/loader-links.mjs` | 加载检出里真实的构建产物 / 建 loader junction |
 | `tests/` | 沙箱复刻 + 两个适配器 + 契约套件 + 桥套件 + 局域网套件 + 翻译后端接缝（129 项） |
 | `tests/python-suite.py` | **语音分段器**验证（20 项，不加载模型，含一条静默失败的回归测试） |
-| `tests/live/` | **真实 Cordis 组合**：真实 `ToolRuntime` + 真实执行流水线 + 真实 `timer` + 真实 `output.schema` 校验 |
+| `tests/live/` | **真实 Cordis 组合**：真实 `ToolRuntime` + 真实执行流水线 + 真实 `timer` + 真实 `output.schema` 校验（组合现场生成，见该目录 README） |
 | `skills/leion-interpreter/SKILL.md` | **同传操作规范**：巴葡 vs 葡葡用词差异表、字幕长度纪律、调用顺序 |
+| `var/` | **运行时数据**（不进版本库）：`live/` 收件箱与字幕总线、`cache/` 模型缓存、`audio/` 测试音频、`logs/` |
 | `docs/01-架构与方案.md` | **给老师的方案**：分层、接缝论证、验证状态、真机/ASR 接入路径、路线图 |
 | `docs/02-创造模式加载指南.md` | 怎么把它挂起来（含可直接粘贴的提示词、真实报错对照表） |
 | `docs/04-语音识别验证.md` | **ASR 实测报告**：模型选型、每句延迟、三个测试方法的坑、修掉的三个 bug |
+| `docs/05-数据通路.md` | **数据通路与目录布局**：哪份数据能删、收件箱行格式、字幕帧字段、路径怎么取 |
 
 ---
 
