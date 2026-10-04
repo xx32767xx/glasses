@@ -9,7 +9,7 @@
  */
 
 import { readFileSync } from 'node:fs'
-import { buildSteps, parseArgs, portInUse } from '../scripts/start-all.mjs'
+import { buildSteps, childEnv, parseArgs, portInUse } from '../scripts/start-all.mjs'
 import { defaultAudioIn, defaultBus, defaultInbox } from '../lib/paths.mjs'
 
 const argsOf = step => step.args.join(' ')
@@ -134,5 +134,32 @@ export async function runStartAllSuite({ it, check, assert }) {
     const source = readFileSync(new URL('../scripts/start-all.mjs', import.meta.url), 'utf-8')
     check('有清音频这段', source.includes('staleAudioSeconds'), '缺清理逻辑')
     check('说了为什么', source.includes('上次录的音频'), '缺原因说明')
+  })
+
+  // ── 6. 模型缓存环境变量（这次真实事故的根子）────────────────────────────────
+  //
+  // 用户自己跑脚本时没有 HF_HOME，于是识别进程从零把模型下到默认缓存。
+  // 直连 HuggingFace 实测 3 分钟只下了 2.5MB → 识别进程四分钟没开始听，
+  // 而终端上只有一句"加载模型…"。仓库里明明已缓存 466MB 的 small 却没用上。
+
+  await it('缺省给子进程设好模型缓存与下载源（否则会重新下一个几百 MB 的模型）', async () => {
+    const { env, notes } = childEnv({})
+    check('设了 HF_HOME', typeof env.HF_HOME === 'string' && env.HF_HOME.includes('var'), env.HF_HOME)
+    check('指向仓库里的 var/cache/hf', env.HF_HOME.includes('cache'), env.HF_HOME)
+    check('设了 HF_ENDPOINT（直连基本下不动）', env.HF_ENDPOINT === 'https://hf-mirror.com', env.HF_ENDPOINT)
+    check('把这两件事打印出来给人看（不然完全看不出它在下载）', notes.length === 2, String(notes.length))
+  })
+
+  await it('用户自己设了环境变量就不覆盖（想直连/换缓存目录都行）', async () => {
+    const { env, notes } = childEnv({ HF_HOME: '/my/cache', HF_ENDPOINT: 'https://huggingface.co' })
+    check('HF_HOME 保持用户的值', env.HF_HOME === '/my/cache', env.HF_HOME)
+    check('HF_ENDPOINT 保持用户的值', env.HF_ENDPOINT === 'https://huggingface.co', env.HF_ENDPOINT)
+    check('这种情况不再多嘴', notes.length === 0, String(notes.length))
+  })
+
+  await it('环境变量是**继承**的，不是替换（PATH 等必须还在）', async () => {
+    const { env } = childEnv({ PATH: 'C:\\x', SOMETHING: 'y' })
+    check('PATH 还在', env.PATH === 'C:\\x', String(env.PATH))
+    check('别的变量也还在', env.SOMETHING === 'y', String(env.SOMETHING))
   })
 }

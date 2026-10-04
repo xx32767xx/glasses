@@ -12,7 +12,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { startRelay, formatBanner } from '../relay/lan-relay.mjs'
+import { startRelay, formatBanner, pcmLevel, describeLevel } from '../relay/lan-relay.mjs'
 import { VAR_DIR } from '../lib/paths.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -295,7 +295,7 @@ export async function runRelaySuite({ it, check, assert }) {
     return callRaw(`/audio?${query}`, buffer, { secret })
   }
 
-  await it('POST /audio?fresh=1：清空并开始新一次录音', async () => {
+  await it('POST /audio：第一块与后续块都是**只追加**，永不清空', async () => {
     const first = pcm(16000)                 // 1 秒 16k
     const result = await postAudio(first, { fresh: true })
     check('200', result.status === 200, String(result.status))
@@ -305,9 +305,20 @@ export async function runRelaySuite({ it, check, assert }) {
     const written = await readAudio()
     check('文件里正好是这一块的长度', written.length === first.length, `${written.length} vs ${first.length}`)
     check('字节没被改动', written.equals(first), '内容不一致')
+
+    // ⚠️ 这一条是被真实事故逼出来的：原来 fresh=1 会把文件截断成 0，
+    // 本意是"新一次录音，旧的别管了"。但识别进程可能还没加载完模型、或者只是慢一点，
+    // 用户一按"重新录音"，**上一段没被读走的话就永久消失了**。
+    // 实测撞上了：识别进程在下模型，用户录了三段，每段都被下一次 fresh 清掉，一条都没识别出来。
+    const second = pcm(8000)
+    const before = (await readAudio()).length
+    const again = await postAudio(second, { fresh: true })   // 又声明"新一次录音"
+    check('再声明 fresh 也不清空', (await readAudio()).length === before + second.length,
+          `${before} → ${(await readAudio()).length}`)
+    check('回执里仍然带 fresh 标记（供显示用）', again.json.fresh === true, JSON.stringify(again.json))
   })
 
-  await it('再传一块是**追加**，不是覆盖（跨块的整句才不会被切断）', async () => {
+  await it('音频是跨块连续的（跨块的整句才不会被切断）', async () => {
     const second = pcm(8000)                 // 0.5 秒
     const before = (await readAudio()).length
     const result = await postAudio(second)
@@ -315,7 +326,6 @@ export async function runRelaySuite({ it, check, assert }) {
     const after = await readAudio()
     check('长度按追加增长', after.length === before + second.length, `${before} → ${after.length}`)
     check('尾部就是刚发的那块', after.subarray(before).equals(second), '尾部内容不一致')
-    check('回执的累计秒数是 1.5', Math.abs(result.json.seconds - 1.5) < 0.01, String(result.json.seconds))
   })
 
   await it('采样率写进旁文件（安卓降级到 44.1k 时识别进程靠它重采样）', async () => {
@@ -447,6 +457,47 @@ export async function runRelaySuite({ it, check, assert }) {
       [{ name: 'VMware Network Adapter VMnet8', address: '1.2.3.4' }],
     )
     check('提到没找到真实网卡', text.includes('没找到真实网卡'), text.slice(0, 200))
+  })
+
+  // ── 8. 电平：区分"有音频"和"有声音" ───────────────────────────────────────
+  //
+  // 这一节来自一次真实误判：日志显示"收到手机音频"，但识别结果一直是 0 段。
+  // 查下来发现上传的音频**基本是静音**（峰值 0.019，正常说话能到 1.0）——
+  // 链路是好的，是手机没录到人声。而这件事光看日志完全看不出来。
+  // 所以现在每块都报电平，并对"明显没声音"直接告警。
+
+  await it('pcmLevel：静音 → 峰值 0；满幅 → 峰值 1；RMS 算得对', async () => {
+    const silence = Buffer.alloc(2000)                       // 1000 个零采样
+    const quiet = pcmLevel(silence)
+    check('静音峰值是 0', quiet.peak === 0, String(quiet.peak))
+    check('静音 RMS 是 0', quiet.rms === 0, String(quiet.rms))
+    check('报出采样数', quiet.samples === 1000, String(quiet.samples))
+
+    const loud = Buffer.alloc(4)
+    loud.writeInt16LE(32767, 0)
+    loud.writeInt16LE(-32768, 2)
+    const big = pcmLevel(loud)
+    check('满幅峰值约等于 1', Math.abs(big.peak - 1) < 0.001, String(big.peak))
+
+    // 半幅方波：RMS 应该正好是 0.5
+    const half = Buffer.alloc(8)
+    for (let i = 0; i < 4; i += 1) {
+      half.writeInt16LE(16384, i * 2)                        // +0.5 → 但只有 4 个采样
+    }
+    const halfLevel = pcmLevel(half)
+    check('半幅 RMS 约 0.5', Math.abs(halfLevel.rms - 0.5) < 0.01, String(halfLevel.rms))
+    check('空 buffer 不崩', pcmLevel(Buffer.alloc(0)).samples === 0)
+  })
+
+  await it('describeLevel：没声音时直接告警（这次误判的教训）', async () => {
+    const silence = describeLevel({ peak: 0.012, rms: 0.0012 })
+    check('带警告字样', silence.includes('几乎没有声音'), silence)
+    check('说明了人声的量级', silence.includes('0.1'), silence)
+
+    const speech = describeLevel({ peak: 0.45, rms: 0.08 })
+    check('正常说话不告警', !speech.includes('警告') && !speech.includes('几乎没有声音'), speech)
+    check('仍然报出峰值与 RMS', speech.includes('0.450') && speech.includes('0.0800'), speech)
+    check('有可视化的条（不看数字也能一眼判断）', speech.includes('█'), speech)
   })
 
   await relay.close()

@@ -56,6 +56,7 @@ leion-pro 的 ASR 收件箱：
 """
 
 import argparse
+import os
 import queue
 import sys
 import time
@@ -99,6 +100,8 @@ def parse_args():
                              "手机可能降级到 44.1 kHz 录音，读它才知道要不要重采样")
     parser.add_argument("--follow-poll-ms", type=int, default=80,
                         help="尾随时检查新数据的间隔（缺省 80ms）")
+    parser.add_argument("--follow-from-start", action="store_true",
+                        help="尾随时从文件开头读（缺省从末尾开始，这样不会把上次的录音重放一遍）")
     parser.add_argument("--stop-after-idle", type=float, default=None,
                         help="尾随模式下，连续多少秒没有新音频就收尾退出（缺省不退出）。"
                              "手机停止录音后用它自动结束；测试也靠它自动收敛")
@@ -412,7 +415,8 @@ class PcmFollower:
         让下一句就用新语种识别 —— 而不是要求用户停止录音、重开一次。
     """
 
-    def __init__(self, path, fallback_rate, np, block_samples, follow_rate_path=None):
+    def __init__(self, path, fallback_rate, np, block_samples, follow_rate_path=None,
+                 from_start=False):
         self.path = Path(path)
         self.rate_path = Path(follow_rate_path) if follow_rate_path else self.path.with_suffix('.rate')
         self.lang_path = self.path.with_suffix('.lang')
@@ -426,6 +430,15 @@ class PcmFollower:
         self.rate_notice = None
         self.language = None             # 当前语种（Whisper 码）；None = 让 Whisper 自己判
         self.lang_notice = None
+        # **从末尾开始跟**，而不是从头：
+        # 文件是"只追加"的，里面可能攒着上一次运行的录音。从头读的话，一启动就会把
+        # 那些旧音频重新识别一遍，冒出一串莫名其妙的旧字幕 —— 而且用户会以为是刚说的话。
+        # 想重放整个文件就用 --follow-from-start。
+        if not from_start:
+            try:
+                self.offset = self.path.stat().st_size
+            except OSError:
+                self.offset = 0
 
     def read_rate(self):
         """读采样率旁文件。没有就沿用上一轮的值（relay 还没写过）。"""
@@ -523,6 +536,16 @@ def main():
 
     print(f"[whisper_stream] 加载模型 {args.model}"
           f"（device={args.device}, compute_type={args.compute_type}）…", file=sys.stderr)
+    # 把"模型从哪儿来"打出来。这一行是被一次真实事故逼出来的：
+    # 用户自己跑的时候没设 HF_HOME，于是模型从零开始下载到默认缓存 ——
+    # 直连 HuggingFace 三分钟只下了 2.5MB，识别进程 4 分钟都没开始听，
+    # 而终端上只看到"加载模型…"一句，完全看不出它在下载。
+    hf_home = os.environ.get("HF_HOME") or os.environ.get("HF_HUB_CACHE") or "(默认 ~/.cache/huggingface)"
+    hf_endpoint = os.environ.get("HF_ENDPOINT") or "huggingface.co"
+    print(f"[whisper_stream] 模型缓存 {hf_home}；下载源 {hf_endpoint}", file=sys.stderr)
+    print("[whisper_stream] 若这里显示的是默认缓存，而模型仓库里已经有了，"
+          "说明 HF_HOME 没设 —— 它会重新下一个几百 MB 的模型，慢得像是卡住了",
+          file=sys.stderr)
     model = WhisperModel(args.model, device=args.device, compute_type=args.compute_type)
     print("[whisper_stream] 模型就绪", file=sys.stderr)
 
@@ -600,6 +623,7 @@ def main():
         follower = PcmFollower(
             args.follow, args.samplerate, np, segmenter.block,
             follow_rate_path=args.follow_rate,
+            from_start=args.follow_from_start,
         )
         rate = follower.read_rate()
         # 语种：**手机的旁文件优先于命令行的 --language**。

@@ -22,7 +22,7 @@
  *   node scripts/debug-window.mjs --once             # 只打一次快照，不循环（给脚本用）
  */
 
-import { readFile, stat } from 'node:fs/promises'
+import { readFile, stat, open } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 import { DEFAULT_DATA_DIR } from '../relay/lan-relay.mjs'
 import { AUDIO_IN_NAME, AUDIO_LANG_NAME, AUDIO_RATE_NAME, BUS_NAME, INBOX_NAME } from '../lib/paths.mjs'
@@ -63,6 +63,41 @@ function parseArgs(argv) {
 async function readText(path) {
   try {
     return await readFile(path, 'utf-8')
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 读文件**末尾**若干个采样，算出电平。
+ *
+ * 为什么只看末尾：问的是"现在手机录到的声音有多大"。
+ * 这也是判断"手机麦克风到底有没有在工作"的唯一直接办法 ——
+ * 只看到"音频在涨"是不够的：字节在涨、里面全是静音，照样啥也识别不出来（真发生过）。
+ */
+async function tailLevel(path, seconds = 1.5) {
+  try {
+    const info = await stat(path)
+    const want = Math.min(info.size, Math.round(seconds * 16000) * 2)
+    if (want < 2) return null
+    const handle = await open(path, 'r')
+    try {
+      const buffer = Buffer.alloc(want - (want % 2))
+      await handle.read(buffer, 0, buffer.length, info.size - buffer.length)
+      const samples = buffer.length >> 1
+      if (samples === 0) return null
+      let peak = 0
+      let sum = 0
+      for (let i = 0; i < samples; i += 1) {
+        const value = buffer.readInt16LE(i * 2) / 32768
+        const magnitude = value < 0 ? -value : value
+        if (magnitude > peak) peak = magnitude
+        sum += value * value
+      }
+      return { peak, rms: Math.sqrt(sum / samples) }
+    } finally {
+      await handle.close()
+    }
   } catch {
     return null
   }
@@ -135,9 +170,9 @@ export async function snapshot(options) {
   const langPath = `${dataDir}/${AUDIO_LANG_NAME}`
 
   const now = Date.now()
-  const [inboxText, busText, audioSize, rateText, langText, status] = await Promise.all([
+  const [inboxText, busText, audioSize, rateText, langText, level, status] = await Promise.all([
     readText(inboxPath), readText(busPath), sizeOf(audioPath),
-    readText(ratePath), readText(langPath), fetchStatus(options),
+    readText(ratePath), readText(langPath), tailLevel(audioPath), fetchStatus(options),
   ])
 
   let audioAgo = null
@@ -166,6 +201,7 @@ export async function snapshot(options) {
     audioBytes: audioSize, audioSeconds: seconds, audioAgo,
     rate: Number.isFinite(rate) ? rate : null,
     lang: langText === null ? null : langText.trim(),
+    level,
     inboxLines, inboxCount: inboxLines.length, inboxAgo,
     bus, busAgo,
   }
@@ -187,6 +223,16 @@ function render(snap, previous) {
     out.push(`  ① 手机音频   ${pad(snap.audioSeconds === null ? '?' : snap.audioSeconds.toFixed(1) + 's', 8)}`
       + `${pad(snap.audioBytes + ' 字节', 16)}${pad(snap.rate === null ? '采样率?' : snap.rate + 'Hz', 12)}`
       + `${pad('语种 ' + (snap.lang ?? '?'), 14)}最后写入 ${ago(snap.audioAgo)}${growth}`)
+    // 电平：区分"有音频"和"有声音"。字节在涨但全是静音，照样什么都识别不出来（真发生过）。
+    if (snap.level) {
+      const bars = Math.min(10, Math.round(snap.level.peak * 20))
+      const bar = '█'.repeat(bars) + '·'.repeat(10 - bars)
+      const warn = snap.level.peak < 0.02
+        ? '   ⚠️ 最近这段几乎没有声音 —— 检查手机麦克风有没有被挡住/被别的应用占着'
+        : ''
+      out.push(`               ${pad('最近电平 ' + bar, 26)}峰值 ${snap.level.peak.toFixed(3)}`
+        + `  RMS ${snap.level.rms.toFixed(4)}${warn}`)
+    }
   }
 
   // ② 收件箱（识别结果）
@@ -250,6 +296,12 @@ export function diagnose(snap, previous) {
       return '→ 还没有任何音频：先确认①手机点了「开始录音上传」；'
         + '②转发进程是**新代码**（改过代码后必须重启，Node 不会热加载）。'
     }
+    // 音频到了但里面没声音 —— 此时"识别进程没跑"和"麦克风没录到"表现完全一样，
+    // 必须靠电平区分，否则会朝着错的方向查。
+    if (snap.level && snap.level.peak < 0.02) {
+      return '→ 音频到了，但**里面几乎没有声音**（峰值 ' + snap.level.peak.toFixed(3) + '）：'
+        + '手机没录到人声。对着手机说一句，看这里的电平会不会上去。'
+    }
     if (snap.inboxCount === 0) {
       return '→ 音频到了，但收件箱是空的：**识别进程没跑**（终端 3）。'
         + '音频已经躺在电脑上了，把它转成文字就能继续。'
@@ -266,7 +318,14 @@ export function diagnose(snap, previous) {
   }
 
   if (snap.audioBytes === null) {
-    return '→ 音频文件不见了（刚被清掉？）：确认手机还在录音上传，且转发进程没重启过。'
+    return '→ 音频文件还不存在（刚被清掉？）：确认手机还在录音上传，且转发进程没重启过。'
+  }
+  // 音频在涨但里面没有声音 —— 这时"识别进程没跑"和"麦克风没录到"长得一模一样，
+  // 必须靠电平区分，否则会让人朝着错的方向查一整天。
+  if (snap.level && snap.level.peak < 0.02 && audioGrowing !== false) {
+    return '→ 音频在涨，但**里面几乎没有声音**（峰值 ' + snap.level.peak.toFixed(3) + '）。'
+      + '这不是链路问题，是手机没录到人声：对着手机说句话看看电平会不会上去；'
+      + '不上去就检查麦克风被挡住、或被别的应用占着。'
   }
   if (audioGrowing === true && inboxGrowing === false) {
     return '→ 音频在涨、收件箱不动：**识别进程那头的问题**（终端 3 起了吗？是不是盯的同一个文件？）'

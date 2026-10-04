@@ -33,7 +33,7 @@ import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync, write
 import { connect } from 'node:net'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { ROOT, LOGS_DIR, defaultAudioIn, defaultBus, defaultInbox, defaultSecret } from '../lib/paths.mjs'
+import { ROOT, LOGS_DIR, WHISPER_CACHE_DIR, defaultAudioIn, defaultBus, defaultInbox, defaultSecret } from '../lib/paths.mjs'
 import { DEFAULT_DATA_DIR } from '../relay/lan-relay.mjs'
 
 const HELP = `start-all —— 一条命令起齐整条链路
@@ -176,6 +176,33 @@ export function portInUse(port, timeoutMs = 800) {
   })
 }
 
+/**
+ * 给子进程准备环境变量。
+ *
+ * 这一条是被一次真实事故逼出来的：用户自己跑脚本时**没有 HF_HOME**，于是识别进程
+ * 从零开始把模型下到默认缓存（`~/.cache/huggingface`）—— 直连 HuggingFace 三分钟
+ * 只下了 2.5MB，识别进程四分钟都没开始听，而终端上只有一句"加载模型…"。
+ * 仓库里明明已经缓存好了 466MB 的 small，却完全没用上。
+ *
+ * 所以这里缺省就把缓存指到 var/cache/hf、下载源指到镜像；
+ * **用户自己的环境变量优先**（已经设了就不覆盖）。
+ */
+export function childEnv(base = process.env) {
+  const env = { ...base }
+  const notes = []
+  if (!env.HF_HOME) {
+    env.HF_HOME = WHISPER_CACHE_DIR
+    notes.push(`模型缓存 → ${WHISPER_CACHE_DIR.replace(ROOT, '.').replace(/\\/g, '/')}`)
+  }
+  if (!env.HF_ENDPOINT) {
+    // 直连 huggingface.co 在国内基本下不动（实测 3 分钟 2.5MB）；镜像可覆盖。
+    // 想直连就自己设 HF_ENDPOINT=https://huggingface.co
+    env.HF_ENDPOINT = 'https://hf-mirror.com'
+    notes.push(`下载源 → ${env.HF_ENDPOINT}（想直连就自己设 HF_ENDPOINT）`)
+  }
+  return { env, notes }
+}
+
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 async function main() {
@@ -233,6 +260,7 @@ async function main() {
   console.log(`  翻译后端    ${options.offline ? '离线例句表（只认得剧本 14 句）' : '真实模型（deepseek-official）'}`)
   console.log(`  识别模型    ${options.transcriber ? `${options.whisperModel} / ${options.device} / ${options.computeType}` : '未启动（--no-transcriber）'}`)
   console.log(`  数据目录    ${options.dataDir}`)
+  for (const note of envNotes) console.log(`  ${note}`)
   if (staleAudioSeconds > 0) {
     console.log(`  已清旧音频  ${staleAudioSeconds.toFixed(1)}s（上次录音留下的；不清的话启动会先冒一句旧字幕）`)
   }
@@ -244,13 +272,14 @@ async function main() {
 
   const children = []
   let shuttingDown = false
+  const { env: spawnEnv, notes: envNotes } = childEnv()
 
   for (const step of steps) {
     const child = spawn(process.execPath, [step.script, ...step.args], {
       cwd: ROOT,
       stdio: ['ignore', 'pipe', 'pipe'],
       // 让子进程的 stdout 不被父进程的缓冲拖住（低延迟链条上这点很重要）
-      env: process.env,
+      env: spawnEnv,
     })
     child.step = step
     children.push(child)

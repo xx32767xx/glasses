@@ -102,6 +102,31 @@ export async function runDebugSuite({ it, check, assert }) {
     check('说链路通', verdict.includes('通'), verdict)
   })
 
+  // ── 2b. 电平：区分"有音频"和"有声音" ──────────────────────────────────────
+  //
+  // 真实误判过：日志说"收到手机音频"，但识别一直 0 段。
+  // 原因是上传的音频基本是静音（峰值 0.019）——链路没问题，是手机没录到人声。
+  // 如果这里只说"识别进程没跑"，用户会朝着完全错的方向查。
+
+  await it('音频到了但电平极低 → 结论指向"手机没录到人声"，而不是识别进程', async () => {
+    const verdict = diagnose(snap({ level: { peak: 0.012, rms: 0.0012 }, inboxCount: 0, inboxLines: [] }), null)
+    check('说里面几乎没有声音', verdict.includes('声音'), verdict)
+    check('指向手机/麦克风', verdict.includes('手机') || verdict.includes('麦克风'), verdict)
+    check('**没有**误导成"识别进程没跑"', !verdict.includes('识别进程没跑'), verdict)
+  })
+
+  await it('电平正常时，收件箱空才归因到识别进程', async () => {
+    const verdict = diagnose(snap({ level: { peak: 0.4, rms: 0.07 }, inboxCount: 0, inboxLines: [] }), null)
+    check('指向识别进程', verdict.includes('识别进程'), verdict)
+  })
+
+  await it('电平告警只看峰值 0.02 这条线（正常说话的峰值远高于它）', async () => {
+    const low = diagnose(snap({ level: { peak: 0.019, rms: 0.001 } }), null)
+    check('0.019 → 告警', low.includes('几乎没有声音'), low)
+    const ok = diagnose(snap({ level: { peak: 0.021, rms: 0.002 } }), null)
+    check('0.021 → 不告警', !ok.includes('几乎没有声音'), ok)
+  })
+
   // ── 2. snapshot()：真的去读文件，四个环节都要读对 ──────────────────────────
 
   await it('snapshot 能读出音频秒数、采样率、语种、收件箱行数与字幕内容', async () => {

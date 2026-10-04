@@ -161,6 +161,41 @@ export function lanAddresses() {
   return out
 }
 
+/**
+ * 算一块 PCM 的电平（峰值 / RMS）。
+ *
+ * 为什么要算：用户遇到的是"手机发录音了，但什么都没发生"。查下来发现
+ * **上传的音频基本是静音**（峰值 0.019、RMS 0.0012，而正常说话的峰值能到 1.0）。
+ * 也就是说链路是好的，问题在"手机根本没录到人声"。
+ * 而这是从日志里完全看不出来的 —— 只看到"收到音频"，看不出里面有没有声音。
+ * 所以每块都报一次电平，并对"明显没声音"的情况直接给出警告。
+ *
+ * 阈值取 0.02：正常对着手机说话的峰值一般 > 0.1；安静说话也有 0.02~0.05；
+ * 低于 0.02 说明要么没说话、要么麦克风被挡住/被别的应用占着。
+ */
+export function pcmLevel(buffer) {
+  const samples = buffer.length >> 1
+  if (samples === 0) return { peak: 0, rms: 0, samples: 0 }
+  let peak = 0
+  let sum = 0
+  for (let i = 0; i < samples; i += 1) {
+    const value = buffer.readInt16LE(i * 2) / 32768
+    const magnitude = value < 0 ? -value : value
+    if (magnitude > peak) peak = magnitude
+    sum += value * value
+  }
+  return { peak, rms: Math.sqrt(sum / samples), samples }
+}
+
+/** 把电平转成一句人话 + 一个直观的条形。 */
+export function describeLevel(level) {
+  const bars = Math.min(10, Math.round(level.peak * 20))       // 峰值 0.5 → 满格
+  const bar = '█'.repeat(bars) + '·'.repeat(10 - bars)
+  const text = `音平 ${bar} 峰值 ${level.peak.toFixed(3)} RMS ${level.rms.toFixed(4)}`
+  if (level.peak < 0.02) return `${text}  ⚠️ 这一块几乎没有声音（人声一般峰值 > 0.1）`
+  return text
+}
+
 /** 看起来像虚拟网卡的（VMware / VirtualBox / Hyper-V / WSL），提示用户别填这些。 */
 function looksVirtual(name) {
   return /vmware|virtualbox|hyper-v|vethernet|wsl|loopback|tap|tun|docker|zerotier|tailscale/i.test(name)
@@ -496,11 +531,18 @@ export async function startRelay(rawOptions = {}) {
 
         state.audioChain = state.audioChain.then(async () => {
           await mkdir(dirname(options.audio), { recursive: true })
-          if (fresh) {
-            await writeFile(options.audio, Buffer.alloc(0))
-            state.audioBytes = 0
-            state.audioChunks = 0
-          }
+          // ⚠️ 这里**刻意不再清空文件**，即使 fresh=1。
+          //
+          // 原来 fresh=1 会把 audio-in.pcm 截断成 0，本意是"新一次录音，旧音频别管了"。
+          // 但那会让**没被读走的音频永久消失**：识别进程可能还没加载完模型、或者只是慢了一点，
+          // 用户一按"重新录音"，上一段话就没了。实测就撞上了 —— 识别进程在下载模型，
+          // 用户录了三段，每段都被下一次 fresh 清掉，于是一条都没识别出来。
+          //
+          // 现在改成"只追加、永不清空"：
+          //   · 识别进程按自己的节奏读，不会漏；
+          //   · 一段话与下一段之间的静音会让它自然断句（切句器有静音判定）；
+          //   · 文件会一直长（16k 单声道 = 32KB/秒，一小时约 115MB），可在重启时清掉 ——
+          //     start-all 每次启动都会清，识别进程自己也会从文件末尾开始跟（不重放旧的）。
           if (body.length > 0) {
             await appendFile(options.audio, body)
             state.audioBytes += body.length
@@ -525,20 +567,16 @@ export async function startRelay(rawOptions = {}) {
           return
         }
 
-        // 顺便让 /status 的计数准一点：手机端靠它确认音频真的在往上走
         const totalSeconds = state.audioRateValue ? state.audioBytes / 2 / state.audioRateValue : 0
         // 调试：让这个终端能直接看出"音频上来了"。
-        // 缺省每秒汇总一行（不是每块一行）——音频是每秒一块，逐块打会刷屏；
-        // 而且"每秒都在涨"这个信息本身就够判断链路了。
-        // 手机是每秒一块，所以阈值取 900ms 而不是 1000ms ——
-        // 卡在 1000 的话，抖动会让大约一半的块被吞掉，看起来像"音频断断续续"。
-        const nowMs = Date.now()
-        if (options.verbose || fresh || nowMs - audioLogAt >= 900) {
-          audioLogAt = nowMs
-          debug(`📥 收到手机音频：+${body.length} 字节（第 ${state.audioChunks} 块）`
-            + ` → 累计 ${totalSeconds.toFixed(1)}s @ ${state.audioRateValue ?? rate}Hz`
-            + `，语种 ${state.audioLangValue ?? lang}${fresh ? '（新一次录音，已清空）' : ''}`)
-        }
+        // **每一块都打印** —— 用户要的就是"收到手机的音频就输出"。
+        // 早先按秒节流（阈值 900ms），结果手机上块号看着像 1,2,3,5，像是丢了数据，
+        // 其实只是被节流吞掉了 —— 这种"看起来像故障"的日志比不打印更糟。要安静就用 --quiet。
+        debug(`📥 收到手机音频：+${body.length} 字节（第 ${state.audioChunks} 块）`
+          + ` → 累计 ${totalSeconds.toFixed(1)}s @ ${state.audioRateValue ?? rate}Hz`
+          + `，语种 ${state.audioLangValue ?? lang}${fresh ? '（手机开始了新一次录音）' : ''}`)
+        // 电平单独一行：这是"手机到底有没有录到人声"的唯一直接证据
+        debug(`   ${describeLevel(pcmLevel(body))}`)
         send(response, 200, {
           ok: true,
           bytes: body.length,
