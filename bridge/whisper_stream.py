@@ -70,6 +70,38 @@ HALLUCINATION_SAMPLES = (
 TARGET_RATE = 16000          # Whisper 内部固定按 16 kHz 工作
 
 
+def force_utf8_stdio():
+    """把 stdout/stderr 强制成 UTF-8。
+
+    ⚠️ 这一步是必须的，不是保险措施。真实事故：
+      Windows 中文环境下，Python 往**管道**写东西时用的是本地编码（GBK/cp936），
+      而下游的桥（node）按 UTF-8 读 —— 于是识别出来的"你好"变成 3 个替换符 `���`，
+      写进收件箱后插件"判不出源语种"，**一句字幕都出不来**。
+      而链路每一环看起来都是好的：音频有声音、识别有输出、收件箱有行数。
+      字节层面能对上：`你好` 的 GBK 是 4 字节（C4 E3 BA C3），按 UTF-8 解正好是 3 个坏字节。
+
+    为什么放在脚本里而不是只靠环境变量：
+      环境变量（PYTHONUTF8/PYTHONIOENCODING）只有 start-all 会设；
+      用户手动起这个脚本时就没了 —— 而这个 bug 恰恰只在手动起的时候出现，
+      所以必须让脚本自己扛住。
+
+    为什么在**导入时**就调用（而不是只在 main() 里）：
+      编码是整个进程的事，跟"有没有走到 main()"无关。
+      只在 main() 里调的话，"忘了调用"这个失败模式就测不出来 —— 实测过：
+      把 main() 里那行注释掉，测试照样全绿，因为测试脚本自己调了一次。
+      放在导入时，这个失败模式根本不存在。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            # 不是可重配的文本流（比如被重定向成别的对象）就算了，不该因此起不来
+            pass
+
+
+force_utf8_stdio()      # 导入即生效，见上面"为什么在导入时就调用"
+
+
 def whisper_language_of(tag):
     """把收件箱/手机用的语种标记转成 Whisper 认的语种码。
 

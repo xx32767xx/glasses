@@ -18,6 +18,8 @@ python-suite.py —— 语音分段器与音频读入的验证套件
 """
 
 import sys
+import os
+import subprocess
 import wave
 from pathlib import Path
 
@@ -276,6 +278,62 @@ def main():
     check("认不出来返回 None（交给 Whisper 自动判定，不瞎猜）",
           whisper_language_of("klingon") is None, str(whisper_language_of("klingon")))
     check("None / 空值不炸", whisper_language_of(None) is None and whisper_language_of("") is None)
+
+    # ── 10. 输出编码（真实事故：识别结果变乱码，一句字幕都出不来）─────────────
+    #
+    # Windows 中文环境下，Python 往**管道**写东西时用本地编码（GBK/cp936），
+    # 而下游的桥（node）按 UTF-8 读 —— 于是识别出来的「你好」变成 3 个替换符 `���`，
+    # 写进收件箱后插件"判不出源语种"，**一句字幕都出不来**。
+    # 而每一环看起来都是好的：音频有声音、识别有输出、收件箱有行数。
+    #
+    # 所以这里真的起一个子进程、**故意不带 UTF-8 环境变量**，把中文输出抓回来验字节。
+    # 这是唯一能真正证明"脚本自己扛住了编码"的测法 —— 只查源码里有没有那行调用是假验证。
+    heading("输出编码 · 不带 UTF-8 环境变量时中文仍要正确")
+
+    # 关键：这里**只 import，不调用任何东西**。修法是在模块导入时就生效，
+    # 所以这条测的正是"生产路径真的扛住了"，而不是"有个函数能用"。
+    # （早先的写法显式调了一次 force_utf8_stdio()，结果把 main() 里的调用注释掉测试照样全绿 ——
+    #   那等于什么都没测。）
+    script = (
+        "import sys; sys.path.insert(0, r'%s');\n"
+        "import whisper_stream;\n"
+        "print('你好，这是一条测试信息');\n"
+        "print('Olá, tudo bem?');\n"
+    ) % str(ROOT / "bridge")
+
+    clean_env = {k: v for k, v in os.environ.items()
+                 if k not in ("PYTHONUTF8", "PYTHONIOENCODING", "PYTHONLEGACYWINDOWSSTDIO")}
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True, env=clean_env, timeout=60,
+        )
+        raw = proc.stdout
+        check("子进程正常退出", proc.returncode == 0,
+              proc.stderr.decode("utf-8", "replace")[-300:])
+
+        # ⚠️ 注意别用"输出里有没有 U+FFFD 的字节"来判：GBK 的输出里也不含那三个字节
+        # （替换符是**解码时**才产生的）。所以这里直接做严格 UTF-8 解码 ——
+        # GBK 的中文（如「你好」= C4 E3 BA C3）在 UTF-8 下必然解不出来。
+        try:
+            decoded = raw.decode("utf-8")
+            decode_error = None
+        except UnicodeDecodeError as error:
+            decoded = raw.decode("utf-8", "replace")
+            decode_error = error
+        check("输出是合法 UTF-8（是 GBK 的话这里就会失败）", decode_error is None,
+              f"{decode_error}；原始字节 {raw[:40]!r}")
+        check("按 UTF-8 能解出正确的中文", "你好，这是一条测试信息" in decoded, repr(decoded[:120]))
+        check("葡语重音也没坏", "Olá, tudo bem?" in decoded, repr(decoded[:120]))
+        # 「你好」的 GBK 字节是 C4 E3 BA C3；如果输出里出现它，说明走的还是本地编码。
+        # （这条比"看有没有 U+FFFD"可靠：替换符是解码时才产生的，原始字节里没有。）
+        check("输出里没有 GBK 编码的「你好」字节",
+              "你好".encode("gbk") not in raw,
+              "输出仍然是 GBK —— 桥按 UTF-8 读就会变成乱码")
+    except FileNotFoundError:
+        check("能起 python 子进程（本机应能）", False, "找不到 python")
+    except subprocess.TimeoutExpired:
+        check("子进程不超时", False, "60 秒没结束")
 
     # ── 结果 ────────────────────────────────────────────────────────────────
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")

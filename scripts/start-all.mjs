@@ -202,6 +202,13 @@ export function childEnv(base = process.env) {
     env.HF_ENDPOINT = 'https://hf-mirror.com'
     notes.push(`下载源 → ${env.HF_ENDPOINT}（想直连就自己设 HF_ENDPOINT）`)
   }
+  // Python 的 stdio 编码：不强制的话，Windows 中文环境下它用 GBK 写管道，
+  // 而桥按 UTF-8 读 —— 识别结果会变成乱码，插件判不出语种，一句字幕都出不来。
+  // （脚本自己也做了 sys.stdout.reconfigure，这里是第二道；手动起 python 时靠脚本那道。）
+  let pythonEncoding = false
+  if (!env.PYTHONUTF8) { env.PYTHONUTF8 = '1'; pythonEncoding = true }
+  if (!env.PYTHONIOENCODING) { env.PYTHONIOENCODING = 'utf-8'; pythonEncoding = true }
+  if (pythonEncoding) notes.push('Python 输出编码 → UTF-8（不设的话识别结果会变乱码，见 README）')
   return { env, notes }
 }
 

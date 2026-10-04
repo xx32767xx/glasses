@@ -148,13 +148,27 @@ export async function runStartAllSuite({ it, check, assert }) {
     check('设了 HF_HOME', typeof env.HF_HOME === 'string' && env.HF_HOME.includes('var'), env.HF_HOME)
     check('指向仓库里的 var/cache/hf', env.HF_HOME.includes('cache'), env.HF_HOME)
     check('设了 HF_ENDPOINT（直连基本下不动）', env.HF_ENDPOINT === 'https://hf-mirror.com', env.HF_ENDPOINT)
-    check('把这两件事打印出来给人看（不然完全看不出它在下载）', notes.length === 2, String(notes.length))
+    check('把这几件事打印出来给人看（不然完全看不出它在下载）', notes.length === 3, String(notes.length))
+  })
+
+  // 编码事故：Windows 中文环境下 Python 往管道写的是 GBK，桥按 UTF-8 读，
+  // 于是识别出的"你好"变成 3 个替换符写进收件箱，插件"判不出源语种"，一句字幕都出不来。
+  // 而每一环看起来都正常（有声音、有输出、有行数）。
+  await it('缺省给子进程设好 Python 的 UTF-8（否则识别结果会变乱码）', async () => {
+    const { env, notes } = childEnv({})
+    check('设了 PYTHONUTF8', env.PYTHONUTF8 === '1', String(env.PYTHONUTF8))
+    check('设了 PYTHONIOENCODING', env.PYTHONIOENCODING === 'utf-8', String(env.PYTHONIOENCODING))
+    check('横幅里说明了', notes.some(n => n.includes('UTF-8')), JSON.stringify(notes))
   })
 
   await it('用户自己设了环境变量就不覆盖（想直连/换缓存目录都行）', async () => {
-    const { env, notes } = childEnv({ HF_HOME: '/my/cache', HF_ENDPOINT: 'https://huggingface.co' })
+    const { env, notes } = childEnv({
+      HF_HOME: '/my/cache', HF_ENDPOINT: 'https://huggingface.co',
+      PYTHONUTF8: '0', PYTHONIOENCODING: 'gbk',
+    })
     check('HF_HOME 保持用户的值', env.HF_HOME === '/my/cache', env.HF_HOME)
     check('HF_ENDPOINT 保持用户的值', env.HF_ENDPOINT === 'https://huggingface.co', env.HF_ENDPOINT)
+    check('编码也保持用户的（他想用 GBK 是他的事）', env.PYTHONIOENCODING === 'gbk', env.PYTHONIOENCODING)
     check('这种情况不再多嘴', notes.length === 0, String(notes.length))
   })
 
@@ -178,8 +192,11 @@ export async function runStartAllSuite({ it, check, assert }) {
     process.stdout.write = chunk => { captured.push(String(chunk)); return true }
     let code
     try {
-      // 用一个几乎不可能被占用的端口，免得被本机正在跑的转发进程干扰
-      code = await main(['--dry-run', '--quiet-logs', '--port', '59999'])
+      // 端口要挑在**临时端口范围之外**（Windows 是 49152–65535）。
+      // 早先这里用 59999，而 relay 套件会用 port 0 让系统随机分配端口 ——
+      // 那个随机端口可能正好落在 59999，于是这条测试时好时坏（实测过：同一份代码
+      // 一次跑失败、紧跟着再跑就通过）。18788 在范围外，不会被别的测试抢到。
+      code = await main(['--dry-run', '--quiet-logs', '--port', '18788'])
     } finally {
       process.stdout.write = original
     }
@@ -201,7 +218,7 @@ export async function runStartAllSuite({ it, check, assert }) {
     const original = process.stdout.write
     process.stdout.write = chunk => { captured.push(String(chunk)); return true }
     try {
-      await main(['--dry-run', '--quiet-logs', '--port', '59999'])
+      await main(['--dry-run', '--quiet-logs', '--port', '18788'])
     } finally {
       process.stdout.write = original
     }
