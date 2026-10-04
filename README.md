@@ -17,7 +17,7 @@
 ```powershell
 node scripts/generate.mjs        # 从核心逻辑生成两个产物
 node tests/run-all.mjs           # 152 项断言：新鲜度门禁 + 两个包装版本各跑一遍 + 一致性对比
-python tests/python-suite.py     # 另 35 项：语音分段器 + 音频尾随 + 语种转换（不加载模型，很快）
+python tests/python-suite.py     # 另 106 项：语音分段器 + 音频尾随 + 语种转换（不加载模型，很快）
                                  # + ASR 桥契约 + 局域网契约 + 真实 Cordis 组合
 
 # A) 不需要麦克风、不需要手机：重放一段中葡对照的剧本，看整条同传链路
@@ -84,7 +84,7 @@ node scripts/fake-phone.mjs --wav var/audio/zh/short-16k.wav --url http://127.0.
 | `lib/composition.mjs` · `lib/fs-node.mjs` · `lib/keepalive.mjs` | 组合生成与两个共用的小插件 |
 | `lib/real-tools.mjs` · `lib/loader-links.mjs` | 加载检出里真实的构建产物 / 建 loader junction |
 | `tests/` | 沙箱复刻 + 两个适配器 + 契约套件 + 桥套件 + 局域网套件 + 翻译后端接缝（152 项） |
-| `tests/python-suite.py` | **语音分段器与音频尾随**验证（35 项，不加载模型，含一条静默失败的回归测试） |
+| `tests/python-suite.py` | **语音分段器与音频尾随**验证（106 项，不加载模型，含一条静默失败的回归测试） |
 | `tests/live/` | **真实 Cordis 组合**：真实 `ToolRuntime` + 真实执行流水线 + 真实 `timer` + 真实 `output.schema` 校验（组合现场生成，见该目录 README） |
 | `skills/leion-interpreter/SKILL.md` | **同传操作规范**：巴葡 vs 葡葡用词差异表、字幕长度纪律、调用顺序 |
 | `var/` | **运行时数据**（不进版本库）：`live/` 收件箱与字幕总线、`cache/` 模型缓存、`audio/` 测试音频、`logs/` |
@@ -180,7 +180,7 @@ node scripts/fake-phone.mjs --wav var/audio/zh/short-16k.wav --url http://127.0.
 | 7 个工具契约、排版、双向语向、节流、异常 | ✅ 152 项断言，两个版本各跑一遍，全绿 |
 | ASR 收件箱（半行/坏行/强制语种/stop-drain-reset） | ✅ 离线契约 + **真实 timer 端到端** |
 | **ASR 桥**（断句 / 停顿断句 / UTF-8 重音 / 协议不被破坏 / replay 端到端） | ✅ 19 项契约 + 实测 CLI |
-| **语音分段器**（切句 / 自适应门槛 / 防幻听 / 前导缓存 / 短响丢弃 / **到上限时按停顿断句**) | ✅ 41 项断言，`tests/python-suite.py`（含一条静默失败的回归测试，和一条"交出多少语音"的不变量测试） |
+| **语音分段器**（切句 / 自适应门槛 / 防幻听 / 前导缓存 / 短响丢弃 / 到上限时按停顿断句 / **切句不随上传节奏变化**) | ✅ 106 项断言，`tests/python-suite.py`（含一条静默失败的回归、一条"交出多少语音"的不变量、一条"上传间隔不算句子结束"的回归 + 负对照） |
 | **音频尾随**（追加增量 / 文件截断重来 / 半帧对齐 / 采样率降级重采样） | ✅ 10 项断言，同上 |
 | **录音上传整条路**（手机音频 → 继电器落盘 → 识别 → 收件箱） | ✅ 用真实中文录音跑通：`fake-phone.mjs` 逐块上传 → 收件箱出现 6 句正确中文 |
 | **安卓 App 的录音上传** | ✅ 真构建出 APK（35 KB），并核对 dex 里有 `MicUploader` / `&lang=`，**没有**任何 `SpeechRecognizer` 残留 |

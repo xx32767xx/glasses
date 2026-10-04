@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "bridge"))
 
 from whisper_stream import (   # noqa: E402
-    LANGUAGE_PROMPTS, PcmFollower, SPEECH_RMS_FLOOR, UtteranceSegmenter,
+    IdleTracker, LANGUAGE_PROMPTS, PcmFollower, SPEECH_RMS_FLOOR, UtteranceSegmenter,
     decide_no_speech, looks_like_hallucination, looks_like_prompt_echo,
     normalize_peak, parse_args, prompt_for, rms_of, whisper_language_of,
 )
@@ -480,6 +480,74 @@ def main():
     check("正常字幕在**没发提示词**时也不会被误判",
           not looks_like_prompt_echo("你好", None))
     check("空文本不炸", not looks_like_prompt_echo("", PROMPT) and not looks_like_prompt_echo("你好", ""))
+
+    # 回显过滤的**长度下限**是先加护栏、后收紧的：提示词「以下是普通话的句子，请用简体中文输出。」
+    # 里全是常用字，所以只看"是不是子串"的话，「中文」「输出」「句子」「的话」这些
+    # 两三个字的**正常短句**也会被静默吃掉 —— 用户真说了这些词，字幕就没了，
+    # 而且日志里看不出原因。所以现在要求至少 4 个字、且占到提示词的 40%。
+    heading("回显过滤 · 不能吃掉正常短句（收紧后的护栏）")
+    for short_utterance in ("中文", "输出", "句子", "的话", "以下", "请用"):
+        check(f"「{short_utterance}」是常用词，不该被判成回显",
+              not looks_like_prompt_echo(short_utterance, PROMPT),
+              "被吃掉了 —— 用户真说这两个字就永远看不到字幕")
+    check("真实回显仍然拦得住：整条提示词",
+          looks_like_prompt_echo(PROMPT, PROMPT))
+    check("真实回显仍然拦得住：实测那次丢弃的原文",
+          looks_like_prompt_echo("请用简体中文输出。", PROMPT),
+          "这个漏了就等于闸门形同虚设")
+
+    # 幻听闸：那条「谢谢观看,下次见!」是实测混过去的假字幕（按真实上传节奏重放时出来的），
+    # 它当时直接当字幕发到了眼镜上 —— 假字幕比没有字幕糟得多。
+    heading("幻听惯用语 · 实测逮到的那条")
+    check("「谢谢观看,下次见!」被拦下（曾混过去发到眼镜上）",
+          looks_like_hallucination("谢谢观看,下次见!"), "漏了就会在眼镜上出现假字幕")
+    check("「请不吝点赞订阅」仍然被拦下", looks_like_hallucination("请不吝点赞、订阅、转发"))
+    check("正常中文句不会被幻听闸误伤",
+          not looks_like_hallucination("这是一条测试音频。"), "把正常话拦掉就白干了")
+    check("葡语幻听（legendas 之类）仍然被拦下", looks_like_hallucination("Legendas pela comunidade"))
+    check("正常葡语句不会被幻听闸误伤",
+          not looks_like_hallucination("Olá, por favor, diga seu nome."))
+
+    # ── 上传节奏不能被当成"说话人停了"（真实故障的回归测试）──────────────────
+    #
+    # 故障经过：手机按 1 秒一块上传，块与块之间本来就有近 1 秒没数据。
+    # 而原来的判据是"连续 5 次轮询没读到数据"，每次轮询睡 80ms → 只有 400ms，
+    # 于是正常上传时它反复判定"说话人停了"，往切句器里塞 500ms 数字零，把句子切开。
+    # 实测：同一段音频数据一次性到位 → [2.9, 4.9] 两段；按真实节奏喂 → 五段，
+    # 其中一段 1.0 秒的电平与 relay 日志里某一块**完全一致**（就是被按块切开的一块）。
+    # 切出来的短碎片正是 Whisper 爱出幻觉的长度 —— 用户看到的「丢弃…回显了提示词」
+    # 就是这么来的：丢字幕只是症状，按上传节奏切句才是病。
+    heading("尾随判据 · 上传间隔不能被当成句子结束（回归）")
+    cadence = IdleTracker(2000, 80)          # 缺省：2 秒才认"停了"
+    fired_during_upload = False
+    for _ in range(12):                      # 1 秒的上传间隔 = 12 次空轮询
+        if cadence.saw_nothing():
+            fired_during_upload = True
+    check("每秒一块的上传节奏下，绝不触发（12 次空轮询 = 960ms）",
+          not fired_during_upload,
+          "触发了 —— 说话人还在说，句子会被按上传节奏切开")
+    long_idle = IdleTracker(2000, 80)
+    reached_at = None
+    for index in range(1, 40):
+        if long_idle.saw_nothing():
+            reached_at = index
+            break
+    check("空转约 2 秒才真的认（实测在第 25 次轮询）", reached_at == 25,
+          f"第 {reached_at} 次就认了，阈值不对")
+    recovered = IdleTracker(2000, 80)
+    for _ in range(20):
+        recovered.saw_nothing()
+    recovered.saw_data()
+    check("一旦读到新数据，计数归零（不来一次误判就永久卡住）",
+          not recovered.saw_nothing() and recovered.idle_ms == 80,
+          f"idle_ms={recovered.idle_ms}")
+
+    # 负对照：把阈值调回旧行为（400ms），同一段上传节奏必须触发 ——
+    # 证明上面那条"不触发"确实是阈值改对了，而不是测试没测到东西。
+    old = IdleTracker(400, 80)
+    fired_old = any(old.saw_nothing() for _ in range(12))
+    check("负对照：阈值 400ms（旧行为）在同一节奏下会触发",
+          fired_old, "负对照没复现出旧行为，上面那条通过也不能说明问题")
 
     check("缺省用束搜索 beam=5（基准实测：7.4% vs beam1 的 9.2%）",
           args.beam_size == 5, str(args.beam_size))

@@ -64,6 +64,10 @@ from pathlib import Path
 
 HALLUCINATION_SAMPLES = (
     "请不吝点赞", "订阅", "转发", "打赏", "明镜", "点点栏目",   # 中文常见幻听
+    # 下面这条是**实测逮到的**：按真实上传节奏重放用户录音时，
+    # 一段几乎没内容的 2.0 秒碎片（电平 0.0359）被识别成「谢谢观看,下次见!」，
+    # 而它当时混过了这道闸，直接当字幕发了出去 —— 假字幕比没有字幕糟得多。
+    "谢谢观看",
     "amara.org", "legendas", "subtitles by", "subscribe",       # 葡/英常见幻听
 )
 
@@ -132,6 +136,12 @@ def parse_args(argv=None):
     parser.add_argument("--follow-rate", default=None,
                         help="尾随文件的采样率旁文件（缺省 <--follow>.rate）。"
                              "手机可能降级到 44.1 kHz 录音，读它才知道要不要重采样")
+    parser.add_argument("--idle-flush-ms", type=int, default=2000,
+                        help="尾随时，多久没读到新音频就把已在缓冲里的半句交出去（缺省 2000）。"
+                             "**必须明显大于手机的上传间隔**（实测约 1 秒一块）："
+                             "原来的判据只有 400ms 且往切句器里塞数字零，"
+                             "结果正常上传时反复误判成「说话人停了」，按上传节奏把句子切开 —— "
+                             "切出来的 1 秒碎片正是 Whisper 最爱出幻觉的长度（见 IdleTracker）")
     parser.add_argument("--follow-poll-ms", type=int, default=80,
                         help="尾随时检查新数据的间隔（缺省 80ms）")
     parser.add_argument("--follow-from-start", action="store_true",
@@ -554,18 +564,26 @@ def prompt_for(language, explicit):
     return LANGUAGE_PROMPTS.get(language or "", None)
 
 
-def looks_like_prompt_echo(text, prompt):
+def looks_like_prompt_echo(text, prompt, min_chars=4, min_coverage=0.4):
     """这段识别结果是不是在回显提示词？
 
-    两条判据，缺一不可（第二条是测试逼出来的）：
-      1. 去掉标点空白后，输出是提示词的子串，或提示词整体出现在输出里。
-      2. 输出被切成若干块后，**每一块**都出自提示词 —— 对应"同一句回显两遍"的情况。
+    判据（缺一不可）：
+      1. 去标点空白后，输出等于/包含整条提示词；
+      2. 输出是提示词的一部分时，必须**占到提示词的相当一块**（缺省 40%）；
+      3. 输出被切成若干块后，**每一块**都出自提示词 —— 对应"同一句回显两遍"的情况。
          实测样本：`请用简体中文输出。 请用简体中文输出。`
          它整体不是提示词的子串（提示词前面还有"以下是普通话的句子"），
-         只靠第一条会漏掉。
+         只靠第 1 条会漏掉。
 
-    为什么必须有这道闸：回显出来的是一句**看起来完全正常的字幕**，
+    为什么是这道闸：回显出来的是一句**看起来完全正常的字幕**，
     但它跟用户说的话毫无关系 —— 比"没有字幕"糟得多。
+
+    ⚠️ 第 2 条那个"占相当一块"的要求是后补的，原来只看"是不是子串"。
+    那是个隐患：提示词是「以下是普通话的句子，请用简体中文输出。」，
+    里面**每一个字都是常用字**，于是「中文」「输出」「句子」「的话」「以下」
+    这类两三个字的正常短句全都是它的子串 —— 用户真说了这些词，字幕会被静默吃掉，
+    而且日志里看不出原因。现在要求至少 4 个字、且占到提示词的 40%，
+    真实的回显（整条、尾巴、重复两遍）都仍然拦得住。
     """
     if not prompt or not text:
         return False
@@ -580,8 +598,12 @@ def looks_like_prompt_echo(text, prompt):
     prompt_clean = strip(prompt)
     if not text_clean or not prompt_clean:
         return False
-    if text_clean in prompt_clean or prompt_clean in text_clean:
+    if len(text_clean) < min_chars:
+        return False
+    if text_clean == prompt_clean or prompt_clean in text_clean:
         return True
+    if text_clean in prompt_clean:
+        return len(text_clean) >= min_coverage * len(prompt_clean)
 
     pieces = []
     current = ""
@@ -594,8 +616,10 @@ def looks_like_prompt_echo(text, prompt):
             current += char
     if current:
         pieces.append(current)
-    meaningful = [piece for piece in pieces if len(piece) >= 2]
-    return bool(meaningful) and all(piece in prompt_clean for piece in meaningful)
+    meaningful = [piece for piece in pieces if len(piece) >= min_chars]
+    if not meaningful or not all(piece in prompt_clean for piece in meaningful):
+        return False
+    return sum(len(piece) for piece in meaningful) >= min_coverage * len(prompt_clean)
 
 
 def normalize_peak(audio, target=0.9, quiet_below=0.3):
@@ -657,6 +681,17 @@ def decide_no_speech(no_speech_prob, threshold, level, speech_floor=SPEECH_RMS_F
     return True, False
 
 
+def preview(text, limit=40):
+    """把一段文字压成一行短预览，用于日志。
+
+    为什么丢弃日志必须带上文字：日志原来只写"丢弃"和原因，不写**被丢掉的是什么**。
+    用户报"经常出现丢弃"时，从日志里完全看不出丢掉的是真话还是幻听 ——
+    这跟"静默的 daemon 最难排查"是同一类问题。丢掉的文字正是唯一的证据。
+    """
+    flat = " ".join(str(text).split())
+    return flat if len(flat) <= limit else flat[:limit] + "…"
+
+
 def transcribe(model, audio, language, min_logprob, no_speech_prob,
                beam_size=1, initial_prompt=None, do_normalize=True,
                speech_floor=SPEECH_RMS_FLOOR):
@@ -688,19 +723,20 @@ def transcribe(model, audio, language, min_logprob, no_speech_prob,
             drop, overridden = decide_no_speech(
                 seg.no_speech_prob, no_speech_prob, level, speech_floor)
             if drop:
-                dropped = f"no_speech_prob={seg.no_speech_prob:.2f}（电平 {level:.4f}）"
+                dropped = (f"no_speech_prob={seg.no_speech_prob:.2f}（电平 {level:.4f}）"
+                           f"｜文字：{preview(text)}")
                 continue
             overrode = overrode or overridden
         if getattr(seg, "avg_logprob", 0.0) < min_logprob:
-            dropped = f"avg_logprob={seg.avg_logprob:.2f}"
+            dropped = f"avg_logprob={seg.avg_logprob:.2f}｜文字：{preview(text)}"
             continue
         if looks_like_hallucination(text):
-            dropped = "命中幻听惯用语"
+            dropped = f"命中幻听惯用语｜文字：{preview(text)}"
             continue
         if looks_like_prompt_echo(text, initial_prompt):
             # 回显出来的是一句"看起来完全正常的字幕"，但它跟用户说的话毫无关系。
             # 这比没有字幕糟得多 —— 用户会以为眼镜在乱翻译。
-            dropped = "回显了提示词（initial_prompt 的经典副作用）"
+            dropped = f"回显了提示词（initial_prompt 的经典副作用）｜文字：{preview(text)}"
             continue
         kept.append(text)
     return " ".join(kept).strip(), kept == [], dropped, (overrode and kept != [])
@@ -863,6 +899,51 @@ class PcmFollower:
         return blocks
 
 
+class IdleTracker:
+    """判断"上传真的停了"还是"只是两块音频之间"。
+
+    ⚠️ 这个类是从一次实测故障里拆出来的，值得完整记下来。
+
+    原来的写法是"连续 5 次轮询没读到数据就算停了"，然后**往切句器里塞 500ms 数字零**，
+    把当前这句逼出来。看着没问题，其实判据和单位都错了：
+
+      · 单位错：`silence_ms / block_ms` = 500/100 = 5，隐含假设"一次轮询 = 一块 = 100ms"。
+        但每次轮询之间睡的是 `--follow-poll-ms`（缺省 **80ms**），
+        所以 5 次轮询只有 **400ms**，比它想表达的 500ms 还短。
+      · 概念错（更要命）：手机是**按 1 秒一块**上传的，块与块之间本来就有近 1 秒没数据。
+        于是"400ms 没新数据"在正常上传时**天天成立** —— 它把"网络还没送来下一块"
+        当成了"说话人停下来了"。
+
+    后果用用户那次真实录音量过（var/logs/relay.log 有真实上传时刻表）：
+      同一段音频、同样参数，数据一次性到位 → 切成 [2.9, 4.9] 两段；
+      按真实节奏（每秒一块）喂 → 切成 [2.6, 1.0, 0.9, 1.9, 2.0] 五段，
+      其中那段 1.0 秒的，电平 0.0664 与 relay 日志里第 9 块**一模一样** ——
+      说明它正好是"一块音频"，是按上传节奏切出来的。
+
+    切出来的这些短碎片又正好是 Whisper 最容易出幻觉的长度：用户看到的
+    「丢弃 …：回显了提示词」就是这些碎片被判成回显（那次确实回显了，
+    被丢弃的原文是「请用简体中文输出。」）。所以**丢字幕只是症状，按上传节奏切句才是病**。
+
+    新判据：按**毫秒**累计"一直没读到新数据"的时间，而且要求这个时间明显长于
+    上传间隔（缺省 2 秒）。道理很直白：2 秒的静默比"一句话结束"的判定阈值（500ms）
+    还长，所以在这个位置断开，和"本来就会在这里断"是一致的；
+    而 400ms 就断，是在跟判据打架。
+    """
+
+    def __init__(self, flush_ms, poll_ms):
+        self.flush_ms = max(1, int(flush_ms))
+        self.poll_ms = max(1, int(poll_ms))
+        self.idle_ms = 0
+
+    def saw_data(self):
+        self.idle_ms = 0
+
+    def saw_nothing(self):
+        """这次轮询没读到数据。返回是否已经"停得够久"。"""
+        self.idle_ms += self.poll_ms
+        return self.idle_ms >= self.flush_ms
+
+
 # ── 主流程 ───────────────────────────────────────────────────────────────────
 
 def emit(text: str):
@@ -1007,17 +1088,17 @@ def main():
         print("[whisper_stream] 等手机开始录音上传…", file=sys.stderr, flush=True)
 
         # 说话人半句就松开按钮时，数据流断在那里、没有尾部静音，切句器会一直等。
-        # 所以"静了太久"就自己补一点静音，让它把这一句交出来。
-        silence_block = np.zeros(segmenter.block, dtype=np.float32)
-        idle_limit = max(1, int(round(args.silence_ms / args.block_ms)))
-        idle_blocks = 0
+        # 所以"上传确实停了"就把这一句先交出去。
+        # 判据见 IdleTracker：按**毫秒**算，而且阈值要明显长于上传间隔 ——
+        # 原来按"轮询次数"算（5 次 × 80ms = 400ms），正常上传时天天误触发。
+        idle = IdleTracker(args.idle_flush_ms, args.follow_poll_ms)
         last_notice = None
         last_lang_tag = None
         # --stop-after-idle：连续多久没新音频就收尾。
         # 为什么需要它：手机停止录音后文件就不再增长，尾随循环会永远等下去。
         # 有了它，识别进程能在录音结束后自己把最后一句吐出来并退出。
-        idle_stop_blocks = (None if args.stop_after_idle is None
-                            else max(1, int(round(args.stop_after_idle * 1000 / args.follow_poll_ms))))
+        idle_stop_ms = (None if args.stop_after_idle is None
+                        else max(1, int(args.stop_after_idle * 1000)))
         try:
             while True:
                 blocks = follower.read()
@@ -1037,19 +1118,22 @@ def main():
                     elif language != active["language"]:
                         active["language"] = language
                 if blocks:
-                    idle_blocks = 0
+                    idle.saw_data()
                     for block in blocks:
                         for utterance in segmenter.push(block):
                             handle(utterance)
                 else:
-                    idle_blocks += 1
-                    if segmenter.speaking and idle_blocks >= idle_limit:
-                        # 补够一次静音判定所需的量，把整句逼出来
-                        for _ in range(segmenter.silence_blocks):
-                            for utterance in segmenter.push(silence_block):
-                                handle(utterance)
-                        idle_blocks = 0
-                    elif idle_stop_blocks is not None and idle_blocks >= idle_stop_blocks:
+                    if idle.saw_nothing() and segmenter.speaking:
+                        # 直接把这半句交出去，**不再往切句器里塞数字零**：
+                        # 那些零会污染自适应门槛的统计（噪声底被算成 0），
+                        # 而"没数据"和"有静音"本来就是两件事。
+                        last = segmenter.flush()
+                        if last is not None:
+                            print(f"[whisper_stream] 上传停了 {args.idle_flush_ms / 1000:.1f}s，"
+                                  f"先把缓冲里的这半句交出去（不塞假静音）",
+                                  file=sys.stderr, flush=True)
+                            handle(last)
+                    if idle_stop_ms is not None and idle.idle_ms >= idle_stop_ms:
                         print(f"[whisper_stream] 连续 {args.stop_after_idle}s 没有新音频，收尾退出",
                               file=sys.stderr, flush=True)
                         break
