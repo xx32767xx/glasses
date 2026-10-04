@@ -438,9 +438,48 @@ def normalize_peak(audio, target=0.9):
     return audio * (target / peak)
 
 
+def rms_of(audio):
+    """一段音频的 RMS。用来判断"这段到底是人声还是环境噪声"。"""
+    import numpy as np
+    if audio.size == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(audio ** 2)))
+
+
+# 电平达到这个值，就认定"这里面确实有人声"，不再让模型的 no_speech_prob 否决它。
+# 取值依据（本机实测）：安静房间底噪约 0.0005，用户手机录音的说话段 RMS 约 0.067~0.12。
+# 0.02 大约在两者中间偏人声一侧，留了足够余量（正常说话比它高 3~6 倍）。
+SPEECH_RMS_FLOOR = 0.02
+
+
+def decide_no_speech(no_speech_prob, threshold, level, speech_floor=SPEECH_RMS_FLOOR):
+    """要不要因为 no_speech_prob 丢掉这一段？
+
+    @return (是否丢弃, 是否是被"电平证据"压过的)
+
+    为什么单独抽成纯函数：这条规则曾经**把用户正在说的话扔掉**（连着说「你好 欢迎」，
+    两段都被判 no_speech_prob=0.68/0.87，而电平是 0.086/0.067 —— 明明是人声）。
+    静默丢数据是最难查的一类 bug，所以规则要能被测试逐条钉住，而不是埋在
+    transcribe() 里靠人读。
+
+    规则：
+      · no_speech_prob 没超阈值 → 不丢（返回 False）。
+      · 超了阈值，但这段音频的**电平明显是人声** → 不丢，并标记"压过了模型自述"。
+        （no_speech_prob 是模型对一小段的自我报告，在 1 秒级片段上很不可靠；
+          而我们自己的切句器已经按能量判过"这是语音"了。）
+      · 超了阈值且电平很弱 → 丢。噪声/气声正是这个闸擅长的场景。
+    """
+    if no_speech_prob <= threshold:
+        return False, False
+    if level >= speech_floor:
+        return False, True
+    return True, False
+
+
 def transcribe(model, audio, language, min_logprob, no_speech_prob,
-               beam_size=1, initial_prompt=None, do_normalize=True):
-    """返回 (文字, 是否被丢弃, 丢弃原因)。"""
+               beam_size=1, initial_prompt=None, do_normalize=True,
+               speech_floor=SPEECH_RMS_FLOOR):
+    """返回 (文字, 是否被丢弃, 丢弃原因, 是否用"电平证据"压过了 no_speech_prob)。"""
     data = normalize_peak(audio) if do_normalize else audio
     segments, _info = model.transcribe(
         data,
@@ -452,15 +491,25 @@ def transcribe(model, audio, language, min_logprob, no_speech_prob,
         condition_on_previous_text=False,   # 句间独立，避免上一句的错误污染下一句
         initial_prompt=initial_prompt,
     )
+    # 先算一次电平（在**归一化之前**算，那才是真实录音的电平）
+    level = rms_of(audio)
+
     kept = []
     dropped = None
+    overrode = False
     for seg in segments:
         text = seg.text.strip()
         if not text:
             continue
         if getattr(seg, "no_speech_prob", 0.0) > no_speech_prob:
-            dropped = f"no_speech_prob={seg.no_speech_prob:.2f}"
-            continue
+            # 规则见 decide_no_speech：**电平明显是人声时，不让模型自述否决它**。
+            # 这里曾经无条件丢弃，结果把用户正在说的话扔了（详见该函数的说明）。
+            drop, overridden = decide_no_speech(
+                seg.no_speech_prob, no_speech_prob, level, speech_floor)
+            if drop:
+                dropped = f"no_speech_prob={seg.no_speech_prob:.2f}（电平 {level:.4f}）"
+                continue
+            overrode = overrode or overridden
         if getattr(seg, "avg_logprob", 0.0) < min_logprob:
             dropped = f"avg_logprob={seg.avg_logprob:.2f}"
             continue
@@ -468,7 +517,7 @@ def transcribe(model, audio, language, min_logprob, no_speech_prob,
             dropped = "命中幻听惯用语"
             continue
         kept.append(text)
-    return " ".join(kept).strip(), kept == [], dropped
+    return " ".join(kept).strip(), kept == [], dropped, (overrode and kept != [])
 
 
 class Stats:
@@ -694,7 +743,7 @@ def main():
     def handle(utterance):
         seconds = len(utterance) / float(args.samplerate)
         start = time.perf_counter()
-        text, empty, reason = transcribe(
+        text, empty, reason, overrode = transcribe(
             model, utterance, active["language"],
             args.min_logprob, args.no_speech_prob,
             beam_size=args.beam_size,
@@ -704,11 +753,15 @@ def main():
         elapsed = time.perf_counter() - start
         stats.add(seconds, elapsed, empty)   # 每段都记：短段的固定开销正是同传的敌人
         rtf = elapsed / seconds if seconds > 0 else float("nan")
+        level = rms_of(utterance)
         if empty:
-            print(f"  [丢弃 {seconds:.1f}s 音频，{elapsed:.2f}s，RTF {rtf:.2f}：{reason or '没有内容'}]",
+            print(f"  [丢弃 {seconds:.1f}s 音频，{elapsed:.2f}s，RTF {rtf:.2f}，"
+                  f"电平 {level:.4f}：{reason or '没有内容'}]",
                   file=sys.stderr, flush=True)
         else:
-            print(f"  [{seconds:.1f}s 音频 / {elapsed:.2f}s 识别 / RTF {rtf:.2f}]",
+            note = "（电平明显是人声，已压过 no_speech_prob 的误判）" if overrode else ""
+            print(f"  [{seconds:.1f}s 音频 / {elapsed:.2f}s 识别 / RTF {rtf:.2f}"
+                  f" / 电平 {level:.4f}]{note}",
                   file=sys.stderr, flush=True)
         emit(text)
 

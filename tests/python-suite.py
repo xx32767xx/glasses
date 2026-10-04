@@ -29,8 +29,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "bridge"))
 
 from whisper_stream import (   # noqa: E402
-    PcmFollower, UtteranceSegmenter, looks_like_hallucination, whisper_language_of,
-    normalize_peak, parse_args, prompt_for,
+    PcmFollower, SPEECH_RMS_FLOOR, UtteranceSegmenter, decide_no_speech,
+    looks_like_hallucination, normalize_peak, parse_args, prompt_for, rms_of,
+    whisper_language_of,
 )
 from whisper_transcribe import TARGET_RATE, load_audio                    # noqa: E402
 
@@ -384,6 +385,46 @@ def main():
           len(guarded) == 1, f"切出 {len(guarded)} 段")
     check("关掉保护：同样音频会被切成两段（说明这个开关确实在起作用）",
           len(plain) == 2, f"切出 {len(plain)} 段")
+
+    # ── 12. 防幻听闸不能误杀正常说话（真实事故）────────────────────────────────
+    #
+    # 用户连着说「你好 欢迎」，两段都被判 no_speech_prob=0.68 / 0.87 并**丢弃**，
+    # 而日志显示音频电平是 0.086 / 0.067 —— 明明是人声。他的原话是
+    # "我后面明明还在说话 但是被丢弃了"。
+    #
+    # 原因：no_speech_prob 是模型对**一小段**的自我报告，在 1 秒级片段上很不可靠。
+    # 修法：电平明显是人声时，不让模型自述否决它（物理证据压过模型自述）；
+    # 电平很弱时仍然让这个闸拦（那正是它擅长的场景）。
+    heading("防幻听 · 电平证据压过 no_speech_prob（曾把用户的话扔掉）")
+
+    check("no_speech_prob 没超阈值：不丢",
+          decide_no_speech(0.30, 0.60, 0.09) == (False, False),
+          str(decide_no_speech(0.30, 0.60, 0.09)))
+    check("刚好等于阈值：不丢（用的是 <= 判定）",
+          decide_no_speech(0.60, 0.60, 0.09) == (False, False),
+          str(decide_no_speech(0.60, 0.60, 0.09)))
+
+    # 这条就是事故现场的数字：0.87 + 电平 0.067
+    drop, overrode = decide_no_speech(0.87, 0.60, 0.067)
+    check("电平明显是人声时**不丢**，并标记'压过了模型自述'",
+          drop is False and overrode is True, f"drop={drop} overrode={overrode}")
+    check("事故里的另一段（0.68 + 电平 0.086）同样不丢",
+          decide_no_speech(0.68, 0.60, 0.086) == (False, True))
+
+    # 另一半：闸不能被废掉 —— 噪声/气声仍然要拦
+    check("电平很弱时仍然丢（噪声、气声正是这个闸擅长的）",
+          decide_no_speech(0.90, 0.60, 0.0012) == (True, False),
+          str(decide_no_speech(0.90, 0.60, 0.0012)))
+    check("刚好等于电平下限：不丢（>= 判定，宁可多留）",
+          decide_no_speech(0.90, 0.60, SPEECH_RMS_FLOOR) == (False, True),
+          str(decide_no_speech(0.90, 0.60, SPEECH_RMS_FLOOR)))
+    check("电平下限比本机实测的底噪（约 0.0005）高得多、比说话（约 0.07）低得多",
+          0.0005 < SPEECH_RMS_FLOOR < 0.07, str(SPEECH_RMS_FLOOR))
+
+    check("rms_of 能算出电平（静音 0、满幅约 1）",
+          rms_of(np.zeros(1600, dtype=np.float32)) == 0.0
+          and 0.99 < rms_of(np.ones(1600, dtype=np.float32)) <= 1.0,
+          str(rms_of(np.ones(1600, dtype=np.float32))))
 
     # ── 结果 ────────────────────────────────────────────────────────────────
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
