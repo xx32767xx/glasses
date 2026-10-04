@@ -86,12 +86,13 @@ def build(segments):
 
 def run_segmenter(audio, adaptive=True, rms_threshold=0.01, max_speech_ms=15000,
                   min_speech_ms=300, silence_ms=700, preroll_ms=250,
-                  short_utterance_ms=800, short_silence_ms=1100):
+                  short_utterance_ms=800, short_silence_ms=1100, cut_pause_ms=200):
     segmenter = UtteranceSegmenter(
         TARGET_RATE, 100, silence_ms, min_speech_ms, max_speech_ms,
         rms_threshold, preroll_ms, np,
         adaptive=adaptive,
         short_utterance_ms=short_utterance_ms, short_silence_ms=short_silence_ms,
+        cut_pause_ms=cut_pause_ms,
     )
     found = []
     for start in range(0, len(audio), segmenter.block):
@@ -156,6 +157,91 @@ def main():
     check("没有任何一段超过强制上限太多",
           all(len(x) / TARGET_RATE <= 4.5 for x in found_endless),
           f"最长 {max(len(x) / TARGET_RATE for x in found_endless):.2f}s")
+
+    # ── 6. 到上限时优先在"停顿"处断，而不是在固定位置硬切 ────────────────────
+    #
+    # 这条钉住的是真实发生过的故障：说话人被合并成长段后，断点正好落在第 15 秒
+    # 那个样本上 —— 说话说到一半被切断，两条字幕各拿半句。用户报的就是
+    # "长对话被截断"。用 bridge/segment_eval.py 量到的现象是：合并片段的最大时长
+    # **精确等于**上限（15.0s），那就是硬切的指纹。
+    #
+    # 造一段"每 3 秒有一次短停顿"的连续说话：短停顿（0.3s）不足以触发正常收句
+    # （静音判定 700ms），所以只有"到上限"这条路会切它 —— 正好用来测断点选在哪里。
+    heading("分段器 · 到上限时在停顿处断，而不是硬切（回归：长对话被截断）")
+    pausing = build([("silence", 0.3)] + [("tone", 3.0), ("silence", 0.3)] * 3 + [("silence", 0.5)])
+    soft, _ = run_segmenter(pausing, max_speech_ms=4000)
+    hard, _ = run_segmenter(pausing, max_speech_ms=4000, cut_pause_ms=99999)
+    soft_lengths = [len(x) / TARGET_RATE for x in soft]
+    hard_lengths = [len(x) / TARGET_RATE for x in hard]
+    check("找到停顿就提前断：第一段明显短于上限（不是 4.0s 硬切）",
+          soft_lengths and soft_lengths[0] < 3.7,
+          f"各段 {[round(n, 2) for n in soft_lengths]}")
+    check("负数对照：关掉找停顿（cut_pause_ms 极大）就退回硬切，第一段正好顶到上限",
+          hard_lengths and hard_lengths[0] >= 3.7,
+          f"各段 {[round(n, 2) for n in hard_lengths]} —— 负对照没复现出旧行为，"
+          f"那上面那条通过也不能说明是找停顿起了作用")
+    check("断在停顿处不会丢内容：三段声音的长度基本都交出来了",
+          sum(soft_lengths) >= 8.9,
+          f"三段合计 9.0s，实际交出 {sum(soft_lengths):.2f}s")
+
+    # ── 7. 强制断句绝不能丢语音（不变量测试）────────────────────────────────
+    #
+    # 这条是补的，因为上面那个改动**连续踩了两次坑**，两次都表现为"内容无声消失"：
+    #   第一次：选"最长的停顿"切，后面剩一小截（< min_speech_ms）→ 后面被 _take 丢掉；
+    #   第二次：算"前半段有几个语音块"时 self.energies 已经被切成后半段了，
+    #           数出来偏低 → _release 判它太短 → 把**整个前半段**扔掉。
+    # 两次都是"看起来还在跑、字幕照出、就是少了几个字"，光看现象根本发现不了。
+    # 所以这里不测具体行为，直接测不变量：**送进去多少有声音的音频，就必须交出多少**。
+    # 两种信号都要测 —— 它们走的是不同的代码路径：
+    #   · 停顿后面还有一大截话 → 在停顿处切（走"两头都够长"的正常分支）
+    #   · 停顿后面只剩一小截话 → 找不到"两头都够长"的停顿，走兜底分支
+    # 而那两次丢内容的 bug 分别藏在两条路径里，只测一条会漏。
+    #
+    # 注意兜底分支里那一小截尾巴**本来就该被丢掉**（不到 min_speech_ms 的碎片是防
+    # 噪声爆音用的，这是设计如此），所以那条用例不能要求"块数不少"，
+    # 只能要求**前半段活着** —— 而丢内容的 bug 丢的恰恰是前半段（几秒钟的话）。
+    heading("分段器 · 不变量：强制断句不能丢掉语音")
+    block = int(TARGET_RATE * 0.1)
+
+    def loud_blocks(audio):
+        usable = len(audio) // block * block
+        if not usable:
+            return 0
+        rms = np.sqrt(np.mean(audio[:usable].reshape(-1, block) ** 2, axis=1))
+        return int(np.sum(rms >= 0.05))
+
+    def total_emitted(audio, max_ms, cut_pause_ms):
+        emitted, _ = run_segmenter(audio, max_speech_ms=max_ms, cut_pause_ms=cut_pause_ms)
+        return sum(loud_blocks(x) for x in emitted), [loud_blocks(x) for x in emitted]
+
+    long_tail = build([("silence", 0.3)] + [("tone", 2.0), ("silence", 0.25)] * 4
+                      + [("tone", 0.4), ("silence", 1.2)])
+    expected = loud_blocks(long_tail)
+    for cut_pause_ms in (200, 99999):
+        got, _ = total_emitted(long_tail, 3000, cut_pause_ms)
+        check(f"停顿后面还有一大截话 · cut_pause_ms={cut_pause_ms}：交出的语音块数不少于送进去的"
+              f"（{got} ≥ {expected}）",
+              got >= expected - 1,
+              f"送进去 {expected} 块、只交出 {got} 块 —— 少了 {expected - got} 块语音，"
+              f"字幕会静默缺内容")
+
+    # 这一段要造得能真的走进兜底分支：停顿后面必须有**一点**话把停顿"关上"
+    # （_pause_candidates 只记录被后面的话终止的停顿），但这点话又必须短到
+    # 两头都够长的分支不接受它 —— 0.25s（2 块）< min_speech_ms（3 块）刚好满足。
+    # 上限取 3600ms，让上限正好在"那点话刚进 buffer"时触发。
+    # 第一版把这段造错了（上限卡在停顿结束那一刻），结果兜底分支根本没被走到，
+    # 负对照（故意写错一行）照样全绿 —— 测试等于没测。
+    short_tail = build([("silence", 0.3), ("tone", 3.0), ("silence", 0.25),
+                        ("tone", 0.25), ("silence", 1.5)])
+    head_expected = 30        # 前面那 3.0 秒的话
+    for cut_pause_ms in (200, 99999):
+        _, per_segment = total_emitted(short_tail, 3600, cut_pause_ms)
+        biggest = max(per_segment, default=0)
+        check(f"停顿后面只剩一小截话 · cut_pause_ms={cut_pause_ms}："
+              f"前面那 {head_expected} 块语音必须交出来（实测最大一段 {biggest} 块）",
+              biggest >= head_expected,
+              f"最大的片段只有 {biggest} 块，而前面那段话有 {head_expected} 块 —— "
+              f"前半段被整个丢掉了（曾因为算块数时用错了数组而真的发生）")
 
     # ── 6. 前导缓存：句首的低能量音频要被带上 ────────────────────────────────
     heading("分段器 · 句首前导缓存")
@@ -403,6 +489,13 @@ def main():
     check("缺省开启短句保护，但阈值克制（不把相邻两句合起来）",
           args.short_utterance_ms == 800 and args.short_silence_ms == 1100,
           f"{args.short_utterance_ms}/{args.short_silence_ms}")
+    # 静音判定的缺省值是量出来改过的：原来 700ms，实测在"句间停顿 500ms"的连续说话下
+    # 会把句子并成 12~14 秒的长段，文字错误率 23.9%；改成 500ms 后降到 10.0%。
+    # 反方向（说话人停顿本来就长）只贵 2 个百分点 —— 这个不对称是选 500 的理由。
+    check("缺省静音判定 500ms（基准实测：判太慢的代价比判太快大得多）",
+          args.silence_ms == 500, str(args.silence_ms))
+    check("缺省会在上限处优先找停顿断句（不是硬切）",
+          args.cut_pause_ms == 200, str(args.cut_pause_ms))
 
     # 短句保护的实际行为：<800ms 的碎片后面跟 0.8 秒停顿，**不该**就此收句，
     # 而是等它接上后面的话；但正常长度的话仍然按 700ms 收句（不然字幕会拖）。

@@ -71,6 +71,7 @@ node scripts/fake-phone.mjs --wav var/audio/zh/short-16k.wav --url http://127.0.
 | `bridge/whisper_transcribe.py` | 转写单个音频文件并测耗时/RTF（自带解码器，绕开 PyAV 版本坑） |
 | `bridge/make_long_wav.py` | 把短录音拼成长的测试音频（可加底噪），用来测真实延迟 |
 | `bridge/asr_eval.py` | **准确率基准**：用 FLEURS 语料算错误率（中文按**字** CER、葡语按**词** WER），带参考文本、不靠肉眼 |
+| `bridge/segment_eval.py` | **切句基准**：直接 import 生产那个分段器，量"静音判定该设多久"——切碎/合并各多少次、最长合并多久、错误率变好还是变坏。缺省 500ms 就是它量出来的，见 `docs/04` §13 |
 | `bridge/sample-transcript.txt` | 中葡对照的样例转写，用于无麦克风演示 |
 | `relay/lan-relay.mjs` | **局域网转发**：手机 ↔ 电脑，5 个端点 + 共享密钥（含 `POST /audio` 录音上传，见下） |
 | `scripts/harness-side.mjs` | 常驻的 harness 侧进程（真实组合 + 插件，文件模式） |
@@ -179,7 +180,7 @@ node scripts/fake-phone.mjs --wav var/audio/zh/short-16k.wav --url http://127.0.
 | 7 个工具契约、排版、双向语向、节流、异常 | ✅ 152 项断言，两个版本各跑一遍，全绿 |
 | ASR 收件箱（半行/坏行/强制语种/stop-drain-reset） | ✅ 离线契约 + **真实 timer 端到端** |
 | **ASR 桥**（断句 / 停顿断句 / UTF-8 重音 / 协议不被破坏 / replay 端到端） | ✅ 19 项契约 + 实测 CLI |
-| **语音分段器**（切句 / 自适应门槛 / 防幻听 / 前导缓存 / 短响丢弃） | ✅ 35 项断言，`tests/python-suite.py`（含一条静默失败的回归测试） |
+| **语音分段器**（切句 / 自适应门槛 / 防幻听 / 前导缓存 / 短响丢弃 / **到上限时按停顿断句**) | ✅ 41 项断言，`tests/python-suite.py`（含一条静默失败的回归测试，和一条"交出多少语音"的不变量测试） |
 | **音频尾随**（追加增量 / 文件截断重来 / 半帧对齐 / 采样率降级重采样） | ✅ 10 项断言，同上 |
 | **录音上传整条路**（手机音频 → 继电器落盘 → 识别 → 收件箱） | ✅ 用真实中文录音跑通：`fake-phone.mjs` 逐块上传 → 收件箱出现 6 句正确中文 |
 | **安卓 App 的录音上传** | ✅ 真构建出 APK（35 KB），并核对 dex 里有 `MicUploader` / `&lang=`，**没有**任何 `SpeechRecognizer` 残留 |

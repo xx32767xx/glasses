@@ -149,11 +149,25 @@ def parse_args(argv=None):
     parser.add_argument("--stats", action="store_true", help="退出时打印统计（延迟、RTF）")
     parser.add_argument("--samplerate", type=int, default=16000, help="采样率（Whisper 要 16000）")
     parser.add_argument("--block-ms", type=int, default=100, help="每次读取的音频块长度")
-    parser.add_argument("--silence-ms", type=int, default=700, help="静音超过这么久就认为一句话结束")
+    parser.add_argument("--silence-ms", type=int, default=500,
+                        help="静音超过这么久就认为一句话结束（缺省 500）。"
+                             "这个数**必须小于说话人句子之间真正停顿的时长**，否则句子会并成长段："
+                             "用带标准答案的中文语料量过（bridge/segment_eval.py，12 句）："
+                             "句间停顿 500ms 时，判 500ms 的文字错误率 10.0%%、判 700ms 变成 23.9%%、"
+                             "判 1000ms 变成 27.0%%；而句间停顿 1500ms 时，判 500ms 是 10.0%%、"
+                             "判 700ms 是 7.9%%。"
+                             "也就是说**判太慢的代价（+14~17 个百分点）远大于判太快的代价（+2 个百分点）**，"
+                             "所以缺省取偏快的一侧；判得快还顺带把等待时间从 0.7s 降到 0.5s")
     parser.add_argument("--min-speech-ms", type=int, default=500,
                         help="短于这么久的语音段丢弃（多半是噪声/气声）。缺省 500 —— "
                              "实测 0.03~0.27 秒的碎片送进识别只会产出胡话（「你以後」这种）")
-    parser.add_argument("--max-speech-ms", type=int, default=15000, help="单句最长时长，超过就强制切句（防止一直不说停）")
+    parser.add_argument("--max-speech-ms", type=int, default=15000,
+                        help="单句最长时长，超过就强制断句（防止一直不说停）。"
+                             "断句点会优先选内部停顿（见 --cut-pause-ms），"
+                             "找不到停顿才在这个长度上硬切")
+    parser.add_argument("--cut-pause-ms", type=int, default=200,
+                        help="强制断句时，至少要找到这么长的内部停顿才肯切（缺省 200）。"
+                             "设成很大（比如 5000）就退化成「到上限硬切」的旧行为")
     parser.add_argument("--short-utterance-ms", type=int, default=800,
                         help="短句保护：还没攒够这么久的语音，要等更长的静音才收句（缺省 800）。"
                              "正常说话词间就有 300~500ms 停顿，固定 700ms 会把一句话切成两半，"
@@ -172,7 +186,7 @@ def parse_args(argv=None):
                         help="给模型的提示词（引导语种/字形）。缺省按语种自动选："
                              "中文「以下是普通话的句子，请用简体中文输出。」（压掉繁体输出）；"
                              "葡语一句巴葡引子。**实测有用**：中文基准上 medium 的 CER "
-                             "7.4%→5.9%、疑似繁体 8 字→1 字。"
+                             "从 7.4%% 降到 5.9%%、疑似繁体 8 字降到 1 字。"
                              "副作用是短片段上会被模型回显成一句假字幕，那个由回显过滤挡住")
     parser.add_argument("--no-prompt", action="store_true",
                         help="不发提示词（想看纯模型输出、或怀疑提示词在捣乱时用）")
@@ -239,9 +253,10 @@ class UtteranceSegmenter:
     def __init__(self, samplerate, block_ms, silence_ms, min_speech_ms, max_speech_ms,
                  rms_threshold, preroll_ms, np,
                  adaptive=True, rms_floor=0.004, noise_multiplier=4.0,
-                 short_utterance_ms=800, short_silence_ms=1100):
+                 short_utterance_ms=800, short_silence_ms=1100, cut_pause_ms=200):
         self.np = np
         self.block = int(samplerate * block_ms / 1000)
+        self.block_ms = block_ms
         self.silence_blocks = max(1, int(round(silence_ms / block_ms)))
         self.min_blocks = max(1, int(round(min_speech_ms / block_ms)))
         self.max_blocks = max(1, int(round(max_speech_ms / block_ms)))
@@ -249,12 +264,17 @@ class UtteranceSegmenter:
         # "短句保护"：还不到 short_utterance_ms 的片段，要等 short_silence_ms 的静音才收句
         self.short_utterance_blocks = max(1, int(round(short_utterance_ms / block_ms)))
         self.short_silence_blocks = max(1, int(round(short_silence_ms / block_ms)))
+        # 到上限强制断句时，至少要找到这么长的内部停顿才肯切（见 _best_inner_pause）
+        self.cut_pause_blocks = max(1, int(round(cut_pause_ms / block_ms)))
         self.rms_threshold = rms_threshold
         self.buffer = []
+        self.energies = []       # 与 buffer 一一对应的能量（为"按停顿切"服务）
         self.preroll = []
+        self.preroll_energies = []
         self.silent_run = 0
         self.speaking = False
         self.voiced = 0          # 本句里"确实超过门槛"的块数（前导缓存不算，见 _take）
+        self.cut_count = 0       # 因为到上限而断句的次数（供统计与诊断）
 
         # ── 自适应门槛 ────────────────────────────────────────────────────────
         # 固定阈值为什么不够用：会议室安静时说话声可能只有 0.008（低于阈值 → 整句丢失），
@@ -317,13 +337,17 @@ class UtteranceSegmenter:
             if not self.speaking:
                 self.speaking = True
                 self.buffer = list(self.preroll)     # 补上句首之前的一点音频
+                self.energies = list(self.preroll_energies)
                 self.preroll = []
+                self.preroll_energies = []
                 self.voiced = 0
             self.silent_run = 0
             self.voiced += 1
             self.buffer.append(block)
+            self.energies.append(energy)
         elif self.speaking:
             self.buffer.append(block)
+            self.energies.append(energy)
             self.silent_run += 1
             # 自适应静音判定：**攒得还短的时候，要求更长的静音才收句**。
             # 为什么：正常说话时词与词、短语与短语之间就有 300~500ms 的停顿，
@@ -343,8 +367,10 @@ class UtteranceSegmenter:
             # 没在说话：维护前导缓存
             if self.preroll_blocks > 0:
                 self.preroll.append(block)
+                self.preroll_energies.append(energy)
                 if len(self.preroll) > self.preroll_blocks:
                     self.preroll.pop(0)
+                    self.preroll_energies.pop(0)
 
         # 每块都进统计窗口，再用它校准下一块的判定门槛（见上面关于"鸡生蛋"的说明）
         if self.adaptive:
@@ -353,30 +379,128 @@ class UtteranceSegmenter:
                 self.window.pop(0)
             self._refresh_threshold()
 
-        # 一直不停口也要强制断句，否则字幕会永远不出来
+        # 一直不停口也要断句，否则字幕永远不出来。
+        #
+        # ⚠️ 这里原来是"直接 _take()"，也就是**在固定位置硬切**。后果实测过：
+        #   句子被合并成长段时，断点正好落在第 15 秒那个样本上 —— 说话说到一半
+        #   就被切断，两条字幕各拿半句。这正是"长对话被截断"的来源。
+        #   （用 bridge/segment_eval.py 量出来的：合并片段的最大时长**精确等于**上限 15.0s。）
+        # 现在改成：先找 buffer 里**最长的内部停顿**，在那里切；实在找不到停顿
+        #   （真的连着说了 15 秒没换气）才退回硬切。
         if self.speaking and len(self.buffer) >= self.max_blocks:
-            utterance = self._take()
+            # 注意不能写成 `self._cut_at_pause() or self._take()` ——
+            # 返回的是 numpy 数组，"or" 会去做逐元素布尔判断并抛
+            # "truth value of an array is ambiguous"。必须显式判 None。
+            utterance = self._cut_at_pause()
+            if utterance is None:
+                utterance = self._take()
             if utterance is not None:
                 out.append(utterance)
 
         return out
+
+    def _release(self, blocks, voiced):
+        """够长就交出去，太短就丢掉（短的多半是噪声/气声，送进去只会出胡话）。"""
+        if voiced < self.min_blocks or not blocks:
+            return None
+        return self.np.concatenate(blocks)
+
+    def _pause_candidates(self):
+        """buffer 里所有长度达标的内部停顿：[(起点块号, 长度块数), …]。"""
+        candidates = []
+        start = None
+        for index, energy in enumerate(self.energies):
+            if energy < self.threshold:
+                if start is None:
+                    start = index
+            elif start is not None:
+                if index - start >= self.cut_pause_blocks:
+                    candidates.append((start, index - start))
+                start = None
+        return candidates
+
+    def _cut_at_pause(self):
+        """buffer 攒到上限时，在**内部停顿**处断开，而不是在固定位置硬切。
+
+        返回前半段音频；剩下的留在 buffer 里当下一段的开头。
+        找不到合适的停顿就返回 None，让调用方退回硬切。
+
+        为什么值得这么做：停顿是说话人自己给的边界信号。同样是断句，
+        切在停顿上和切在"第 15 秒那个样本"上，对下游的意义完全不同 ——
+        前者两边都是完整的话，后者两边都是半句。
+
+        ⚠️ 选哪个停顿是有讲究的，第一版选"最长的那个"就出了事故：
+           buffer 末尾如果只剩一小截话（比如切开后只剩 0.3 秒），
+           后面说话人一停，_take 会因为"不到 min_speech_ms"把这一小截**直接丢掉**
+           （这就是它防噪声爆音的机制）。用 12 句中文量出来的后果是
+           **31 个字一次都没进过模型** —— 内容无声地消失了，比识别错严重得多。
+        所以现在要求：切开后**两头都够长**（前半段 ≥ 短句下限，后半段 ≥ min_speech_ms），
+        在这个前提下尽量靠后切（少切一次、字幕更完整）；
+        实在没有两头都合格的，就退而选最靠前的（保证后半段最长，不会丢内容）。
+        """
+        candidates = self._pause_candidates()
+        if not candidates:
+            return None
+
+        floor = max(self.min_blocks, self.short_utterance_blocks)
+        head_voiced = lambda start: sum(1 for e in self.energies[:start]  # noqa: E731
+                                        if e >= self.threshold)
+        tail_voiced = lambda end: sum(1 for e in self.energies[end:]     # noqa: E731
+                                      if e >= self.threshold)
+
+        viable = [item for item in candidates
+                  if head_voiced(item[0]) >= floor
+                  and tail_voiced(item[0] + item[1]) >= self.min_blocks]
+        if viable:
+            best_start, best_length = max(viable, key=lambda item: item[0])
+        else:
+            fallback = [item for item in candidates if head_voiced(item[0]) >= floor]
+            if not fallback:
+                return None
+            best_start, best_length = min(fallback, key=lambda item: item[0])
+
+        head_end = best_start
+        tail_start = best_start + best_length
+        head = self.buffer[:head_end]
+
+        # ⚠️ 这个计数必须在**切掉 self.energies 之前**算完。
+        #   写成 `return self._release(head, head_voiced(best_start))` 就错了 ——
+        #   那时 self.energies 已经是后半段（从停顿末尾开始），
+        #   `self.energies[:best_start]` 取到的是后半段的开头，算出来的"前半段语音块数"
+        #   是错的；一旦它低于 min_speech_ms，_release 会返回 None，
+        #   于是**整个前半段被静默丢掉**。实测后果：12 句里 66 个字从没进过模型。
+        head_loud = sum(1 for e in self.energies[:head_end] if e >= self.threshold)
+        remainder_energies = self.energies[tail_start:]
+
+        self.buffer = self.buffer[tail_start:]
+        self.energies = remainder_energies
+        self.voiced = sum(1 for e in self.energies if e >= self.threshold)
+        # 剩下这段自己的尾巴静音要重算，否则会拿"整段 buffer 的静音数"去判下一句收尾
+        trailing = 0
+        for energy in reversed(self.energies):
+            if energy < self.threshold:
+                trailing += 1
+            else:
+                break
+        self.silent_run = trailing
+        self.cut_count += 1
+        return self._release(head, head_loud)
 
     def _take(self):
         blocks = self.buffer
         tail = self.silent_run
         voiced = self.voiced
         self.buffer = []
+        self.energies = []
         self.silent_run = 0
         self.speaking = False
         self.voiced = 0
         # 注意：判断"够不够长"必须用**真正超过门槛的块数**，不能用 buffer 的总长度。
         # buffer 里还混着前导缓存（句首前那 250ms 环境音），拿它计数的话，一声 0.1 秒的
         # 爆音会被算成 0.35 秒的"一句话"送进识别 —— 白算一次，还容易诱发幻听。
-        if voiced < self.min_blocks:
-            return None
         if tail > 0:
             blocks = blocks[:len(blocks) - tail]
-        return self.np.concatenate(blocks)
+        return self._release(blocks, voiced)
 
     def flush(self):
         """流结束时把剩下的语音交出来。"""
@@ -385,11 +509,11 @@ class UtteranceSegmenter:
             voiced = self.voiced
             blocks = self.buffer[:len(self.buffer) - tail] if tail else self.buffer
             self.buffer = []
+            self.energies = []
             self.speaking = False
             self.silent_run = 0
             self.voiced = 0
-            if voiced >= self.min_blocks:
-                return self.np.concatenate(blocks)
+            return self._release(blocks, voiced)
         self.buffer = []
         self.speaking = False
         self.voiced = 0
@@ -781,6 +905,7 @@ def main():
         args.min_speech_ms, args.max_speech_ms, args.rms_threshold, args.preroll_ms, np,
         adaptive=args.adaptive, rms_floor=args.rms_floor, noise_multiplier=args.noise_multiplier,
         short_utterance_ms=args.short_utterance_ms, short_silence_ms=args.short_silence_ms,
+        cut_pause_ms=args.cut_pause_ms,
     )
     stats = Stats()
 
