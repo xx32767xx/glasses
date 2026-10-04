@@ -52,6 +52,7 @@ const HELP = `start-all —— 一条命令起齐整条链路
   --cols <n>            显示宽度（缺省 40）
   --lines <n>           显示行数（缺省 3）
   --open-window         另外弹一个窗口跑调试窗口（Windows；那个窗口是全屏重画的，混在一起会打架）
+  --dry-run             只检查并显示将要做什么，不真的启动进程（用来排查"起不来"）
   --quiet-logs          不写 var/logs/
   --help
 `
@@ -90,6 +91,7 @@ export function parseArgs(argv) {
     if (key === 'no-transcriber') { options.transcriber = false; continue }
     if (key === 'open-window') { options.openWindow = true; continue }
     if (key === 'quiet-logs') { options.writeLogs = false; continue }
+    if (key === 'dry-run') { options.dryRun = true; continue }
     if (!takesValue.has(key)) throw new Error(`未知选项 --${key}（用 --help 看用法）`)
     const value = argv[index + 1]
     if (value === undefined || value.startsWith('--')) throw new Error(`--${key} 需要一个值`)
@@ -205,8 +207,17 @@ export function childEnv(base = process.env) {
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-async function main() {
-  const options = parseArgs(process.argv.slice(2))
+/**
+ * 主流程。
+ *
+ * ⚠️ argv 作为参数传进来（而不是直接读 process.argv），是为了让测试能在**同一个进程里**
+ * 调用它 —— 这个脚本崩过一次"横幅里用了还没初始化的变量"（Cannot access 'envNotes'
+ * before initialization），而所有单测都在测纯函数、没走这条路径，于是全绿却起不来。
+ * 现在 `--dry-run` 会走完整条启动前逻辑（解析参数 → 探端口 → 拼命令 → 打印横幅）后返回，
+ * 测试直接 `await main(['--dry-run'])` 就能把这类崩掉的问题挡住。
+ */
+export async function main(argv = process.argv.slice(2)) {
+  const options = parseArgs(argv)
   if (options.help) { process.stdout.write(HELP); return 0 }
 
   // ── 起之前先查端口：这是"以为重启了其实还是旧进程"的头号来源 ──────────────
@@ -225,21 +236,27 @@ async function main() {
 
   const steps = buildSteps(options)
 
+  // ⚠️ 这几个必须在**打印横幅之前**算好 —— 横幅要用 envNotes。
+  // （原来 childEnv() 写在下面的 spawn 段里，于是"用了还没初始化的变量"直接崩。）
+  const { env: spawnEnv, notes: envNotes } = childEnv()
+
   // ── 开一次新会话：把上一次留下的手机音频清掉 ──────────────────────────────
   // 不清的话，识别进程一启动就会把**上次录的音频**从头转一遍，于是先冒出一句旧字幕 ——
   // 和"收件箱里旧内容被重放"是同一类困扰（那个由 harness-side 负责清）。
   // 实测就是这样：启动后立刻出现一句上次录音的译文，看着像"刚收到手机的话"。
   let staleAudioSeconds = 0
-  if (options.transcriber && existsSync(options.audio)) {
+  if (!options.dryRun && options.transcriber && existsSync(options.audio)) {
     try {
       const size = statSync(options.audio).size
       staleAudioSeconds = size / 2 / 16000          // 只用于提示，按 16k 估算即可
       if (size > 0) writeFileSync(options.audio, Buffer.alloc(0))
     } catch { /* 清不掉就算了，不该因为清理失败而起不来 */ }
+  } else if (options.dryRun && existsSync(options.audio)) {
+    try { staleAudioSeconds = statSync(options.audio).size / 2 / 16000 } catch { /* 忽略 */ }
   }
 
   let logs = null
-  if (options.writeLogs) {
+  if (options.writeLogs && !options.dryRun) {
     mkdirSync(LOGS_DIR, { recursive: true })
     logs = {}
     for (const step of steps) {
@@ -270,9 +287,16 @@ async function main() {
   console.log('─'.repeat(72))
   console.log('')
 
+  // --dry-run：走完上面所有启动前逻辑（探端口、拼命令、算环境变量、打印横幅）就返回。
+  // 它同时也是这条路径的**回归测试入口** —— 见 tests/start-all-suite.mjs。
+  if (options.dryRun) {
+    console.log('（--dry-run：只检查并显示将要做什么，没有真的启动任何进程）')
+    console.log('')
+    return 0
+  }
+
   const children = []
   let shuttingDown = false
-  const { env: spawnEnv, notes: envNotes } = childEnv()
 
   for (const step of steps) {
     const child = spawn(process.execPath, [step.script, ...step.args], {

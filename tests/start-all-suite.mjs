@@ -9,8 +9,9 @@
  */
 
 import { readFileSync } from 'node:fs'
-import { buildSteps, childEnv, parseArgs, portInUse } from '../scripts/start-all.mjs'
-import { defaultAudioIn, defaultBus, defaultInbox } from '../lib/paths.mjs'
+import { join } from 'node:path'
+import { buildSteps, childEnv, main, parseArgs, portInUse } from '../scripts/start-all.mjs'
+import { defaultAudioIn, defaultBus, defaultInbox, VAR_DIR } from '../lib/paths.mjs'
 
 const argsOf = step => step.args.join(' ')
 
@@ -161,5 +162,50 @@ export async function runStartAllSuite({ it, check, assert }) {
     const { env } = childEnv({ PATH: 'C:\\x', SOMETHING: 'y' })
     check('PATH 还在', env.PATH === 'C:\\x', String(env.PATH))
     check('别的变量也还在', env.SOMETHING === 'y', String(env.SOMETHING))
+  })
+
+  // ── 7. 真跑一遍启动路径（崩过一次，全部单测都测不到）──────────────────────
+  //
+  // 事故：横幅里用了 `envNotes`，而它在下面才初始化 → 一启动就
+  // "Cannot access 'envNotes' before initialization"。而套件全绿 ——
+  // 因为所有断言都在测纯函数（buildSteps / childEnv / portInUse），
+  // 没人走 main() 这条路径。所以现在用 --dry-run 把这条路径也纳入测试：
+  // 它跑完"探端口 → 拼命令 → 算环境变量 → 打印横幅"就返回，不起任何进程。
+
+  await it('--dry-run 能走完整条启动路径而不崩（横幅那段曾被测不到）', async () => {
+    const captured = []
+    const original = process.stdout.write
+    process.stdout.write = chunk => { captured.push(String(chunk)); return true }
+    let code
+    try {
+      // 用一个几乎不可能被占用的端口，免得被本机正在跑的转发进程干扰
+      code = await main(['--dry-run', '--quiet-logs', '--port', '59999'])
+    } finally {
+      process.stdout.write = original
+    }
+    const output = captured.join('')
+    check('退出码 0', code === 0, String(code))
+    check('打印了三个进程（转发/识别/大脑）',
+      output.includes('转发') && output.includes('识别') && output.includes('大脑'), output.slice(0, 200))
+    check('打印了模型缓存位置（上次事故就是这里用了未初始化变量）',
+      output.includes('模型缓存'), output.slice(0, 400))
+    check('打印了下载源', output.includes('下载源'), output.slice(0, 400))
+    check('说明是 dry-run、没真的启动', output.includes('--dry-run'), output.slice(-120))
+  })
+
+  await it('--dry-run 不留下副作用（不写日志、不动音频）', async () => {
+    const { existsSync, statSync } = await import('node:fs')
+    const audioPath = join(VAR_DIR, 'live', 'audio-in.pcm')
+    const before = existsSync(audioPath) ? statSync(audioPath).size : null
+    const captured = []
+    const original = process.stdout.write
+    process.stdout.write = chunk => { captured.push(String(chunk)); return true }
+    try {
+      await main(['--dry-run', '--quiet-logs', '--port', '59999'])
+    } finally {
+      process.stdout.write = original
+    }
+    const after = existsSync(audioPath) ? statSync(audioPath).size : null
+    check('音频文件大小没变（dry-run 不该清它）', before === after, `${before} → ${after}`)
   })
 }
