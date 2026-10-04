@@ -32,12 +32,14 @@
 
 import { createServer } from 'node:http'
 import { createHash, randomBytes } from 'node:crypto'
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, appendFile, readFile, stat, writeFile } from 'node:fs/promises'
 import { networkInterfaces } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createInboxWriter } from '../bridge/asr-bridge.mjs'
-import { LIVE_DIR, defaultBus, defaultInbox, defaultSecret } from '../lib/paths.mjs'
+import {
+  LIVE_DIR, defaultAudioIn, defaultAudioRate, defaultBus, defaultInbox, defaultSecret,
+} from '../lib/paths.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
 
@@ -49,6 +51,16 @@ export const DEFAULT_DATA_DIR = LIVE_DIR
 
 /** 每次请求体上限。字幕/一句话都很短，超过这个大小基本不是正常客户端。 */
 const MAX_BODY_BYTES = 8 * 1024
+
+/**
+ * 音频请求体的上限，单独一档。
+ * 1 秒 16 kHz 单声道 PCM 就是 32000 字节，用上面那个 8 KB 的限额会把正常录音直接拒掉。
+ * 1 MB 够手机一次传 32 秒；平时手机每秒传一块，远低于这个数。
+ */
+const MAX_AUDIO_BYTES = 1024 * 1024
+
+/** 允许的录音采样率：16 kHz 是 Whisper 要的，44.1/48 kHz 是安卓降级时的常见值。 */
+const ALLOWED_RATES = [16000, 44100, 48000]
 
 /**
  * 显示预算的兜底值：只有在还没收到任何字幕帧时才用得上。
@@ -69,14 +81,18 @@ const HELP = `lan-relay —— 手机 ↔ 电脑 的局域网转发进程
   --data-dir <path>     收件箱与字幕总线所在目录（缺省 var/live）
   --inbox <path>        收件箱文件（缺省 <data-dir>/asr-inbox.jsonl）
   --bus <path>          字幕总线文件（缺省 <data-dir>/subtitle-bus.json）
+  --audio <path>        手机上传的原始音频落盘位置（缺省 <data-dir>/audio-in.pcm）
+  --audio-rate <path>   采样率旁文件（缺省 <data-dir>/audio-in.rate）
   --poll-hold-ms <n>    长轮询最长挂起时间（缺省 25000）
   --bus-poll-ms <n>     字幕总线轮询间隔（缺省 60）
   --quiet               少打印
   --help
 
 端点（手机侧要用）
-  GET  /hello              带密钥 → { device, cols, lines, seq }
+  GET  /hello              带密钥 → { device, cols, lineBudget, seq }
   POST /say                {"text":"...","from":"pt-BR"} → 追加进收件箱
+  POST /audio              原始音频（PCM S16LE 单声道）→ 追加到 --audio 文件
+                             ?rate=16000 采样率；?fresh=1 表示这是一次新录音的开头（先清空）
   GET  /frame?since=<seq>  长轮询取字幕帧
   GET  /status             诊断
 
@@ -85,7 +101,7 @@ const HELP = `lan-relay —— 手机 ↔ 电脑 的局域网转发进程
 
 export function parseArgs(argv) {
   const options = { port: 8788, host: '0.0.0.0', pollHoldMs: 25000, busPollMs: 60, quiet: false }
-  const takesValue = new Set(['port', 'host', 'secret', 'data-dir', 'inbox', 'bus', 'poll-hold-ms', 'bus-poll-ms'])
+  const takesValue = new Set(['port', 'host', 'secret', 'data-dir', 'inbox', 'bus', 'audio', 'audio-rate', 'poll-hold-ms', 'bus-poll-ms'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -102,6 +118,8 @@ export function parseArgs(argv) {
     else if (key === 'data-dir') options.dataDir = value
     else if (key === 'inbox') options.inbox = value
     else if (key === 'bus') options.bus = value
+    else if (key === 'audio') options.audio = value
+    else if (key === 'audio-rate') options.audioRate = value
     else options[key] = value
   }
   if (options.help === true) return options
@@ -116,6 +134,8 @@ export function parseArgs(argv) {
   options.dataDir = options.dataDir ?? DEFAULT_DATA_DIR
   options.inbox = options.inbox ?? defaultInbox(options.dataDir)
   options.bus = options.bus ?? defaultBus(options.dataDir)
+  options.audio = options.audio ?? defaultAudioIn(options.dataDir)
+  options.audioRate = options.audioRate ?? defaultAudioRate(options.dataDir)
   return options
 }
 
@@ -171,6 +191,8 @@ export async function startRelay(rawOptions = {}) {
   }, rawOptions)
   options.inbox = options.inbox ?? defaultInbox(options.dataDir)
   options.bus = options.bus ?? defaultBus(options.dataDir)
+  options.audio = options.audio ?? defaultAudioIn(options.dataDir)
+  options.audioRate = options.audioRate ?? defaultAudioRate(options.dataDir)
   const secret = await resolveSecret(options)
   await mkdir(options.dataDir, { recursive: true })
 
@@ -194,6 +216,12 @@ export async function startRelay(rawOptions = {}) {
     writer: null,
     /** 写入串行化：收件箱的顺序就是字幕的顺序，不能乱 */
     writeChain: Promise.resolve(),
+    /** 音频：已落盘字节数 / 已收块数 / 当前采样率（null = 还没收到过） */
+    audioBytes: 0,
+    audioChunks: 0,
+    audioRateValue: null,
+    /** 音频写入也要串行化：追加写交错会把 PCM 数据搅碎，识别必然出错 */
+    audioChain: Promise.resolve(),
     closed: false,
   }
 
@@ -338,6 +366,88 @@ export async function startRelay(rawOptions = {}) {
         return
       }
 
+      // ── POST /audio ───────────────────────────────────────────────────────
+      //
+      // 手机录音上传：把原始 PCM 追加到一个文件里，转写进程尾随这个文件做识别。
+      //
+      // 为什么用「追加到一个文件」而不是每次上传都单独存一份：
+      //   按音量切句需要**跨块**的连续性 —— 一句话可能横跨两次上传。如果每块单独存，
+      //   句首句尾就会被切断，识别结果会莫名其妙地缺字。追加写让下游看到的是
+      //   一条连续的音频流，和"直接用麦克风录"在形态上完全一致。
+      if (request.method === 'POST' && url.pathname === '/audio') {
+        const rateText = url.searchParams.get('rate') ?? request.headers['x-sample-rate'] ?? '16000'
+        const rate = Number(rateText)
+        if (!ALLOWED_RATES.includes(rate)) {
+          send(response, 400, {
+            ok: false,
+            error: `rate 只能是 ${ALLOWED_RATES.join(' / ')}，收到 ${JSON.stringify(rateText)}`,
+          })
+          return
+        }
+        const fresh = ['1', 'true', 'yes'].includes(String(url.searchParams.get('fresh') ?? '').toLowerCase())
+
+        const chunks = []
+        let size = 0
+        try {
+          for await (const chunk of request) {
+            size += chunk.length
+            if (size > MAX_AUDIO_BYTES) {
+              const error = new Error(`音频块过大（上限 ${MAX_AUDIO_BYTES} 字节）`)
+              error.statusCode = 413
+              throw error
+            }
+            chunks.push(chunk)
+          }
+        } catch (error) {
+          send(response, error.statusCode ?? 400, { ok: false, error: String(error.message) })
+          return
+        }
+        const body = Buffer.concat(chunks)
+        // 采样率是 2 字节一帧，奇数长度说明发端截断在半帧上 —— 收下会污染后面所有数据
+        if (body.length % 2 !== 0) {
+          send(response, 400, { ok: false, error: 'PCM 数据长度必须是偶数（16-bit 一帧 2 字节）' })
+          return
+        }
+
+        state.audioChain = state.audioChain.then(async () => {
+          await mkdir(dirname(options.audio), { recursive: true })
+          if (fresh) {
+            await writeFile(options.audio, Buffer.alloc(0))
+            state.audioBytes = 0
+            state.audioChunks = 0
+          }
+          if (body.length > 0) {
+            await appendFile(options.audio, body)
+            state.audioBytes += body.length
+          }
+          state.audioChunks += 1
+          // 采样率变了才写旁文件（不是每块都写）
+          if (state.audioRateValue !== rate) {
+            await writeFile(options.audioRate, String(rate) + '\n', 'utf-8')
+            state.audioRateValue = rate
+          }
+        })
+        try {
+          await state.audioChain
+        } catch (error) {
+          state.audioChain = Promise.resolve()
+          send(response, 500, { ok: false, error: '写音频失败：' + String(error && error.message ? error.message : error) })
+          return
+        }
+
+        // 顺便让 /status 的计数准一点：手机端靠它确认音频真的在往上走
+        send(response, 200, {
+          ok: true,
+          bytes: body.length,
+          totalBytes: state.audioBytes,
+          chunks: state.audioChunks,
+          rate: state.audioRateValue ?? rate,
+          seconds: state.audioRateValue ? state.audioBytes / 2 / state.audioRateValue : 0,
+          fresh,
+        })
+        return
+      }
+
       // ── GET /frame（长轮询）───────────────────────────────────────────────
       if (request.method === 'GET' && url.pathname === '/frame') {
         const since = Number(url.searchParams.get('since') ?? '0')
@@ -392,12 +502,16 @@ export async function startRelay(rawOptions = {}) {
           busSeen: state.lastFrame !== null,
           inbox: options.inbox,
           bus: options.bus,
+          audio: options.audio,
+          audioBytes: state.audioBytes,
+          audioChunks: state.audioChunks,
+          audioRate: state.audioRateValue,
           ...info(),
         })
         return
       }
 
-      send(response, 404, { ok: false, error: 'not-found', routes: ['/hello', '/say', '/frame', '/status'] })
+      send(response, 404, { ok: false, error: 'not-found', routes: ['/hello', '/say', '/audio', '/frame', '/status'] })
     })().catch(error => {
       if (!response.writableEnded) {
         send(response, 500, { ok: false, error: String(error && error.message ? error.message : error) })
@@ -463,7 +577,12 @@ async function main() {
   console.log('─'.repeat(68))
   console.log(`  收件箱（手机的文字进这里）  ${options.inbox}`)
   console.log(`  字幕总线（字幕从这里出去）  ${options.bus}`)
+  console.log(`  录音上传（手机音频落这里）  ${options.audio}`)
   console.log(`  共享密钥（手机上要填这个）  ${relay.secret}`)
+  console.log('')
+  console.log('  手机端「录音上传」还需要另一个进程把音频变成文字（识别在电脑上跑）：')
+  console.log(`      python bridge/whisper_stream.py --follow "${options.audio}" --language pt | \\`)
+  console.log(`        node bridge/asr-bridge.mjs --inbox "${options.inbox}" --from pt-BR`)
   console.log('')
   const addresses = lanAddresses()
   const real = addresses.filter(a => !looksVirtual(a.name))

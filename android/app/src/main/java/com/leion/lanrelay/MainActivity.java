@@ -35,12 +35,20 @@ import java.util.List;
  * 字号也调到"40 个半角字符正好铺满面板宽度"。所以在拿到真眼镜之前，你看到的
  * **就是眼镜将来会显示的样子**——包括"这句话太长被截掉了"这种问题也能提前发现。
  *
- * 整条链路：
- *   麦克风 → 安卓自带语音识别 → POST /say → 电脑上的转发进程 → 收件箱文件
- *        → harness 里的插件（判语向 / 调大模型翻译 / 排版）→ 字幕总线文件
- *        → 转发进程 → GET /frame → 这块屏幕
+ * 整条链路（两条，互为备份）：
+ *
+ *   ① 录音上传（**推荐，本机上唯一真能用的那条**）
+ *      麦克风 → AudioRecord 录成裸 PCM → 每秒一块 POST /audio → 电脑上的转发进程落盘
+ *           → 电脑上的 Whisper 尾随该文件做识别 → 桥写收件箱
+ *           → harness 里的插件（判语向 / 调大模型翻译 / 排版）→ 字幕总线文件
+ *           → 转发进程 → GET /frame → 这块屏幕
+ *      为什么走这条：**这台设备的系统语音识别服务不可用**（已诊断确认，不是我们的代码问题）。
+ *      把识别放到电脑上，质量与手机型号无关，还能顺手用上 GPU。
+ *
+ *   ② 系统语音识别（保留，但本机不可用）
+ *      麦克风 → 安卓自带语音识别 → POST /say → …后面同上
  */
-public class MainActivity extends Activity implements LanClient.Listener {
+public class MainActivity extends Activity implements LanClient.Listener, MicUploader.Listener {
 
     private static final int REQUEST_RECORD_AUDIO = 1001;
     private static final String PREFS = "leion";
@@ -59,10 +67,12 @@ public class MainActivity extends Activity implements LanClient.Listener {
     private Button connectButton;
     private Button langButton;
     private Button micButton;
+    private Button recordButton;
     private Button sendButton;
     private Button diagnoseButton;
 
     private LanClient client;
+    private MicUploader uploader;
     private SpeechRecognizer recognizer;
 
     /**
@@ -81,6 +91,9 @@ public class MainActivity extends Activity implements LanClient.Listener {
     private int retryCount = 0;
     /** 正在跑"不指定语种"的诊断识别（那种结果要单独解释，不走正常重试逻辑）。 */
     private boolean diagnosticRun = false;
+
+    /** 录音上传的意图（授权回调回来时靠它知道该不该接着开始）。 */
+    private boolean wantRecording = false;
 
     private String listenLanguage = "pt-BR";
     private int cols = 40;
@@ -102,6 +115,7 @@ public class MainActivity extends Activity implements LanClient.Listener {
         connectButton = findViewById(R.id.connectButton);
         langButton = findViewById(R.id.langButton);
         micButton = findViewById(R.id.micButton);
+        recordButton = findViewById(R.id.recordButton);
         sendButton = findViewById(R.id.sendButton);
         diagnoseButton = findViewById(R.id.diagnoseButton);
 
@@ -114,6 +128,7 @@ public class MainActivity extends Activity implements LanClient.Listener {
         connectButton.setOnClickListener(v -> toggleConnection());
         langButton.setOnClickListener(v -> toggleLanguage());
         micButton.setOnClickListener(v -> toggleListening());
+        recordButton.setOnClickListener(v -> toggleRecording());
         sendButton.setOnClickListener(v -> sendManualText());
         diagnoseButton.setOnClickListener(v -> diagnose());
 
@@ -136,6 +151,11 @@ public class MainActivity extends Activity implements LanClient.Listener {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        // 录音线程必须先停：它持有麦克风与 AudioRecord，进程退出前不释放会留个坏状态
+        if (uploader != null) {
+            uploader.stop();
+            uploader = null;
+        }
         if (client != null) {
             client.stop();
         }
@@ -238,11 +258,84 @@ public class MainActivity extends Activity implements LanClient.Listener {
             if (wantListening) {
                 startListening();
             }
+            if (wantRecording) {
+                startUpload();
+            }
         } else {
             wantListening = false;
+            wantRecording = false;
             updateMicButton();
-            setStatus("没有麦克风权限，无法听写。到系统设置里给这个应用开权限。");
+            updateRecordButton();
+            setStatus("没有麦克风权限，无法听写、也无法录音上传。到系统设置里给这个应用开权限。");
         }
+    }
+
+    // ── 录音上传（把识别放到电脑上做）───────────────────────────────────────
+
+    /**
+     * 为什么要有这条路：
+     *   这台设备的系统语音识别服务不可用（已诊断确认），所以「开始听写」在本机是死的。
+     *   录音上传让手机只当麦克风，识别交给电脑上的 Whisper —— 于是"对着说话出字幕"
+     *   在这台设备上才真的能用。代价是必须连着电脑，而同传本来就要连。
+     */
+    private void toggleRecording() {
+        if (uploader != null && uploader.isRunning()) {
+            uploader.stop();
+            updateRecordButton();
+            setStatus("已停止录音上传。已上传的音频仍会被电脑识别成字幕。");
+            return;
+        }
+        if (client == null || !client.isRunning()) {
+            setStatus("先点「连接」，连上电脑再录音上传（音频要传给电脑识别）。");
+            return;
+        }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            wantRecording = true;                  // 记住意图，授权回来接着开始
+            updateRecordButton();
+            requestPermissions(new String[] { Manifest.permission.RECORD_AUDIO }, REQUEST_RECORD_AUDIO);
+            return;
+        }
+        startUpload();
+    }
+
+    private void startUpload() {
+        if (client == null || !client.isRunning()) {
+            wantRecording = false;
+            updateRecordButton();
+            setStatus("连上电脑才能录音上传。");
+            return;
+        }
+        if (uploader == null) {
+            uploader = new MicUploader(client, this);
+        }
+        String problem = uploader.start();
+        if (problem != null) {
+            wantRecording = false;
+            updateRecordButton();
+            setStatus(problem);
+            return;
+        }
+        updateRecordButton();
+        setStatus("录音上传中：对着手机说话，电脑识别后字幕会出现在上面（采样率 "
+                + uploader.getSampleRate() + " Hz）。");
+    }
+
+    private void updateRecordButton() {
+        boolean active = uploader != null && uploader.isRunning();
+        recordButton.setText(active ? R.string.stop_record : R.string.start_record);
+    }
+
+    @Override
+    public void onUploadStatus(final String message) {
+        main.post(() -> setStatus(message));
+    }
+
+    @Override
+    public void onUploadError(final String message) {
+        main.post(() -> {
+            updateRecordButton();
+            setStatus(message);
+        });
     }
 
     private void startListening() {

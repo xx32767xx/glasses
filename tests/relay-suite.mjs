@@ -210,7 +210,7 @@ export async function runRelaySuite({ it, check, assert }) {
   await it('未知路由 404，并列出可用路由', async () => {
     const result = await call('/nope')
     check('404', result.status === 404, String(result.status))
-    assert.deepEqual(result.json.routes, ['/hello', '/say', '/frame', '/status'])
+    assert.deepEqual(result.json.routes, ['/hello', '/say', '/audio', '/frame', '/status'])
   })
 
   await it('请求体过大返回 413', async () => {
@@ -238,6 +238,120 @@ export async function runRelaySuite({ it, check, assert }) {
     check('有 rejected', json.rejected >= 1, String(json.rejected))
     check('有 waiting', typeof json.waiting === 'number', String(json.waiting))
     check('报出了两个文件路径', String(json.inbox).includes('asr-inbox') && String(json.bus).includes('subtitle-bus'))
+    check('报出了音频路径与采样率字段', String(json.audio).includes('audio-in')
+            && 'audioBytes' in json && 'audioRate' in json, JSON.stringify(json.audio))
+  })
+
+  // ── 5. POST /audio（手机录音上传）──────────────────────────────────────────
+  //
+  // 这一节钉住的是「手机只当麦克风」那条路：安卓录不到 16 kHz 时会降级，
+  // 而继电器必须把真实采样率如实落盘给识别进程 —— 猜错采样率会让识别全是乱码，
+  // 所以采样率这块要有断言。
+
+  /** 造一段可辨认的 PCM：16-bit 小端，值随序号变化，便于断言字节没被搅乱。 */
+  const pcm = (samples) => {
+    const buffer = Buffer.alloc(samples * 2)
+    for (let i = 0; i < samples; i += 1) buffer.writeInt16LE((i % 1000) - 500, i * 2)
+    return buffer
+  }
+
+  const audioPath = join(TMP, 'audio-in.pcm')
+  const audioRatePath = join(TMP, 'audio-in.rate')
+  const readAudio = async () => {
+    try {
+      return await readFile(audioPath)
+    } catch {
+      return Buffer.alloc(0)
+    }
+  }
+
+  /**
+   * 发原始字节的请求。
+   * 刻意不复用上面的 call()：那个会把非字符串的 body 走 JSON.stringify，
+   * 对音频来说等于把字节搅烂 —— 那样测出来的"字节没被改动"就是假的。
+   */
+  const callRaw = async (path, buffer, { secret = relay.secret } = {}) => {
+    const response = await fetch(base + path, {
+      method: 'POST',
+      headers: {
+        ...(secret === null ? {} : { 'x-leion-secret': secret }),
+        'content-type': 'application/octet-stream',
+      },
+      body: buffer,
+    })
+    const text = await response.text()
+    let json = null
+    try {
+      json = JSON.parse(text)
+    } catch { /* 保留 null */ }
+    return { status: response.status, json, text }
+  }
+
+  const postAudio = async (buffer, { rate = 16000, fresh = false, secret = relay.secret } = {}) => {
+    const query = new URLSearchParams({ rate: String(rate) })
+    if (fresh) query.set('fresh', '1')
+    return callRaw(`/audio?${query}`, buffer, { secret })
+  }
+
+  await it('POST /audio?fresh=1：清空并开始新一次录音', async () => {
+    const first = pcm(16000)                 // 1 秒 16k
+    const result = await postAudio(first, { fresh: true })
+    check('200', result.status === 200, String(result.status))
+    check('回执报了本块字节数', result.json.bytes === first.length, String(result.json.bytes))
+    check('回执报了累计秒数', Math.abs(result.json.seconds - 1) < 0.01, String(result.json.seconds))
+    check('回执报了采样率', result.json.rate === 16000, String(result.json.rate))
+    const written = await readAudio()
+    check('文件里正好是这一块的长度', written.length === first.length, `${written.length} vs ${first.length}`)
+    check('字节没被改动', written.equals(first), '内容不一致')
+  })
+
+  await it('再传一块是**追加**，不是覆盖（跨块的整句才不会被切断）', async () => {
+    const second = pcm(8000)                 // 0.5 秒
+    const before = (await readAudio()).length
+    const result = await postAudio(second)
+    check('200', result.status === 200, String(result.status))
+    const after = await readAudio()
+    check('长度按追加增长', after.length === before + second.length, `${before} → ${after.length}`)
+    check('尾部就是刚发的那块', after.subarray(before).equals(second), '尾部内容不一致')
+    check('回执的累计秒数是 1.5', Math.abs(result.json.seconds - 1.5) < 0.01, String(result.json.seconds))
+  })
+
+  await it('采样率写进旁文件（安卓降级到 44.1k 时识别进程靠它重采样）', async () => {
+    const result = await postAudio(pcm(100), { rate: 44100 })
+    check('200', result.status === 200, String(result.status))
+    const text = (await readFile(audioRatePath, 'utf-8')).trim()
+    check('旁文件里是 44100', text === '44100', text)
+  })
+
+  await it('非法采样率返回 400（不猜、不静默改成 16k）', async () => {
+    const result = await postAudio(pcm(100), { rate: 8000 })
+    check('400', result.status === 400, String(result.status))
+    check('说明了允许值', String(result.json.error).includes('16000'), String(result.json.error))
+  })
+
+  await it('奇数长度的 PCM 返回 400（半帧会让后面所有采样错位）', async () => {
+    const odd = Buffer.alloc(101)
+    const result = await postAudio(odd)
+    check('400', result.status === 400, String(result.status))
+    check('提示要偶数长度', String(result.json.error).includes('偶数'), String(result.json.error))
+  })
+
+  await it('音频端点同样要密钥', async () => {
+    const result = await postAudio(pcm(10), { secret: 'wrong' })
+    check('401', result.status === 401, String(result.status))
+  })
+
+  await it('音频上限比 JSON 上限大得多（1 秒 16k 就是 32KB，不能按 8KB 卡）', async () => {
+    // 32 KB（1 秒 16k）必须能过
+    const ok = await postAudio(pcm(16000), { fresh: true })
+    check('32KB 能过', ok.status === 200, String(ok.status))
+    // 超过 1 MB 必须拒（不是 8KB 就拒）
+    const tooBig = Buffer.alloc(1024 * 1024 + 2)
+    const rejected = await postAudio(tooBig)
+    check('超 1MB 返回 413', rejected.status === 413, `${rejected.status} ${rejected.text.slice(0, 80)}`)
+    // 断言它**不是**被 8KB 的门槛拦下的：64KB 仍然要能过
+    const medium = await postAudio(pcm(32000))      // 2 秒
+    check('64KB 仍然能过（证明用的不是 8KB 那个门槛）', medium.status === 200, String(medium.status))
   })
 
   await relay.close()

@@ -6,8 +6,10 @@
     <string name="hint_secret">共享密钥</string>
     <string name="connect">连接</string>
     <string name="disconnect">断开</string>
-    <string name="start_listen">开始听写</string>
+    <string name="start_listen">开始听写（系统识别）</string>
     <string name="stop_listen">停止听写</string>
+    <string name="start_record">开始录音上传（识别在电脑上做）</string>
+    <string name="stop_record">停止录音上传</string>
     <string name="hint_manual">手输一句话（不依赖语音识别）</string>
     <string name="send">发送</string>
     <string name="diagnose">诊断语音识别环境</string>

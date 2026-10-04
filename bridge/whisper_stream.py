@@ -16,6 +16,23 @@ leion-pro 的 ASR 收件箱：
     python bridge/whisper_stream.py                          # 麦克风，自动判语种
     python bridge/whisper_stream.py --language pt            # 固定语种（更准更快，同传应该固定）
     python bridge/whisper_stream.py --file x.wav             # 转写文件（不需要麦克风）
+    python bridge/whisper_stream.py --follow <裸PCM文件>      # 尾随手机上传的音频（见下）
+
+⚠️ 接管道时**千万不要**写 `2>&1`
+    这个脚本的 stdout 是"识别结果"，stderr 是"日志/进度/报错"。管道下游的
+    bridge/asr-bridge.mjs 会把 stdin 的每一行都当成一句话写进收件箱。
+    一旦把 stderr 也合进管道（`python ... 2>&1 | node ...`），日志和报错就会被
+    当成"对方说的话"送进同传链路 —— 眼镜上会出现"缺少 sounddevice"这种字幕。
+    这个坑真的踩到过（就是 --follow 那次）。正确写法是不写重定向：
+
+        python bridge/whisper_stream.py --follow var/live/audio-in.pcm --language pt |
+          node bridge/asr-bridge.mjs --inbox var/live/asr-inbox.jsonl --from pt-BR
+
+手机端「录音上传」那条路（--follow）
+    手机把麦克风音频按块 POST 给 relay，relay 追加写进一个裸 PCM 文件，
+    这个脚本尾随该文件做切句与识别。所以"录音"和"识别"可以分在两台机器上：
+        手机（录音）→ relay（落盘）→ 本脚本（识别）→ 桥（写收件箱）→ leion-pro（翻译）
+
     python bridge/whisper_stream.py --file x.wav --realtime  # 按真实时间喂音频，测"真实延迟"
     python bridge/whisper_stream.py --file x.wav --stats     # 只跑一遍并打印统计
 
@@ -42,11 +59,14 @@ import argparse
 import queue
 import sys
 import time
+from pathlib import Path
 
 HALLUCINATION_SAMPLES = (
     "请不吝点赞", "订阅", "转发", "打赏", "明镜", "点点栏目",   # 中文常见幻听
     "amara.org", "legendas", "subtitles by", "subscribe",       # 葡/英常见幻听
 )
+
+TARGET_RATE = 16000          # Whisper 内部固定按 16 kHz 工作
 
 
 # ── 参数 ─────────────────────────────────────────────────────────────────────
@@ -59,6 +79,17 @@ def parse_args():
                         help="int8 / int8_float16 / float16 / float32（CPU 用 int8，GPU 用 float16）")
     parser.add_argument("--language", default=None, help="固定语种（zh / pt）；缺省自动判定")
     parser.add_argument("--file", default=None, help="转写一个音频文件而不是麦克风")
+    parser.add_argument("--follow", default=None,
+                        help="尾随一个**不断追加**的裸 PCM 文件（16-bit 小端、单声道）。"
+                             "手机端「录音上传」走的就是这条：relay 往文件追加，这里跟着读")
+    parser.add_argument("--follow-rate", default=None,
+                        help="尾随文件的采样率旁文件（缺省 <--follow>.rate）。"
+                             "手机可能降级到 44.1 kHz 录音，读它才知道要不要重采样")
+    parser.add_argument("--follow-poll-ms", type=int, default=80,
+                        help="尾随时检查新数据的间隔（缺省 80ms）")
+    parser.add_argument("--stop-after-idle", type=float, default=None,
+                        help="尾随模式下，连续多少秒没有新音频就收尾退出（缺省不退出）。"
+                             "手机停止录音后用它自动结束；测试也靠它自动收敛")
     parser.add_argument("--realtime", action="store_true",
                         help="文件模式按真实时间喂块（不加速），用来测真实延迟")
     parser.add_argument("--stats", action="store_true", help="退出时打印统计（延迟、RTF）")
@@ -346,6 +377,99 @@ class Stats:
         print("─" * 72, file=sys.stderr)
 
 
+# ── 尾随一个不断增长的裸 PCM 文件（手机录音上传那条路）──────────────────────
+
+class PcmFollower:
+    """读一个被外部进程不断追加的裸 PCM 文件，按块产出 float32 音频。
+
+    为什么要单独一个类、而且不直接 open() 了事：
+      · **文件可能被截断重来**（手机重新开始录音时 relay 会清空它）。此时必须把读指针
+        退回 0，否则会永远读不到新数据，表现成"录音上传没反应"。
+      · **采样率可能不是 16 kHz**（安卓降级到 44.1 kHz 时）。猜错会让识别结果全是乱码，
+        所以要读 relay 写的旁文件，并做重采样。
+      · **对不齐的半帧要留住**。PCM 一帧 2 字节，而文件是边写边读的：很可能读到"半帧"。
+        直接用会把这 1 个字节当成一帧的低位，之后所有采样都错位（听感是刺啦声，识别必然崩）。
+        所以不足一帧的尾巴要留在缓冲里，等下次读齐再处理。
+      · **说话人半句就停止录音时**，数据流就断在那里，没有尾部静音，切句器会一直等下去。
+        所以要能按需补静音（见 idle_silence_blocks）。
+    """
+
+    def __init__(self, path, fallback_rate, np, block_samples, follow_rate_path=None):
+        self.path = Path(path)
+        self.rate_path = Path(follow_rate_path) if follow_rate_path else self.path.with_suffix('.rate')
+        self.fallback_rate = fallback_rate
+        self.np = np
+        self.block_samples = block_samples
+        self.offset = 0                  # 已读到的字节位置
+        self.tail = b""                  # 不足一帧的残余字节
+        self.rate = fallback_rate
+        self.resample_pos = 0.0          # 重采样用的连续位置（跨块保持，避免接缝处跳变）
+        self.rate_notice = None
+
+    def read_rate(self):
+        """读采样率旁文件。没有就沿用上一轮的值（relay 还没写过）。"""
+        try:
+            text = self.rate_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return self.rate
+        try:
+            value = int(float(text))
+        except ValueError:
+            return self.rate
+        if value != self.rate and value > 0:
+            self.rate = value
+            self.resample_pos = 0.0
+            self.rate_notice = value
+        return self.rate
+
+    def _resample(self, samples):
+        """把任意采样率线性插值到 16 kHz。够用：这是给人听的语音，不是音频制品。"""
+        if self.rate == TARGET_RATE or samples.size == 0:
+            return samples
+        step = self.rate / float(TARGET_RATE)
+        count = int((samples.shape[0] - self.resample_pos) / step)
+        if count <= 0:
+            return samples[:0]
+        index = self.resample_pos + step * self.np.arange(count, dtype="float64")
+        self.resample_pos = index[-1] + step
+        return self.np.interp(index, self.np.arange(samples.shape[0]), samples).astype("float32")
+
+    def read(self):
+        """读一次新数据，返回若干个 float32 块（可能为空列表）。"""
+        blocks = []
+        try:
+            size = self.path.stat().st_size
+        except OSError:
+            return blocks                     # 文件还没被创建
+
+        if size < self.offset:                # 被截断重来了
+            self.offset = 0
+            self.tail = b""
+            self.resample_pos = 0.0
+
+        if size <= self.offset:
+            return blocks
+
+        with open(self.path, "rb") as handle:
+            handle.seek(self.offset)
+            raw = handle.read(size - self.offset)
+        self.offset += len(raw)
+
+        raw = self.tail + raw
+        usable = len(raw) - (len(raw) % 2)     # 奇数尾巴留到下次
+        self.tail = raw[usable:]
+        if usable == 0:
+            return blocks
+
+        samples = self.np.frombuffer(raw[:usable], dtype="<i2").astype("float32") / 32768.0
+        samples = self._resample(samples)
+        for start in range(0, samples.shape[0], self.block_samples):
+            piece = samples[start:start + self.block_samples]
+            if piece.shape[0] > 0:
+                blocks.append(piece)
+        return blocks
+
+
 # ── 主流程 ───────────────────────────────────────────────────────────────────
 
 def emit(text: str):
@@ -357,7 +481,11 @@ def emit(text: str):
 
 def main():
     args = parse_args()
-    need_audio = args.file is None
+    # 只有"真要从麦克风收"才需要 sounddevice。
+    # 注意 follow 模式也算"不是麦克风" —— 早先这里只判了 --file，于是
+    # `--follow` 会因为没有 sounddevice 直接退出（而退出前那句错误信息又被管道
+    # 下游的桥当成"识别结果"写进了收件箱，见文件末尾的警告）。
+    need_audio = args.file is None and args.follow is None
     np, WhisperModel, sounddevice = load_dependencies(need_audio)
 
     print(f"[whisper_stream] 加载模型 {args.model}"
@@ -429,6 +557,60 @@ def main():
             handle(last)
         if args.stats:
             stats.report(args.silence_ms, segmenter.gate_report())
+        return 0
+
+    if args.follow is not None:
+        follower = PcmFollower(
+            args.follow, args.samplerate, np, segmenter.block,
+            follow_rate_path=args.follow_rate,
+        )
+        rate = follower.read_rate()
+        print(f"[whisper_stream] 尾随 {args.follow}（{rate} Hz，"
+              f"目标 {TARGET_RATE} Hz）；Ctrl-C 结束", file=sys.stderr, flush=True)
+        print("[whisper_stream] 等手机开始录音上传…", file=sys.stderr, flush=True)
+
+        # 说话人半句就松开按钮时，数据流断在那里、没有尾部静音，切句器会一直等。
+        # 所以"静了太久"就自己补一点静音，让它把这一句交出来。
+        silence_block = np.zeros(segmenter.block, dtype=np.float32)
+        idle_limit = max(1, int(round(args.silence_ms / args.block_ms)))
+        idle_blocks = 0
+        last_notice = None
+        # --stop-after-idle：连续多久没新音频就收尾。
+        # 为什么需要它：手机停止录音后文件就不再增长，尾随循环会永远等下去。
+        # 有了它，识别进程能在录音结束后自己把最后一句吐出来并退出。
+        idle_stop_blocks = (None if args.stop_after_idle is None
+                            else max(1, int(round(args.stop_after_idle * 1000 / args.follow_poll_ms))))
+        try:
+            while True:
+                blocks = follower.read()
+                if follower.rate_notice is not None and follower.rate_notice != last_notice:
+                    last_notice = follower.rate_notice
+                    print(f"[whisper_stream] 采样率变为 {last_notice} Hz，已开始重采样",
+                          file=sys.stderr, flush=True)
+                if blocks:
+                    idle_blocks = 0
+                    for block in blocks:
+                        for utterance in segmenter.push(block):
+                            handle(utterance)
+                else:
+                    idle_blocks += 1
+                    if segmenter.speaking and idle_blocks >= idle_limit:
+                        # 补够一次静音判定所需的量，把整句逼出来
+                        for _ in range(segmenter.silence_blocks):
+                            for utterance in segmenter.push(silence_block):
+                                handle(utterance)
+                        idle_blocks = 0
+                    elif idle_stop_blocks is not None and idle_blocks >= idle_stop_blocks:
+                        print(f"[whisper_stream] 连续 {args.stop_after_idle}s 没有新音频，收尾退出",
+                              file=sys.stderr, flush=True)
+                        break
+                    time.sleep(max(0.01, args.follow_poll_ms / 1000.0))
+        except KeyboardInterrupt:
+            print("\n[whisper_stream] 收到 Ctrl-C", file=sys.stderr)
+        last = segmenter.flush()
+        if last is not None:
+            handle(last)
+        stats.report(args.silence_ms, segmenter.gate_report())
         return 0
 
     # 麦克风模式

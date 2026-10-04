@@ -26,7 +26,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "bridge"))
 
-from whisper_stream import UtteranceSegmenter, looks_like_hallucination   # noqa: E402
+from whisper_stream import PcmFollower, UtteranceSegmenter, looks_like_hallucination   # noqa: E402
 from whisper_transcribe import TARGET_RATE, load_audio                    # noqa: E402
 
 passed = 0
@@ -190,6 +190,80 @@ def main():
           f"RMS {float(np.sqrt(np.mean(loaded ** 2))):.4f}")
     check("路径传字符串也能用，不必是 Path 对象",
           len(load_audio(str(target))) == len(loaded))
+
+    # ── 9. 尾随手机上传的音频（录音上传那条路）──────────────────────────────
+    #
+    # 这一节测的是"手机只当麦克风"那条路的读侧。它没有模型也能测：
+    # 我们往一个文件里追加字节，看 PcmFollower 读出来的采样对不对。
+    # 三个最容易写错的地方各有一条：追加增量、文件被截断、奇数字节的半帧。
+    heading("尾随上传音频 · PcmFollower（手机录音上传）")
+
+    follow_dir = ROOT / "var" / "test" / "python-suite" / "follow"
+    follow_dir.mkdir(parents=True, exist_ok=True)
+    follow_pcm = follow_dir / "audio-in.pcm"
+    follow_rate = follow_dir / "audio-in.rate"
+    follow_pcm.write_bytes(b"")
+    follow_rate.write_text("16000\n", encoding="utf-8")
+
+    def ramp(count, start=0):
+        """可辨认的 16-bit PCM：值随序号变化，错位一眼就能看出来。"""
+        values = ((np.arange(count) + start) % 1000 - 500).astype("<i2")
+        return values.tobytes()
+
+    def append(data):
+        with open(follow_pcm, "ab") as handle:
+            handle.write(data)
+
+    block_samples = 1600                      # 100ms @ 16k
+    follower = PcmFollower(follow_pcm, TARGET_RATE, np, block_samples,
+                           follow_rate_path=follow_rate)
+
+    check("空文件读不出东西（不崩）", follower.read() == [])
+
+    append(ramp(3200))                        # 0.2 秒
+    blocks = follower.read()
+    check("追加 0.2 秒 → 读出两块 100ms", len(blocks) == 2 and all(b.shape[0] == block_samples for b in blocks),
+          f"块数 {len(blocks)}，各块长度 {[b.shape[0] for b in blocks]}")
+    expected = (np.arange(3200) % 1000 - 500).astype(np.float32) / 32768.0
+    check("采样值与写入的一致（没有错位、没有整体缩放错）",
+          blocks and float(np.max(np.abs(np.concatenate(blocks) - expected))) < 1e-6,
+          "读回来的波形与写入的不一致")
+
+    check("没有新数据时读出空（不是重复吐旧数据）", follower.read() == [])
+
+    # 半帧：PCM 一帧 2 字节，而文件是边写边读的，读到"半帧"是常态。
+    # 如果直接把这 1 个字节当成一帧，之后**所有**采样都会错位（听感是刺啦声、识别必崩）。
+    append(ramp(1)[:1])                       # 只写 1 个字节
+    check("只有半个采样时不出数据（留在缓冲里等下次）", follower.read() == [])
+    append(ramp(2)[1:])                       # 补齐第 1 帧 + 再写 1 帧
+    blocks = follower.read()
+    total = sum(b.shape[0] for b in blocks)
+    check("补齐后正好读出 2 个采样（半帧没有被丢掉、也没有被错位解释）", total == 2,
+          f"读出 {total} 个采样")
+
+    # 文件被截断重来（手机重新开始录音时 relay 会清空它）。
+    # 不处理的话读指针永远停在旧偏移，表现成"录音上传没反应"。
+    follow_pcm.write_bytes(b"")
+    append(ramp(1600, start=7))
+    blocks = follower.read()
+    check("文件被截断后能从 0 重新读（否则会永远卡在旧偏移）",
+          sum(b.shape[0] for b in blocks) == block_samples,
+          f"读出 {sum(b.shape[0] for b in blocks)} 个采样")
+
+    # 采样率降级：安卓录不到 16k 时会用 44.1k，识别进程必须按旁文件重采样。
+    follow_rate.write_text("44100\n", encoding="utf-8")
+    rate = follower.read_rate()
+    check("读到旁文件里的新采样率", rate == 44100, str(rate))
+    check("把变化记下来通知调用方（好在日志里说清楚）", follower.rate_notice == 44100,
+          str(follower.rate_notice))
+    follow_pcm.write_bytes(b"")
+    follower.read()                           # 让指针跟着截断回到 0
+    append(ramp(44100))                       # 44.1k 的 1 秒
+    blocks = follower.read()
+    resampled = sum(b.shape[0] for b in blocks)
+    check("44.1k 的 1 秒被重采样成 16k 的 1 秒（约 16000 个采样）",
+          abs(resampled - TARGET_RATE) <= block_samples,
+          f"重采样后 {resampled} 个采样（期望约 {TARGET_RATE}）")
 
     # ── 结果 ────────────────────────────────────────────────────────────────
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")

@@ -140,6 +140,21 @@ export async function createInboxWriter({ inboxPath, format = 'text', tags = {},
   const stats = { lines: 0, bytes: 0, skipped: 0 }
   let handle = null
 
+  // ── 清空收件箱：**在这里立刻做，不能等到写第一行时才做** ──────────────────
+  // 早先的实现把 truncate 放在"第一次写"的分支里（`if (handle === null)`），于是：
+  //   · 一行都没写（比如识别进程刚起来就报错退出）时，truncate 根本不会发生 ——
+  //     `--truncate` 静默失效，上一次的旧内容原样留着，看起来像是"新识别没生效"；
+  //   · 而且它是"写第一行"的时刻才删，会删掉那个时刻别人（比如 relay）刚写进去的行。
+  // 这两个都是很难查的，所以改成创建时就清空。
+  if (doTruncate && !dryRun) {
+    try {
+      await truncate(inboxPath, 0)
+    } catch (error) {
+      // 文件还不存在是正常的：下面 open('a') 会创建它。
+      if (error && error.code !== 'ENOENT') throw error
+    }
+  }
+
   /** 一句话 → 收件箱里的一行。JSON 行不能含裸换行，否则插件会把它当成两句。 */
   function formatLine(text) {
     const clean = String(text).replace(/\s+/g, ' ').trim()
@@ -166,14 +181,6 @@ export async function createInboxWriter({ inboxPath, format = 'text', tags = {},
         log.log('[dry-run] ' + line)
       } else {
         if (handle === null) {
-          if (doTruncate) {
-            try {
-              await truncate(inboxPath, 0)
-            } catch (error) {
-              // 文件还不存在是正常的：下面的 open('a') 会创建它。
-              if (error && error.code !== 'ENOENT') throw error
-            }
-          }
           handle = await open(inboxPath, 'a')
         }
         await handle.appendFile(line + '\n', 'utf-8')
@@ -215,6 +222,12 @@ const HELP = `asr-bridge —— 把语音识别结果送进 leion-pro 的 ASR �
                                  有 NVIDIA 显卡时建议 --whisper-device cuda --whisper-compute float16，
                                  实测同样的句子只要 0.1~0.25 秒（延迟约 0.8~1.0 秒）。
                                  数字与测法见 docs/04-语音识别验证.md。
+  --whisper-follow <path>     手机端「录音上传」：尾随 relay 追加写的裸 PCM 文件。
+                                 给了这个就等于 --engine whisper 且让识别进程跟着文件跑。
+                                 **强烈建议用这个，而不是自己在终端里写 python | node 管道**：
+                                 Windows PowerShell 的原生命令管道会缓冲 stdout，而尾随模式的
+                                 识别进程永不退出 → 缓冲永不刷新 → 桥一行都收不到（踩过）。
+                                 走这条路由桥自己 spawn 子进程并流式读 stdout，没有这个问题。
 
 格式
   --format text|json          text=一行原文（插件自动判语向）；json=带标记，缺省 text
@@ -246,7 +259,7 @@ export function parseArgs(argv) {
   const takesValue = new Set([
     'inbox', 'engine', 'command', 'replay', 'replay-delay-ms', 'format',
     'from', 'to', 'speaker', 'flush-on-pause-ms',
-    'whisper-model', 'whisper-device', 'whisper-compute',
+    'whisper-model', 'whisper-device', 'whisper-compute', 'whisper-follow',
   ])
   const flags = new Set(['truncate', 'dry-run', 'quiet', 'help'])
 
@@ -269,6 +282,13 @@ export function parseArgs(argv) {
 
   if (options.help === true) return options
   if (options.inbox === undefined) throw new Error('必须给 --inbox <收件箱路径>（用 --help 看用法）')
+  // --whisper-follow 是"engine=whisper + 尾随文件"的简写：手机录音上传那条路走它最省事
+  if (options['whisper-follow'] !== undefined) {
+    if (options.engine === 'stdin') options.engine = 'whisper'
+    if (options.engine !== 'whisper') {
+      throw new Error(`--whisper-follow 只能配 --engine whisper，收到 ${JSON.stringify(options.engine)}`)
+    }
+  }
   if (!['stdin', 'command', 'replay', 'whisper'].includes(options.engine)) {
     throw new Error(`--engine 只能是 stdin / command / replay / whisper，收到 ${JSON.stringify(options.engine)}`)
   }
@@ -281,6 +301,7 @@ export function parseArgs(argv) {
       // 免得"你以为跑的是你的命令，其实被塞了两个参数"。
       let command = `python "${join(HERE, 'whisper_stream.py')}"`
       if (options.from !== undefined) command += ` --language ${options.from === 'zh-CN' ? 'zh' : 'pt'}`
+      if (options['whisper-follow'] !== undefined) command += ` --follow "${options['whisper-follow']}"`
       if (options['whisper-model'] !== undefined) command += ` --model ${options['whisper-model']}`
       if (options['whisper-device'] !== undefined) command += ` --device ${options['whisper-device']}`
       if (options['whisper-compute'] !== undefined) command += ` --compute-type ${options['whisper-compute']}`

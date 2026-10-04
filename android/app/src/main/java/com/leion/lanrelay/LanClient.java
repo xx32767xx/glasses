@@ -14,11 +14,19 @@ import java.nio.charset.StandardCharsets;
 /**
  * 与电脑上的局域网转发进程通信。
  *
- * 只做四件事，和 relay/lan-relay.mjs 的四个端点一一对应：
+ * 只做五件事，和 relay/lan-relay.mjs 的五个端点一一对应：
  *   hello()      握手：验证共享密钥 + 取回显示预算（cols / lineBudget）
  *   长轮询循环     /frame?since=&lt;seq&gt;：有新字幕就回调；没有就挂住等
  *   sendText()   把识别出的文字 POST 给 /say（异步，不阻塞界面）
+ *   sendAudio()  把一段录音 POST 给 /audio（**同步**，见下面的说明）
  *   status()     /status，诊断用
+ *
+ * 为什么 sendAudio 是同步的、而 sendText 是异步的：
+ *   sendText 是用户点一下发一句，异步即可。而录音上传是每秒一块、连续不断，
+ *   如果每块都新起一个线程，网络一慢就会堆出几十个线程互相抢带宽。
+ *   所以录音那条路由调用方（MicUploader）在自己的后台线程里**阻塞**调用，
+ *   天然形成背压：上传跟不上就少读一点音频，而不是无限制地堆线程。
+ *   界面线程绝对不能直接调它。
  *
  * 为什么用长轮询而不是 WebSocket：安卓这边只需要一个普通 HTTP GET 循环，
  * 不用引任何第三方库，也不用处理 WebSocket 握手与重连。字幕本来就是低频事件，
@@ -104,6 +112,24 @@ public class LanClient {
         }, "lan-say");
         thread.setDaemon(true);
         thread.start();
+    }
+
+    /**
+     * 上传一块录音（**同步**，必须在后台线程里调）。
+     *
+     * @param pcm        裸 PCM，16-bit 小端、单声道
+     * @param sampleRate 采样率。安卓不保证都能用 16 kHz，所以如实上报，
+     *                   电脑侧的识别进程会按这个数字重采样（猜错会让识别全乱）
+     * @param fresh      true = 这是一次新录音的第一块，让继电器先把旧音频清掉
+     * @return 继电器的回执，含累计秒数（界面用它显示"已上传多久"）
+     */
+    public JSONObject sendAudio(byte[] pcm, int sampleRate, boolean fresh)
+            throws IOException, org.json.JSONException {
+        StringBuilder path = new StringBuilder("/audio?rate=").append(sampleRate);
+        if (fresh) {
+            path.append("&fresh=1");
+        }
+        return requestRaw(path.toString(), pcm, 10000);
     }
 
     /** 诊断：把 /status 的计数读回来。 */
@@ -207,6 +233,42 @@ public class LanClient {
                 if (code == 401) {
                     hint = "（共享密钥不对）";
                 }
+                throw new IOException("HTTP " + code + hint + " " + text);
+            }
+            return new JSONObject(text);
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    /**
+     * 一次"请求体是原始字节"的请求（音频上传用）。
+     * 与上面那个分开写，是因为音频不是 JSON，而且**必须设 Content-Type: application/octet-stream**
+     * 并用固定长度 —— 让服务端能直接按字节收，不必去猜编码。
+     */
+    private JSONObject requestRaw(String path, byte[] payload, int readTimeoutMs)
+            throws IOException, org.json.JSONException {
+        HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + path).openConnection();
+        try {
+            connection.setRequestMethod("POST");
+            connection.setRequestProperty("X-Leion-Secret", secret);
+            connection.setRequestProperty("Content-Type", "application/octet-stream");
+            connection.setConnectTimeout(5000);
+            connection.setReadTimeout(readTimeoutMs);
+            connection.setUseCaches(false);
+            connection.setDoOutput(true);
+            connection.setFixedLengthStreamingMode(payload.length);
+            try (OutputStream out = connection.getOutputStream()) {
+                out.write(payload);
+            }
+
+            int code = connection.getResponseCode();
+            InputStream stream = (code >= 200 && code < 300)
+                    ? connection.getInputStream()
+                    : connection.getErrorStream();
+            String text = readAll(stream);
+            if (code < 200 || code >= 300) {
+                String hint = (code == 401) ? "（共享密钥不对）" : (code == 413 ? "（音频块太大）" : "");
                 throw new IOException("HTTP " + code + hint + " " + text);
             }
             return new JSONObject(text);

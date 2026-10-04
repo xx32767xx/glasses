@@ -87,13 +87,27 @@
                 android:text="听葡语" />
         </LinearLayout>
 
+        <!--
+          录音上传：**本机上唯一真能用的语音输入**。
+          这台设备的系统语音识别服务不可用（已诊断确认），所以"对着说话出字幕"
+          靠的是这条路 —— 手机只当麦克风，识别交给电脑上的 Whisper。
+          放在系统听写按钮下面、手输框上面：按推荐程度排序。
+        -->
+        <Button
+            android:id="@+id/recordButton"
+            android:layout_width="match_parent"
+            android:layout_height="72dp"
+            android:layout_marginTop="10dp"
+            android:text="@string/start_record"
+            android:textSize="16sp" />
+
         <Button
             android:id="@+id/micButton"
             android:layout_width="match_parent"
-            android:layout_height="72dp"
-            android:layout_marginTop="12dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
             android:text="@string/start_listen"
-            android:textSize="18sp" />
+            android:textSize="14sp" />
 
         <!--
           不依赖语音识别的输入通道：手输一句话直接送走。

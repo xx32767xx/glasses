@@ -16,8 +16,8 @@
 
 ```powershell
 node scripts/generate.mjs        # 从核心逻辑生成两个产物
-node tests/run-all.mjs           # 129 项断言：新鲜度门禁 + 两个包装版本各跑一遍 + 一致性对比
-python tests/python-suite.py     # 另 20 项：语音分段器（不加载模型，很快）
+node tests/run-all.mjs           # 136 项断言：新鲜度门禁 + 两个包装版本各跑一遍 + 一致性对比
+python tests/python-suite.py     # 另 30 项：语音分段器 + 音频尾随（不加载模型，很快）
                                  # + ASR 桥契约 + 局域网契约 + 真实 Cordis 组合
 
 # A) 不需要麦克风、不需要手机：重放一段中葡对照的剧本，看整条同传链路
@@ -28,10 +28,16 @@ node bridge/asr-bridge.mjs --inbox var/demo/asr-inbox.jsonl `
 node scripts/demo.mjs                  # 离线例句表：不联网、零成本、可复现
 node scripts/demo.mjs --live           # 真实模型翻译（走已配置的 DeepSeek 凭据）
 
-# C) 手机端真跑（两个终端 + 手机装 App）
+# C) 手机端真跑（三个终端 + 手机装 App）
 node scripts/harness-side.mjs          # 终端 1：harness 侧（加 --offline 则不联网）
 node relay/lan-relay.mjs               # 终端 2：局域网转发（会打印地址与密钥）
 node scripts/build-apk.mjs             # 构建安卓 App → android/README.md 有完整步骤
+
+# D) 手机上"对着说话出字幕"（录音上传；这台设备的系统识别服务不可用，只能走这条）
+node bridge/asr-bridge.mjs --inbox var/live/asr-inbox.jsonl --from pt-BR `
+  --whisper-follow var/live/audio-in.pcm --whisper-device cuda --whisper-compute float16
+#   ↑ 终端 3：把手机传来的音频变成文字。手机 App 里点「开始录音上传」。
+#     没有手机也能验：node scripts/fake-phone.mjs --wav <16k wav> --url http://127.0.0.1:8788 --secret <密钥>
 ```
 
 想立刻在 harness 里看到 7 个眼镜工具 → 看 [`docs/02-创造模式加载指南.md`](docs/02-创造模式加载指南.md)。
@@ -49,21 +55,22 @@ node scripts/build-apk.mjs             # 构建安卓 App → android/README.md 
 | `plugin/schemas.generated.mjs` | 生成：由 core 的 DSL 经真实 `defineTool` 编译出的原始 schema |
 | `plugin/cordis.patch.yml` · `cordis.local.patch.yml` | 装进 profile 用 / 开发 `--patch` 用 |
 | `dynamic/leion-pro.host.js` | 生成：**动态插件**，可直接粘贴给创造模式的 `cordis_define` |
-| `bridge/asr-bridge.mjs` | **ASR 桥**（harness 之外）：把语音识别结果变成收件箱里的一行一句话 |
-| `bridge/whisper_stream.py` | 本地 Whisper 引擎（faster-whisper）：按音量切句 + 自适应门槛 + 防幻听 + 预热 ✅ 已实测，见 `docs/04` |
+| `bridge/asr-bridge.mjs` | **ASR 桥**（harness 之外）：把语音识别结果变成收件箱里的一行一句话；`--whisper-follow` 直接尾随手机上传的音频 |
+| `bridge/whisper_stream.py` | 本地 Whisper 引擎（faster-whisper）：按音量切句 + 自适应门槛 + 防幻听 + 预热；`--follow` 尾随手机上传的裸 PCM ✅ 已实测，见 `docs/04` |
 | `bridge/whisper_transcribe.py` | 转写单个音频文件并测耗时/RTF（自带解码器，绕开 PyAV 版本坑） |
 | `bridge/make_long_wav.py` | 把短录音拼成长的测试音频（可加底噪），用来测真实延迟 |
 | `bridge/asr_eval.py` | **葡语准确率评测**：用 FLEURS 巴葡语料算词错率 WER（带参考文本，不靠肉眼） |
 | `bridge/sample-transcript.txt` | 中葡对照的样例转写，用于无麦克风演示 |
-| `relay/lan-relay.mjs` | **局域网转发**：手机 ↔ 电脑，4 个端点 + 共享密钥（见下） |
+| `relay/lan-relay.mjs` | **局域网转发**：手机 ↔ 电脑，5 个端点 + 共享密钥（含 `POST /audio` 录音上传，见下） |
 | `scripts/harness-side.mjs` | 常驻的 harness 侧进程（真实组合 + 插件，文件模式） |
-| `android/` | **安卓 App「虚拟眼镜」**：麦克风 + 听写 + 40×3 字幕面板（零第三方依赖） |
+| `scripts/fake-phone.mjs` | **假手机**：没有手机时按同样的协议逐块上传音频，用来验证「录音上传」那条路 |
+| `android/` | **安卓 App「虚拟眼镜」**：录音上传 + 系统听写 + 40×3 字幕面板（零第三方依赖） |
 | `lib/artifacts.mjs` · `scripts/generate.mjs` | 产物生成（测试与 CLI 共用同一份实现） |
 | `lib/paths.mjs` | **运行时路径与文件名的唯一来源**（数据不能乱删的分层就是它定的，见 `docs/05`） |
 | `lib/composition.mjs` · `lib/fs-node.mjs` · `lib/keepalive.mjs` | 组合生成与两个共用的小插件 |
 | `lib/real-tools.mjs` · `lib/loader-links.mjs` | 加载检出里真实的构建产物 / 建 loader junction |
-| `tests/` | 沙箱复刻 + 两个适配器 + 契约套件 + 桥套件 + 局域网套件 + 翻译后端接缝（129 项） |
-| `tests/python-suite.py` | **语音分段器**验证（20 项，不加载模型，含一条静默失败的回归测试） |
+| `tests/` | 沙箱复刻 + 两个适配器 + 契约套件 + 桥套件 + 局域网套件 + 翻译后端接缝（136 项） |
+| `tests/python-suite.py` | **语音分段器与音频尾随**验证（30 项，不加载模型，含一条静默失败的回归测试） |
 | `tests/live/` | **真实 Cordis 组合**：真实 `ToolRuntime` + 真实执行流水线 + 真实 `timer` + 真实 `output.schema` 校验（组合现场生成，见该目录 README） |
 | `skills/leion-interpreter/SKILL.md` | **同传操作规范**：巴葡 vs 葡葡用词差异表、字幕长度纪律、调用顺序 |
 | `var/` | **运行时数据**（不进版本库）：`live/` 收件箱与字幕总线、`cache/` 模型缓存、`audio/` 测试音频、`logs/` |
@@ -156,10 +163,13 @@ node scripts/build-apk.mjs             # 构建安卓 App → android/README.md 
 | 事项 | 状态 |
 |---|---|
 | schema DSL / 参数校验 / 输出校验 | ✅ 用**真实** `defineTool` + `validateJsonSchemaValue` |
-| 7 个工具契约、排版、双向语向、节流、异常 | ✅ 129 项断言，两个版本各跑一遍，全绿 |
+| 7 个工具契约、排版、双向语向、节流、异常 | ✅ 136 项断言，两个版本各跑一遍，全绿 |
 | ASR 收件箱（半行/坏行/强制语种/stop-drain-reset） | ✅ 离线契约 + **真实 timer 端到端** |
 | **ASR 桥**（断句 / 停顿断句 / UTF-8 重音 / 协议不被破坏 / replay 端到端） | ✅ 19 项契约 + 实测 CLI |
-| **语音分段器**（切句 / 自适应门槛 / 防幻听 / 前导缓存 / 短响丢弃） | ✅ 20 项断言，`tests/python-suite.py`（含一条静默失败的回归测试） |
+| **语音分段器**（切句 / 自适应门槛 / 防幻听 / 前导缓存 / 短响丢弃） | ✅ 30 项断言，`tests/python-suite.py`（含一条静默失败的回归测试） |
+| **音频尾随**（追加增量 / 文件截断重来 / 半帧对齐 / 采样率降级重采样） | ✅ 10 项断言，同上 |
+| **录音上传整条路**（手机音频 → 继电器落盘 → 识别 → 收件箱） | ✅ 用真实中文录音跑通：`fake-phone.mjs` 逐块上传 → 收件箱出现 6 句正确中文 |
+| **安卓 App 的录音上传** | ✅ 真构建出 APK（41 KB），并核对 dex 里有 `MicUploader` / `/audio?rate=`、资源里有新按钮文案 |
 | 两个版本一致性（含 schema 与 render） | ✅ 逐字段对比 |
 | **正式包装进真实 Cordis 组合** | ✅ 真实 `ToolRuntime` 注册 + 真实执行流水线 + 真实 `output.schema` 校验（`tests/live/`） |
 | **桥 → 收件箱 → 真实 timer → 真实流水线** 端到端 | ✅ `tests/live/` 里跑通（已处理 2 条、错误 0 条） |
@@ -169,8 +179,9 @@ node scripts/build-apk.mjs             # 构建安卓 App → android/README.md 
 | 在创造模式会话里真实挂载 | ⬜ 需要你新建会话 |
 | 在**你自己的 `dsh web` profile** 里加载 | ⬜ 需要重启，或授权我写 profile 的 `cordis.patch.yml`（HMR 热挂载，不用重启） |
 | `ctx.llm` / `ctx.fs` 真实运行时行为 | ⬜ 真实组合里用的是假 llm / 假 fs（timer 是真的） |
+| **安卓 App 在真机上录音上传** | ⬜ APK 已构建并核对内容，但**没在手机上装过**；安卓录音参数与降级行为待真机验证 |
 | **真实会议室里的葡语对话** | ⬜ 目前只有朗读语音（乐观下界）；口音/抢话/背景人声未测，缺真实会议录音 |
-| 端到端延迟（识别+翻译连续测一次） | ⬜ 目前是分段推算 1.3~1.8s，插件里还没打时间戳 |
+| 端到端延迟（识别+翻译连续测一次） | ⬜ 目前是分段推算 1.3~2.2s，插件里还没打时间戳 |
 | 真机协议（Leion Pro / GLXSS ME） | ⬜ **最大的未知项** |
 
 ---
