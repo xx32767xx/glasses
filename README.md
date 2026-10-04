@@ -70,7 +70,7 @@ node scripts/fake-phone.mjs --wav var/audio/zh/short-16k.wav --url http://127.0.
 | `bridge/whisper_stream.py` | 本地 Whisper 引擎（faster-whisper）：按音量切句 + 自适应门槛 + 防幻听 + 预热；`--follow` 尾随手机上传的裸 PCM ✅ 已实测，见 `docs/04` |
 | `bridge/whisper_transcribe.py` | 转写单个音频文件并测耗时/RTF（自带解码器，绕开 PyAV 版本坑） |
 | `bridge/make_long_wav.py` | 把短录音拼成长的测试音频（可加底噪），用来测真实延迟 |
-| `bridge/asr_eval.py` | **葡语准确率评测**：用 FLEURS 巴葡语料算词错率 WER（带参考文本，不靠肉眼） |
+| `bridge/asr_eval.py` | **准确率基准**：用 FLEURS 语料算错误率（中文按**字** CER、葡语按**词** WER），带参考文本、不靠肉眼 |
 | `bridge/sample-transcript.txt` | 中葡对照的样例转写，用于无麦克风演示 |
 | `relay/lan-relay.mjs` | **局域网转发**：手机 ↔ 电脑，5 个端点 + 共享密钥（含 `POST /audio` 录音上传，见下） |
 | `scripts/harness-side.mjs` | 常驻的 harness 侧进程（真实组合 + 插件，文件模式） |
@@ -191,6 +191,7 @@ node scripts/fake-phone.mjs --wav var/audio/zh/short-16k.wav --url http://127.0.
 | **桥 → 收件箱 → 真实 timer → 真实流水线** 端到端 | ✅ `tests/live/` 里跑通（已处理 2 条、错误 0 条） |
 | **真实录音 → Whisper → 桥 → 插件 → 字幕帧** 端到端 | ✅ 用真实中文录音跑通，输出 `speaker:"me"` / `pt-BR`，见 `docs/04` |
 | **Whisper 每句延迟与模型选型** | ✅ 实测：small+GPU 每句 0.10s、延迟 0.80s；small+CPU 跟不上（RTF 1.148） |
+| **中文识别准确率（CER 基准）** | ✅ 30 条带参考文本（FLEURS 中文）：**large-v3 3.9%** / medium 7.4% / **small 18.9%** 字错率 —— 见 `docs/04` §11 |
 | **葡语识别准确率**（对方说葡语 → 中文字幕） | ✅ 用 FLEURS 巴葡朗读语料算词错率：medium **4.9%**、large-v3 4.7%、small 7.3%；语种判定 30/30 全对 |
 | 在创造模式会话里真实挂载 | ⬜ 需要你新建会话 |
 | 在**你自己的 `dsh web` profile** 里加载 | ⬜ 需要重启，或授权我写 profile 的 `cordis.patch.yml`（HMR 热挂载，不用重启） |

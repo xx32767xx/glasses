@@ -29,11 +29,14 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "bridge"))
 
 from whisper_stream import (   # noqa: E402
-    PcmFollower, SPEECH_RMS_FLOOR, SUGGESTED_PROMPTS, UtteranceSegmenter,
+    LANGUAGE_PROMPTS, PcmFollower, SPEECH_RMS_FLOOR, UtteranceSegmenter,
     decide_no_speech, looks_like_hallucination, looks_like_prompt_echo,
-    normalize_peak, parse_args, rms_of, whisper_language_of,
+    normalize_peak, parse_args, prompt_for, rms_of, whisper_language_of,
 )
 from whisper_transcribe import TARGET_RATE, load_audio                    # noqa: E402
+from asr_eval import (   # noqa: E402
+    count_traditional, detect_unit, error_rate, looks_chinese,
+)
 
 passed = 0
 failures = []
@@ -349,29 +352,37 @@ def main():
     heading("准确率 · 归一化 / 提示词 / 默认值")
     args = parse_args([])
 
-    check("峰值归一化把峰值抬到 0.9",
-          abs(float(np.max(np.abs(normalize_peak(tone(0.5) * 0.2)))) - 0.9) < 1e-5,
-          str(float(np.max(np.abs(normalize_peak(tone(0.5) * 0.2))))))
+    # 归一化只在**电平确实低**时才做。原来是无条件做，但中文基准（30 条）测出来
+    # 一律归一化反而略差（6.7% → 7.4%，medium 无提示词），因为公开语料本来就录得正常。
+    # 所以改成"只在需要时动手"：峰值低于 0.3 才抬。
+    quiet = tone(0.5, amplitude=0.2)          # 峰值 0.2（手机远距离录音那种）
+    loud = tone(0.5, amplitude=0.8)           # 峰值 0.8（公开语料那种，本来就录得好）
+    check("电平低（峰值 0.2）时归一化到 0.9",
+          abs(float(np.max(np.abs(normalize_peak(quiet)))) - 0.9) < 1e-5,
+          str(float(np.max(np.abs(normalize_peak(quiet))))))
+    check("电平已经正常（峰值 0.8）时**不动它**",
+          abs(float(np.max(np.abs(normalize_peak(loud)))) - 0.8) < 1e-6,
+          str(float(np.max(np.abs(normalize_peak(loud))))))
     check("归一化不改变静音的静音性（全 0 不炸、也不会变出声音）",
           float(np.max(np.abs(normalize_peak(np.zeros(1600, dtype=np.float32))))) == 0.0)
     check("归一化不改变波形形状（只是整体缩放）",
-          bool(np.allclose(normalize_peak(tone(0.2) * 0.3) / 0.9, tone(0.2) * 0.3 / (0.3 * float(np.max(np.abs(tone(0.2))))), atol=1e-5)))
+          bool(np.allclose(normalize_peak(quiet) / 0.9, quiet / 0.2, atol=1e-5)))
 
-    # ⚠️ 提示词**不再默认发**。曾经默认发一句「…请用简体中文输出。」，
-    # 结果它在 0.5 秒级的短片段上被模型**回显成字幕**（用户看到的正是这个）：
-    #   [识别] → 请用简体中文输出。 请用简体中文输出。
-    # 而分离测试显示：正常长度的句子上给不给提示词内容一样（只差句号），
-    # 不给提示词时那些短片段会输出空并被丢弃 —— 比"假字幕"好得多。
-    check("缺省不发提示词（避免被回显成假字幕）",
-          args.initial_prompt is None, str(args.initial_prompt))
-    check("推荐提示词仍然留着，供需要压繁体时复制（中文）",
-          "简体" in SUGGESTED_PROMPTS["zh"] and "普通话" in SUGGESTED_PROMPTS["zh"],
-          SUGGESTED_PROMPTS["zh"])
-    check("推荐提示词里有葡语版（巴葡口吻）",
-          "Brasil" in SUGGESTED_PROMPTS["pt"], SUGGESTED_PROMPTS["pt"])
+    # 提示词：一波三折之后**默认开着** —— 因为回显那道闸已经能挡住唯一的坏处，
+    # 而基准显示它确实提准确率（medium 7.4%→5.9%，疑似繁体 8 字→1 字）。
+    check("中文提示词要求普通话 + 简体（压掉繁体输出）",
+          "简体" in (prompt_for("zh", None) or "") and "普通话" in (prompt_for("zh", None) or ""),
+          str(prompt_for("zh", None)))
+    check("葡语提示词是巴葡口吻", "Brasil" in (prompt_for("pt", None) or ""), str(prompt_for("pt", None)))
+    check("认不出语种就不发提示词（别硬塞一个错的）",
+          prompt_for("xx", None) is None, str(prompt_for("xx", None)))
+    check("显式给的提示词优先", prompt_for("zh", "自定义") == "自定义")
+    check("缺省会发提示词（不是 None）", prompt_for("zh", args.initial_prompt) is not None)
+    check("--no-prompt 能关掉它",
+          args.no_prompt is False and parse_args(["--no-prompt"]).no_prompt is True)
 
-    # 回显过滤：这条闸必须真的拦得住 —— 按实测复现出来的两个真实样本
-    PROMPT = SUGGESTED_PROMPTS["zh"]
+    # 回显过滤：这条闸必须真的拦得住 —— 按实测复现出来的真实样本
+    PROMPT = LANGUAGE_PROMPTS["zh"]
     check("整句回显被认出（复现出来的真实输出）",
           looks_like_prompt_echo("请用简体中文输出。", PROMPT), "「请用简体中文输出。」没被认出")
     check("重复两次的回显也被认出",
@@ -384,7 +395,7 @@ def main():
           not looks_like_prompt_echo("你好", None))
     check("空文本不炸", not looks_like_prompt_echo("", PROMPT) and not looks_like_prompt_echo("你好", ""))
 
-    check("缺省用束搜索 beam=5（准确率明显更好，GPU 上很便宜）",
+    check("缺省用束搜索 beam=5（基准实测：7.4% vs beam1 的 9.2%）",
           args.beam_size == 5, str(args.beam_size))
     check("缺省做峰值归一化", args.no_normalize is False, str(args.no_normalize))
     check("缺省丢弃 <500ms 的碎片（碎片只会变成胡话）",
@@ -443,6 +454,45 @@ def main():
           rms_of(np.zeros(1600, dtype=np.float32)) == 0.0
           and 0.99 < rms_of(np.ones(1600, dtype=np.float32)) <= 1.0,
           str(rms_of(np.ones(1600, dtype=np.float32))))
+
+    # ── 13. 准确率基准的工具函数（中文按字算 CER）────────────────────────────
+    #
+    # 中文不用空格分词：按"词"算的话整句就是一个 token，错一个字和整句全错得到一样的数字，
+    # 完全没法用来调参。所以基准必须按**字**算（CER），并且要能自动认出中文。
+    heading("准确率基准 · 中文按字算 CER")
+
+    check("中文短句也认得出（「你好」两字也要算中文）",
+          looks_chinese("这是一条测试信息") and looks_chinese("你好"),
+          f"{looks_chinese('这是一条测试信息')} / {looks_chinese('你好')}")
+    check("葡语不被误认成中文",
+          not looks_chinese("Bom dia, tudo bem?") and not looks_chinese("A reunião é às três"),
+          "葡语被判成中文了")
+    check("整批样本的单位判定：中文 → char",
+          detect_unit(["这是一条测试信息", "你好"]) == "char",
+          detect_unit(["这是一条测试信息", "你好"]))
+    check("整批样本的单位判定：葡语 → word",
+          detect_unit(["Bom dia", "tudo bem"]) == "word",
+          detect_unit(["Bom dia", "tudo bem"]))
+
+    check("CER：完全正确 = 0",
+          error_rate("这是一条测试信息", "这是一条测试信息", "char")[0] == 0.0)
+    rate, units, distance = error_rate("这是一条测试信息", "这是一条测试消息", "char")
+    check("CER：错一个字 = 1/8",
+          abs(rate - 0.125) < 1e-9 and units == 8 and distance == 1,
+          f"rate={rate} units={units} distance={distance}")
+    rate_trad, _, distance_trad = error_rate("这是一条测试信息", "這是一條測試信息", "char")
+    check("CER：整句输出成繁体 = 0.5（4 个字不同）",
+          abs(rate_trad - 0.5) < 1e-9 and distance_trad == 4,
+          f"rate={rate_trad} distance={distance_trad}")
+    check("按字算时忽略标点与空格（中文的空白没有语义）",
+          error_rate("这是一条测试信息。", "这 是 一 条 测 试 信 息", "char")[0] == 0.0,
+          str(error_rate("这是一条测试信息。", "这 是 一 条 测 试 信 息", "char")))
+
+    check("疑似繁体计数：繁体句 > 0，简体句 = 0",
+          count_traditional("這是一條測試信息") > 0 and count_traditional("这是一条测试信息") == 0,
+          f"{count_traditional('這是一條測試信息')} / {count_traditional('这是一条测试信息')}")
+    check("葡语重音不被当成繁体字（那是两回事）",
+          count_traditional("A reunião é às três") == 0)
 
     # ── 结果 ────────────────────────────────────────────────────────────────
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")

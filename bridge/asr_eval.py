@@ -49,46 +49,122 @@ from whisper_transcribe import TARGET_RATE, decode_with_av   # noqa: E402
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="用带参考文本的葡语音频测 WER 与延迟")
+    parser = argparse.ArgumentParser(description="用带参考文本的音频测错误率（中文 CER / 葡语 WER）与延迟")
     parser.add_argument("--parquet", help="FLEURS parquet 文件（--extract 时用）")
-    parser.add_argument("--set", dest="wavset", help="抽好的测试集目录（测 WER 时用）")
-    parser.add_argument("--out", default=None, help="抽取到哪里，缺省 <parquet 同目录>/pt")
+    parser.add_argument("--set", dest="wavset", help="抽好的测试集目录（测错误率时用）")
+    parser.add_argument("--out", default=None,
+                        help="抽取到哪里，缺省 <parquet 同目录>/<语料名>-eval")
     parser.add_argument("--count", type=int, default=30, help="抽/测多少条（缺省 30）")
     parser.add_argument("--extract", action="store_true", help="只抽取音频与参考文本，不跑模型")
+    parser.add_argument("--unit", default="auto", choices=["auto", "char", "word"],
+                        help="错误率单位：auto（缺省，中文自动按字）/ char / word。"
+                             "中文必须按字 —— 没有空格分词，按词算整句就是一个 token，"
+                             "错一个字和整句全错得到一样的结果")
     parser.add_argument("--model", default="small")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--compute-type", default="int8")
-    parser.add_argument("--language", default="pt")
+    parser.add_argument("--language", default=None,
+                        help="固定语种（zh / pt）；缺省自动判定")
+    parser.add_argument("--beam-size", type=int, default=5, help="缺省 5（与生产链路一致）")
+    parser.add_argument("--no-normalize", action="store_true",
+                        help="不做峰值归一化（缺省做，与生产链路一致）")
+    parser.add_argument("--initial-prompt", default=None,
+                        help="提示词（缺省不发，与生产链路一致）")
     parser.add_argument("--show", type=int, default=5, help="打印前几条对照（缺省 5）")
     return parser.parse_args()
 
 
-# ── WER ──────────────────────────────────────────────────────────────────────
+# ── 错误率：中文按**字**，葡语按**词** ────────────────────────────────────────
+#
+# 为什么必须分两种单位：中文不用空格分词。按"词"算的话，整句就是一个 token，
+# 错一个字和整句全错得到的数字一样（要么 0、要么 1）—— 完全没法用来调参。
+# 所以中文按**字**算 CER（Character Error Rate），葡语按词算 WER。
 
-def normalize(text):
-    """比较前先归一：小写、去标点、合并空白。重音符号保留 —— 葡语的重音是有意义的。"""
+# 只在繁体里出现的常用字。用来把"输出成繁体"这个已知毛病**量化**出来 ——
+# 否则 CER 只会告诉你"错了"，不会告诉你"错在哪一类"。
+# （不是完备的繁简对照表，只覆盖口语里最常出现的一批；所以指标叫"疑似繁体字数"。）
+TRADITIONAL_ONLY = set(
+    "這說麼為個們來時會對開過實現學國產與東車門見長問間題讓從應該裡樣還進發經頭幾語聽讀寫"
+    "電話點認識覺辦體條壓點無萬業員這樣實際應該處理總機關於當來後東車馬鳥魚龍風飛隻億據"
+    "處臟選擇觀觀點運動員圖書館總結經驗營運營養")
+# 这些字在简体里也这么写，去掉以免误报（上面列表里混进来的）。
+TRADITIONAL_ONLY -= set("由只几只")
+
+CJK = re.compile(r"[\u4e00-\u9fff]")
+PUNCT = re.compile(r"[^\w\u4e00-\u9fff]", flags=re.UNICODE)
+
+
+def looks_chinese(text):
+    """这段参考文本是不是中文？（用来决定按字还是按词算）
+
+    门槛刻意放到"至少 2 个汉字" —— 短句也要算中文。
+    第一版写的是 `cjk >= 4`，结果「你好」这种两字短句被判成"不是中文"，
+    单位退回 word，整句变成一个 token，错误率就失去意义了（一条两字句测出来的
+    不是 0% 就是 100%）。
+    """
+    if not text:
+        return False
+    stripped = text.strip()
+    cjk = len(CJK.findall(stripped))
+    return cjk >= 2 and cjk / max(1, len(stripped)) > 0.3
+
+
+def detect_unit(reference_texts):
+    """auto：中文 → char，其它 → word。"""
+    samples = [t for t in reference_texts if t and t.strip()]
+    if not samples:
+        return "word"
+    chinese = sum(1 for t in samples if looks_chinese(t))
+    return "char" if chinese * 2 > len(samples) else "word"
+
+
+def normalize(text, unit="word"):
+    """比较前先归一。
+
+    两种单位都要做的：统一小写、去标点。
+    差别在于**空白**：
+      · word —— 用空白分词，所以把标点换成空格再合并（葡语的重音**必须保留**，那是有意义的）。
+      · char —— 中文里的空白不是语义的一部分（而且 FLEURS 的 transcription 字段是逐字用空格
+        分开的），所以要把空白**全部删掉**，否则"字数"会被空格搞错。
+    """
     text = text.lower().replace("’", "'")
+    if unit == "char":
+        return PUNCT.sub("", text)
     text = re.sub(r"[^\w\s']", " ", text, flags=re.UNICODE)
     return " ".join(text.split())
 
 
-def wer(reference, hypothesis):
-    """词错率。用滚动数组做编辑距离，避免长句吃内存。"""
-    ref = normalize(reference).split()
-    hyp = normalize(hypothesis).split()
-    if not ref:
-        return float("nan"), 0, 0, 0, 0
-    previous = list(range(len(hyp) + 1))
-    for i, ref_word in enumerate(ref, start=1):
-        current = [i] + [0] * len(hyp)
-        for j, hyp_word in enumerate(hyp, start=1):
-            cost = 0 if ref_word == hyp_word else 1
-            current[j] = min(previous[j] + 1,          # 删除
-                             current[j - 1] + 1,       # 插入
-                             previous[j - 1] + cost)   # 替换 / 正确
+def count_traditional(text):
+    """数一数输出里出现了多少个"疑似繁体专用字"。"""
+    return sum(1 for char in text if char in TRADITIONAL_ONLY)
+
+
+def edit_distance(sequence_a, sequence_b):
+    """编辑距离（滚动数组，长句不吃内存）。"""
+    previous = list(range(len(sequence_b) + 1))
+    for i, item_a in enumerate(sequence_a, start=1):
+        current = [i] + [0] * len(sequence_b)
+        for j, item_b in enumerate(sequence_b, start=1):
+            cost = 0 if item_a == item_b else 1
+            current[j] = min(previous[j] + 1,        # 删除
+                             current[j - 1] + 1,     # 插入
+                             previous[j - 1] + cost)  # 替换 / 正确
         previous = current
-    distance = previous[len(hyp)]
-    return distance / len(ref), len(ref), distance, len(ref), len(hyp)
+    return previous[len(sequence_b)]
+
+
+def error_rate(reference, hypothesis, unit="word"):
+    """返回 (错误率, 参考单位数, 距离)。中文 unit='char' 时就是 CER。"""
+    if unit == "char":
+        ref = list(normalize(reference, "char"))
+        hyp = list(normalize(hypothesis, "char"))
+    else:
+        ref = normalize(reference, "word").split()
+        hyp = normalize(hypothesis, "word").split()
+    if not ref:
+        return float("nan"), 0, 0
+    distance = edit_distance(ref, hyp)
+    return distance / len(ref), len(ref), distance
 
 
 # ── 抽取测试集 ───────────────────────────────────────────────────────────────
@@ -108,7 +184,10 @@ def extract(args):
     source = Path(args.parquet)
     if not source.is_file():
         sys.exit(f"找不到 parquet：{source}")
-    target = Path(args.out) if args.out else source.parent / "pt"
+    # 缺省抽到 parquet 同目录下一个以语料名命名的子目录（如 cmn_hans_cn-eval）。
+    # 实际用的时候建议显式 --out（文档里的命令都带着），免得找不着。
+    stem = re.sub(r"_(validation|test|train)$", "", source.stem)
+    target = Path(args.out) if args.out else source.parent / f"{stem}-eval"
     target.mkdir(parents=True, exist_ok=True)
 
     table = pq.read_table(source, columns=["audio", "raw_transcription", "transcription", "gender"])
@@ -116,7 +195,7 @@ def extract(args):
     manifest = []
     for index, row in enumerate(rows):
         samples = load_wav_bytes(row["audio"]["bytes"])
-        name = f"pt-{index:03d}.wav"
+        name = f"{stem}-{index:03d}.wav"
         pcm = (np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2")
         with wave.open(str(target / name), "wb") as handle:
             handle.setnchannels(1)
@@ -164,14 +243,18 @@ def main():
         return extract(args)
 
     if not args.wavset:
-        sys.exit("测 WER 需要 --set <测试集目录>（先用 --extract 抽一批）")
+        sys.exit("测错误率需要 --set <测试集目录>（先用 --extract 抽一批）")
 
     wavset, items = read_manifest(args.wavset)
-    print(f"测试集：{wavset}（{len(items)} 条）")
+    unit = args.unit if args.unit != "auto" else detect_unit([i["reference"] for i in items])
+    unit_label = "字" if unit == "char" else "词"
+    print(f"测试集：{wavset}（{len(items)} 条；错误率按**{unit_label}**算"
+          f"{'，auto 判定为中文' if args.unit == 'auto' else ''}）")
 
     from faster_whisper import WhisperModel
 
-    print(f"载入模型 {args.model}（device={args.device}, compute_type={args.compute_type}）…")
+    print(f"载入模型 {args.model}（device={args.device}, compute_type={args.compute_type}"
+          f"{'' if args.no_normalize else '，峰值归一化'}；beam {args.beam_size}）…")
     model = WhisperModel(args.model, device=args.device, compute_type=args.compute_type)
 
     # 先预热：CUDA 上第一次推理要十几秒，混进统计会污染第一个样本（见 docs/04）
@@ -183,56 +266,71 @@ def main():
     for item in items:
         sys.stdout.write(".")
         sys.stdout.flush()
-        _, samples = None, None
         audio = _read_wav(wavset / item["file"])
+        if not args.no_normalize:
+            peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+            if peak > 1e-6:
+                audio = audio * (0.9 / peak)
         start = time.perf_counter()
         segments, info = model.transcribe(
-            audio, language=args.language, beam_size=1,
+            audio, language=args.language, beam_size=args.beam_size,
             vad_filter=True, condition_on_previous_text=False,
+            initial_prompt=args.initial_prompt,
         )
         text = " ".join(seg.text.strip() for seg in segments).strip()
         elapsed = time.perf_counter() - start
-        score, words, _, _, _ = wer(item["reference"], text)
+        score, ref_units, distance = error_rate(item["reference"], text, unit)
         rows.append({
             "file": item["file"],
             "seconds": item["seconds"],
             "reference": item["reference"],
             "hypothesis": text,
-            "wer": score,
-            "words": words,
+            "rate": score,
+            "units": ref_units,
+            "distance": distance,
+            "traditional": count_traditional(text),
             "seconds_used": elapsed,
             "detected": getattr(info, "language", "?"),
             "detected_prob": getattr(info, "language_probability", 0.0),
         })
     print("")
 
-    scored = [r for r in rows if r["words"] > 0 and not np.isnan(r["wer"])]
-    total_words = sum(r["words"] for r in scored)
-    weighted_wer = sum(r["wer"] * r["words"] for r in scored) / total_words if total_words else float("nan")
+    scored = [r for r in rows if r["units"] > 0 and not np.isnan(r["rate"])]
+    total_units = sum(r["units"] for r in scored)
+    weighted = sum(r["rate"] * r["units"] for r in scored) / total_units if total_units else float("nan")
     audio_seconds = sum(r["seconds"] for r in rows)
     used_seconds = sum(r["seconds_used"] for r in rows)
     detections = {}
     for r in rows:
         detections[r["detected"]] = detections.get(r["detected"], 0) + 1
+    traditional_total = sum(r["traditional"] for r in rows)
+    traditional_sentences = sum(1 for r in rows if r["traditional"] > 0)
 
     print("=" * 76)
-    print(f"结果 · 模型 {args.model} / {args.device} / {args.compute_type}")
+    print(f"结果 · 模型 {args.model} / {args.device} / {args.compute_type} / beam {args.beam_size}")
     print("=" * 76)
-    print(f"  样本数        {len(rows)} 条（葡语朗读语音）")
-    print(f"  语种判定      {detections}（期望全部是 pt）")
-    print(f"  加权词错率    {weighted_wer * 100:.1f}%   ← 按句子长度加权，反映整体")
-    print(f"  按句平均      {np.mean([r['wer'] for r in scored]) * 100:.1f}%")
-    good = sum(1 for r in scored if r["wer"] <= 0.10)
-    print(f"  完全/近乎正确 {good}/{len(scored)} 句的 WER ≤ 10%")
+    print(f"  样本数        {len(rows)} 条（朗读语音 —— 比真实会议**乐观**，见 docs/04 §8）")
+    print(f"  错误率单位    {unit_label}"
+          f"（中文必须按字：没有空格，按词算整句就是一个 token）")
+    print(f"  语种判定      {detections}")
+    print(f"  加权错误率    {weighted * 100:.1f}%   ← 按句子长度加权，反映整体")
+    print(f"  按句平均      {np.mean([r['rate'] for r in scored]) * 100:.1f}%")
+    good = sum(1 for r in scored if r["rate"] <= 0.10)
+    print(f"  完全/近乎正确 {good}/{len(scored)} 句的错误率 ≤ 10%")
+    if unit == "char":
+        print(f"  疑似繁体输出  {traditional_total} 个字，涉及 {traditional_sentences}/{len(rows)} 句"
+              f"（Whisper 在中文上的已知毛病，这一项单独列出来）")
     print(f"  音频总时长    {audio_seconds:.1f}s")
     print(f"  识别总耗时    {used_seconds:.1f}s（RTF {used_seconds / audio_seconds:.3f}）")
     print(f"  每句识别      {used_seconds / len(rows):.2f}s（含静音过滤）")
     print("")
     print(f"  随机看 {min(args.show, len(rows))} 条对照：")
     for row in rows[: args.show]:
+        extra = f"，疑似繁体 {row['traditional']} 字" if row["traditional"] else ""
         print(f"    参考  {row['reference']}")
         print(f"    识别  {row['hypothesis']}")
-        print(f"    WER {row['wer'] * 100:5.1f}%   [{row['seconds']:.2f}s 音频 / {row['seconds_used']:.2f}s]")
+        print(f"    {'CER' if unit == 'char' else 'WER'} {row['rate'] * 100:5.1f}%"
+              f"   [{row['seconds']:.2f}s 音频 / {row['seconds_used']:.2f}s{extra}]")
         print("")
     print("=" * 76)
     return 0

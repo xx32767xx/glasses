@@ -169,12 +169,13 @@ def parse_args(argv=None):
                         help="不做峰值归一化。缺省**做** —— 手机远距离录音电平偏低，"
                              "实测归一化能把「测试语音」纠正成「这是一条测试语音」")
     parser.add_argument("--initial-prompt", default=None,
-                        help="给模型的提示词（可选）。**缺省不发** —— 实测它会在 0.5 秒级的"
-                             "短片段上被回显成假字幕（字幕变成「请用简体中文输出。」），"
-                             "而在正常长度的句子上几乎不影响结果，所以默认关掉。"
-                             "想压掉繁体输出可以用："
-                             "--initial-prompt \"以下是普通话的句子，请用简体中文输出。\""
-                             "（回显会被自动过滤）")
+                        help="给模型的提示词（引导语种/字形）。缺省按语种自动选："
+                             "中文「以下是普通话的句子，请用简体中文输出。」（压掉繁体输出）；"
+                             "葡语一句巴葡引子。**实测有用**：中文基准上 medium 的 CER "
+                             "7.4%→5.9%、疑似繁体 8 字→1 字。"
+                             "副作用是短片段上会被模型回显成一句假字幕，那个由回显过滤挡住")
+    parser.add_argument("--no-prompt", action="store_true",
+                        help="不发提示词（想看纯模型输出、或怀疑提示词在捣乱时用）")
     parser.add_argument("--rms-threshold", type=float, default=0.01, help="判定「有语音」的能量阈值（配合 --no-adaptive 使用）")
     parser.add_argument("--adaptive", dest="adaptive", action="store_true", default=True,
                         help="自动估计环境噪声并据此定阈值（缺省开）")
@@ -402,30 +403,31 @@ def looks_like_hallucination(text: str) -> bool:
     return any(sample in lowered for sample in HALLUCINATION_SAMPLES)
 
 
-# ⚠️ 关于 initial_prompt（曾经默认开着，现在默认关）
+# ── initial_prompt：关于它的一波三折，值得完整记下来 ──────────────────────────
 #
-# 我一度默认发一句「以下是普通话的句子，请用简体中文输出。」，想压掉中文上常见的繁体输出。
-# 后来用户报了个更严重的问题：字幕变成了「请用简体中文输出。」——
-# **提示词被模型回显成了字幕**。这是 initial_prompt 的经典副作用：
-# 片段太短或太模糊时，Whisper 会把提示词当成"要接着写的文本"照抄出来。
+# 1) 起初我默认发一句「以下是普通话的句子，请用简体中文输出。」，想压掉繁体输出。
+# 2) 用户随后报：字幕变成了「请用简体中文输出。」——**提示词被模型回显成了字幕**。
+#    这是 initial_prompt 的经典副作用：片段太短或太模糊时，Whisper 会把提示词当成
+#    "要接着写的文本"照抄出来。我构造 0.5 秒短片段复现了它，于是**撤掉了默认提示词**，
+#    并加了回显过滤（looks_like_prompt_echo）。
+# 3) 但建好中文基准（var/audio/zh-eval，30 条带参考文本）之后一测，发现**它确实有用**：
+#        medium：7.4% → 5.9% CER，疑似繁体 8 字 → 1 字
+#        large-v3：4.0% → 3.9%（大模型上影响很小）
+#    所以又把它**默认打开**了 —— 因为回显那道闸已经能挡住"假字幕"这个唯一的坏处，
+#    剩下的就只是好处。这就是"先加护栏、再放开"的顺序。
 #
-# 我构造 0.5 秒的短片段复现了它，并做了分离测试：
-#   · 长指令式提示词 → 三个短片段全部回显成「请用简体中文输出。」
-#   · 不给提示词     → 三个短片段都输出空 → 被丢弃（**不会显示假字幕**）
-#   · 短名词式提示词 → 仍然回显（「您好 简体中文。」）
-#   · 而一个 2.5 秒的正常句子：给不给提示词，识别内容**一样**（只差一个句号）
-#
-# 结论：**代价明确（假字幕）、收益不明显**，所以不再默认启用。
-# 想用就自己传（并注意回显过滤会兜住它）：
-#     --initial-prompt "以下是普通话的句子，请用简体中文输出。"
-#
-# 推荐的两个（供需要时复制）：
-#   中文 → 以下是普通话的句子，请用简体中文输出。
-#   葡语 → A seguir, frases em português do Brasil.
-SUGGESTED_PROMPTS = {
+# 想关掉：--no-prompt
+LANGUAGE_PROMPTS = {
     "zh": "以下是普通话的句子，请用简体中文输出。",
     "pt": "A seguir, frases em português do Brasil.",
 }
+
+
+def prompt_for(language, explicit):
+    """显式给的优先；没给就用该语种的缺省提示词（压繁体、稳巴葡口吻）。"""
+    if explicit:
+        return explicit
+    return LANGUAGE_PROMPTS.get(language or "", None)
 
 
 def looks_like_prompt_echo(text, prompt):
@@ -472,13 +474,14 @@ def looks_like_prompt_echo(text, prompt):
     return bool(meaningful) and all(piece in prompt_clean for piece in meaningful)
 
 
-def normalize_peak(audio, target=0.9):
-    """把一段音频按峰值归一化。
+def normalize_peak(audio, target=0.9, quiet_below=0.3):
+    """把**电平偏低**的音频按峰值抬到正常量级。
 
-    为什么必须做：手机离嘴 20~30cm 录进来，电平常常只有峰值的 0.2 左右，
-    而 Whisper 是在电平相对正常的音频上训练的 —— 声音太小会显著掉准确率。
-    实测同一段录音：不归一化时 small 把「这是一条测试语音」听成「测试语音」，
-    归一化后全对。这一段成本几乎为零（一次数组乘法），收益却很大。
+    为什么只在低电平时做：手机离嘴 20~30cm 录进来，峰值常常只有 0.2 左右，
+    而 Whisper 是在电平相对正常的音频上训练的。
+    但在**已经录得正常**的音频上（比如公开语料，峰值本来就 0.5~1.0）再抬一次没有好处 ——
+    实测中文基准 30 条：不归一化 6.7%、一律归一化 7.4%（medium，无提示词）。
+    所以加个门槛：只在峰值低于 quiet_below 时才动它。**只在需要时动手**。
 
     注意：numpy 在这个文件里是**惰性导入**的（让 --help 在没有 numpy 的机器上也能用），
     所以这里不能用模块级的 np。（第一次写就踩了：NameError: name 'np' is not defined。）
@@ -487,7 +490,7 @@ def normalize_peak(audio, target=0.9):
     if audio.size == 0:
         return audio
     peak = float(np.max(np.abs(audio)))
-    if peak <= 1e-6:
+    if peak <= 1e-6 or peak >= quiet_below:
         return audio
     return audio * (target / peak)
 
@@ -806,7 +809,8 @@ def main():
             model, utterance, active["language"],
             args.min_logprob, args.no_speech_prob,
             beam_size=args.beam_size,
-            initial_prompt=args.initial_prompt,     # 缺省 None = 不发提示词（见 SUGGESTED_PROMPTS 说明）
+            # 缺省按语种给提示词（实测能压繁体、提准确率）；--no-prompt 才不发。
+            initial_prompt=None if args.no_prompt else prompt_for(active["language"], args.initial_prompt),
             do_normalize=not args.no_normalize,
         )
         elapsed = time.perf_counter() - start

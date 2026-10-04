@@ -45,9 +45,20 @@ export async function runStartAllSuite({ it, check, assert }) {
 
   await it('识别进程带上模型/设备/精度（缺省 cuda + float16，实测比 CPU 快一个数量级）', async () => {
     const asr = buildSteps(parseArgs([])).find(s => s.key === 'asr')
-    check('--whisper-model small', argsOf(asr).includes('--whisper-model small'), argsOf(asr))
     check('--whisper-device cuda', argsOf(asr).includes('--whisper-device cuda'), argsOf(asr))
     check('--whisper-compute float16', argsOf(asr).includes('--whisper-compute float16'), argsOf(asr))
+  })
+
+  await it('模型缺省按设备自动选：GPU 用 large-v3、CPU 用 small', async () => {
+    // 依据是中文基准（docs/04 §11）：small 18.9% / medium 7.4% / large-v3 3.9% 字错率。
+    // 模型大小是准确率上**最大**的变量，所以 GPU 上直接上大的；
+    // CPU 上 large-v3 慢到没法用，退回 small。
+    const gpu = buildSteps(parseArgs([])).find(s => s.key === 'asr')
+    check('GPU → large-v3', argsOf(gpu).includes('--whisper-model large-v3'), argsOf(gpu))
+    const cpu = buildSteps(parseArgs(['--cpu'])).find(s => s.key === 'asr')
+    check('CPU → small', argsOf(cpu).includes('--whisper-model small'), argsOf(cpu))
+    const forced = buildSteps(parseArgs(['--whisper-model', 'medium'])).find(s => s.key === 'asr')
+    check('显式指定优先', argsOf(forced).includes('--whisper-model medium'), argsOf(forced))
   })
 
   await it('--cpu 会同时把精度换成 int8（CPU 上 float16 更慢）', async () => {
@@ -186,6 +197,31 @@ export async function runStartAllSuite({ it, check, assert }) {
   // 没人走 main() 这条路径。所以现在用 --dry-run 把这条路径也纳入测试：
   // 它跑完"探端口 → 拼命令 → 算环境变量 → 打印横幅"就返回，不起任何进程。
 
+  // ⚠️ 这条测试必须自己控制环境变量，不能靠"跑测试的人碰巧没设 HF_HOME"。
+  // 踩过：本机 shell 里设了 HF_HOME 时 childEnv() 就不会加那两行说明，
+  // 于是"打印了模型缓存位置"这条断言失败 —— 同一份代码，换个环境跑结果不同。
+  // 测试的输入必须由测试自己决定。
+  //
+  // 这个 helper 必须是 async 且 `await run()`：第一版写成同步的，
+  // finally 在 main() **返回 Promise 的那一刻**就恢复了环境变量，
+  // 而 main() 内部是稍后才读 process.env 的 —— 等于没清，测试照样失败。
+  const ENV_KEYS = ['HF_HOME', 'HF_ENDPOINT', 'PYTHONUTF8', 'PYTHONIOENCODING']
+  async function withoutEnv(keys, run) {
+    const saved = {}
+    for (const key of keys) {
+      saved[key] = process.env[key]
+      delete process.env[key]
+    }
+    try {
+      return await run()
+    } finally {
+      for (const key of keys) {
+        if (saved[key] === undefined) delete process.env[key]
+        else process.env[key] = saved[key]
+      }
+    }
+  }
+
   await it('--dry-run 能走完整条启动路径而不崩（横幅那段曾被测不到）', async () => {
     const captured = []
     const original = process.stdout.write
@@ -196,7 +232,7 @@ export async function runStartAllSuite({ it, check, assert }) {
       // 早先这里用 59999，而 relay 套件会用 port 0 让系统随机分配端口 ——
       // 那个随机端口可能正好落在 59999，于是这条测试时好时坏（实测过：同一份代码
       // 一次跑失败、紧跟着再跑就通过）。18788 在范围外，不会被别的测试抢到。
-      code = await main(['--dry-run', '--quiet-logs', '--port', '18788'])
+      code = await withoutEnv(ENV_KEYS, () => main(['--dry-run', '--quiet-logs', '--port', '18788']))
     } finally {
       process.stdout.write = original
     }
@@ -218,7 +254,7 @@ export async function runStartAllSuite({ it, check, assert }) {
     const original = process.stdout.write
     process.stdout.write = chunk => { captured.push(String(chunk)); return true }
     try {
-      await main(['--dry-run', '--quiet-logs', '--port', '18788'])
+      await withoutEnv(ENV_KEYS, () => main(['--dry-run', '--quiet-logs', '--port', '18788']))
     } finally {
       process.stdout.write = original
     }

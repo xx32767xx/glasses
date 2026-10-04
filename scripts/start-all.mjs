@@ -41,7 +41,12 @@ const HELP = `start-all —— 一条命令起齐整条链路
   node scripts/start-all.mjs [选项]
 
   --cpu                 识别用 CPU（缺省 cuda + float16；没有 N 卡时用这个）
-  --whisper-model <尺寸> tiny/base/small/medium/large-v3（缺省 small）
+  --whisper-model <尺寸> tiny/base/small/medium/large-v3
+                        缺省按设备自动选：**GPU 用 large-v3，CPU 用 small**。
+                        依据（中文基准 30 条，见 docs/04 §11）：
+                          small 18.9% / medium 7.4% / large-v3 3.9% 的字错率
+                        —— 模型大小是影响准确率**最大**的那个变量，比调切句/beam/提示词加起来都大。
+                        large-v3 在 GPU 上每段约 0.6 秒（延迟仍在 1.3 秒量级），所以 GPU 上直接用大的。
   --offline             大脑用离线例句表（不联网、零成本，只认得剧本那 14 句）
   --no-transcriber      只起转发 + 大脑（手输文字那条路不需要识别）
   --data-dir <path>     数据目录（缺省 var/live）
@@ -74,7 +79,7 @@ export function parseArgs(argv) {
     lines: 3,
     offline: false,
     transcriber: true,
-    whisperModel: 'small',
+    whisperModel: null,          // null = 按设备自动选（见下）
     device: 'cuda',
     computeType: 'float16',
     openWindow: false,
@@ -109,6 +114,13 @@ export function parseArgs(argv) {
   options.inbox = options.inbox ?? defaultInbox(options.dataDir)
   options.bus = options.bus ?? defaultBus(options.dataDir)
   options.audio = options.audio ?? defaultAudioIn(options.dataDir)
+  // 模型没指定就按设备选。依据是中文基准（30 条带参考文本，见 docs/04 §11）：
+  //   small 18.9% CER / medium 7.4% / large-v3 3.9% —— 模型大小是**最大**的那个变量，
+  //   比调切句、调 beam、加提示词加起来都重要得多。
+  //   而 large-v3 每段约 0.6 秒（GPU，float16），延迟仍然在 1.3 秒量级，所以 GPU 上直接用大的。
+  //   CPU 上 large-v3 会慢到没法用，所以退回 small（质量有限，文档里写明）。
+  options.whisperModel = options.whisperModel
+    ?? (options.device === 'cuda' ? 'large-v3' : 'small')
   return options
 }
 
@@ -140,7 +152,6 @@ export function buildSteps(options) {
       ],
     })
   }
-
   const brainArgs = ['--data-dir', options.dataDir, '--cols', String(options.cols), '--lines', String(options.lines)]
   if (options.offline) brainArgs.push('--offline')
   steps.push({
