@@ -116,7 +116,9 @@ def whisper_language_of(tag):
 
 # ── 参数 ─────────────────────────────────────────────────────────────────────
 
-def parse_args():
+def parse_args(argv=None):
+    """argv 可传（缺省读 sys.argv）—— 仓库里别的工具（asr-bridge / start-all）都是这个形状，
+    这样测试才能直接断言"缺省值到底是什么"，而不是靠人去读一遍源码。"""
     parser = argparse.ArgumentParser(description="faster-whisper 实时转写，逐行输出")
     parser.add_argument("--model", default="small", help="模型大小：tiny/base/small/medium/large-v3（缺省 small）")
     parser.add_argument("--device", default="cpu", help="cpu 或 cuda（本机实测两者都能跑，见 --stats）")
@@ -148,8 +150,28 @@ def parse_args():
     parser.add_argument("--samplerate", type=int, default=16000, help="采样率（Whisper 要 16000）")
     parser.add_argument("--block-ms", type=int, default=100, help="每次读取的音频块长度")
     parser.add_argument("--silence-ms", type=int, default=700, help="静音超过这么久就认为一句话结束")
-    parser.add_argument("--min-speech-ms", type=int, default=300, help="短于这么久的语音段丢弃（多半是噪声）")
+    parser.add_argument("--min-speech-ms", type=int, default=500,
+                        help="短于这么久的语音段丢弃（多半是噪声/气声）。缺省 500 —— "
+                             "实测 0.03~0.27 秒的碎片送进识别只会产出胡话（「你以後」这种）")
     parser.add_argument("--max-speech-ms", type=int, default=15000, help="单句最长时长，超过就强制切句（防止一直不说停）")
+    parser.add_argument("--short-utterance-ms", type=int, default=800,
+                        help="短句保护：还没攒够这么久的语音，要等更长的静音才收句（缺省 800）。"
+                             "正常说话词间就有 300~500ms 停顿，固定 700ms 会把一句话切成两半，"
+                             "而短片段（<1 秒）的识别质量急剧下降。实测调这个值要注意："
+                             "调到 1200 会把「说完一句、停 1 秒、再说一句」合并成一段"
+                             "（字幕更慢更少），所以缺省只保护接近下限的碎片")
+    parser.add_argument("--short-silence-ms", type=int, default=1100,
+                        help="配合上一项：短句需要多长的静音才收句（缺省 1100）")
+    parser.add_argument("--beam-size", type=int, default=5,
+                        help="1=贪心（快） / 5=束搜索（准，缺省）。GPU 上实测很便宜"
+                             "（14.7 秒音频 small 只要 0.35~0.56 秒），准确率差别明显")
+    parser.add_argument("--no-normalize", action="store_true",
+                        help="不做峰值归一化。缺省**做** —— 手机远距离录音电平偏低，"
+                             "实测归一化能把「测试语音」纠正成「这是一条测试语音」")
+    parser.add_argument("--initial-prompt", default=None,
+                        help="给模型的提示词（引导语种/字形）。缺省按语种自动选："
+                             "中文用「以下是普通话的句子，请用简体中文输出。」（顺带压掉繁体输出）。"
+                             "想完全不发提示词就传 --initial-prompt ''")
     parser.add_argument("--rms-threshold", type=float, default=0.01, help="判定「有语音」的能量阈值（配合 --no-adaptive 使用）")
     parser.add_argument("--adaptive", dest="adaptive", action="store_true", default=True,
                         help="自动估计环境噪声并据此定阈值（缺省开）")
@@ -168,7 +190,7 @@ def parse_args():
     parser.add_argument("--min-logprob", type=float, default=-1.00,
                         help="avg_logprob 低于这个值就丢弃该段（太不确定就别显示）")
     parser.add_argument("--self-check", action="store_true", help="只检查依赖与模型能否加载")
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 # ── 依赖 ─────────────────────────────────────────────────────────────────────
@@ -212,13 +234,17 @@ class UtteranceSegmenter:
 
     def __init__(self, samplerate, block_ms, silence_ms, min_speech_ms, max_speech_ms,
                  rms_threshold, preroll_ms, np,
-                 adaptive=True, rms_floor=0.004, noise_multiplier=4.0):
+                 adaptive=True, rms_floor=0.004, noise_multiplier=4.0,
+                 short_utterance_ms=800, short_silence_ms=1100):
         self.np = np
         self.block = int(samplerate * block_ms / 1000)
         self.silence_blocks = max(1, int(round(silence_ms / block_ms)))
         self.min_blocks = max(1, int(round(min_speech_ms / block_ms)))
         self.max_blocks = max(1, int(round(max_speech_ms / block_ms)))
         self.preroll_blocks = max(0, int(round(preroll_ms / block_ms)))
+        # "短句保护"：还不到 short_utterance_ms 的片段，要等 short_silence_ms 的静音才收句
+        self.short_utterance_blocks = max(1, int(round(short_utterance_ms / block_ms)))
+        self.short_silence_blocks = max(1, int(round(short_silence_ms / block_ms)))
         self.rms_threshold = rms_threshold
         self.buffer = []
         self.preroll = []
@@ -295,7 +321,17 @@ class UtteranceSegmenter:
         elif self.speaking:
             self.buffer.append(block)
             self.silent_run += 1
-            if self.silent_run >= self.silence_blocks:
+            # 自适应静音判定：**攒得还短的时候，要求更长的静音才收句**。
+            # 为什么：正常说话时词与词、短语与短语之间就有 300~500ms 的停顿，
+            # 用固定的 700ms 会把「这是一条 / 测试语音」切成交给 Whisper 的两段 ——
+            # 而 Whisper 对短片段（<1s）的识别质量急剧下降，实测就是这样出错的
+            # （"这是一条测试语音"被切成两段后，第二段被识别成"测试语音"甚至"你以後"）。
+            # 所以：已经攒够 short_utterance_blocks 的，按正常静音判定收句；
+            # 还没攒够的，多等一会儿，让句子有机会长到能认的时长。
+            needed = self.silence_blocks
+            if self.voiced < self.short_utterance_blocks:
+                needed = max(self.silence_blocks, self.short_silence_blocks)
+            if self.silent_run >= needed:
                 utterance = self._take()
                 if utterance is not None:
                     out.append(utterance)
@@ -363,14 +399,58 @@ def looks_like_hallucination(text: str) -> bool:
     return any(sample in lowered for sample in HALLUCINATION_SAMPLES)
 
 
-def transcribe(model, audio, language, min_logprob, no_speech_prob):
+# 各语种的"提示词"。这不是可有可无的润色 —— 实测它是准确率的关键之一：
+#   · 中文：明确要求普通话 + 简体，能压掉"输出成繁体"和一部分胡猜
+#     （Whisper 在中文上很容易吐繁体，早期 base/tiny 尤其明显）。
+#   · 葡语：给个巴葡口吻的引子，避免它按葡葡习惯拼词。
+# 实测（用户那段 14.7 秒录音，small + beam5）：
+#   不带提示词 → 「这测试语音」「真是不行」；带提示词 + 归一化 → 「这是一条测试语音。」全对。
+LANGUAGE_PROMPTS = {
+    "zh": "以下是普通话的句子，请用简体中文输出。",
+    "pt": "A seguir, frases em português do Brasil.",
+}
+
+
+def prompt_for(language, explicit):
+    """显式给的优先；没给就用该语种的缺省提示词。"""
+    if explicit:
+        return explicit
+    return LANGUAGE_PROMPTS.get(language or "", None)
+
+
+def normalize_peak(audio, target=0.9):
+    """把一段音频按峰值归一化。
+
+    为什么必须做：手机离嘴 20~30cm 录进来，电平常常只有峰值的 0.2 左右，
+    而 Whisper 是在电平相对正常的音频上训练的 —— 声音太小会显著掉准确率。
+    实测同一段录音：不归一化时 small 把「这是一条测试语音」听成「测试语音」，
+    归一化后全对。这一段成本几乎为零（一次数组乘法），收益却很大。
+
+    注意：numpy 在这个文件里是**惰性导入**的（让 --help 在没有 numpy 的机器上也能用），
+    所以这里不能用模块级的 np。（第一次写就踩了：NameError: name 'np' is not defined。）
+    """
+    import numpy as np
+    if audio.size == 0:
+        return audio
+    peak = float(np.max(np.abs(audio)))
+    if peak <= 1e-6:
+        return audio
+    return audio * (target / peak)
+
+
+def transcribe(model, audio, language, min_logprob, no_speech_prob,
+               beam_size=1, initial_prompt=None, do_normalize=True):
     """返回 (文字, 是否被丢弃, 丢弃原因)。"""
+    data = normalize_peak(audio) if do_normalize else audio
     segments, _info = model.transcribe(
-        audio,
+        data,
         language=language,
-        beam_size=1,            # 同传要快：贪心解码比 beam search 快得多，质量损失可接受
+        # beam search 比贪心准，代价是多花一点解码时间。GPU 上实测很便宜
+        # （14.7 秒音频：small beam5 只要 0.35~0.56 秒），所以缺省用 5 而不是 1。
+        beam_size=beam_size,
         vad_filter=False,       # 我们已经按能量切好了，不需要再切
         condition_on_previous_text=False,   # 句间独立，避免上一句的错误污染下一句
+        initial_prompt=initial_prompt,
     )
     kept = []
     dropped = None
@@ -589,6 +669,7 @@ def main():
         args.samplerate, args.block_ms, args.silence_ms,
         args.min_speech_ms, args.max_speech_ms, args.rms_threshold, args.preroll_ms, np,
         adaptive=args.adaptive, rms_floor=args.rms_floor, noise_multiplier=args.noise_multiplier,
+        short_utterance_ms=args.short_utterance_ms, short_silence_ms=args.short_silence_ms,
     )
     stats = Stats()
 
@@ -613,8 +694,13 @@ def main():
     def handle(utterance):
         seconds = len(utterance) / float(args.samplerate)
         start = time.perf_counter()
-        text, empty, reason = transcribe(model, utterance, active["language"],
-                                        args.min_logprob, args.no_speech_prob)
+        text, empty, reason = transcribe(
+            model, utterance, active["language"],
+            args.min_logprob, args.no_speech_prob,
+            beam_size=args.beam_size,
+            initial_prompt=prompt_for(active["language"], args.initial_prompt),
+            do_normalize=not args.no_normalize,
+        )
         elapsed = time.perf_counter() - start
         stats.add(seconds, elapsed, empty)   # 每段都记：短段的固定开销正是同传的敌人
         rtf = elapsed / seconds if seconds > 0 else float("nan")

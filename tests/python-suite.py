@@ -30,6 +30,7 @@ sys.path.insert(0, str(ROOT / "bridge"))
 
 from whisper_stream import (   # noqa: E402
     PcmFollower, UtteranceSegmenter, looks_like_hallucination, whisper_language_of,
+    normalize_peak, parse_args, prompt_for,
 )
 from whisper_transcribe import TARGET_RATE, load_audio                    # noqa: E402
 
@@ -80,11 +81,13 @@ def build(segments):
 
 
 def run_segmenter(audio, adaptive=True, rms_threshold=0.01, max_speech_ms=15000,
-                  min_speech_ms=300, silence_ms=700, preroll_ms=250):
+                  min_speech_ms=300, silence_ms=700, preroll_ms=250,
+                  short_utterance_ms=800, short_silence_ms=1100):
     segmenter = UtteranceSegmenter(
         TARGET_RATE, 100, silence_ms, min_speech_ms, max_speech_ms,
         rms_threshold, preroll_ms, np,
         adaptive=adaptive,
+        short_utterance_ms=short_utterance_ms, short_silence_ms=short_silence_ms,
     )
     found = []
     for start in range(0, len(audio), segmenter.block):
@@ -334,6 +337,53 @@ def main():
         check("能起 python 子进程（本机应能）", False, "找不到 python")
     except subprocess.TimeoutExpired:
         check("子进程不超时", False, "60 秒没结束")
+
+    # ── 11. 准确率相关的几个改动（都是"拿真实录音测出来"才加的）──────────────
+    #
+    # 背景：用户反馈"语音转文字的偏差很大"。用他自己那段录音做对照实验后发现，
+    # 主要问题不是模型大小（small/medium/large-v3 结果几乎一样），而是：
+    #   · 切得太碎 —— 0.03~0.27 秒的碎片送进识别只会产出胡话（「你以後」这种）；
+    #   · 电平没归一化 —— 手机远距离录音峰值只有 0.2 左右，Whisper 明显掉准确率；
+    #   · 缺提示词 —— 中文上容易输出繁体、也更容易胡猜；
+    #   · beam=1 —— 贪心解码比束搜索差一截，而 GPU 上束搜索很便宜。
+    heading("准确率 · 归一化 / 提示词 / 默认值")
+
+    check("峰值归一化把峰值抬到 0.9",
+          abs(float(np.max(np.abs(normalize_peak(tone(0.5) * 0.2)))) - 0.9) < 1e-5,
+          str(float(np.max(np.abs(normalize_peak(tone(0.5) * 0.2))))))
+    check("归一化不改变静音的静音性（全 0 不炸、也不会变出声音）",
+          float(np.max(np.abs(normalize_peak(np.zeros(1600, dtype=np.float32))))) == 0.0)
+    check("归一化不改变波形形状（只是整体缩放）",
+          bool(np.allclose(normalize_peak(tone(0.2) * 0.3) / 0.9, tone(0.2) * 0.3 / (0.3 * float(np.max(np.abs(tone(0.2))))), atol=1e-5)))
+
+    check("中文提示词要求普通话 + 简体（压掉繁体输出）",
+          "简体" in (prompt_for("zh", None) or "") and "普通话" in (prompt_for("zh", None) or ""),
+          str(prompt_for("zh", None)))
+    check("葡语提示词是巴葡口吻", "Brasil" in (prompt_for("pt", None) or ""), str(prompt_for("pt", None)))
+    check("认不出语种就不发提示词（别硬塞一个错的）",
+          prompt_for("xx", None) is None, str(prompt_for("xx", None)))
+    check("显式给的提示词优先", prompt_for("zh", "自定义") == "自定义")
+
+    args = parse_args([])
+    check("缺省用束搜索 beam=5（准确率明显更好，GPU 上很便宜）",
+          args.beam_size == 5, str(args.beam_size))
+    check("缺省做峰值归一化", args.no_normalize is False, str(args.no_normalize))
+    check("缺省丢弃 <500ms 的碎片（碎片只会变成胡话）",
+          args.min_speech_ms == 500, str(args.min_speech_ms))
+    check("缺省开启短句保护，但阈值克制（不把相邻两句合起来）",
+          args.short_utterance_ms == 800 and args.short_silence_ms == 1100,
+          f"{args.short_utterance_ms}/{args.short_silence_ms}")
+
+    # 短句保护的实际行为：<800ms 的碎片后面跟 0.8 秒停顿，**不该**就此收句，
+    # 而是等它接上后面的话；但正常长度的话仍然按 700ms 收句（不然字幕会拖）。
+    speech = build([("silence", 0.3), ("tone", 0.5), ("silence", 0.8),
+                    ("tone", 1.0), ("silence", 1.0)])
+    guarded, _ = run_segmenter(speech, short_utterance_ms=800, short_silence_ms=1100)
+    plain, _ = run_segmenter(speech, short_utterance_ms=0, short_silence_ms=0)
+    check("开短句保护：0.5s 的碎片与后面的话合成一段（不切成两半）",
+          len(guarded) == 1, f"切出 {len(guarded)} 段")
+    check("关掉保护：同样音频会被切成两段（说明这个开关确实在起作用）",
+          len(plain) == 2, f"切出 {len(plain)} 段")
 
     # ── 结果 ────────────────────────────────────────────────────────────────
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
