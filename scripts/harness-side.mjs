@@ -26,7 +26,7 @@
  * 有顺着链接删到检出文件的风险）。
  */
 
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -47,19 +47,29 @@ const HELP = `harness-side —— 常驻的 harness 侧进程（给手机 + 局�
   --cols <n>            AR 显示宽度（缺省 40；眼镜到手后按实测改）
   --lines <n>           AR 可见行数（缺省 3；眼镜到手后按实测改）
   --poll-ms <n>         收件箱轮询间隔（缺省 150）
+  --keep-inbox          保留收件箱里的旧内容（缺省会先清空，见下）
   --help
 
-配套启动（两个终端）：
+关于收件箱：**默认先清空**。
+  上一次运行留下的行会被插件重新翻译一遍，于是每次启动都先冒出几句旧字幕，
+  看起来像"刚收到了东西"。对常驻同传来说收件箱的语义应该是"这次运行收到了什么"。
+  想看旧内容被重放就加 --keep-inbox。
+
+配套启动（三个终端）：
   1) node scripts/harness-side.mjs
   2) node relay/lan-relay.mjs
+  3) node bridge/asr-bridge.mjs --inbox var/live/asr-inbox.jsonl \`
+       --whisper-follow var/live/audio-in.pcm --whisper-device cuda --whisper-compute float16
+  想随时看链路状态：node scripts/debug-window.mjs
 `
 
 export function parseArgs(argv) {
-  const options = { mode: 'live', dataDir: LIVE_DATA_DIR, cols: 40, lines: 3, pollMs: 150 }
+  const options = { mode: 'live', dataDir: LIVE_DATA_DIR, cols: 40, lines: 3, pollMs: 150, keepInbox: false }
   const takesValue = new Set(['data-dir', 'inbox', 'bus', 'cols', 'lines', 'poll-ms'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (token === '--offline') { options.mode = 'offline'; continue }
+    if (token === '--keep-inbox') { options.keepInbox = true; continue }
     if (token === '--help') { options.help = true; continue }
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
     const key = token.slice(2)
@@ -101,6 +111,22 @@ async function main() {
 
   mkdirSync(options.dataDir, { recursive: true })
 
+  // ── 收件箱：默认从干净的开始 ────────────────────────────────────────────
+  // 为什么默认清空：上一次运行留下的行会被插件**重新翻译一遍**，于是每次启动都先
+  // 冒出几句莫名其妙的旧字幕（"今天的会议改到下午三点"之类），看起来像是刚收到了东西。
+  // 对"常驻同传"来说，收件箱的语义应该是"这次运行收到了什么"，所以默认从空开始。
+  // 想保留旧内容（比如想手动重放一遍）就加 --keep-inbox。
+  let droppedLines = 0
+  if (!options.keepInbox) {
+    try {
+      const old = readFileSync(options.inbox, 'utf-8')
+      droppedLines = old.split('\n').filter(line => line.trim() !== '').length
+      writeFileSync(options.inbox, '', 'utf-8')
+    } catch {
+      // 文件还不存在是正常的（第一次跑）
+    }
+  }
+
   const composition = buildComposition({
     mode: options.mode,
     header: '# harness 侧常驻组合（由 scripts/harness-side.mjs 生成）',
@@ -130,6 +156,11 @@ async function main() {
   console.log('─'.repeat(68))
   console.log(`  翻译后端    ${options.mode === 'live' ? '真实模型（deepseek-official）' : '离线例句表（只认得剧本 14 句）'}`)
   console.log(`  收件箱      ${options.inbox}`)
+  if (options.keepInbox) {
+    console.log('              （保留了旧内容：--keep-inbox，旧行会被重新翻译一遍）')
+  } else if (droppedLines > 0) {
+    console.log(`              （启动时清掉了上次留下的 ${droppedLines} 行旧内容；想保留加 --keep-inbox）`)
+  }
   console.log(`  字幕总线    ${options.bus}`)
   console.log(`  显示预算    ${options.cols} 列 × ${options.lines} 行`)
   if (created > 0) console.log(`  组合目录    ${composeDir}`)

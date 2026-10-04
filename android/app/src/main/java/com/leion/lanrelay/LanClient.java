@@ -176,8 +176,18 @@ public class LanClient {
         while (running) {
             try {
                 JSONObject response = request("/frame?since=" + seq, "GET", null, 35000);
+                long serverSeq = response.optLong("seq", seq);
+                // 序号重置（转发进程重启过）：把本地序号拉回服务端的值。
+                // 不做这一步的话，我们记的序号会永远大于服务端，之后每一轮都只能收到
+                // "没有新帧"，字幕再也不会上屏 —— 而且完全不会报错，最难查。
+                if (serverSeq < seq) {
+                    seq = serverSeq;
+                }
+                if (response.optBoolean("reset", false)) {
+                    listener.onStatus("电脑侧序号已重置（转发进程重启过），已自动跟随");
+                }
                 if (response.optBoolean("changed", false)) {
-                    seq = response.optLong("seq", seq);
+                    seq = serverSeq;
                     JSONObject frame = response.optJSONObject("frame");
                     if (frame != null) {
                         JSONArray lines = frame.optJSONArray("lines");

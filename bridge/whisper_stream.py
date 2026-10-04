@@ -102,6 +102,11 @@ def parse_args():
     parser.add_argument("--stop-after-idle", type=float, default=None,
                         help="尾随模式下，连续多少秒没有新音频就收尾退出（缺省不退出）。"
                              "手机停止录音后用它自动结束；测试也靠它自动收敛")
+    parser.add_argument("--no-sidecar-lang", action="store_true",
+                        help="不听手机发来的语种（audio-in.lang），一律用 --language。"
+                             "尾随时**缺省听手机的** —— 手机上切「听葡语/听中文」要能生效。"
+                             "但如果你在同一个数据目录上跑离线测试，那里可能留着上一次"
+                             "手机用过的语种，这时用这个开关强制用命令行的值")
     parser.add_argument("--realtime", action="store_true",
                         help="文件模式按真实时间喂块（不加速），用来测真实延迟")
     parser.add_argument("--stats", action="store_true", help="退出时打印统计（延迟、RTF）")
@@ -597,15 +602,24 @@ def main():
             follow_rate_path=args.follow_rate,
         )
         rate = follower.read_rate()
-        # 手机可能已经把"在听哪种语言"发过来了（手机上切按钮时随音频一起发）。
-        # 有就以它为准 —— 它比命令行上的 --language 新。
-        language = follower.read_language(default=args.language)
-        if language is not None:
-            active["language"] = language
-        # 启动这次读取也填了 lang_notice；不清掉的话，循环第一轮会把同一件事再报一遍
-        follower.lang_notice = None
+        # 语种：**手机的旁文件优先于命令行的 --language**。
+        # 为什么这样定：手机上那个「听葡语/听中文」按钮是用户当下意图的唯一来源，
+        # 而 --language（或桥的 --from）是启动时写死的。手机中途切了按钮还要重启识别进程
+        # 才能生效的话，这个按钮就成了摆设。
+        # 副作用：在同一个数据目录上跑离线测试时，可能读到上一次手机留下的语种。
+        # 那种情况下用 --no-sidecar-lang 强制用命令行的值。
+        language = args.language
+        if not args.no_sidecar_lang:
+            language = follower.read_language(default=args.language)
+            if language is not None:
+                active["language"] = language
+            # 启动这次读取也填了 lang_notice；不清掉的话，循环第一轮会把同一件事再报一遍
+            follower.lang_notice = None
+        source = '命令行'
+        if not args.no_sidecar_lang and follower.language is not None and follower.language != whisper_language_of(args.language):
+            source = f'来自 {follower.lang_path.name}（手机上的语言按钮）'
         print(f"[whisper_stream] 尾随 {args.follow}（{rate} Hz，"
-              f"目标 {TARGET_RATE} Hz，语种 {active['language'] or '自动判定'}）；Ctrl-C 结束",
+              f"目标 {TARGET_RATE} Hz，语种 {active['language'] or '自动判定'}，{source}）；Ctrl-C 结束",
               file=sys.stderr, flush=True)
         print("[whisper_stream] 等手机开始录音上传…", file=sys.stderr, flush=True)
 
@@ -629,15 +643,16 @@ def main():
                     print(f"[whisper_stream] 采样率变为 {last_notice} Hz，已开始重采样",
                           file=sys.stderr, flush=True)
                 # 手机切了语种就跟着切 —— 下一句立刻生效，不用停止录音
-                language = follower.read_language(default=active["language"])
-                if follower.lang_notice is not None and follower.lang_notice[0] != last_lang_tag:
-                    tag, code = follower.lang_notice
-                    last_lang_tag = tag
-                    active["language"] = code
-                    print(f"[whisper_stream] 语种变为 {tag}（Whisper 码 {code}），下一句起生效",
-                          file=sys.stderr, flush=True)
-                elif language != active["language"]:
-                    active["language"] = language
+                if not args.no_sidecar_lang:
+                    language = follower.read_language(default=active["language"])
+                    if follower.lang_notice is not None and follower.lang_notice[0] != last_lang_tag:
+                        tag, code = follower.lang_notice
+                        last_lang_tag = tag
+                        active["language"] = code
+                        print(f"[whisper_stream] 语种变为 {tag}（Whisper 码 {code}），下一句起生效",
+                              file=sys.stderr, flush=True)
+                    elif language != active["language"]:
+                        active["language"] = language
                 if blocks:
                     idle_blocks = 0
                     for block in blocks:

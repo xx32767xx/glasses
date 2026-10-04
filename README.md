@@ -16,7 +16,7 @@
 
 ```powershell
 node scripts/generate.mjs        # 从核心逻辑生成两个产物
-node tests/run-all.mjs           # 139 项断言：新鲜度门禁 + 两个包装版本各跑一遍 + 一致性对比
+node tests/run-all.mjs           # 152 项断言：新鲜度门禁 + 两个包装版本各跑一遍 + 一致性对比
 python tests/python-suite.py     # 另 35 项：语音分段器 + 音频尾随 + 语种转换（不加载模型，很快）
                                  # + ASR 桥契约 + 局域网契约 + 真实 Cordis 组合
 
@@ -64,12 +64,13 @@ node bridge/asr-bridge.mjs --inbox var/live/asr-inbox.jsonl --from pt-BR `
 | `relay/lan-relay.mjs` | **局域网转发**：手机 ↔ 电脑，5 个端点 + 共享密钥（含 `POST /audio` 录音上传，见下） |
 | `scripts/harness-side.mjs` | 常驻的 harness 侧进程（真实组合 + 插件，文件模式） |
 | `scripts/fake-phone.mjs` | **假手机**：没有手机时按同样的协议逐块上传音频，用来验证「录音上传」那条路 |
+| `scripts/debug-window.mjs` | **调试窗口**：实时显示"音频/收件箱/字幕总线/转发进程"四个环节，并直接判断**断在哪一环** |
 | `android/` | **安卓 App「虚拟眼镜」**：录音上传（识别在电脑上做）+ 40×3 字幕面板（零第三方依赖） |
 | `lib/artifacts.mjs` · `scripts/generate.mjs` | 产物生成（测试与 CLI 共用同一份实现） |
 | `lib/paths.mjs` | **运行时路径与文件名的唯一来源**（数据不能乱删的分层就是它定的，见 `docs/05`） |
 | `lib/composition.mjs` · `lib/fs-node.mjs` · `lib/keepalive.mjs` | 组合生成与两个共用的小插件 |
 | `lib/real-tools.mjs` · `lib/loader-links.mjs` | 加载检出里真实的构建产物 / 建 loader junction |
-| `tests/` | 沙箱复刻 + 两个适配器 + 契约套件 + 桥套件 + 局域网套件 + 翻译后端接缝（139 项） |
+| `tests/` | 沙箱复刻 + 两个适配器 + 契约套件 + 桥套件 + 局域网套件 + 翻译后端接缝（152 项） |
 | `tests/python-suite.py` | **语音分段器与音频尾随**验证（35 项，不加载模型，含一条静默失败的回归测试） |
 | `tests/live/` | **真实 Cordis 组合**：真实 `ToolRuntime` + 真实执行流水线 + 真实 `timer` + 真实 `output.schema` 校验（组合现场生成，见该目录 README） |
 | `skills/leion-interpreter/SKILL.md` | **同传操作规范**：巴葡 vs 葡葡用词差异表、字幕长度纪律、调用顺序 |
@@ -163,7 +164,7 @@ node bridge/asr-bridge.mjs --inbox var/live/asr-inbox.jsonl --from pt-BR `
 | 事项 | 状态 |
 |---|---|
 | schema DSL / 参数校验 / 输出校验 | ✅ 用**真实** `defineTool` + `validateJsonSchemaValue` |
-| 7 个工具契约、排版、双向语向、节流、异常 | ✅ 139 项断言，两个版本各跑一遍，全绿 |
+| 7 个工具契约、排版、双向语向、节流、异常 | ✅ 152 项断言，两个版本各跑一遍，全绿 |
 | ASR 收件箱（半行/坏行/强制语种/stop-drain-reset） | ✅ 离线契约 + **真实 timer 端到端** |
 | **ASR 桥**（断句 / 停顿断句 / UTF-8 重音 / 协议不被破坏 / replay 端到端） | ✅ 19 项契约 + 实测 CLI |
 | **语音分段器**（切句 / 自适应门槛 / 防幻听 / 前导缓存 / 短响丢弃） | ✅ 35 项断言，`tests/python-suite.py`（含一条静默失败的回归测试） |
@@ -171,6 +172,8 @@ node bridge/asr-bridge.mjs --inbox var/live/asr-inbox.jsonl --from pt-BR `
 | **录音上传整条路**（手机音频 → 继电器落盘 → 识别 → 收件箱） | ✅ 用真实中文录音跑通：`fake-phone.mjs` 逐块上传 → 收件箱出现 6 句正确中文 |
 | **安卓 App 的录音上传** | ✅ 真构建出 APK（35 KB），并核对 dex 里有 `MicUploader` / `&lang=`，**没有**任何 `SpeechRecognizer` 残留 |
 | **语种随音频下发**（切「听葡语/听中文」录音中即时生效） | ✅ 端到端验过：手机侧改语种 → `audio-in.lang` → 识别进程换语种，下一句生效 |
+| **调试窗口**（把"断在哪一环"变成结论） | ✅ 11 项断言：六种卡住形态各指向正确环节 + 真读文件（空目录/坏 JSON 都不崩） |
+| **帧序号复位**（转发进程重启后手机不再失聪） | ✅ relay 套件 2 项：客户端序号超前时明确回 reset，正常时不乱发帧 |
 | 两个版本一致性（含 schema 与 render） | ✅ 逐字段对比 |
 | **正式包装进真实 Cordis 组合** | ✅ 真实 `ToolRuntime` 注册 + 真实执行流水线 + 真实 `output.schema` 校验（`tests/live/`） |
 | **桥 → 收件箱 → 真实 timer → 真实流水线** 端到端 | ✅ `tests/live/` 里跑通（已处理 2 条、错误 0 条） |

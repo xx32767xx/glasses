@@ -89,7 +89,8 @@ const HELP = `lan-relay —— 手机 ↔ 电脑 的局域网转发进程
   --audio-lang <path>   语种旁文件（缺省 <data-dir>/audio-in.lang）
   --poll-hold-ms <n>    长轮询最长挂起时间（缺省 25000）
   --bus-poll-ms <n>     字幕总线轮询间隔（缺省 60）
-  --quiet               少打印
+  --quiet               关掉调试输出（收到的音频/文字/字幕都不打印）
+  --verbose             每一块音频都打印（缺省是每秒汇总一行）
   --help
 
 端点（手机侧要用）
@@ -111,6 +112,7 @@ export function parseArgs(argv) {
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
     const key = token.slice(2)
     if (key === 'quiet') { options.quiet = true; continue }
+    if (key === 'verbose') { options.verbose = true; continue }
     if (key === 'help') { options.help = true; continue }
     if (!takesValue.has(key)) throw new Error(`未知选项 --${key}（用 --help 看用法）`)
     const value = argv[index + 1]
@@ -203,6 +205,20 @@ export async function startRelay(rawOptions = {}) {
   const secret = await resolveSecret(options)
   await mkdir(options.dataDir, { recursive: true })
 
+  /**
+   * 调试输出：默认**开着**（除了 --quiet）。
+   *
+   * 为什么默认开：手机上传音频之后如果电脑端一声不响，用户完全无法判断
+   * "音频到底有没有上来" —— 这正是最难查的形态（不报错、也没反应）。
+   * 所以收到东西就在这个终端里打一行。怕刷屏的话用 --quiet 关掉，
+   * 或者用 --verbose 看每一块（缺省是每秒汇总一次）。
+   */
+  const debug = options.quiet
+    ? () => {}
+    : (...args) => console.log(`[${new Date().toTimeString().slice(0, 8)}]`, ...args)
+  /** 音频按秒汇总，避免每秒好几行把终端刷爆 */
+  let audioLogAt = 0
+
   const state = {
     /** 已读到的字幕总线原始内容（内容变了才算新帧） */
     busRaw: '',
@@ -261,6 +277,9 @@ export async function startRelay(rawOptions = {}) {
     state.seq += 1
     state.frameCount += 1
     state.lastFrame = frame
+    // 调试：字幕总线一变就报一行 —— 手机应该马上能看到这一帧
+    debug(`📺 字幕已更新（第 ${state.seq} 帧）[${frame.speaker ?? '?'} / ${frame.lang ?? '?'}] `
+      + `${frame.text ?? ''}`)
     notifyWaiters()
   }
 
@@ -370,6 +389,7 @@ export async function startRelay(rawOptions = {}) {
         }
         state.sayCount += 1
         state.inboxLines = state.writer.stats.lines
+        debug(`📥 收到手机文字：${text}（收件箱第 ${state.inboxLines} 行）`)
         send(response, 200, { ok: true, inboxLines: state.inboxLines, ...info() })
         return
       }
@@ -458,6 +478,19 @@ export async function startRelay(rawOptions = {}) {
         }
 
         // 顺便让 /status 的计数准一点：手机端靠它确认音频真的在往上走
+        const totalSeconds = state.audioRateValue ? state.audioBytes / 2 / state.audioRateValue : 0
+        // 调试：让这个终端能直接看出"音频上来了"。
+        // 缺省每秒汇总一行（不是每块一行）——音频是每秒一块，逐块打会刷屏；
+        // 而且"每秒都在涨"这个信息本身就够判断链路了。
+        // 手机是每秒一块，所以阈值取 900ms 而不是 1000ms ——
+        // 卡在 1000 的话，抖动会让大约一半的块被吞掉，看起来像"音频断断续续"。
+        const nowMs = Date.now()
+        if (options.verbose || fresh || nowMs - audioLogAt >= 900) {
+          audioLogAt = nowMs
+          debug(`📥 收到手机音频：+${body.length} 字节（第 ${state.audioChunks} 块）`
+            + ` → 累计 ${totalSeconds.toFixed(1)}s @ ${state.audioRateValue ?? rate}Hz`
+            + `，语种 ${state.audioLangValue ?? lang}${fresh ? '（新一次录音，已清空）' : ''}`)
+        }
         send(response, 200, {
           ok: true,
           bytes: body.length,
@@ -465,7 +498,7 @@ export async function startRelay(rawOptions = {}) {
           chunks: state.audioChunks,
           rate: state.audioRateValue ?? rate,
           lang: state.audioLangValue ?? lang,
-          seconds: state.audioRateValue ? state.audioBytes / 2 / state.audioRateValue : 0,
+          seconds: totalSeconds,
           fresh,
         })
         return
@@ -478,7 +511,29 @@ export async function startRelay(rawOptions = {}) {
           send(response, 400, { ok: false, error: 'since 必须是非负数字' })
           return
         }
+        // 客户端记的序号比服务端**大** —— 这只可能是转发进程重启过（seq 从 0 重新开始），
+        // 而手机还揣着重启前的旧序号。
+        //
+        // 不处理的话会非常难查：`state.seq > since` 永远不成立，于是每一次长轮询都挂到超时，
+        // 客户端只会周期性收到 changed:false，**永远等不到那个不会到来的序号**。
+        // 表现就是用户说的"手机收不到任何回复，但也不报错" —— 因为从协议角度看一切正常。
+        // （这个坑真踩到了：电脑侧字幕明明在写，手机上却永远是空的。）
+        //
+        // 所以这里主动告诉它"序号重置了"，并把当前帧一并给它，让它立刻恢复。
+        if (since > state.seq) {
+          debug(`↩ 手机的序号(${since}) 比服务端(${state.seq}) 大 —— 转发进程重启过，已让它复位`)
+          send(response, 200, {
+            ok: true,
+            reset: true,
+            changed: state.lastFrame !== null,
+            seq: state.seq,
+            frame: state.lastFrame,
+            ...info(),
+          })
+          return
+        }
         if (state.seq > since) {
+          debug(`➡ 手机取字幕（since=${since}），立即给第 ${state.seq} 帧`)
           send(response, 200, { ok: true, changed: true, seq: state.seq, frame: state.lastFrame, ...info() })
           return
         }
@@ -605,8 +660,13 @@ async function main() {
   console.log(`  共享密钥（手机上要填这个）  ${relay.secret}`)
   console.log('')
   console.log('  手机端「录音上传」还需要另一个进程把音频变成文字（识别在电脑上跑）：')
-  console.log(`      python bridge/whisper_stream.py --follow "${options.audio}" --language pt | \\`)
-  console.log(`        node bridge/asr-bridge.mjs --inbox "${options.inbox}" --from pt-BR`)
+  console.log(`      node bridge/asr-bridge.mjs --inbox "${options.inbox}" --whisper-follow "${options.audio}" \\`)
+  console.log('        --whisper-device cuda --whisper-compute float16')
+  console.log('  （不要写成 python … | node … 管道：PowerShell 会缓冲 stdout，而识别进程一直不退出，')
+  console.log('    于是桥一行都收不到。见 bridge/whisper_stream.py 头部说明。）')
+  console.log('')
+  console.log('  想看链路走到哪一步（另开一个终端，只读不改）：')
+  console.log(`      node scripts/debug-window.mjs --url http://127.0.0.1:${options.port} --secret ${secret}`)
   console.log('')
   const addresses = lanAddresses()
   const real = addresses.filter(a => !looksVirtual(a.name))

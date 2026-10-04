@@ -23,6 +23,7 @@ import { dynamicAdapter, formalAdapter, FORMAL_PATH } from './host-adapters.mjs'
 import { runContractSuite, makeFakeLlm, makeFakeFs, SAMPLE_ARGS } from './contract-suite.mjs'
 import { runBridgeSuite } from './bridge-suite.mjs'
 import { runRelaySuite } from './relay-suite.mjs'
+import { runDebugSuite } from './debug-suite.mjs'
 import { runLive } from './live/run.mjs'
 
 let passed = 0
@@ -145,7 +146,12 @@ await runBridgeSuite(helpers)
 heading('局域网转发（手机 ↔ 电脑，跑在真实 HTTP 上）')
 await runRelaySuite(helpers)
 
-// ── 6. 真实 Cordis 组合（真实 ToolRuntime + 真实执行流水线） ─────────────────
+// ── 6. 调试窗口（把"断在哪一环"变成结论）───────────────────────────────────
+
+heading('调试窗口（判断"断在哪一环"，纯函数 + 真读文件）')
+await runDebugSuite(helpers)
+
+// ── 7. 真实 Cordis 组合（真实 ToolRuntime + 真实执行流水线） ─────────────────
 
 heading('真实 Cordis 组合（真实 ToolRuntime，不是复刻的检查器）')
 await it('plugin/index.mjs 装进真实组合后能被真实流水线注册与执行', async () => {

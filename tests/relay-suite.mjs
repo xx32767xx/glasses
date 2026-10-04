@@ -381,6 +381,32 @@ export async function runRelaySuite({ it, check, assert }) {
     check('64KB 仍然能过（证明用的不是 8KB 那个门槛）', medium.status === 200, String(medium.status))
   })
 
+  // ── 6. 序号复位（手机收不到字幕的那个坑）──────────────────────────────────
+  //
+  // 转发进程重启后 seq 从 0 重新开始，而手机还揣着重启前的旧序号。
+  // 不处理的话 `state.seq > since` 永远不成立 → 每次长轮询都挂到超时 →
+  // 手机**永远等不到那个不会到来的序号**，表现成"没有任何回复，也不报错"。
+  // 这个坑真踩到了（电脑侧字幕在写，手机上永远是空的），所以钉住它。
+
+  await it('/frame：客户端的 since 比服务端大时，明确告诉它序号重置了', async () => {
+    const result = await call('/frame?since=9999')
+    check('200', result.status === 200, String(result.status))
+    check('带 reset 标记', result.json.reset === true, JSON.stringify(result.json))
+    check('报出服务端真实的 seq', result.json.seq === relay.state.seq,
+          `${result.json.seq} vs ${relay.state.seq}`)
+    check('不谎报有新帧（没有帧时 changed=false）',
+          result.json.changed === (result.json.frame !== null), JSON.stringify(result.json))
+    check('**不是**挂到超时（挂住的话这里不会立刻返回）', true)
+  })
+
+  await it('/frame：序号正常时行为不变（不会因为加了 reset 就乱发帧）', async () => {
+    const since = relay.state.seq
+    const current = await call(`/frame?since=${since}`)
+    check('没有比 since 更新的帧时不谎报 changed', current.json.changed === false,
+          JSON.stringify(current.json))
+    check('这种情况下也不带 reset', current.json.reset === undefined, JSON.stringify(current.json))
+  })
+
   await relay.close()
   await rm(TMP, { recursive: true, force: true })
 }
