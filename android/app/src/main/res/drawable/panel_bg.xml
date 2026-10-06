@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 虚拟眼镜屏幕的边框：让它看起来像一块"设备屏幕"，而不是一段普通文字 -->
+<!--
+  「眼镜屏幕」：深色、圆角、细边 —— 让它一眼看着像一块设备屏幕而不是一段普通文字。
+  刻意不用纯黑（#000）：纯黑在手机上边缘会糊在一起，看不出屏幕边界。
+-->
 <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
-    <solid android:color="#11181C" />
-    <stroke android:width="2dp" android:color="#3A4750" />
-    <corners android:radius="10dp" />
+    <solid android:color="@color/screen" />
+    <stroke android:width="1dp" android:color="@color/screen_line" />
+    <corners android:radius="16dp" />
 </shape>

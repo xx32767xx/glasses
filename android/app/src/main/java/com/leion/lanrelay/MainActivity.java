@@ -4,13 +4,17 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
 import android.graphics.Paint;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.TypedValue;
+import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageButton;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import java.util.ArrayList;
@@ -50,13 +54,21 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
     private TextView panel;
     private TextView panelCaption;
+    private TextView panelBadge;
     private TextView status;
+    private TextView connChip;
+    private TextView recordLabel;
+    private TextView pillThem;
+    private TextView pillMe;
+    private TextView settingsToggle;
+    private View statusDot;
+    private LinearLayout settingsBox;
     private EditText host;
     private EditText secret;
     private EditText manualText;
     private Button connectButton;
-    private Button langButton;
-    private Button recordButton;
+    private ImageButton langButton;
+    private ImageButton recordButton;
     private Button sendButton;
 
     private LanClient client;
@@ -78,7 +90,15 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
         panel = findViewById(R.id.panel);
         panelCaption = findViewById(R.id.panelCaption);
+        panelBadge = findViewById(R.id.panelBadge);
         status = findViewById(R.id.status);
+        connChip = findViewById(R.id.connChip);
+        recordLabel = findViewById(R.id.recordLabel);
+        pillThem = findViewById(R.id.pillThem);
+        pillMe = findViewById(R.id.pillMe);
+        settingsToggle = findViewById(R.id.settingsToggle);
+        statusDot = findViewById(R.id.statusDot);
+        settingsBox = findViewById(R.id.settingsBox);
         host = findViewById(R.id.host);
         secret = findViewById(R.id.secret);
         manualText = findViewById(R.id.manualText);
@@ -94,12 +114,32 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         updateLanguageLabel();
 
         connectButton.setOnClickListener(v -> toggleConnection());
+        // 语言方向条整条都能点：点哪一侧就切到哪一侧（和 Google 翻译一样）
         langButton.setOnClickListener(v -> toggleLanguage());
+        pillThem.setOnClickListener(v -> toggleLanguage());
+        pillMe.setOnClickListener(v -> toggleLanguage());
         recordButton.setOnClickListener(v -> toggleRecording());
         sendButton.setOnClickListener(v -> sendManualText());
+        settingsToggle.setOnClickListener(v -> toggleSettings());
 
-        renderPanel(new String[] { "（等待字幕…）" });
+        // 设置区默认收起，把界面让给字幕；但**没配过地址时必须展开** ——
+        // 否则第一次打开的人只看到一块空屏幕和一个点不动的按钮，不知道该干什么。
+        settingsBox.setVisibility(host.getText().toString().trim().isEmpty()
+                ? View.VISIBLE : View.GONE);
+
+        renderPanel(new String[] { getString(R.string.panel_placeholder) });
         applyPanelMetrics();
+        setDot(R.color.idle);
+    }
+
+    private void toggleSettings() {
+        settingsBox.setVisibility(settingsBox.getVisibility() == View.VISIBLE
+                ? View.GONE : View.VISIBLE);
+    }
+
+    /** 顶栏那颗小圆点：一眼看出"没连 / 连上 / 正在录 / 出错"。 */
+    private void setDot(int colorRes) {
+        statusDot.setBackgroundTintList(ColorStateList.valueOf(getColor(colorRes)));
     }
 
     @Override
@@ -122,7 +162,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             client.stop();
             client = null;
             connectButton.setText(R.string.connect);
-            panelCaption.setText("未连接");
+            connChip.setText(R.string.state_offline);
+            setDot(R.color.idle);
             setStatus("已断开。");
             return;
         }
@@ -130,6 +171,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         String url = host.getText().toString().trim();
         String key = secret.getText().toString().trim();
         if (url.isEmpty()) {
+            settingsBox.setVisibility(View.VISIBLE);      // 缺地址就把设置摊开，别让人干瞪眼
             setStatus("先填电脑地址，例如 http://192.168.1.108:8788（转发进程启动时会打印）");
             return;
         }
@@ -149,7 +191,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
         client = new LanClient(url, key, this);
         connectButton.setText(R.string.disconnect);
-        panelCaption.setText("连接中…");
+        connChip.setText(R.string.state_connecting);
+        setDot(R.color.warn);
         setStatus("正在连接 " + url + " …");
         client.start();
     }
@@ -173,11 +216,15 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     }
 
     private void updateLanguageLabel() {
-        langButton.setText("pt-BR".equals(listenLanguage) ? "听葡语" : "听中文");
-        String hint = "pt-BR".equals(listenLanguage)
+        boolean listeningPt = "pt-BR".equals(listenLanguage);
+        // 高亮"正在听谁说"的那一侧。整条都能点，点哪边就切到哪边。
+        pillThem.setBackgroundResource(listeningPt ? R.drawable.tap_pill_active : R.drawable.tap_pill);
+        pillMe.setBackgroundResource(listeningPt ? R.drawable.tap_pill : R.drawable.tap_pill_active);
+        pillThem.setTextColor(getColor(listeningPt ? R.color.on_brand : R.color.ink));
+        pillMe.setTextColor(getColor(listeningPt ? R.color.ink : R.color.on_brand));
+        panelCaption.setText(listeningPt
                 ? "对方说葡语 → 眼镜上显示中文字幕"
-                : "你说中文 → 译成巴葡（眼镜上只做回显，对方需要 TTS 才能听到）";
-        panelCaption.setText(hint);
+                : "你说中文 → 译成巴葡（眼镜上只做回显，对方需要 TTS 才能听到）");
     }
 
     @Override
@@ -250,7 +297,15 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
     private void updateRecordButton() {
         boolean active = uploader != null && uploader.isRunning();
-        recordButton.setText(active ? R.string.stop_record : R.string.start_record);
+        boolean online = client != null && client.isRunning();
+        // 一个圆钮承担两种状态：麦克风（待机）↔ 方块（录音中），颜色也跟着换。
+        // 这样"正在录"在余光里就能看出来 —— 走路时看手机不方便。
+        recordButton.setImageResource(active ? R.drawable.ic_stop : R.drawable.ic_mic);
+        recordButton.setBackgroundResource(active ? R.drawable.tap_mic_active : R.drawable.tap_mic_idle);
+        recordButton.setContentDescription(getString(
+                active ? R.string.stop_record : R.string.start_record));
+        recordLabel.setText(active ? R.string.stop_record : R.string.start_record);
+        setDot(active ? R.color.rec : (online ? R.color.ok : R.color.idle));
     }
 
     @Override
@@ -305,7 +360,9 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         main.post(() -> {
             cols = serverCols > 0 ? serverCols : 40;
             lineBudget = serverLineBudget > 0 ? serverLineBudget : 3;
-            panelCaption.setText("已连接 " + device + " · " + cols + " 列 × " + lineBudget + " 行");
+            connChip.setText("已连接");
+            panelBadge.setText("眼镜显示 · " + cols + " 列 × " + lineBudget + " 行");
+            setDot(uploader != null && uploader.isRunning() ? R.color.rec : R.color.ok);
             applyPanelMetrics();
         });
     }
@@ -332,6 +389,10 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                     client = null;
                 }
                 connectButton.setText(R.string.connect);
+                connChip.setText(R.string.state_offline);
+                setDot(R.color.warn);
+                // 连不上通常是地址/密钥写错了，直接把设置摊开
+                settingsBox.setVisibility(View.VISIBLE);
             }
         });
     }

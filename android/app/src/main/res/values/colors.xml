@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  配色与尺寸。参考的是 Google 翻译 / 讯飞那种"白底 + 一个主色 + 大圆麦克风"的路子：
+  · 界面本身尽量素（白卡片 + 浅灰底 + 深灰字），把注意力全留给字幕
+  · 主色只有一个（蓝），只用在"当前状态"和主操作上，别处一律不用
+  · 录音中用红色 —— 这是唯一允许抢占注意力的颜色
+  ·
+  注意：本工程**不引入 AndroidX / Material**，所以这些都是自己写的 drawable，
+  没有 MaterialButton 之类可用。好处是 APK 小、构建稳。
+-->
+<resources>
+    <!-- 主色：只在主操作与"当前选中"上出现 -->
+    <color name="brand">#1A73E8</color>
+    <color name="brand_dark">#1557B0</color>
+    <color name="brand_soft">#E8F0FE</color>
+
+    <!-- 录音态：唯一允许抢注意力的颜色 -->
+    <color name="rec">#E8453C</color>
+    <color name="rec_dark">#C5221F</color>
+
+    <!-- 状态点 -->
+    <color name="ok">#34A853</color>
+    <color name="warn">#F9AB00</color>
+    <color name="idle">#BDC1C6</color>
+
+    <!-- 页面与卡片 -->
+    <color name="page">#F1F3F4</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="ink">#202124</color>
+    <color name="ink_soft">#5F6368</color>
+    <color name="ink_faint">#80868B</color>
+    <color name="line">#DADCE0</color>
+
+    <!-- "眼镜屏幕"：故意做成深色，让它一眼看着像一块设备屏幕而不是一段文字 -->
+    <color name="screen">#0E1418</color>
+    <color name="screen_line">#2A3439</color>
+    <color name="screen_ink">#E8F0F2</color>
+    <color name="screen_ink_dim">#7C8B93</color>
+
+    <color name="on_brand">#FFFFFF</color>
+    <color name="ripple_light">#1F000000</color>
+    <color name="ripple_dark">#33FFFFFF</color>
+</resources>

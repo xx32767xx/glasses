@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 麦克风按钮（录音中）：红色渐变圆。按钮形状不变、只换颜色，
+     这样"正在录"这件事在余光里也能看出来（开车/走路时看手机不方便） -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="@color/ripple_dark">
+    <item>
+        <shape android:shape="oval">
+            <gradient
+                android:angle="270"
+                android:startColor="#FF6B60"
+                android:endColor="@color/rec" />
+        </shape>
+    </item>
+</ripple>

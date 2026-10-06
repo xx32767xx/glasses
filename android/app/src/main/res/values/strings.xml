@@ -2,13 +2,36 @@
 <resources>
     <string name="app_name">虚拟眼镜</string>
     <string name="title">虚拟眼镜 · 开发者模式</string>
+
+    <!-- 顶栏状态标签 -->
+    <string name="state_offline">未连接</string>
+    <string name="state_connecting">连接中…</string>
+
+    <!-- 语言方向条：高亮的那一侧 = 正在听谁说 -->
+    <string name="side_them">对方 · Português</string>
+    <string name="side_me">我 · 中文</string>
+    <string name="swap_sides">交换方向</string>
+
+    <!-- 眼镜屏幕 -->
+    <string name="panel_badge_default">眼镜显示 · 40 列 × 3 行</string>
+    <string name="panel_placeholder">（等待字幕…）</string>
+
+    <!-- 连接设置（默认收起） -->
+    <string name="settings">连接设置</string>
     <string name="hint_host">http://192.168.1.108:8788</string>
     <string name="hint_secret">共享密钥</string>
     <string name="connect">连接</string>
     <string name="disconnect">断开</string>
-    <string name="start_record">开始录音上传（识别在电脑上做）</string>
-    <string name="stop_record">停止录音上传</string>
+    <string name="settings_help">地址和密钥在电脑上启动转发进程时会打印出来。手机要和电脑在同一个 WiFi 里。</string>
+
+    <!-- 录音上传：这台设备上唯一真能用的语音通道 -->
+    <string name="start_record">点击开始录音上传</string>
+    <string name="stop_record">录音中 · 点击停止</string>
+    <string name="mic_hint">对着手机说话，电脑识别后字幕出现在上方</string>
+
+    <!-- 手输通道：不依赖语音识别 -->
     <string name="hint_manual">手输一句话（不依赖语音识别）</string>
     <string name="send">发送</string>
-    <string name="panel_placeholder">（等待字幕…）</string>
+
+    <string name="status_hint">填好电脑的地址和共享密钥，点连接。</string>
 </resources>

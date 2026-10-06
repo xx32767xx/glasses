@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 麦克风按钮（待机）：主色渐变圆。这是整个界面唯一的"大圆钮"，
+     像 Google 翻译那样把它放在最下方正中，一眼就知道该点哪里 -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="@color/ripple_dark">
+    <item>
+        <shape android:shape="oval">
+            <gradient
+                android:angle="270"
+                android:startColor="#4A90FF"
+                android:endColor="@color/brand" />
+        </shape>
+    </item>
+</ripple>

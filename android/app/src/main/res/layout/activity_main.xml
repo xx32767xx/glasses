@@ -1,142 +1,342 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  极简布局：一块"虚拟眼镜屏幕" + 连接设置 + 一个听写大按钮 + 状态行。
-  刻意不引入任何 AndroidX / Material 控件，全部用平台 View。
+  界面结构（自上而下），参照 Google 翻译 / 讯飞那种"白底 + 一条语言方向 + 大圆麦克风"的路子：
+
+    ① 顶栏        应用名 + 状态点 + 状态胶囊（连没连上、显示预算多少）
+    ② 语言方向条   [对方 · Português] ⇄ [我 · 中文]   —— 高亮的那侧 = 正在听谁说
+    ③ 眼镜屏幕     深色面板，严格按电脑端给的预算（40 列 × 3 行）显示
+    ④ 手输通道     不依赖语音识别的输入框 + 发送
+    ⑤ 大圆麦克风   录音上传（这台设备上唯一真能用的语音通道）
+    ⑥ 状态行       一句话说清现在在干什么
+    ⑦ 连接设置     默认收起；没配过地址时自动展开
+
+  三条硬约束，改这个文件时别破坏：
+    · panel 必须保持等宽字体、行数严格等于 lineBudget（宁可留白也不让面板高度跳动），
+      且**绝不重排文字** —— 折行是电脑端按真实显示预算做的（见 MainActivity.applyPanelMetrics）
+    · 所有 id 都是 MainActivity 用 findViewById 取的，改名要同步改 Java
+    · 不引入 AndroidX / Material 控件，圆角/阴影全靠上面的 drawable
 -->
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:fillViewport="true">
+    android:background="@color/page"
+    android:fillViewport="true"
+    android:scrollbars="none">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="16dp">
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="16dp"
+        android:paddingBottom="24dp">
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/title"
-            android:textSize="14sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/panelCaption"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:textSize="12sp"
-            android:text="未连接" />
-
-        <!-- 虚拟眼镜屏幕：严格按服务器给的显示预算折行，不自己重排 -->
+        <!-- ① 顶栏 -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:fontFamily="sans-serif-medium"
+                android:text="@string/app_name"
+                android:textColor="@color/ink"
+                android:textSize="22sp" />
+
+            <View
+                android:id="@+id/statusDot"
+                android:layout_width="9dp"
+                android:layout_height="9dp"
+                android:layout_marginEnd="6dp"
+                android:background="@drawable/bg_dot" />
+
+            <TextView
+                android:id="@+id/connChip"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_chip"
+                android:paddingStart="10dp"
+                android:paddingTop="5dp"
+                android:paddingEnd="10dp"
+                android:paddingBottom="5dp"
+                android:text="@string/state_offline"
+                android:textColor="@color/ink_soft"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <!-- ② 语言方向条：高亮的那一侧 = 正在听谁说；点任意一处都能换 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/pillThem"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:background="@drawable/tap_pill_active"
+                android:fontFamily="sans-serif-medium"
+                android:gravity="center"
+                android:paddingTop="12dp"
+                android:paddingBottom="12dp"
+                android:text="@string/side_them"
+                android:textColor="@color/on_brand"
+                android:textSize="14sp" />
+
+            <ImageButton
+                android:id="@+id/langButton"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_marginStart="8dp"
+                android:layout_marginEnd="8dp"
+                android:background="@drawable/bg_swap"
+                android:contentDescription="@string/swap_sides"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_swap" />
+
+            <TextView
+                android:id="@+id/pillMe"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:background="@drawable/tap_pill"
+                android:fontFamily="sans-serif-medium"
+                android:gravity="center"
+                android:paddingTop="12dp"
+                android:paddingBottom="12dp"
+                android:text="@string/side_me"
+                android:textColor="@color/ink"
+                android:textSize="14sp" />
+        </LinearLayout>
+
+        <!-- ③ 眼镜屏幕 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
             android:background="@drawable/panel_bg"
+            android:elevation="2dp"
             android:orientation="vertical"
-            android:padding="12dp">
+            android:padding="14dp">
+
+            <TextView
+                android:id="@+id/panelBadge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp"
+                android:letterSpacing="0.08"
+                android:text="@string/panel_badge_default"
+                android:textColor="@color/screen_ink_dim"
+                android:textSize="10sp" />
 
             <TextView
                 android:id="@+id/panel"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:fontFamily="monospace"
+                android:lineSpacingExtra="6dp"
                 android:text="@string/panel_placeholder"
-                android:textColor="#E8F0F2"
+                android:textColor="@color/screen_ink"
                 android:textSize="16sp" />
         </LinearLayout>
 
-        <EditText
-            android:id="@+id/host"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:hint="@string/hint_host"
-            android:inputType="textUri"
-            android:textSize="14sp" />
-
-        <EditText
-            android:id="@+id/secret"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="@string/hint_secret"
-            android:inputType="text"
-            android:textSize="14sp" />
-
-        <LinearLayout
+        <TextView
+            android:id="@+id/panelCaption"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:orientation="horizontal">
+            android:text="@string/state_offline"
+            android:textColor="@color/ink_faint"
+            android:textSize="12sp" />
 
-            <Button
-                android:id="@+id/connectButton"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/connect" />
-
-            <Button
-                android:id="@+id/langButton"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
-                android:layout_weight="1"
-                android:text="听葡语" />
-        </LinearLayout>
-
-        <!--
-          录音上传：本机上唯一能用的语音输入。
-          这台设备的系统语音识别服务不可用（已诊断确认），所以"对着说话出字幕"
-          靠的是这条路 —— 手机只当麦克风，识别交给电脑上的 Whisper。
-          原来那个「开始听写」按钮（走系统识别）已经删掉：在这台设备上它只会报错，
-          留着不但没用，还会让人以为"语音功能坏了"。
-        -->
-        <Button
-            android:id="@+id/recordButton"
-            android:layout_width="match_parent"
-            android:layout_height="72dp"
-            android:layout_marginTop="12dp"
-            android:text="@string/start_record"
-            android:textSize="16sp" />
-
-        <!--
-          不依赖语音识别的输入通道：手输一句话直接送走。
-          它的意义是"把链路验证和语音识别解耦" —— 语音识别是这台设备最容易出问题的环节，
-          它坏了不该堵住"手机→电脑→翻译→字幕"这条主链路的验证。
-        -->
+        <!-- ④ 手输通道：把"链路验证"和"语音识别"解耦，语音坏了也能确认后面全是好的 -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
+            android:layout_marginTop="18dp"
+            android:gravity="center_vertical"
             android:orientation="horizontal">
 
             <EditText
                 android:id="@+id/manualText"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="52dp"
                 android:layout_weight="1"
+                android:background="@drawable/bg_input"
                 android:hint="@string/hint_manual"
+                android:importantForAutofill="no"
                 android:inputType="text"
-                android:textSize="14sp" />
+                android:paddingStart="14dp"
+                android:paddingEnd="14dp"
+                android:singleLine="true"
+                android:textColor="@color/ink"
+                android:textColorHint="@color/ink_faint"
+                android:textSize="15sp" />
 
             <Button
                 android:id="@+id/sendButton"
                 android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
+                android:layout_height="52dp"
                 android:layout_marginStart="8dp"
-                android:text="@string/send" />
+                android:background="@drawable/tap_primary"
+                android:fontFamily="sans-serif-medium"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:paddingStart="22dp"
+                android:paddingEnd="22dp"
+                android:stateListAnimator="@null"
+                android:text="@string/send"
+                android:textAllCaps="false"
+                android:textColor="@color/on_brand"
+                android:textSize="15sp" />
         </LinearLayout>
 
+        <!-- ⑤ 大圆麦克风：整个界面唯一的"大圆钮"，录音上传走它 -->
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp">
+
+            <ImageButton
+                android:id="@+id/recordButton"
+                android:layout_width="92dp"
+                android:layout_height="92dp"
+                android:layout_gravity="center_horizontal"
+                android:background="@drawable/tap_mic_idle"
+                android:contentDescription="@string/start_record"
+                android:elevation="6dp"
+                android:scaleType="center"
+                android:src="@drawable/ic_mic" />
+        </FrameLayout>
+
+        <TextView
+            android:id="@+id/recordLabel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:fontFamily="sans-serif-medium"
+            android:gravity="center"
+            android:text="@string/start_record"
+            android:textColor="@color/ink"
+            android:textSize="15sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:gravity="center"
+            android:text="@string/mic_hint"
+            android:textColor="@color/ink_faint"
+            android:textSize="12sp" />
+
+        <!-- ⑥ 状态行 -->
         <TextView
             android:id="@+id/status"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            android:textSize="12sp"
-            android:text="填好电脑的地址和共享密钥，点连接。" />
+            android:layout_marginTop="16dp"
+            android:background="@drawable/bg_chip"
+            android:lineSpacingExtra="2dp"
+            android:paddingStart="12dp"
+            android:paddingTop="10dp"
+            android:paddingEnd="12dp"
+            android:paddingBottom="10dp"
+            android:text="@string/status_hint"
+            android:textColor="@color/ink_soft"
+            android:textSize="12sp" />
+
+        <!-- ⑦ 连接设置：默认收起（Google 翻译也不会把设置摊在主界面上） -->
+        <TextView
+            android:id="@+id/settingsToggle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:background="@drawable/tap_ghost"
+            android:drawableEnd="@drawable/ic_chevron"
+            android:drawablePadding="8dp"
+            android:fontFamily="sans-serif-medium"
+            android:gravity="center_vertical"
+            android:paddingStart="16dp"
+            android:paddingTop="12dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="12dp"
+            android:text="@string/settings"
+            android:textColor="@color/ink"
+            android:textSize="14sp" />
+
+        <LinearLayout
+            android:id="@+id/settingsBox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/bg_card"
+            android:elevation="1dp"
+            android:orientation="vertical"
+            android:padding="14dp">
+
+            <EditText
+                android:id="@+id/host"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:background="@drawable/bg_input"
+                android:hint="@string/hint_host"
+                android:importantForAutofill="no"
+                android:inputType="textUri"
+                android:paddingStart="14dp"
+                android:paddingEnd="14dp"
+                android:singleLine="true"
+                android:textColor="@color/ink"
+                android:textColorHint="@color/ink_faint"
+                android:textSize="14sp" />
+
+            <EditText
+                android:id="@+id/secret"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bg_input"
+                android:hint="@string/hint_secret"
+                android:importantForAutofill="no"
+                android:inputType="text"
+                android:paddingStart="14dp"
+                android:paddingEnd="14dp"
+                android:singleLine="true"
+                android:textColor="@color/ink"
+                android:textColorHint="@color/ink_faint"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/connectButton"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/tap_primary"
+                android:fontFamily="sans-serif-medium"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:stateListAnimator="@null"
+                android:text="@string/connect"
+                android:textAllCaps="false"
+                android:textColor="@color/on_brand"
+                android:textSize="15sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:lineSpacingExtra="2dp"
+                android:text="@string/settings_help"
+                android:textColor="@color/ink_faint"
+                android:textSize="11sp" />
+        </LinearLayout>
 
     </LinearLayout>
 </ScrollView>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 语言胶囊：选中（当前"在听谁说"的那一侧） -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="@color/ripple_dark">
+    <item android:drawable="@drawable/bg_pill_active" />
+</ripple>
