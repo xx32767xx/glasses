@@ -80,7 +80,6 @@
     <string name="connect_progress_ready">服务已就绪</string>
     <string name="connect_ok">已连接 · %1$s</string>
     <string name="connect_failed">无法连接电脑，请检查服务地址与网络</string>
-    <string name="connect_scanned_hint">扫码连接需要电脑端能生成二维码，目前还没有做，所以这里不提供入口。</string>
 
     <!-- 连接详情 -->
     <string name="detail_caps">服务能力</string>
@@ -137,13 +136,14 @@
     <string name="settings_output">音频输出</string>
     <string name="settings_connection">连接</string>
     <string name="settings_server">同传服务</string>
+    <string name="settings_developer">开发者</string>
+    <string name="settings_developer_mode">开发者模式</string>
+    <string name="settings_developer_hint">打开后显示实验与诊断选项</string>
     <string name="settings_experiments">实验</string>
     <string name="settings_type_text">手输一句话（不经过语音识别）</string>
     <string name="settings_type_text_hint">把链路验证和语音识别解耦：语音坏了也能确认后面是好的</string>
     <string name="settings_send">发送</string>
     <string name="settings_diagnostics">诊断</string>
-    <string name="settings_about">关于</string>
-    <string name="settings_about_body">不引入任何第三方库的应用（含 AndroidX）。字幕由电脑上的同传服务生成，手机只负责收音与显示。</string>
 
     <!-- 眼镜预览 -->
     <string name="glasses_preview_title">眼镜显示预览</string>

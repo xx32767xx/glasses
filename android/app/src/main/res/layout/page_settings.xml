@@ -409,8 +409,69 @@
                     android:src="@drawable/ic_chevron" />
             </LinearLayout>
 
+            <!--
+              开发者模式：一个开关，关着的时候下面的「实验」「诊断」两段整体隐藏。
+              为什么要这么分：那两段是排障与内部验证用的（手输一句话、连接与管道的原始计数），
+              日常使用者不需要看到，看到也只会困惑。
+            -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="18dp"
+                android:layout_marginBottom="8dp"
+                android:fontFamily="sans-serif-medium"
+                android:text="@string/settings_developer"
+                android:textColor="@color/ink_soft"
+                android:textSize="13sp" />
+
+            <LinearLayout
+                android:id="@+id/developerRow"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@drawable/tap_card"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="16dp"
+                android:paddingTop="12dp"
+                android:paddingEnd="12dp"
+                android:paddingBottom="12dp">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/settings_developer_mode"
+                        android:textColor="@color/ink"
+                        android:textSize="15sp" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="@string/settings_developer_hint"
+                        android:textColor="@color/ink_soft"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <Switch
+                    android:id="@+id/developerSwitch"
+                    android:layout_width="wrap_content"
+                    android:layout_height="48dp"
+                    android:contentDescription="@string/settings_developer_mode" />
+            </LinearLayout>
+
+            <!-- ══ 以下两段只在开发者模式打开时显示 ══ -->
+
             <!-- 实验 -->
             <TextView
+                android:id="@+id/experimentsHeader"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="18dp"
@@ -418,7 +479,8 @@
                 android:fontFamily="sans-serif-medium"
                 android:text="@string/settings_experiments"
                 android:textColor="@color/ink_soft"
-                android:textSize="13sp" />
+                android:textSize="13sp"
+                android:visibility="gone" />
 
             <LinearLayout
                 android:id="@+id/settingsTypeRow"
@@ -428,7 +490,8 @@
                 android:clickable="true"
                 android:focusable="true"
                 android:orientation="vertical"
-                android:padding="16dp">
+                android:padding="16dp"
+                android:visibility="gone">
 
                 <TextView
                     android:layout_width="match_parent"
@@ -448,6 +511,7 @@
 
             <!-- 诊断 -->
             <TextView
+                android:id="@+id/diagnosticsHeader"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="18dp"
@@ -455,47 +519,23 @@
                 android:fontFamily="sans-serif-medium"
                 android:text="@string/settings_diagnostics"
                 android:textColor="@color/ink_soft"
-                android:textSize="13sp" />
+                android:textSize="13sp"
+                android:visibility="gone" />
 
             <LinearLayout
+                android:id="@+id/diagnosticsCard"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:background="@drawable/bg_card"
                 android:orientation="vertical"
-                android:padding="16dp">
+                android:padding="16dp"
+                android:visibility="gone">
 
                 <TextView
                     android:id="@+id/diagnosticsText"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:lineSpacingExtra="2dp"
-                    android:textColor="@color/ink_soft"
-                    android:textSize="12sp" />
-            </LinearLayout>
-
-            <!-- 关于 -->
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="18dp"
-                android:layout_marginBottom="8dp"
-                android:fontFamily="sans-serif-medium"
-                android:text="@string/settings_about"
-                android:textColor="@color/ink_soft"
-                android:textSize="13sp" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:background="@drawable/bg_card"
-                android:orientation="vertical"
-                android:padding="16dp">
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:lineSpacingExtra="2dp"
-                    android:text="@string/settings_about_body"
                     android:textColor="@color/ink_soft"
                     android:textSize="12sp" />
             </LinearLayout>

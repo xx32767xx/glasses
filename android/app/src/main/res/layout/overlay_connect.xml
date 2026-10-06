@@ -2,8 +2,8 @@
 <!--
   连接电脑（独立全屏页）。规范要点：
     · 说明文字："手机需要连接电脑上的同传服务。"
-    · 扫码入口**不提供** —— 电脑端还不能生成二维码，规范自己写着"不做只有外观的功能"，
-      所以这里只留一行说明，让用户知道为什么没有。
+    · 只提供**手动连接**（地址 + 配对码）。扫码连接不做 —— 这一条已经定了，
+      所以页面上连"暂不支持"的说明都删掉了，不留任何会让人期待它的字。
     · 地址示例放在输入框提示里，主界面不暴露地址/端口/模型参数。
     · 连接过程按真实进度分三步显示（正在连接电脑 / 正在检查同传服务 / 服务已就绪）。
     · 失败时保留输入，提供重试。
@@ -246,16 +246,6 @@
                     android:textColor="@color/ink_soft"
                     android:textSize="13sp" />
             </LinearLayout>
-
-            <!-- 为什么没有扫码入口：如实说明，而不是放一个点了没用的按钮 -->
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="20dp"
-                android:lineSpacingExtra="2dp"
-                android:text="@string/connect_scanned_hint"
-                android:textColor="@color/ink_faint"
-                android:textSize="12sp" />
         </LinearLayout>
     </ScrollView>
 </LinearLayout>

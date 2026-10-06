@@ -27,6 +27,7 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.PopupWindow;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -72,6 +73,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private static final String KEY_THEME = "theme";            // system / light / dark
     private static final String KEY_SCALE = "fontScale";
     private static final String KEY_BILINGUAL = "bilingual";
+    /** 开发者模式：关掉时设置页不显示「实验」「诊断」。 */
+    private static final String KEY_DEVELOPER = "developer";
 
     /**
      * 判定"这一小段里有人在讲话"的**界面**门槛。
@@ -167,6 +170,14 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private TextView themeDarkView;
     private TextView modeBilingualView;
     private TextView modeTargetOnlyView;
+    private Switch developerSwitch;
+    private View developerRow;
+    private View experimentsHeader;
+    private View experimentsCard;
+    private View diagnosticsHeader;
+    private View diagnosticsCard;
+    /** 开发者模式：关着时「实验」「诊断」两段整体隐藏。 */
+    private boolean developerMode = false;
 
     // 记录页
     private LinearLayout recordsList;
@@ -209,6 +220,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         sourceLang = prefs.getString(KEY_LANG, "pt-BR");
         fontScale = prefs.getFloat(KEY_SCALE, 1f);
         bilingual = prefs.getBoolean(KEY_BILINGUAL, true);
+        developerMode = prefs.getBoolean(KEY_DEVELOPER, false);
 
         pageHost = findViewById(R.id.pageHost);
         overlayHost = findViewById(R.id.overlayHost);
@@ -1096,6 +1108,41 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         settingsPage.findViewById(R.id.fontUp).setOnClickListener(v -> stepFontScale(1));
         modeBilingualView.setOnClickListener(v -> setBilingual(true));
         modeTargetOnlyView.setOnClickListener(v -> setBilingual(false));
+
+        developerSwitch = settingsPage.findViewById(R.id.developerSwitch);
+        developerRow = settingsPage.findViewById(R.id.developerRow);
+        experimentsHeader = settingsPage.findViewById(R.id.experimentsHeader);
+        experimentsCard = settingsPage.findViewById(R.id.settingsTypeRow);
+        diagnosticsHeader = settingsPage.findViewById(R.id.diagnosticsHeader);
+        diagnosticsCard = settingsPage.findViewById(R.id.diagnosticsCard);
+        developerSwitch.setChecked(developerMode);
+        // 整个卡片都能点：Switch 本身只有 48dp 宽，点卡片更省事，也更好按
+        developerRow.setOnClickListener(v -> setDeveloperMode(!developerSwitch.isChecked()));
+        developerSwitch.setOnCheckedChangeListener((button, checked) -> setDeveloperMode(checked));
+        applyDeveloperMode();
+    }
+
+    /**
+     * 开发者模式开关：只有打开时才显示「实验」与「诊断」。
+     *
+     * 为什么不干脆一直显示：那两段是排障用的（手输一句话绕过语音识别、
+     * 连接与管道的原始计数），日常使用时看到只会困惑；
+     * 而它们又必须留着 —— 出问题时"是不是语音那一环坏了"这个问题，
+     * 只有靠手输通道才能一秒回答。
+     */
+    private void setDeveloperMode(boolean enabled) {
+        developerMode = enabled;
+        prefs.edit().putBoolean(KEY_DEVELOPER, enabled).apply();
+        if (developerSwitch.isChecked() != enabled) developerSwitch.setChecked(enabled);
+        applyDeveloperMode();
+    }
+
+    private void applyDeveloperMode() {
+        int visibility = developerMode ? View.VISIBLE : View.GONE;
+        experimentsHeader.setVisibility(visibility);
+        experimentsCard.setVisibility(visibility);
+        diagnosticsHeader.setVisibility(visibility);
+        diagnosticsCard.setVisibility(visibility);
     }
 
     private void refreshSettingsPage() {
