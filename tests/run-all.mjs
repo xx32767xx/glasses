@@ -25,6 +25,7 @@ import { runBridgeSuite } from './bridge-suite.mjs'
 import { runRelaySuite } from './relay-suite.mjs'
 import { runDebugSuite } from './debug-suite.mjs'
 import { runStartAllSuite } from './start-all-suite.mjs'
+import { runNetDoctorSuite } from './net-doctor-suite.mjs'
 import { runLive } from './live/run.mjs'
 
 let passed = 0
@@ -156,6 +157,13 @@ await runDebugSuite(helpers)
 
 heading('一键启动（start-all：命令行拼接与前置检查）')
 await runStartAllSuite(helpers)
+
+// ── 7b. 网络体检（手机连不上时"卡在哪一环"的判断）──────────────────────────
+// 这一节的价值全在"判断得对不对"：换一次网络就踩同一批坑（地址变了、防火墙不认、
+// 校园网隔离设备），而表现都是同一句"连接超时"。所以要把几种故障判成**不同**的结论。
+
+heading('网络体检（net-doctor：换个网络就连不上时，判断卡在哪一环）')
+await runNetDoctorSuite(helpers)
 
 // ── 8. 真实 Cordis 组合（真实 ToolRuntime + 真实执行流水线） ─────────────────
 
