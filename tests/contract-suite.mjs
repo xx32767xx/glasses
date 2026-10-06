@@ -48,6 +48,40 @@ export function makeFakeLlm({ finish = 'stop' } = {}) {
   }
 }
 
+/**
+ * 一个会"改译文"的假适配器：用来测**校对这第二遍**。
+ *
+ * 怎么区分两次调用：校对那一次的 system 提示词里带「校对」两个字
+ * （见 core.mjs 的 proofreadSystem —— 它开头就是"你在做**译文校对**"）。
+ * 靠提示词内容分流，比靠"第几次调用"分流更结实：调用顺序以后可能变，
+ * 而"哪一次是校对"是由提示词定义的。
+ */
+export function makeProofreadLlm({ corrected = 'CORRECTED', delayMs = 0, respond = null } = {}) {
+  const calls = []
+  return {
+    calls,
+    listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
+    listModels: async () => [{ id: 'deepseek-chat' }],
+    stream(options) {
+      calls.push(options)
+      const isProofread = String(options.system ?? '').includes('校对')
+      const userText = String(options.messages?.[0]?.content?.[0]?.text ?? '')
+      // respond 让"校对结果"随输入变化 —— 测"过期结果不许覆盖屏幕"时必须要这个：
+      // 一个固定返回值没法区分"第一句的过期结果"和"第二句的正常结果"。
+      const text = !isProofread
+        ? cannedTranslation(options)
+        : (respond === null ? corrected : respond(userText))
+      return (async function* generate() {
+        if (isProofread && delayMs > 0) await new Promise(r => setTimeout(r, delayMs))
+        for (const piece of text.match(/.{1,12}/gu) ?? []) {
+          yield { type: 'text-delta', index: 0, text: piece }
+        }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      })()
+    },
+  }
+}
+
 export function makeFakeFs(store) {
   return {
     async resolve(path) { return { path } },
@@ -597,6 +631,188 @@ export async function runContractSuite(adapter, { it, check, assert }) {
     check('没有错误', status1.errors === 0, String(status1.lastError))
     fingerprint.inboxAuto = { configured: status1.configured, processed: status1.processed, errors: status1.errors }
     await auto.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
+  // ── 5c. 大模型校对（第二遍，讯飞那种"先出译文、再回头改"）──────────────────
+  //
+  // 这一组断言的顺序是有讲究的：先证明"缺省完全不变"（否则前面所有用例都可能被它影响），
+  // 再证明"开了之后真的会改"，最后证明**它绝不会改错屏幕**（这一条最重要）。
+
+  await it('校对缺省关闭：一句只调一次模型，行为与加这个功能之前完全一样', async () => {
+    const store = new Map()
+    const path = inboxPathOf('proofread-off.jsonl')
+    const llm = makeProofreadLlm({ corrected: '不该出现' })
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store), config: { inboxPath: path, inboxPollMs: 100 },
+    })
+    store.set(path, 'A reunião de hoje passou para as três da tarde.\n')
+    const processed = await waitFor(async () =>
+      (await box.tools.get('leion_inbox').execute({ action: 'status' })).processed >= 1)
+    check('这句被处理了', processed)
+    await sleep(400)          // 给"如果校对真的会跑"留出足够时间
+    check('一次都没有多做模型调用（缺省 = 不做第二遍）', llm.calls.length === 1,
+      '实际调用 ' + llm.calls.length + ' 次：' + JSON.stringify(llm.calls.map(c => String(c.system).slice(0, 12))))
+    const status = await box.tools.get('leion_inbox').execute({ action: 'status' })
+    check('状态里校对是 null（关闭时不虚报）', status.proofread === null, JSON.stringify(status.proofread))
+    const history = await box.tools.get('leion_history').execute({ limit: 10 })
+    check('没有出现校对产物', !history.entries.some(e => e.text.includes('不该出现')))
+    await box.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
+  await it('校对开启：初译先上屏，空闲时回头改，改的是**同一帧**而不是追加一条', async () => {
+    const store = new Map()
+    const path = inboxPathOf('proofread-fix.jsonl')
+    // 用**中文进、巴葡出**（真实主用途：佩戴者说中文）。而且"修正版"比初译短 ——
+    // 校对规则要求"不许比原译文更长"（屏幕只有 3 行），这条数据符合真实形态。
+    const SOURCE = '这是一条测试语音。'
+    const FIXED = 'Esta é uma mensagem de teste.'
+    const llm = makeProofreadLlm({ corrected: FIXED })
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: { inboxPath: path, inboxPollMs: 100, proofread: 'idle' },
+    })
+    const tools = box.tools
+
+    // 初译必须**先**上屏 —— 这是这个功能的全部意义：不能让观众等第二遍。
+    store.set(path, SOURCE + '\n')
+    const drafted = await waitFor(async () => {
+      const h = await tools.get('leion_history').execute({ limit: 5 })
+      return h.entries.length >= 1
+    })
+    check('初译已经上屏（没有等第二遍）', drafted)
+
+    // 然后校对把这一句换掉
+    const fixed = await waitFor(async () => {
+      const h = await tools.get('leion_history').execute({ limit: 5 })
+      return h.entries.some(e => e.text === FIXED)
+    })
+    check('校对结果替换到了屏幕上', fixed)
+
+    const history = await tools.get('leion_history').execute({ limit: 10 })
+    check('历史里还是**一条**（替换而不是追加，否则双语记录会重复）',
+      history.entries.length === 1, JSON.stringify(history.entries.map(e => e.text)))
+
+    const status = await tools.get('leion_inbox').execute({ action: 'status' })
+    check('状态里能看到"改了 1 句"', status.proofread !== null && status.proofread.fixed === 1,
+      JSON.stringify(status.proofread))
+    check('校对那一调用的提示词里带着**原文**（不然发现不了听错）',
+      llm.calls.some(c => String(c.system).includes('校对')
+        && JSON.stringify(c.messages).includes(SOURCE)),
+      '校对请求里没看到原文')
+    check('一句只调两次模型（初译 + 校对）', llm.calls.length === 2, String(llm.calls.length))
+    await tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
+  await it('校对判定无需改动：屏幕不动、历史也不多一条', async () => {
+    const store = new Map()
+    const path = inboxPathOf('proofread-same.jsonl')
+    // 这一句是葡语 → 初译是中文。所以"无需改动"的那次校对必须返回**中文**那版，
+    // 否则它就不叫"无需改动"了（第一版这里传错了，测试因此假失败）。
+    const llm = makeProofreadLlm({ corrected: cannedTranslation({ system: '简体中文' }) })
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: { inboxPath: path, inboxPollMs: 100, proofread: 'idle' },
+    })
+    store.set(path, 'A reunião de hoje passou para as três da tarde.\n')
+    const settled = await waitFor(async () => {
+      const s = await box.tools.get('leion_inbox').execute({ action: 'status' })
+      return s.proofread !== null && s.proofread.settled >= 1
+    })
+    check('校对跑完并判定"无需改"', settled)
+    const status = await box.tools.get('leion_inbox').execute({ action: 'status' })
+    check('记为 same，而不是 fixed', status.proofread.same === 1 && status.proofread.fixed === 0,
+      JSON.stringify(status.proofread))
+    const history = await box.tools.get('leion_history').execute({ limit: 10 })
+    check('历史仍然只有一条（没改就不该多写一条）', history.entries.length === 1,
+      JSON.stringify(history.entries.map(e => e.text)))
+    await box.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
+  await it('校对**绝不覆盖更新的字幕**：改到一半屏幕已经换页，结果就丢弃', async () => {
+    // 这条是这个功能最重要的安全属性。收录理由：改错屏幕比不校对严重得多 ——
+    // 观众读着第二句，屏幕突然跳回第一句的"修正版"，那是事故。
+    const store = new Map()
+    const path = inboxPathOf('proofread-stale.jsonl')
+    // 校对慢 600ms，留出足够时间让第二句插进来。
+    // respond 让每句的校对结果**各不相同** —— 否则分不清"第一句的过期结果"和"第二句的正常结果"。
+    const llm = makeProofreadLlm({
+      delayMs: 600,
+      respond: userText => {
+        const line = userText.split('\n').find(l => l.startsWith('这一句原文：')) ?? ''
+        return 'FIX(' + line.replace('这一句原文：', '') + ')'
+      },
+    })
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: { inboxPath: path, inboxPollMs: 100, proofread: 'idle' },
+    })
+    const tools = box.tools
+
+    // 句子必须带**葡语特征词**（reunião / também 这类），否则语种判定失败、
+    // 这一句根本不会上屏，测试就会以为是功能坏了（第一版正是栽在这上面）。
+    const FIRST = 'A reunião de hoje é às três.'
+    const SECOND = 'A reunião de amanhã também é às três.'
+    store.set(path, FIRST + '\n')
+    const firstShown = await waitFor(async () =>
+      (await tools.get('leion_history').execute({ limit: 5 })).entries.length >= 1)
+    check('第一句已上屏', firstShown)
+
+    // 校对还在跑的时候，第二句到了 —— 屏幕换页
+    store.set(path, FIRST + '\n' + SECOND + '\n')
+    const secondShown = await waitFor(async () => {
+      const h = await tools.get('leion_history').execute({ limit: 5 })
+      return h.entries.length >= 2
+    })
+    check('第二句也上屏了（屏幕确实换页了）', secondShown)
+
+    // 等第二句**自己**的校对也做完 —— 它应该被正常应用
+    const secondFixed = await waitFor(async () => {
+      const h = await tools.get('leion_history').execute({ limit: 5 })
+      return h.entries.some(e => e.text === 'FIX(' + SECOND + ')')
+    }, { timeout: 5000 })
+    check('第二句的校对正常生效（证明"丢弃"不是"校对整体坏了"）', secondFixed)
+
+    const history = await tools.get('leion_history').execute({ limit: 10 })
+    check('第一句那份**过期**的校对结果没有覆盖屏幕',
+      !history.entries.some(e => e.text === 'FIX(' + FIRST + ')'),
+      '屏幕上出现了过期的校对结果：' + JSON.stringify(history.entries.map(e => e.text)))
+    check('最后一条是第二句的译文（没有被改回上一句）',
+      history.entries[history.entries.length - 1].text === 'FIX(' + SECOND + ')',
+      JSON.stringify(history.entries.map(e => e.text)))
+    const status = await tools.get('leion_inbox').execute({ action: 'status' })
+    check('过期丢弃被记了账（丢弃 = 主动放弃覆盖，不是静默丢掉）',
+      status.proofread.dropped >= 1, JSON.stringify(status.proofread))
+    await tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
+  await it('校对结果没通过验收就不上屏：把对的改错比不校对更糟', async () => {
+    // 这条来自读代码时发现的一个真实陷阱：离线演示的例句表适配器对查不到的问句
+    // 会回一句「（离线演示：例句表里没有这一句…）」。校对请求当然查不到 ——
+    // 如果不拦，它会**被当成校对结果**，把一句本来正确的字幕覆盖成这句演示提示。
+    // 所以校对结果要过两道验收：变长太多（不像校对）、折行超出 3 行（会把开头挤掉）。
+    const store = new Map()
+    const path = inboxPathOf('proofread-reject.jsonl')
+    const junk = '（离线演示：例句表里没有这一句，原文为「' + 'x'.repeat(30) + '」）'
+    const llm = makeProofreadLlm({ corrected: junk })
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: { inboxPath: path, inboxPollMs: 100, proofread: 'idle' },
+    })
+    const tools = box.tools
+    store.set(path, 'A reunião de hoje passou para as três da tarde.\n')
+    const settled = await waitFor(async () => {
+      const s = await tools.get('leion_inbox').execute({ action: 'status' })
+      return s.proofread !== null && (s.proofread.rejected >= 1 || s.proofread.fixed >= 1)
+    })
+    check('校对跑完并做了裁决', settled)
+    const status = await tools.get('leion_inbox').execute({ action: 'status' })
+    check('这种垃圾输出被拒（记为 rejected，不是 fixed）',
+      status.proofread.rejected === 1 && status.proofread.fixed === 0, JSON.stringify(status.proofread))
+    const history = await tools.get('leion_history').execute({ limit: 10 })
+    check('屏幕上仍是初译，没被那句演示提示覆盖',
+      history.entries.length === 1 && !history.entries[0].text.includes('离线演示'),
+      JSON.stringify(history.entries.map(e => e.text)))
+    await tools.get('leion_inbox').execute({ action: 'stop' })
   })
 
   await it('只处理以换行结束的完整行：半行不算，补齐后才算一条', async () => {
