@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 可点击的卡片：涟漪在卡片形状之内，不会溢出圆角 -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="@color/ripple_light">
+    <item android:drawable="@drawable/bg_card" />
+</ripple>

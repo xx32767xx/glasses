@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  语言选择底部弹层。
+  说明：**没有搜索框**。规范原本要求"带搜索框的语言列表"，但这套同传服务只支持两种语言
+  （简体中文 ↔ 巴西葡语），给两个条目配一个搜索框就是规范自己反对的"只有外观的功能"。
+  等以后支持更多语言时再加，那时它才有意义。列表项由代码按"服务支持 + 最近使用"生成。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/bg_sheet"
+    android:orientation="vertical"
+    android:paddingTop="8dp"
+    android:paddingBottom="20dp">
+
+    <View
+        android:layout_width="36dp"
+        android:layout_height="4dp"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginTop="6dp"
+        android:background="@drawable/bg_chip" />
+
+    <TextView
+        android:id="@+id/langSheetTitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:fontFamily="sans-serif-medium"
+        android:paddingStart="20dp"
+        android:paddingEnd="20dp"
+        android:textColor="@color/ink"
+        android:textSize="17sp" />
+
+    <TextView
+        android:id="@+id/langSheetNote"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:paddingStart="20dp"
+        android:paddingEnd="20dp"
+        android:textColor="@color/ink_faint"
+        android:textSize="12sp" />
+
+    <LinearLayout
+        android:id="@+id/langSheetList"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:orientation="vertical" />
+</LinearLayout>

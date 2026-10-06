@@ -44,8 +44,20 @@ public class LanClient {
         /** 握手成功：拿到了设备名与显示预算。 */
         void onHello(String device, int cols, int lineBudget);
 
-        /** 收到一帧新字幕。lines 已经按显示预算折好行，直接画即可。 */
-        void onFrame(String speaker, String lang, String[] lines);
+        /**
+         * 收到一帧新字幕。
+         *
+         * @param text       给佩戴者看的那一侧（已翻译好）；lines 是它按显示预算折好的行
+         * @param source     原文（对方说的话，或佩戴者自己说的话）；没有就是空串
+         * @param sourceLang 原文语种；未知是 "unknown"
+         * @param partial    true = 这一帧还是流式增量（界面要打「生成中」并**原位更新**）
+         *
+         * 为什么 source 和 partial 都要：界面按"原文在上、译文在下"成对显示，
+         * 并且要把"增量 → 定稿 → 校对修订"落到**同一条**片段上。
+         * 少了这两个字段，手机只能靠猜（猜错的表现是字幕永远挂着「生成中」）。
+         */
+        void onFrame(String speaker, String lang, String[] lines, String text,
+                     String source, String sourceLang, boolean partial);
 
         /** 出错了（网络不通、密钥错、被拒绝等）。 */
         void onError(String message);
@@ -137,9 +149,22 @@ public class LanClient {
         return requestRaw(path.toString(), pcm, 10000);
     }
 
+    /**
+     * 同步读一次 /status，返回原始 JSON（**要在后台线程调**）。
+     *
+     * 为什么需要它、而不只是 fetchStatus() 那条文字：
+     * 界面必须区分"连上了电脑"和"同传服务真的在工作"。这不是靠猜 ——
+     * /status 里有真实证据：
+     *   · busSeen    继电器有没有见过字幕总线（= 大脑至少产出过一帧字幕）
+     *   · inboxLines 收件箱里已经有几行（= 识别那一侧在写东西）
+     * 两个都是 0 说明"管道通了但还没流过水"，此时说"服务可用"是过度承诺。
+     */
+    public JSONObject status() throws IOException, org.json.JSONException {
+        return request("/status", "GET", null, 8000);
+    }
+
     /** 诊断：把 /status 的计数读回来。 */
-    public void fetchStatus() {
-        Thread thread = new Thread(() -> {
+    public void fetchStatus() {        Thread thread = new Thread(() -> {
             try {
                 JSONObject json = request("/status", "GET", null, 8000);
                 listener.onStatus("电脑侧：字幕 " + json.optInt("frames", 0)
@@ -199,7 +224,11 @@ public class LanClient {
                         listener.onFrame(
                                 frame.optString("speaker", "them"),
                                 frame.optString("lang", "?"),
-                                out);
+                                out,
+                                frame.optString("text", ""),
+                                frame.optString("source", ""),
+                                frame.optString("sourceLang", "unknown"),
+                                frame.optBoolean("partial", false));
                     }
                 }
             } catch (Exception error) {

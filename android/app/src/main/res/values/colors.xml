@@ -1,43 +1,63 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  配色与尺寸。参考的是 Google 翻译 / 讯飞那种"白底 + 一个主色 + 大圆麦克风"的路子：
-  · 界面本身尽量素（白卡片 + 浅灰底 + 深灰字），把注意力全留给字幕
-  · 主色只有一个（蓝），只用在"当前状态"和主操作上，别处一律不用
-  · 录音中用红色 —— 这是唯一允许抢占注意力的颜色
-  ·
-  注意：本工程**不引入 AndroidX / Material**，所以这些都是自己写的 drawable，
-  没有 MaterialButton 之类可用。好处是 APK 小、构建稳。
+  配色。按界面规范定的（浅灰白底 + 白色卡片 + 一个蓝主色 + 深灰字），
+  对照表：
+
+    背景      #F7F8FA      卡片 #FFFFFF（轻描边，不用大面积阴影）
+    主色      #2563EB      主文字 #172033    次要文字 #667085
+    正常 #12B76A   等待/异常 #F79009   严重错误 #D92D20
+
+  深色模式怎么做的：
+    这里定义的是**浅色**值；`values-night/colors.xml` 里同名再定义一套深色值。
+    界面代码里一律只写语义名（page / ink / brand 这些），不写死具体色值 —— 于是
+    "跟随系统深色"是自动的，"手动切深色"靠 applyOverrideConfiguration 强制
+    UI_MODE_NIGHT_YES（见 MainActivity.applyNightMode），两条路都不需要改布局。
 -->
 <resources>
-    <!-- 主色：只在主操作与"当前选中"上出现 -->
-    <color name="brand">#1A73E8</color>
-    <color name="brand_dark">#1557B0</color>
-    <color name="brand_soft">#E8F0FE</color>
+    <!-- 页面与卡片 -->
+    <color name="page">#F7F8FA</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="surface_alt">#F2F4F7</color>
+    <color name="line">#E4E7EC</color>
+    <color name="line_soft">#EEF0F4</color>
+
+    <!-- 文字 -->
+    <color name="ink">#172033</color>
+    <color name="ink_soft">#667085</color>
+    <color name="ink_faint">#98A2B3</color>
+
+    <!-- 主色：只出现在"主操作"和"当前选中"上 -->
+    <color name="brand">#2563EB</color>
+    <color name="brand_dark">#1D4ED8</color>
+    <color name="brand_soft">#EFF4FF</color>
+    <color name="on_brand">#FFFFFF</color>
+
+    <!-- 状态色。规范要求"颜色 + 文字说明"，所以这三色永远和文字一起出现 -->
+    <color name="ok">#12B76A</color>
+    <color name="ok_soft">#E9F9F1</color>
+    <color name="warn">#F79009</color>
+    <color name="warn_soft">#FFF6E8</color>
+    <color name="err">#D92D20</color>
+    <color name="err_soft">#FEF1F0</color>
+    <color name="idle">#98A2B3</color>
 
     <!-- 录音态：唯一允许抢注意力的颜色 -->
-    <color name="rec">#E8453C</color>
-    <color name="rec_dark">#C5221F</color>
+    <color name="rec">#D92D20</color>
+    <color name="rec_dark">#B42318</color>
 
-    <!-- 状态点 -->
-    <color name="ok">#34A853</color>
-    <color name="warn">#F9AB00</color>
-    <color name="idle">#BDC1C6</color>
-
-    <!-- 页面与卡片 -->
-    <color name="page">#F1F3F4</color>
-    <color name="surface">#FFFFFF</color>
-    <color name="ink">#202124</color>
-    <color name="ink_soft">#5F6368</color>
-    <color name="ink_faint">#80868B</color>
-    <color name="line">#DADCE0</color>
-
-    <!-- "眼镜屏幕"：故意做成深色，让它一眼看着像一块设备屏幕而不是一段文字 -->
+    <!--
+      「眼镜显示预览」那块深色屏幕：深浅两种模式下都保持深色 ——
+      它模拟的是设备屏幕，不是页面的一部分，跟着变白就没有预览意义了。
+    -->
     <color name="screen">#0E1418</color>
     <color name="screen_line">#2A3439</color>
     <color name="screen_ink">#E8F0F2</color>
     <color name="screen_ink_dim">#7C8B93</color>
 
-    <color name="on_brand">#FFFFFF</color>
-    <color name="ripple_light">#1F000000</color>
+    <color name="ripple_light">#14000000</color>
     <color name="ripple_dark">#33FFFFFF</color>
+
+    <!-- 音量条：底槽 + 已点亮 -->
+    <color name="meter_track">#E4E7EC</color>
+    <color name="meter_on">#2563EB</color>
 </resources>

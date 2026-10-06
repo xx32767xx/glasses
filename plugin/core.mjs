@@ -350,11 +350,27 @@ export function createInterpreter(ctx, rawConfig, deps) {
 
   function buildFrame(input) {
     const text = String(input.text === undefined ? '' : input.text)
+    // `source` 是**原文**（ASR 识别出来的那句、或手输的文字），`text` 是给佩戴者看的那一侧。
+    // 为什么两个都要给出去：手机端要按"原文在上、译文在下"成对显示，
+    // 而**只有插件这一层同时知道这两样**（原文是它的输入，译文是它的产出）。
+    // 缺省等于 text —— 这样 translator='none' 与 leion_display 这类没有"原文"概念的
+    // 路径不用改，帧的结构也始终一致（下游不必分情况处理）。
+    const source = String(input.source === undefined ? text : input.source)
     return {
       device: DEVICE.model,
       speaker: input.speaker === undefined ? 'them' : input.speaker,
       lang: input.lang === undefined ? 'unknown' : input.lang,
       text,
+      source,
+      sourceLang: input.sourceLang === undefined ? 'unknown' : input.sourceLang,
+      /**
+       * 这一帧是不是"还在生成中"的流式增量。
+       *
+       * 为什么要给出去：手机端要在**原位更新**同一个片段，并且给未定稿的那条打
+       * 「生成中」标签。少了这个字段，手机分不清"这条还没译完"和"这条已经定稿"，
+       * 只能靠猜 —— 而猜错的表现是：字幕永远挂着"生成中"，或者半句被当成定稿。
+       */
+      partial: input.partial === true,
       lines: fitSubtitle(text, config.cols, config.lines),
       // 把显示预算也放进帧里：这样任何下游（真机桥、局域网转发、手机 App）
       // 都能从数据本身知道"眼镜有多大"，不必各自硬编码或各自配一份。
@@ -915,7 +931,8 @@ export function createInterpreter(ctx, rawConfig, deps) {
           if (partial === '') return
           state.partials += 1
           partialsPushed += 1
-        const frame = buildFrame({ text: partial, speaker: displaySpeaker, lang: to })
+        const frame = buildFrame({ text: partial, speaker: displaySpeaker, lang: to,
+          source, sourceLang: from, partial: true })
         try {
           // 增量只上屏、不进双语历史：历史是「现场说过什么」的记录，
           // 把「正在成形」的碎片写进去会污染它。
@@ -949,7 +966,8 @@ export function createInterpreter(ctx, rawConfig, deps) {
         }
       }
 
-      const finalFrame = buildFrame({ text: result.text, speaker: displaySpeaker, lang: to })
+      const finalFrame = buildFrame({ text: result.text, speaker: displaySpeaker, lang: to,
+        source, sourceLang: from })
       await pushFrame(finalFrame)
 
       return {

@@ -1,37 +1,164 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">虚拟眼镜</string>
-    <string name="title">虚拟眼镜 · 开发者模式</string>
+    <string name="app_name">同传眼镜</string>
 
-    <!-- 顶栏状态标签 -->
-    <string name="state_offline">未连接</string>
-    <string name="state_connecting">连接中…</string>
+    <!-- 底部导航 -->
+    <string name="nav_live">同传</string>
+    <string name="nav_records">记录</string>
+    <string name="nav_settings">设置</string>
 
-    <!-- 语言方向条：高亮的那一侧 = 正在听谁说 -->
-    <string name="side_them">对方 · Português</string>
-    <string name="side_me">我 · 中文</string>
-    <string name="swap_sides">交换方向</string>
+    <!-- 通用 -->
+    <string name="back">返回</string>
+    <string name="close">关闭</string>
+    <string name="retry">重试</string>
+    <string name="cancel">取消</string>
+    <string name="confirm">确定</string>
 
-    <!-- 眼镜屏幕 -->
-    <string name="panel_badge_default">眼镜显示 · 40 列 × 3 行</string>
-    <string name="panel_placeholder">（等待字幕…）</string>
+    <!-- 同传首页（未开始） -->
+    <string name="not_connected">未连接电脑</string>
+    <string name="not_connected_hint">连接电脑上的同传服务后即可开始</string>
+    <string name="connect_computer">连接电脑</string>
+    <string name="change_connection">更换连接</string>
+    <string name="service_ready">同传服务可用</string>
+    <string name="service_loading">模型准备中…</string>
+    <string name="idle_hint_title">让手机靠近讲话者</string>
+    <string name="idle_hint_body">开始后将连续显示原文和译文</string>
+    <string name="current_setup">手机麦克风 · 仅字幕</string>
+    <string name="start_interpreting">开始同传</string>
+    <string name="reason_need_connection">请先连接电脑</string>
+    <string name="reason_need_service">电脑上的模型还在准备，稍等片刻</string>
 
-    <!-- 连接设置（默认收起） -->
-    <string name="settings">连接设置</string>
-    <string name="hint_host">http://192.168.1.108:8788</string>
-    <string name="hint_secret">共享密钥</string>
-    <string name="connect">连接</string>
-    <string name="disconnect">断开</string>
-    <string name="settings_help">地址和密钥在电脑上启动转发进程时会打印出来。手机要和电脑在同一个 WiFi 里。</string>
+    <!-- 同传进行中 -->
+    <string name="interpreting">同传中</string>
+    <string name="paused">已暂停</string>
+    <string name="pause">暂停</string>
+    <string name="resume">继续</string>
+    <string name="end_session">结束</string>
+    <string name="lang_locked_hint">暂停后可切换语言</string>
+    <string name="tag_generating">生成中</string>
+    <string name="back_to_latest">回到最新 ↓</string>
+    <string name="paused_finishing">已暂停收音，正在完成上一段翻译</string>
+    <string name="paused_no_more">已暂停收音</string>
 
-    <!-- 录音上传：这台设备上唯一真能用的语音通道 -->
-    <string name="start_record">点击开始录音上传</string>
-    <string name="stop_record">录音中 · 点击停止</string>
-    <string name="mic_hint">对着手机说话，电脑识别后字幕出现在上方</string>
+    <!-- 音频反馈 -->
+    <string name="mic_listening">正在收音</string>
+    <string name="mic_waiting">正在收音，等待讲话</string>
+    <string name="mic_stopped">麦克风已停止</string>
 
-    <!-- 手输通道：不依赖语音识别 -->
-    <string name="hint_manual">手输一句话（不依赖语音识别）</string>
-    <string name="send">发送</string>
+    <!-- 字幕工具 -->
+    <string name="mode_bilingual">双语</string>
+    <string name="mode_translation_only">仅译文</string>
+    <string name="font_smaller">字号 −</string>
+    <string name="font_larger">字号 ＋</string>
+    <string name="fullscreen">全屏</string>
+    <string name="exit_fullscreen">退出全屏</string>
 
-    <string name="status_hint">填好电脑的地址和共享密钥，点连接。</string>
+    <!-- 输出设备 -->
+    <string name="output_title">音频输出</string>
+    <string name="output_subtitle_only">仅字幕</string>
+    <string name="output_subtitle_only_hint">不播放声音，只在屏幕上显示字幕</string>
+    <string name="output_play_translation">播放译文</string>
+    <string name="output_play_unavailable">当前服务不提供译文语音，所以这一项暂不可用</string>
+    <string name="output_device">输出设备</string>
+    <string name="output_speaker_warning">建议使用耳机，减少译文声音被再次收录。</string>
+    <string name="output_earphone">已连接耳机</string>
+    <string name="output_phone_speaker">手机扬声器</string>
+
+    <!-- 连接电脑页 -->
+    <string name="connect_title">连接电脑</string>
+    <string name="connect_intro">手机需要连接电脑上的同传服务。</string>
+    <string name="connect_manual">手动连接</string>
+    <string name="connect_address">服务地址</string>
+    <string name="connect_address_hint">192.168.1.20:8788</string>
+    <string name="connect_pairing">配对码</string>
+    <string name="connect_pairing_hint">电脑上启动时打印的那串</string>
+    <string name="connect_test">测试并连接</string>
+    <string name="connect_recent">最近成功连接</string>
+    <string name="connect_recent_empty">还没有连接过</string>
+    <string name="connect_progress_connecting">正在连接电脑…</string>
+    <string name="connect_progress_checking">正在检查同传服务…</string>
+    <string name="connect_progress_ready">服务已就绪</string>
+    <string name="connect_ok">已连接 · %1$s</string>
+    <string name="connect_failed">无法连接电脑，请检查服务地址与网络</string>
+    <string name="connect_scanned_hint">扫码连接需要电脑端能生成二维码，目前还没有做，所以这里不提供入口。</string>
+
+    <!-- 连接详情 -->
+    <string name="detail_caps">服务能力</string>
+    <string name="detail_caps_langs">支持语言：简体中文 ↔ 巴西葡语</string>
+    <string name="detail_caps_audio">译文语音：不提供</string>
+
+    <!-- 语言方向 -->
+    <string name="lang_pt_short">葡萄牙语</string>
+    <string name="lang_zh_short">简体中文</string>
+    <string name="lang_pt_full">葡萄牙语（巴西）</string>
+    <string name="lang_zh_full">简体中文（普通话）</string>
+    <string name="lang_pt_note">对方说的语言</string>
+    <string name="lang_zh_note">译成这个语言</string>
+    <string name="swap_sides">交换翻译方向</string>
+    <string name="pick_source_lang">选择源语言</string>
+    <string name="pick_target_lang">选择目标语言</string>
+    <string name="lang_supported_note">当前同传服务支持这两种语言</string>
+
+    <!-- 记录 -->
+    <string name="records_title">记录</string>
+    <string name="records_empty">还没有保存过会话</string>
+    <string name="records_empty_hint">同传结束后可以保存记录，之后在这里回看</string>
+    <string name="record_direction">%1$s → %2$s</string>
+    <string name="record_rename">重命名</string>
+    <string name="record_copy">复制文字</string>
+    <string name="record_delete">删除</string>
+    <string name="record_delete_confirm">删除这条记录？删掉就找不回来了。</string>
+    <string name="record_copied">文字已复制到剪贴板</string>
+    <string name="record_saved">记录已保存</string>
+    <string name="record_partial">部分结果未完成</string>
+
+    <!-- 会话总结 -->
+    <string name="summary_title">本次同传</string>
+    <string name="summary_direction">翻译方向</string>
+    <string name="summary_started">开始时间</string>
+    <string name="summary_duration">会话时长</string>
+    <string name="summary_segments">片段数</string>
+    <string name="summary_save">保存记录</string>
+    <string name="summary_back">返回同传</string>
+    <string name="summary_finishing">正在完成最后一段翻译…</string>
+
+    <!-- 设置 -->
+    <string name="settings_appearance">外观</string>
+    <string name="settings_theme">主题</string>
+    <string name="theme_system">跟随系统</string>
+    <string name="theme_light">浅色</string>
+    <string name="theme_dark">深色</string>
+    <string name="settings_font_size">字号</string>
+    <string name="settings_display">显示</string>
+    <string name="settings_default_mode">字幕显示方式</string>
+    <string name="settings_glasses_preview">眼镜显示预览</string>
+    <string name="settings_glasses_preview_hint">按 40 列 × 3 行看这块屏幕将来会显示成什么样</string>
+    <string name="settings_audio">音频</string>
+    <string name="settings_output">音频输出</string>
+    <string name="settings_connection">连接</string>
+    <string name="settings_server">同传服务</string>
+    <string name="settings_experiments">实验</string>
+    <string name="settings_type_text">手输一句话（不经过语音识别）</string>
+    <string name="settings_type_text_hint">把链路验证和语音识别解耦：语音坏了也能确认后面是好的</string>
+    <string name="settings_send">发送</string>
+    <string name="settings_diagnostics">诊断</string>
+    <string name="settings_about">关于</string>
+    <string name="settings_about_body">不引入任何第三方库的应用（含 AndroidX）。字幕由电脑上的同传服务生成，手机只负责收音与显示。</string>
+
+    <!-- 眼镜预览 -->
+    <string name="glasses_preview_title">眼镜显示预览</string>
+    <string name="glasses_preview_empty">（还没有收到字幕）</string>
+
+    <!-- 异常与等待 -->
+    <string name="err_mic_permission">需要麦克风权限才能采集声音</string>
+    <string name="err_mic_permission_settings">已永久拒绝，请到系统设置里开启</string>
+    <string name="grant">去授权</string>
+    <string name="open_settings">打开系统设置</string>
+    <string name="err_disconnected">连接已断开，已暂停收音</string>
+    <string name="err_disconnected_note">中断期间未录制音频。</string>
+    <string name="reconnecting">正在重新连接…</string>
+    <string name="reconnected">连接已恢复，点击继续同传</string>
+    <string name="err_service">同传服务暂时不可用</string>
+    <string name="processing">正在处理…</string>
+    <string name="tech_detail">技术详情</string>
 </resources>
