@@ -37,6 +37,18 @@ public class MicUploader {
 
         /** 出错了，录音已经停下。 */
         void onUploadError(String message);
+
+        /**
+         * 每一次读取（约 100ms）报一次**真实电平**，用来驱动界面上的音量条。
+         *
+         * 为什么必须是真的：界面上放一根永远在动的假波形，会让人以为麦克风正常，
+         * 而实际上什么都没录到 —— 这个项目已经栽过一次（手机上录到的几乎全是静音，
+         * RMS 0.0012，而界面看起来一切正常）。所以宁可显示一条**不动**的条。
+         *
+         * @param rms  这一段采样的均方根（0~1）
+         * @param peak 这一段采样的峰值（0~1）
+         */
+        void onLevel(float rms, float peak);
     }
 
     /** 优先尝试的采样率：Whisper 要 16k；后两个是安卓上的常见降级值。 */
@@ -184,8 +196,31 @@ public class MicUploader {
         }
     }
 
-    private void loop(int readBytes, int bytesPerChunk) {
-        AudioRecord current = record;
+    /**
+     * 算并上报这一小段（约 100ms）的 RMS 与峰值。
+     *
+     * 只在录音线程里调用，所以不需要额外同步。开销可忽略（1600 个采样）。
+     */
+    private void reportLevel(byte[] pcm, int length) {
+        if (pcm == null || length < 2) return;
+        double sum = 0;
+        int peak = 0;
+        int count = length / 2;
+        for (int i = 0; i < count; i++) {
+            // 16-bit 小端
+            int lo = pcm[i * 2] & 0xFF;
+            int hi = pcm[i * 2 + 1];
+            int sample = (hi << 8) | lo;
+            int abs = sample < 0 ? -sample : sample;
+            if (abs > peak) peak = abs;
+            sum += (double) sample * (double) sample;
+        }
+        float rms = (float) Math.sqrt(sum / count) / 32768f;
+        float peakValue = peak / 32768f;
+        post(() -> listener.onLevel(rms, peakValue));
+    }
+
+    private void loop(int readBytes, int bytesPerChunk) {        AudioRecord current = record;
         if (current == null) {
             running = false;
             return;
@@ -220,14 +255,17 @@ public class MicUploader {
                     }
                     continue;
                 }
+                // 每读一次就报一次真实电平（约 100ms 一次），驱动界面上的音量条。
+                // 注意：这里**只**用于界面提示"有没有在讲话"；
+                // 真正的语音判定在电脑上（自适应门槛 = 噪声底 × 4），手机不重复实现一套。
+                reportLevel(slice, read);
                 int offset = 0;
                 while (offset < read) {
                     int take = Math.min(read - offset, buffer.length - filled);
                     System.arraycopy(slice, offset, buffer, filled, take);
                     filled += take;
                     offset += take;
-                    if (filled == buffer.length) {
-                        if (!upload(buffer, filled, first)) {
+                    if (filled == buffer.length) {                        if (!upload(buffer, filled, first)) {
                             return;         // upload 里已经报过错
                         }
                         first = false;
@@ -272,8 +310,14 @@ public class MicUploader {
         }
     }
 
+    /**
+     * 复用同一个 Handler。
+     * 电平回调现在是每 100ms 一次（10 次/秒），每次 new 一个 Handler 是白白的分配。
+     */
+    private final Handler main = new Handler(Looper.getMainLooper());
+
     private void post(Runnable action) {
-        new Handler(Looper.getMainLooper()).post(action);
+        main.post(action);
     }
 
     private static String describe(Exception error) {

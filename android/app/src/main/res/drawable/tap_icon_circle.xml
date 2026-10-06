@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 圆形图标按钮（工具栏/后退/关闭这类 44~48dp 的点击区） -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="@color/ripple_light">
+    <item>
+        <shape android:shape="oval">
+            <solid android:color="@color/surface_alt" />
+        </shape>
+    </item>
+</ripple>

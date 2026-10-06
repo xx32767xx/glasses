@@ -78,6 +78,7 @@ node scripts/fake-phone.mjs --wav var/audio/zh/short-16k.wav --url http://127.0.
 | `scripts/harness-side.mjs` | 常驻的 harness 侧进程（真实组合 + 插件，文件模式） |
 | `scripts/start-all.mjs` | **一键启动**：一次起齐"转发 + 识别 + 大脑"，日志带前缀汇总、Ctrl-C 全停、先查端口有没有被旧进程占着 |
 | `scripts/fake-phone.mjs` | **假手机**：没有手机时按同样的协议逐块上传音频，用来验证「录音上传」那条路 |
+| `scripts/net-doctor.mjs` | **网络体检**：手机连不上时把"地址变了 / 不在同一网段 / 进程没在听 / 防火墙拦了"分开报；`--watch` 还能判断包到底有没有到电脑（用来区分防火墙与校园网隔离） |
 | `scripts/debug-window.mjs` | **调试窗口**：实时显示"音频/收件箱/字幕总线/转发进程"四个环节，并直接判断**断在哪一环** |
 | `android/` | **安卓 App「虚拟眼镜」**：录音上传（识别在电脑上做）+ 40×3 字幕面板（零第三方依赖） |
 | `lib/artifacts.mjs` · `scripts/generate.mjs` | 产物生成（测试与 CLI 共用同一份实现） |

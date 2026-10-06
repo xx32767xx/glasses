@@ -318,6 +318,9 @@ export async function startRelay(rawOptions = {}) {
     frameCount: 0,
     rejected: 0,
     sockets: 0,
+    /** 累计接受过多少个 TCP 连接（诊断"手机到底有没有连过来"，见 /status）。 */
+    connections: 0,
+    lastConnectionAt: null,
     inboxLines: 0,
     writer: null,
     /** 写入串行化：收件箱的顺序就是字幕的顺序，不能乱 */
@@ -664,6 +667,11 @@ export async function startRelay(rawOptions = {}) {
           rejected: state.rejected,
           waiting: state.waiters.size,
           busSeen: state.lastFrame !== null,
+          // 「手机有没有连到这里」的证据。手机连不上时它自己没法说话，
+          // 所以这两个数只能从电脑本地看：动 = 网络路径通了，不动 = 包被挡在外面。
+          sockets: state.sockets,
+          connections: state.connections,
+          lastConnectionAt: state.lastConnectionAt,
           inbox: options.inbox,
           bus: options.bus,
           audio: options.audio,
@@ -686,6 +694,12 @@ export async function startRelay(rawOptions = {}) {
 
   server.on('connection', socket => {
     state.sockets += 1
+    // 累计计数 + 最后一次连进来的时刻。这两个数是"手机到底有没有连到这里"的**唯一**证据：
+    // 手机点连接时 SYN 先到防火墙，被丢掉的话进程根本不会触发这个事件 ——
+    // 于是"计数不动"就明确指向防火墙或网络隔离，而不是应用层的问题。
+    // （手机连不上时也没法去问它，所以这个数要从电脑本地看，见 scripts/net-doctor.mjs --watch）
+    state.connections += 1
+    state.lastConnectionAt = new Date().toISOString()
     socket.on('close', () => { state.sockets -= 1 })
   })
 

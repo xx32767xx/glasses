@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 记录详情：延续"原文 / 译文"的对应关系，工具入口在顶部 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/page"
+    android:orientation="vertical">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp">
+
+        <ImageView
+            android:id="@+id/detailBack"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="@drawable/tap_icon_bare"
+            android:clickable="true"
+            android:contentDescription="@string/back"
+            android:focusable="true"
+            android:padding="11dp"
+            android:src="@drawable/ic_back" />
+
+        <TextView
+            android:id="@+id/detailTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:fontFamily="sans-serif-medium"
+            android:maxLines="1"
+            android:textColor="@color/ink"
+            android:textSize="18sp" />
+
+        <ImageView
+            android:id="@+id/detailRename"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="@drawable/tap_icon_bare"
+            android:clickable="true"
+            android:contentDescription="@string/record_rename"
+            android:focusable="true"
+            android:padding="11dp"
+            android:src="@drawable/ic_edit" />
+
+        <ImageView
+            android:id="@+id/detailCopy"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="@drawable/tap_icon_bare"
+            android:clickable="true"
+            android:contentDescription="@string/record_copy"
+            android:focusable="true"
+            android:padding="11dp"
+            android:src="@drawable/ic_copy" />
+
+        <ImageView
+            android:id="@+id/detailDelete"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="@drawable/tap_icon_bare"
+            android:clickable="true"
+            android:contentDescription="@string/record_delete"
+            android:focusable="true"
+            android:padding="11dp"
+            android:src="@drawable/ic_delete" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/detailMeta"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="8dp"
+        android:textColor="@color/ink_faint"
+        android:textSize="12sp" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:clipToPadding="false"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="16dp"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:id="@+id/detailList"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+    </ScrollView>
+</LinearLayout>

@@ -629,6 +629,24 @@ export async function runContractSuite(adapter, { it, check, assert }) {
     const status1 = await auto.tools.get('leion_inbox').execute({ action: 'status' })
     check('消费位置前进了', status1.consumedChars > 0, String(status1.consumedChars))
     check('没有错误', status1.errors === 0, String(status1.lastError))
+
+    // 帧里必须同时有**原文和译文**：手机端要按"原文在上、译文在下"成对显示，
+    // 而只有插件这一层同时知道这两样（原文是它的输入，译文是它的产出）。
+    // 少了 source，手机就只能显示一段文字，原文译文分不出来。
+    const finalFrame = history.entries[history.entries.length - 1]
+    check('帧里有原文（source）', typeof finalFrame.source === 'string' && finalFrame.source !== '',
+      JSON.stringify(finalFrame))
+    check('帧里标了原文语种（sourceLang）', finalFrame.sourceLang === 'pt-BR',
+      String(finalFrame.sourceLang))
+    check('原文是葡语、译文是中文（确实是两段不同的文字）',
+      finalFrame.source !== finalFrame.text
+      && finalFrame.source.includes('reunião') && finalFrame.text.includes('会议'),
+      JSON.stringify({ source: finalFrame.source, text: finalFrame.text }))
+    // 定稿帧必须明确标出"这不是流式增量" —— 手机端靠它决定要不要打「生成中」、
+    // 以及要不要把这一帧**原位**写进同一条字幕（而不是新增一条）。
+    check('定稿帧带 partial=false（手机靠它区分"还在生成"）',
+      finalFrame.partial === false, String(finalFrame.partial))
+
     fingerprint.inboxAuto = { configured: status1.configured, processed: status1.processed, errors: status1.errors }
     await auto.tools.get('leion_inbox').execute({ action: 'stop' })
   })

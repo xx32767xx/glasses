@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!--
-      用平台自带主题，不引入 AndroidX / Material 库（APK 就小、构建不依赖仓库）。
-      颜色、圆角、阴影全部由自己写的 drawable 负责，主题只做三件事：
-      页面底色、状态栏融进页面（浅色底 → 状态栏图标要变深色，API 23+ 支持）。
+      平台自带主题，不引入 AndroidX / Material —— APK 小、构建不依赖任何仓库。
+      "Material 3 风格"是靠 colors.xml / drawable / 间距字号自己落地的，
+      不是靠引库（见 android/README.md「改这个界面时的硬约束」）。
+      主题只负责页面底色与状态栏，其余全是 drawable 的事。
     -->
     <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@color/page</item>
@@ -11,5 +12,25 @@
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:navigationBarColor">@color/page</item>
         <item name="android:colorAccent">@color/brand</item>
+    </style>
+
+    <!--
+      深色模式：**不**单独做一套布局，而是让 Activity 在 attachBaseContext 里
+      把配置覆写成 UI_MODE_NIGHT_YES（见 MainActivity.applyNightMode），
+      于是 values-night/colors.xml 自动生效，所有 @color/... 一起变。
+      这个 style 只在"强制深色"时用来把状态栏图标改成浅色。
+    -->
+    <style name="AppTheme.Dark" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/page</item>
+        <item name="android:statusBarColor">@color/page</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:navigationBarColor">@color/page</item>
+        <item name="android:colorAccent">@color/brand</item>
+    </style>
+
+    <!-- 语言/输出设备这类底部弹层：从底部升起，背景压暗 -->
+    <style name="SheetAnimation">
+        <item name="android:windowEnterAnimation">@anim/sheet_in</item>
+        <item name="android:windowExitAnimation">@anim/sheet_out</item>
     </style>
 </resources>

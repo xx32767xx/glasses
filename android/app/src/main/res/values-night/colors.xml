@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  深色模式下的同名颜色。文件名里的 `-night` 是 Android 的资源限定符：
+  系统处于深色模式时，这些值会自动覆盖 values/colors.xml 里的同名项。
+
+  为什么整个深色模式只写这一个文件：界面里所有颜色都写的是**语义名**
+  （@color/page / @color/ink …），没有一处写死具体色值，所以只要这里覆盖一遍，
+  所有布局和 drawable 自动变深色 —— 不用维护两套布局，也不会漏掉某个控件。
+
+  深色不是把浅色反一下那么简单，几条规矩：
+    · 底比卡片**更暗**（浅色模式是底比卡片亮）：深色下才分得出层次
+    · 主色要提亮（#2563EB 在深底上偏暗、对比度不足）
+    · 状态色也要提亮，否则"橙色警告"在深底上看着像棕色
+    · 描边用半透明白，而不是灰色 —— 灰色描边在深底上会显脏
+-->
+<resources>
+    <color name="page">#0F1116</color>
+    <color name="surface">#171923</color>
+    <color name="surface_alt">#1F2230</color>
+    <color name="line">#2A2E3C</color>
+    <color name="line_soft">#232633</color>
+
+    <color name="ink">#ECEFF4</color>
+    <color name="ink_soft">#A9B0C0</color>
+    <color name="ink_faint">#7A8194</color>
+
+    <color name="brand">#5B8DEF</color>
+    <color name="brand_dark">#4A7BE0</color>
+    <color name="brand_soft">#1B2436</color>
+    <color name="on_brand">#0F1116</color>
+
+    <color name="ok">#3ED598</color>
+    <color name="ok_soft">#132A22</color>
+    <color name="warn">#F5B54A</color>
+    <color name="warn_soft">#2C2417</color>
+    <color name="err">#F2685C</color>
+    <color name="err_soft">#2E1A18</color>
+    <color name="idle">#7A8194</color>
+
+    <color name="rec">#F2685C</color>
+    <color name="rec_dark">#D9534A</color>
+
+    <!-- 深色模式下这块"设备屏幕"保持原样：它模拟的是眼镜，不是页面 -->
+    <color name="screen">#0A0E11</color>
+    <color name="screen_line">#2A3439</color>
+    <color name="screen_ink">#E8F0F2</color>
+    <color name="screen_ink_dim">#7C8B93</color>
+
+    <color name="ripple_light">#33FFFFFF</color>
+    <color name="ripple_dark">#1FFFFFFF</color>
+
+    <color name="meter_track">#2A2E3C</color>
+    <color name="meter_on">#5B8DEF</color>
+</resources>

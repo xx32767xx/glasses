@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 音量条的单根柱子：由代码按真实电平决定点亮到第几根、以及颜色 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@color/meter_track" />
+    <corners android:radius="2dp" />
+</shape>

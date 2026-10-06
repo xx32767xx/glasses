@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 片段之间的细分隔线（规范：不要厚重边框或聊天气泡，用细分隔线 + 间距） -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@color/line_soft" />
+</shape>
