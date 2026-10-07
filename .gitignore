@@ -21,6 +21,11 @@ node_modules/
 .DS_Store
 Thumbs.db
 
+# 密钥。横评脚本（scripts/bench-models.mjs）会读它来拿别家平台的 key；
+# 也可以放 ~/.dsh/.credentials.yaml 或环境变量。**提交密钥是事故**，所以先忽略掉。
+.env
+.env.local
+
 # Python（本仓库只有 bridge/ 下几个可选脚本；别把字节码提交进来）
 __pycache__/
 *.pyc

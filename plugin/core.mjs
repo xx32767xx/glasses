@@ -78,6 +78,29 @@ export const CONFIG_DEFAULTS = {
   inboxPollMs: 700,
   /** 强制指定收件行的源语种（ASR 已知语种时有用）；留空 = 逐行自动判定。 */
   inboxFrom: '',
+
+  /**
+   * 大模型校对（讯飞那种"两遍"）：第一遍**快速出译文并立刻上屏**，
+   * 第二遍让模型回头检查这一句（听错 / 译错 / 巴葡口径），改了就**覆盖同一帧**。
+   *
+   *   'off'   关闭（缺省）。行为与加这个功能之前完全一样。
+   *   'idle'  只在**没有别的事可做时**做校对（收件箱队列空了、没有翻译在跑）。
+   *          选 'idle' 而不是"翻译完立刻校对"是刻意的：
+   *          收件箱是**串行**处理的，如果校对占着这一句不放，下一句的初译就要等它，
+   *          等于给每一句都额外加一次模型往返（实测初译 0.44~0.96 秒，再加一次就是翻倍）。
+   *          放到空闲时做，观众看到初译的时间**一点不变**。
+   *
+   * 代价与代价的边界（都是刻意的）：
+   *   · 校对结果**只在"屏幕上还是这一句"时才覆盖**。如果这期间已经出了下一句
+   *     （哪怕是下一句的流式增量），校对结果直接丢弃 —— 否则屏幕会**倒退**回上一句。
+   *   · 超过 proofreadMaxAgeMs 还没轮到的，也不再改了：观众早就读过、翻页了。
+   *   · 一次只跑一个校对（proofreading 标志），不和翻译抢模型。
+   */
+  proofread: 'off',
+  /** 校对结果超过这个年龄（毫秒）就丢弃 —— 屏幕早换页了，改了也没人看。 */
+  proofreadMaxAgeMs: 8000,
+  /** 待校对队列的上限。积压说明机器跟不上，多排也只会更晚、更没意义。 */
+  proofreadMaxQueue: 2,
 }
 
 export const DEVICE = {
@@ -90,6 +113,19 @@ export const DEVICE = {
 export const ZH = 'zh-CN'
 export const PT = 'pt-BR'
 
+/**
+ * 这个路径看起来是不是绝对路径？
+ *
+ * 刻意不引 `node:path` —— core.mjs 是**零 import** 的（动态插件在沙箱里跑，
+ * 拿不到 node 内置模块）。所以这里用最朴素的判断，覆盖三种真实写法：
+ *   C:\... / C:/... / \\server\share\... / /usr/...
+ */
+export function looksAbsolutePath(value) {
+  const text = String(value)
+  return /^[A-Za-z]:[\\/]/.test(text) || text.startsWith('\\\\') || text.startsWith('/')
+}
+
+/** 一个片段一句话（同传里一条字幕就是一句话）。 */
 const HISTORY_CAP = 200
 
 /**
@@ -137,6 +173,15 @@ export function validateConfig(raw) {
     if (!Number.isInteger(config.inboxPollMs) || config.inboxPollMs < 100) {
       throw new Error(`leion-pro: 配置了 inboxPath 时 inboxPollMs 必须是不小于 100 的整数，收到 ${JSON.stringify(config.inboxPollMs)}`)
     }
+  }
+  if (!['off', 'idle'].includes(config.proofread)) {
+    throw new Error(`leion-pro: proofread 只能是 'off' / 'idle'，收到 ${JSON.stringify(config.proofread)}`)
+  }
+  if (!Number.isInteger(config.proofreadMaxAgeMs) || config.proofreadMaxAgeMs <= 0) {
+    throw new Error(`leion-pro: proofreadMaxAgeMs 必须是正整数，收到 ${JSON.stringify(config.proofreadMaxAgeMs)}`)
+  }
+  if (!Number.isInteger(config.proofreadMaxQueue) || config.proofreadMaxQueue <= 0) {
+    throw new Error(`leion-pro: proofreadMaxQueue 必须是正整数，收到 ${JSON.stringify(config.proofreadMaxQueue)}`)
   }
   if (config.inboxFrom !== '' && config.inboxFrom !== ZH && config.inboxFrom !== PT) {
     throw new Error(`leion-pro: inboxFrom 只能是 '' / '${ZH}' / '${PT}'，收到 ${JSON.stringify(config.inboxFrom)}`)
@@ -279,6 +324,89 @@ export function translationSystem(policy, from, to) {
   return lines.join('\n')
 }
 
+/**
+ * 校对那一道的系统提示词。
+ *
+ * 和 translationSystem 分开写，是因为**两件事的目标不一样**：
+ *   翻译：把这段话说成巴葡（可能出错）；
+ *   校对：只找出**错**，别的地方一个字都别动。
+ * 混在一个提示词里会让模型忍不住去"润色"—— 那会把已经正确的译文改坏，
+ * 而同传里"改错"比"不改"严重得多（观众已经把上一版读进去了）。
+ *
+ * 规则本身也放在 policy/br-pt.json 里（口径是数据，不是代码）——
+ * 老师要调口气、加术语，改那个文件就行。
+ *
+ * @param policy 由 plugin/policy.generated.mjs（生成物）提供
+ */
+export function proofreadSystem(policy, from, to) {
+  if (policy === undefined || policy === null) {
+    throw new Error('proofreadSystem 需要 policy（见 policy/br-pt.json 与 plugin/policy.generated.mjs）')
+  }
+  const target = to === PT ? policy.variety.fullName : policy.variety.counterpart.name
+  const lines = [
+    '你在做**译文校对**：译文的目标语言是' + target + '。',
+    '硬性要求：',
+  ]
+  const rules = policy.proofreadRules === undefined ? [] : policy.proofreadRules
+  rules.forEach((rule, index) => lines.push((index + 1) + '. ' + rule))
+  if (to === PT && Array.isArray(policy.terminology) && policy.terminology.length > 0) {
+    lines.push('用词必须按巴葡（括号里是葡葡，不要用）：' + policy.terminology
+      .map(entry => entry.br + '（不用 ' + entry.ptpt + '）')
+      .join('、'))
+  }
+  return lines.join('\n')
+}
+
+/**
+ * 校对结果的验收闸：这条"修正"到底能不能上屏？
+ *
+ * 为什么必须有：提示词里写了"不许比原译文更长"，但**模型不保证守规矩**。
+ * 而且这里还有一个更阴的失败方式 —— 读代码时发现的：
+ * 离线演示用的例句表适配器（scripts/demo-phrasebook.mjs）对查不到的输入会回一句
+ * 「（离线演示：例句表里没有这一句，原文为「…」）」。校对请求当然查不到，
+ * 于是它会**被当成校对结果**，把一句本来正确的字幕覆盖成这句演示提示。
+ * 这类"校对把对的改错"的代价比"不校对"高得多 —— 观众已经把上一版读进去了。
+ *
+ * 两条判据（都必要）：
+ *   ① 变长太多 → 这不是校对，是别的东西（校对只该修错，不该扩写）；
+ *   ② 折行后超出显示预算 → 会把开头挤掉（AR 只有 3 行，超出的部分是从**开头**被丢的）。
+ *
+ * @return 不可用时返回原因字符串；可用返回 null。
+ */
+export function revisionProblem(draft, corrected, cols, lines) {
+  const before = String(draft)
+  const after = String(corrected)
+  if (after.trim() === '') return '校对结果为空'
+  const grew = after.length - before.length
+  if (grew >= 12 && after.length > before.length * 1.5) {
+    return '比原译文长太多（' + before.length + ' → ' + after.length + ' 字符），不像是在校对'
+  }
+  if (wrapText(after, cols).length > lines) {
+    return '折行后有 ' + wrapText(after, cols).length + ' 行，超出 ' + lines + ' 行的显示预算'
+  }
+  return null
+}
+
+/**
+ * 拼校对那一次的输入：这一句的原文 + 已上屏的译文 + 上一句的上下文。
+ *
+ * 为什么一定要把**原文**给它：同传里最常见的错误不是"译得不好"，而是
+ * **听错了**（Whisper 在短片段上尤其容易错，例如把「这是一条测试语音」听成
+ * 「这是一条」+「测试语音」两句）。只看译文是发现不了这类错的，
+ * 必须拿原文对照，甚至要往前看一句才能推断说话人到底想说什么。
+ */
+export function proofreadRequest(input) {
+  const lines = []
+  if (input.context !== undefined && input.context !== null) {
+    lines.push('上一句原文：' + input.context.source)
+    lines.push('上一句译文：' + input.context.translation)
+  }
+  lines.push('这一句原文：' + input.source)
+  lines.push('已经上屏的译文：' + input.draft)
+  lines.push('请输出校对后的译文（没有要改的就原样输出）：')
+  return lines.join('\n')
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 一次挂载 = 一个解释器实例
 //
@@ -346,7 +474,32 @@ export function createInterpreter(ctx, rawConfig, deps) {
     lastGoodFrame: null,
     translating: false,
     callSeq: 0,
+    /**
+     * 屏幕上"换过几次"的计数。**每一次 sendRaw（含流式增量、清屏）都 +1**。
+     * 校对结果靠它判断"我要改的那句还在屏幕上吗"：
+     * 期间只要有任何东西上过屏（哪怕只是下一句的增量），这个数就变了，
+     * 校对结果就必须**丢弃** —— 否则屏幕会倒退回去显示上一句。
+     */
+    displaySeq: 0,
+    /** 校对统计。字段名直说结果，便于在自检和日志里一眼看出"校对到底有没有在干活"。 */
+    proofread: { enqueued: 0, settled: 0, fixed: 0, same: 0, rejected: 0, dropped: 0, failed: 0, lastNote: null },
+    /** 最近几句（原文+译文），给校对当上下文用。只留很少几条，避免把提示词撑大。 */
+    recent: [],
   }
+
+  /**
+   * 待校对队列 + 是否正在校对。
+   *
+   * 为什么要有队列而不是"翻译完立刻校对"：收件箱是串行处理的（同传不能并发，
+   * 否则字幕会互相穿插）。如果校对占着当前这一句不放，下一句的初译就得排队等它，
+   * 等于给每一句都加了一次模型往返 —— 而实测初译本身只要 0.44~0.96 秒，
+   * 加一次就翻倍。所以校对只在**空闲**（队列空、没有翻译在跑）时才动，
+   * 观众看到初译的时间一点不变。
+   */
+  const proofreadQueue = []
+  let proofreading = false
+  /** 第一次因为"没有 llm 服务"失败后就不再重试，免得每句都刷一遍同样的错。 */
+  let proofreadUnavailable = false
 
   function buildFrame(input) {
     const text = String(input.text === undefined ? '' : input.text)
@@ -390,6 +543,7 @@ export function createInterpreter(ctx, rawConfig, deps) {
       throw error
     }
     state.pushes += 1
+    state.displaySeq += 1        // 屏幕变了：在途的校对结果就此作废（见 state.displaySeq 的说明）
     state.lastFrame = frame
     return frame
   }
@@ -401,6 +555,153 @@ export function createInterpreter(ctx, rawConfig, deps) {
     state.frames.push(frame)
     if (state.frames.length > HISTORY_CAP) state.frames.shift()
     return frame
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 大模型校对（第二遍）：把已经上屏的译文回头再检查一次
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /** 有没有可用的模型服务。没有就别排队了 —— 排了也是每次都失败。 */
+  function proofreadEnabled() {
+    if (config.proofread !== 'idle' || proofreadUnavailable) return false
+    if (translator.kind === 'none') return false     // 纯显示通道：插件不碰模型
+    const llm = ctx.get('llm')
+    if (llm === undefined) {
+      proofreadUnavailable = true
+      state.proofread.lastNote = '没有 llm 服务，校对已自动关闭'
+      console.log('[leion-pro] 校对：当前 ctx 里没有 llm 服务，自动关闭（翻译本身不受影响）')
+      return false
+    }
+    return true
+  }
+
+  /**
+   * 把一句刚上屏的译文排进校对队列。
+   *
+   * 记下 seq（当时的 displaySeq）是关键：等真正轮到校对时，要用它确认
+   * "屏幕上还是这一句"。这就是"校对绝不覆盖更新的字幕"这条保证的实现方式。
+   */
+  function enqueueProofread(item) {
+    if (!proofreadEnabled()) return false
+    if (proofreadQueue.length >= config.proofreadMaxQueue) {
+      // 积压了：丢掉最老的一条（它最不可能还在屏幕上）
+      proofreadQueue.shift()
+      state.proofread.dropped += 1
+    }
+    proofreadQueue.push(item)
+    state.proofread.enqueued += 1
+    return true
+  }
+
+  /**
+   * 做一次校对。返回是否真的做了（调用方据此决定要不要继续让出时间片）。
+   *
+   * 只在**空闲**时被调用：收件箱队列空、没有翻译在跑、没有别的校对在跑。
+   */
+  async function runOneProofread() {
+    if (proofreading || !proofreadEnabled()) return false
+    const item = proofreadQueue.shift()
+    if (item === undefined) return false
+
+    // 太老了就不改了：屏幕上早换页了，改它既没人看、还白花一次调用。
+    const age = Date.now() - item.at
+    if (age > config.proofreadMaxAgeMs) {
+      state.proofread.dropped += 1
+      state.proofread.lastNote = '有一句等太久（' + Math.round(age) + 'ms），已放弃校对'
+      return true
+    }
+    // 还没轮到就已经换屏幕了：直接丢弃，连模型都不用调（省一次调用）。
+    if (state.displaySeq !== item.seq) {
+      state.proofread.dropped += 1
+      state.proofread.lastNote = '屏幕上已经不是这一句了，校对结果丢弃'
+      return true
+    }
+
+    proofreading = true
+    try {
+      const llm = ctx.get('llm')
+      const route = await resolveRoute(llm)
+      if (route.ok !== true) {
+        state.proofread.failed += 1
+        state.proofread.lastNote = route.failure
+        return true
+      }
+      state.callSeq += 1
+      const messages = [{
+        id: 'leion-p' + state.callSeq,
+        role: 'user',
+        content: [{ type: 'text', text: proofreadRequest(item) }],
+        source: { kind: 'user' },
+      }]
+      // 刻意**不流式上屏**：校对要么整句替换，要么不动。
+      // 边校边显只会让屏幕来回跳，反而更难读。
+      const result = await runStream(llm, {
+        provider: route.providerId,
+        model: route.modelId,
+        system: proofreadSystem(policy, item.from, item.to),
+        messages,
+        maxTokens: config.maxTokens,
+        // 温度比翻译再低一点：校对要的是"稳定地判对错"，不是发挥。
+        temperature: Math.min(config.temperature, 0.2),
+      }, undefined)
+
+      if (result.ok !== true) {
+        state.proofread.failed += 1
+        state.proofread.lastNote = '校对失败（已忽略，屏幕保持初译）：' + result.failure
+        return true
+      }
+      state.proofread.settled += 1
+
+      const corrected = String(result.text).trim()
+      if (corrected === '' || corrected === item.draft) {
+        state.proofread.same += 1       // 模型认为不用改 —— 这是正常且期望的结果
+        return true
+      }
+      // 验收闸：这条"修正"值不值得上屏（见 revisionProblem 的说明）
+      const problem = revisionProblem(item.draft, corrected, config.cols, config.lines)
+      if (problem !== null) {
+        state.proofread.rejected += 1
+        state.proofread.lastNote = '校对结果没通过验收（保持初译）：' + problem
+        console.log('[leion-pro] ✗ 校对结果不可用，已丢弃：' + problem)
+        return true
+      }
+      // 最后一道闸：重新确认屏幕没变过（模型调用期间可能已经出了下一句）。
+      if (state.displaySeq !== item.seq) {
+        state.proofread.dropped += 1
+        state.proofread.lastNote = '校对期间屏幕已换页，结果丢弃（不覆盖更新的字幕）'
+        return true
+      }
+
+      const frame = buildFrame({ text: corrected, speaker: item.displaySpeaker, lang: item.to,
+        // ⚠️ 必须带上**原文**。这是个真踩过的坑：这一行原本没传 source，于是修订帧的
+        //    source 退化成译文本身，而手机端是**按原文认"这是同一条字幕"**的 ——
+        //    结果"校对改正"到了屏幕上不是原地替换，而是**多出一行**
+        //    （那一行的"原文"位置还会显示成译文）。它是合并两个分支时才暴露的：
+        //    写校对那会儿，帧里还没有 source 这个字段。
+        source: item.source, sourceLang: item.from })
+      await sendRaw(frame)
+      state.lastGoodFrame = frame
+      // 历史里那一条要**替换**，不能追加 —— 否则双语历史会多出一条重复的话，
+      // 而且"改过的那版"会留在记录里，看起来像说了两遍。
+      const last = state.frames.length - 1
+      if (last >= 0 && state.frames[last] === item.draftFrame) {
+        state.frames[last] = frame
+      } else {
+        state.frames.push(frame)
+        if (state.frames.length > HISTORY_CAP) state.frames.shift()
+      }
+      state.proofread.fixed += 1
+      state.proofread.lastNote = '改了：' + item.draft + ' → ' + corrected
+      console.log('[leion-pro] ✎ 校对改了：' + item.draft)
+      console.log('[leion-pro]            → ' + corrected)
+      return true
+    } catch (error) {
+      state.proofread.failed += 1
+      state.proofread.lastNote = '校对抛异常（已忽略）：' + String(error && error.message ? error.message : error)
+      return true
+    } finally {
+      proofreading = false
+    }
   }
 
   /** 解析要用的 provider / model 路由，解析不出来时给出能照着做的报错。 */
@@ -669,6 +970,14 @@ export function createInterpreter(ctx, rawConfig, deps) {
     if (config.inboxPath === '') {
       throw new Error("未配置 inboxPath，收件箱无法启动（在 cordis.yml 的 config 里设置，或改 CONFIG_OVERRIDE）")
     }
+    // ⚠️ 相对路径**实测会静默失效**：继电器照样往文件里写，插件这边读不到，
+    //    既不报错也不出字幕，看上去像"翻译坏了"。所以这里直接拒绝，
+    //    并把话说到能照着改（由调用方 catch 后记进 lastError + 打日志）。
+    if (!looksAbsolutePath(config.inboxPath)) {
+      throw new Error('inboxPath 必须是**绝对路径**，收到 ' + JSON.stringify(config.inboxPath)
+        + '。相对路径会让收件箱静默读不到（继电器在写、插件读不到、还不报错）—— '
+        + '用绝对路径，或在启动脚本里把 --data-dir 解析成绝对路径（scripts/start-all.mjs 已经这么做了）')
+    }
     inbox.stopWatcher = ctx.interval(() => {
       void (async () => {
         try {
@@ -678,6 +987,14 @@ export function createInterpreter(ctx, rawConfig, deps) {
           inbox.lastError = String(error && error.message ? error.message : error)
         }
         await pump()
+        // ── 校对只在这里做（第二遍）──────────────────────────────────────────
+        // 位置是刻意的：pump() 已经返回，说明队列空了、没有翻译在跑 ——
+        // 也就是说**现在这段时间本来就是闲着等的**。
+        // 放到这里，校对既不占"下一句的初译"，也不会和翻译抢模型。
+        // 一次只做一个（proofreading 标志在 runOneProofread 里管）。
+        if (queue.length === 0 && !state.translating) {
+          await runOneProofread()
+        }
       })()
     }, config.inboxPollMs)
     inbox.running = true
@@ -707,6 +1024,12 @@ export function createInterpreter(ctx, rawConfig, deps) {
         startedAt: inbox.startedAt,
         lastLine: inbox.lastLine,
         lastError: inbox.lastError,
+        // 校对的运行状态（关着时是 null）：调用方一眼能看出"第二遍"有没有在跑、
+        // 改了几次、丢了几次（丢 = 屏幕上已经换页，主动放弃覆盖）。
+        proofread: config.proofread === 'off'
+          ? null
+          : Object.assign({ mode: config.proofread, pending: proofreadQueue.length,
+            inFlight: proofreading }, state.proofread),
       }
     },
     start() {
@@ -970,6 +1293,26 @@ export function createInterpreter(ctx, rawConfig, deps) {
         source, sourceLang: from })
       await pushFrame(finalFrame)
 
+      // ── 排进「校对」队列（第二遍）────────────────────────────────────────
+      // 顺序有讲究：先取上一句当上下文，再把这一句记进 recent。
+      // 上下文只在与本句**同向**时才给 —— 语向来回切时，上一句的译文是另一种语言，
+      // 塞给模型只会把它带偏。
+      const previous = state.recent.length > 0 ? state.recent[state.recent.length - 1] : null
+      enqueueProofread({
+        source,
+        from,
+        to,
+        draft: result.text,
+        displaySpeaker,
+        draftFrame: finalFrame,
+        // 记下"此刻屏幕的版本号"：等真轮到时用它确认这一句还在屏幕上（见 state.displaySeq）
+        seq: state.displaySeq,
+        at: Date.now(),
+        context: previous !== null && previous.to === to ? previous : null,
+      })
+      state.recent.push({ source, translation: result.text, to })
+      if (state.recent.length > 4) state.recent.shift()
+
       return {
         ok: true,
         from,
@@ -980,6 +1323,9 @@ export function createInterpreter(ctx, rawConfig, deps) {
         model: result.provider + '/' + result.model,
         forced: args.from !== undefined || args.to !== undefined,
         preview: drawFrame(finalFrame, config.cols),
+        // 校对开着时把它的计数一并给出（拷贝一份：这是即时快照，不是活引用）。
+        // 输出外壳是 additionalProperties: true，所以加字段不会破坏 schema 校验。
+        proofread: config.proofread === 'off' ? null : Object.assign({}, state.proofread),
         outbound: to === PT
           ? {
             channel: 'counterpart',
@@ -1077,6 +1423,21 @@ export function createInterpreter(ctx, rawConfig, deps) {
         }
       }
 
+      // 校对（第二遍）：只报状态，不作为自检成败的判据 ——
+      // 它是个"锦上添花"的环节，坏了不该让整条链路报 FAIL。
+      if (config.proofread === 'off') {
+        notes.push('校对：关闭（config.proofread = off）')
+      } else if (proofreadUnavailable) {
+        notes.push('校对：已自动关闭 —— ' + (state.proofread.lastNote || '没有可用的 llm 服务'))
+      } else {
+        const stats = state.proofread
+        notes.push('校对：' + config.proofread + '（空闲时做）· 排队 ' + proofreadQueue.length
+          + ' 句 · 已改 ' + stats.fixed + ' 句 · 判定无需改 ' + stats.same
+          + ' 句 · 丢弃 ' + stats.dropped + ' 句 · 没通过验收 ' + stats.rejected
+          + ' 句 · 失败 ' + stats.failed + ' 次'
+          + (stats.lastNote === null ? '' : ' · 最近：' + stats.lastNote))
+      }
+
       return {
         ok: layout && transportOk && detect && translateOk && inboxOk !== false,
         layout,
@@ -1084,6 +1445,10 @@ export function createInterpreter(ctx, rawConfig, deps) {
         detect,
         translate: translateOk,
         inbox: inboxOk,
+        proofread: config.proofread === 'off'
+          ? null
+          : Object.assign({ mode: config.proofread, pending: proofreadQueue.length,
+            inFlight: proofreading, unavailable: proofreadUnavailable }, state.proofread),
         notes,
         preview: drawFrame(probe, config.cols),
       }
@@ -1099,6 +1464,9 @@ export function createInterpreter(ctx, rawConfig, deps) {
     } catch (error) {
       inbox.errors += 1
       inbox.lastError = String(error && error.message ? error.message : error)
+      // 必须说出来：收件箱起不来的话整个同传是"静默不动"的（外部照样在写，
+      // 屏幕上永远没字幕），只记 lastError 的话得到有人想起来去查工具才知道。
+      console.log('[leion-pro] ✗ 收件箱没能启动：' + inbox.lastError)
     }
   }
   return api

@@ -29,7 +29,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { CHECKOUT } from '../lib/real-tools.mjs'
 import { ensureLoaderLinks } from '../lib/loader-links.mjs'
 import { buildComposition, LIVE_DATA_DIR, repoFile } from '../lib/composition.mjs'
@@ -41,6 +41,8 @@ const HELP = `harness-side —— 常驻的 harness 侧进程（给手机 + 局�
 
 选项
   --offline             用离线例句表翻译，不联网、零成本（只认得剧本里那 14 句）
+  --proofread           打开大模型校对（第二遍）：初译先上屏，空闲时回头改这一句。
+                        只在 --live 下有实际意义（离线例句表认不出校对请求）
   --data-dir <path>     收件箱与字幕总线所在目录（缺省 var/live）
   --inbox <path>        收件箱文件（缺省 <data-dir>/asr-inbox.jsonl）
   --bus <path>          字幕总线文件（缺省 <data-dir>/subtitle-bus.json）
@@ -64,11 +66,12 @@ const HELP = `harness-side —— 常驻的 harness 侧进程（给手机 + 局�
 `
 
 export function parseArgs(argv) {
-  const options = { mode: 'live', dataDir: LIVE_DATA_DIR, cols: 40, lines: 3, pollMs: 150, keepInbox: false }
+  const options = { mode: 'live', dataDir: LIVE_DATA_DIR, cols: 40, lines: 3, pollMs: 150, keepInbox: false, proofread: false }
   const takesValue = new Set(['data-dir', 'inbox', 'bus', 'cols', 'lines', 'poll-ms'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (token === '--offline') { options.mode = 'offline'; continue }
+    if (token === '--proofread') { options.proofread = true; continue }
     if (token === '--keep-inbox') { options.keepInbox = true; continue }
     if (token === '--help') { options.help = true; continue }
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -89,6 +92,13 @@ export function parseArgs(argv) {
     if (!Number.isInteger(options[key]) || options[key] <= 0) {
       throw new Error(`${key} 必须是正整数，收到 ${JSON.stringify(options[key])}`)
     }
+  }
+  // ⚠️ 必须解析成**绝对路径**：相对路径会一路传到插件配置里，
+  //    然后收件箱**静默读不到**（继电器照写、屏幕上永远没字幕、一个错都不报）。
+  //    start-all 那边也做了同样的事，这里是防"单独起 harness-side"时踩到。
+  options.dataDir = resolve(options.dataDir)
+  for (const key of ['inbox', 'bus']) {
+    if (options[key] !== undefined) options[key] = resolve(options[key])
   }
   options.inbox = options.inbox ?? defaultInbox(options.dataDir)
   options.bus = options.bus ?? defaultBus(options.dataDir)
@@ -137,6 +147,8 @@ async function main() {
       inboxPollMs: options.pollMs,
       cols: options.cols,
       lines: options.lines,
+      // 校对（第二遍）：缺省关闭。开了之后初译照旧先上屏，校对只在空闲时做。
+      proofread: options.proofread ? 'idle' : 'off',
     },
     extraRows: [`- name: '${repoFile('lib', 'keepalive.mjs')}'`],
   })
@@ -155,6 +167,12 @@ async function main() {
   console.log('  harness 侧已启动（亮亮眼镜插件 · 文件模式）')
   console.log('─'.repeat(68))
   console.log(`  翻译后端    ${options.mode === 'live' ? '真实模型（deepseek-official）' : '离线例句表（只认得剧本 14 句）'}`)
+  if (options.proofread) {
+    console.log(options.mode === 'live'
+      ? '  大模型校对  已开启（初译先上屏，空闲时回头改；改不动就保持初译）'
+      : '  大模型校对  已开启 ⚠️ 但离线例句表不认识校对请求，只会回一句演示提示；'
+        + '那句会被验收闸拦住、保持初译。想看效果请去掉 --offline')
+  }
   console.log(`  收件箱      ${options.inbox}`)
   if (options.keepInbox) {
     console.log('              （保留了旧内容：--keep-inbox，旧行会被重新翻译一遍）')

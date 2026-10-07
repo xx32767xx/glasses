@@ -31,7 +31,7 @@
 import { spawn } from 'node:child_process'
 import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { connect } from 'node:net'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { ROOT, LOGS_DIR, WHISPER_CACHE_DIR, defaultAudioIn, defaultBus, defaultInbox, defaultSecret } from '../lib/paths.mjs'
 import { DEFAULT_DATA_DIR } from '../relay/lan-relay.mjs'
@@ -48,6 +48,8 @@ const HELP = `start-all —— 一条命令起齐整条链路
                         —— 模型大小是影响准确率**最大**的那个变量，比调切句/beam/提示词加起来都大。
                         large-v3 在 GPU 上每段约 0.6 秒（延迟仍在 1.3 秒量级），所以 GPU 上直接用大的。
   --offline             大脑用离线例句表（不联网、零成本，只认得剧本那 14 句）
+  --proofread           打开大模型校对（第二遍）：初译先上屏，空闲时回头改这一句。
+                        代价是每句多一次模型调用，但**不占**下一句的初译时间（见 docs/07）
   --no-transcriber      只起转发 + 大脑（手输文字那条路不需要识别）
   --data-dir <path>     数据目录（缺省 var/live）
   --inbox <path>        收件箱（缺省 <data-dir>/asr-inbox.jsonl）
@@ -78,6 +80,7 @@ export function parseArgs(argv) {
     cols: 40,
     lines: 3,
     offline: false,
+    proofread: false,
     transcriber: true,
     whisperModel: null,          // null = 按设备自动选（见下）
     device: 'cuda',
@@ -93,6 +96,7 @@ export function parseArgs(argv) {
     if (key === 'help') { options.help = true; continue }
     if (key === 'cpu') { options.device = 'cpu'; options.computeType = 'int8'; continue }
     if (key === 'offline') { options.offline = true; continue }
+    if (key === 'proofread') { options.proofread = true; continue }
     if (key === 'no-transcriber') { options.transcriber = false; continue }
     if (key === 'open-window') { options.openWindow = true; continue }
     if (key === 'quiet-logs') { options.writeLogs = false; continue }
@@ -110,6 +114,15 @@ export function parseArgs(argv) {
     if (!Number.isInteger(options[key]) || options[key] <= 0) {
       throw new Error(`--${key} 必须是正整数，收到 ${JSON.stringify(options[key])}`)
     }
+  }
+  // ⚠️ 数据目录必须解析成**绝对路径**。
+  //    踩过的坑：`--data-dir var/test/x` 这样的相对路径会被原样写进插件配置，
+  //    接着收件箱路径也是相对的，插件那边**静默读不到**：继电器照写、屏幕上永远没字幕、
+  //    一个错都不报 —— 表现和"翻译坏了"一模一样，害我查了半天。
+  //    在入口处解析成绝对路径，往外传的就永远是绝对的。
+  options.dataDir = resolve(options.dataDir)
+  for (const key of ['inbox', 'bus', 'audio']) {
+    if (options[key] !== undefined) options[key] = resolve(options[key])
   }
   options.inbox = options.inbox ?? defaultInbox(options.dataDir)
   options.bus = options.bus ?? defaultBus(options.dataDir)
@@ -154,6 +167,7 @@ export function buildSteps(options) {
   }
   const brainArgs = ['--data-dir', options.dataDir, '--cols', String(options.cols), '--lines', String(options.lines)]
   if (options.offline) brainArgs.push('--offline')
+  if (options.proofread) brainArgs.push('--proofread')
   steps.push({
     key: 'brain',
     ...STEPS.brain,
@@ -293,6 +307,11 @@ export async function main(argv = process.argv.slice(2)) {
   }
   console.log('')
   console.log(`  翻译后端    ${options.offline ? '离线例句表（只认得剧本 14 句）' : '真实模型（deepseek-official）'}`)
+  console.log(`  大模型校对  ${options.proofread
+    ? (options.offline
+      ? '想开，但离线例句表不认识校对请求 → 实际不会生效（去掉 --offline 才有意义）'
+      : '已开启（初译先上屏，空闲时回头改）')
+    : '关闭（加 --proofread 打开）'}`)
   console.log(`  识别模型    ${options.transcriber ? `${options.whisperModel} / ${options.device} / ${options.computeType}` : '未启动（--no-transcriber）'}`)
   console.log(`  数据目录    ${options.dataDir}`)
   for (const note of envNotes) console.log(`  ${note}`)
