@@ -71,6 +71,9 @@ def parse_args():
     parser.add_argument("--initial-prompt", default=None,
                         help="提示词（缺省不发，与生产链路一致）")
     parser.add_argument("--show", type=int, default=5, help="打印前几条对照（缺省 5）")
+    parser.add_argument("--out-json", default=None,
+                        help="把结构化结果写到这里（供 scripts/test-asr.mjs 汇总用）。"
+                             "只增加输出，不改任何计算逻辑 —— 这样两边的口径永远一致")
     return parser.parse_args()
 
 
@@ -246,6 +249,11 @@ def main():
         sys.exit("测错误率需要 --set <测试集目录>（先用 --extract 抽一批）")
 
     wavset, items = read_manifest(args.wavset)
+    # --count 也限制**测多少条**（不只是抽取多少条）——
+    # 想先跑一小批看趋势时很有用：large-v3 在 CPU 上跑满 30 条要好几分钟。
+    if args.count and args.count < len(items):
+        items = items[: args.count]
+        print(f"（--count {args.count}：只测前 {len(items)} 条）")
     unit = args.unit if args.unit != "auto" else detect_unit([i["reference"] for i in items])
     unit_label = "字" if unit == "char" else "词"
     print(f"测试集：{wavset}（{len(items)} 条；错误率按**{unit_label}**算"
@@ -333,6 +341,34 @@ def main():
               f"   [{row['seconds']:.2f}s 音频 / {row['seconds_used']:.2f}s{extra}]")
         print("")
     print("=" * 76)
+
+    # 结构化结果（供 scripts/test-asr.mjs 汇总）。刻意与上面打印的内容**同源**：
+    # 都从同一批 rows 算出来，所以不会出现"打印说 3.9%、JSON 说 4.1%"这种漂移。
+    if args.out_json:
+        summary = {
+            "set": str(wavset),
+            "model": args.model,
+            "device": args.device,
+            "compute_type": args.compute_type,
+            "beam_size": args.beam_size,
+            "language": args.language,
+            "unit": unit,
+            "count": len(rows),
+            "scoredCount": len(scored),
+            "weightedRate": None if np.isnan(weighted) else float(weighted),
+            "meanRate": None if len(scored) == 0 else float(np.mean([r["rate"] for r in scored])),
+            "goodCount": good,
+            "detections": detections,
+            "traditionalTotal": traditional_total,
+            "traditionalSentences": traditional_sentences,
+            "audioSeconds": float(audio_seconds),
+            "usedSeconds": float(used_seconds),
+            "rows": rows,
+        }
+        Path(args.out_json).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.out_json).write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"结构化结果已写到 {args.out_json}")
     return 0
 
 

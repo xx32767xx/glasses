@@ -71,7 +71,8 @@ node scripts/fake-phone.mjs --wav var/audio/zh/short-16k.wav --url http://127.0.
 | `bridge/whisper_stream.py` | 本地 Whisper 引擎（faster-whisper）：按音量切句 + 自适应门槛 + 防幻听 + 预热；`--follow` 尾随手机上传的裸 PCM ✅ 已实测，见 `docs/04` |
 | `bridge/whisper_transcribe.py` | 转写单个音频文件并测耗时/RTF（自带解码器，绕开 PyAV 版本坑） |
 | `bridge/make_long_wav.py` | 把短录音拼成长的测试音频（可加底噪），用来测真实延迟 |
-| `bridge/asr_eval.py` | **准确率基准**：用 FLEURS 语料算错误率（中文按**字** CER、葡语按**词** WER），带参考文本、不靠肉眼 |
+| `bridge/asr_eval.py` | **准确率基准**：用带参考文本的语料算错误率（中文按**字** CER、葡语按**词** WER），不靠肉眼。`--out-json` 另写结构化结果供汇总用 |
+| `scripts/test-asr.mjs` | **跑 ASR 测试**：`--set pt-coraa --model large-v3`。测试集自动发现（有 `manifest.jsonl` 的目录）、`--compare` 多模型排序、`--by-accent` 按口音分组、结果留存可复用。**只做编排，指标计算调 `bridge/asr_eval.py`**（避免两套口径漂移） |
 | `bridge/segment_eval.py` | **切句基准**：直接 import 生产那个分段器，量"静音判定该设多久"——切碎/合并各多少次、最长合并多久、错误率变好还是变坏。缺省 500ms 就是它量出来的，见 `docs/04` §13 |
 | `bridge/sample-transcript.txt` | 中葡对照的样例转写，用于无麦克风演示 |
 | `relay/lan-relay.mjs` | **局域网转发**：手机 ↔ 电脑，5 个端点 + 共享密钥（含 `POST /audio` 录音上传，见下） |
