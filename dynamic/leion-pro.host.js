@@ -740,9 +740,14 @@ function numbersIn(text) {
   }
   for (const match of raw.matchAll(/(\d+)(?:[.,](\d+))?\s*(亿|万|千|百万)?/g)) {
     const after = raw.slice(match.index + match[0].length)
-    // `15h20` 是"15 点 20 分"，不是 15.2 这个数 —— 只取小时，否则会算出一个不存在的数。
+    // ⚠️ `15h20` / `7:30` 是"几时几分"：**两个数都要收**（15 和 20）。
+    //    曾经这里只收小时、把分钟丢掉，于是「`15h20` → `três e vinte da tarde`」
+    //    被判成"修订把 20 弄丢了" —— 而那是**完全正常的换写法**（实测在真实数据的
+    //    互配对照里抓到的假阳性）。同传里时间几乎总会被换一种写法，所以这条必须对。
     if (/^[hH:]/.test(after) === true) {
       read(Number(match[1]))
+      const minutes = (/^[hH:](\d{1,2})/.exec(after) ?? [])[1]
+      if (minutes !== undefined) read(Number(minutes))
       continue
     }
     const decimals = match[2] === undefined ? '' : '.' + match[2]
@@ -841,9 +846,6 @@ function proofreadRegression(source, draft, corrected, policy) {
   //    **没有解析、也就没有解析 bug**。
   // ⚠️ 但它必须"按值比"而不是"整个放过"：第四版是"修订里有词形数字就整个跳过检查"，
   //    于是 `…sala 802 no 8º andar` → `…o oitavo andar` 里那个 802 丢了也没发现。
-  const biggestSeen = afterNumbers.size === 0 && recoveredLarge.size === 0
-    ? 0
-    : Math.max(...afterNumbers, ...recoveredLarge)
   // ⚠️ **楼层语境的序数词**也算"在用词形写数"（`décimo segundo andar` = 12 楼）。
   //    这里必须限定"后面紧挨着 andar / piso"，**不能把序数词无条件当数字迹象** ——
   //    葡语里 `segundo`（根据）、`primeiro`（首先）是极常见的普通词，
@@ -857,10 +859,23 @@ function proofreadRegression(source, draft, corrected, policy) {
   })
   const hasNumberWord = usesFloorOrdinal === true
     || words.some(word => PT_LARGE[word] !== undefined)
+  // ⚠️ 时间要单独看：`下午三点二十` → `15h20` → `três e vinte da tarde` 是最常见的正常换写法，
+  //    而 `15h20` 拆出来是 {15, 20}、`três e vinte` 只取得到 3 —— 分钟部分会被误判成"丢了 20"。
+  //    （这是实测抓到的假阳性，而且会**成片触发**：同传里时间几乎总会被换一种写法。）
+  //    判法：原文与修订**都**能被认出是"时间"时，就不因分钟数变化而判丢失。
+  //    中文侧也要认（`下午三点二十`），否则 zh→pt 的原文这一半会漏掉。
+  const clockLike = value => /(\d{1,2})\s*[h:]\s*\d{2}/.test(String(value)) === true
+  const spelledTime = value => /\b(uma|duas|três|tres|quatro|cinco|seis|sete|oito|nove|dez|onze|doze|treze|quatorze|catorze|quinze|dezesseis|dezessete|dezoito|dezenove|vinte|trinta)\s+e\s+(dez|vinte|trinta|quarenta|cinquenta)\b/i.test(String(value)) === true
+    || /(horas?|tarde|manhã|manha|noite|meio-dia)/i.test(String(value)) === true
+  const chineseTime = value => /(上午|下午|晚上|中午|凌晨|早上|点钟|点半|点整)/.test(String(value)) === true
+    || /[〇零一二两三四五六七八九十]{1,3}\s*点\s*[〇零一二两三四五六七八九十]{0,3}/.test(String(value)) === true
+  const looksLikeTime = value => clockLike(value) || spelledTime(value) || chineseTime(value)
+  const bothTimes = looksLikeTime(text) && looksLikeTime(after)
   const lost = [...numbersIn(text)].filter(value => {
     if (draftNumbers.has(value) === false) return false     // 初译本来就没译出来 → 不是"改坏"
     if (afterNumbers.has(value) === true) return false      // 修订里还在
     if (recoveredLarge.has(value) === true) return false    // 粗解析对上了（含大单位写法），还在
+    if (bothTimes === true && value <= 60) return false     // 两边都是时间写法 → 分钟数变化不算丢失
     // ⚠️ **小数值（< 1000）遇上"在用词形写数"的迹象就放过。**
     //    理由：这个量级的词形写法会让上面那个粗解析**算出偏小的值**
     //    （`três mil novecentos e oitenta` 只能算到 3000、`décimo segundo` 只有单独处理才对上），
@@ -871,11 +886,12 @@ function proofreadRegression(source, draft, corrected, policy) {
     //    阈值取 100 而不是 1000：**房间号是三位数**（802），
     //    取 1000 会把"802 丢了"也放过（实测踩到过）。
     if (hasNumberWord === true && value < 100) return false
-    // 修订里存在一个 ≥ 它的值，且那个值在**初译里没有别的归属** → 认为这就是它换了套写法
-    // （大额的单位换算：`2.7 亿` ↔ `270 milhões`）。这一条不需要解析，只是比大小。
-    // "在初译里没有别的归属"是关键：同句另一个本来就存在的大数不能当"它被改写"的证据，
-    // 否则真丢失会被掩盖（`3980 reais ... 3582 reais` 里 3582 丢了会被 3980 盖住）。
-    if (biggestSeen >= value && draftNumbers.has(biggestSeen) === false) return false
+    // ⚠️ 这里曾经还有一条"修订里存在 ≥ 它的值就放过"（比大小）。**删掉了**，因为它会掩盖真丢失：
+    //    `…no 12º andar para a sala 802 no 8º andar` → `…para o quarto 802 no oitavo andar`
+    //    里 12 楼真的丢了，但修订里有更大的 802，且 802 在初译里也存在 ——
+    //    于是"比大小"那条直接放行，**真回归被掩盖**（实测抓到的）。
+    //    现在的判据全部基于**证据**（那个值真的出现了 / 词形能对上 / 小数值+词形迹象），
+    //    不做任何"看起来像"的推断。
     return true
   })
   if (lost.length > 0) {
