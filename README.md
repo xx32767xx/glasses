@@ -80,13 +80,15 @@ node scripts/fake-phone.mjs --wav var/audio/zh/short-16k.wav --url http://127.0.
 | `scripts/fake-phone.mjs` | **假手机**：没有手机时按同样的协议逐块上传音频，用来验证「录音上传」那条路 |
 | `scripts/net-doctor.mjs` | **网络体检**：手机连不上时把"地址变了 / 不在同一网段 / 进程没在听 / 防火墙拦了"分开报；`--watch` 还能判断包到底有没有到电脑（用来区分防火墙与校园网隔离） |
 | `scripts/test-phrases.mjs` | **同传效果测试句集**（18 条中文长难句）+ 一键跑批：自动判"数字有没有丢、有没有用葡葡词、译文在 40×3 上会不会被截掉开头、有没有假字幕"。`--list` 只打印句子，`--read-aloud` 连"这条测什么"一起打印 |
+| `scripts/bench-regional.mjs` | **巴葡区域变体句集**（圣保罗/里约/南部/东北部/口语缩略，5 组 10 句）：方案把"巴葡口音适配"列为核心指标，这一套测的是**文本**层的区域说法认不认得（口音要真实录音，是下一步）。判据偏松，两个已知漏洞在 `tests/bench-suite.mjs` 里写成断言钉着 |
+| `scripts/bench-models.mjs` | **翻译模型横评**：同一批句子喂多个模型，出对比表（事故数 / P50 / P95 / 欧葡词 / 数字丢失 / 超行）。提示词**直接取自 policy**（不手抄），开跑前先跑 9 项**判据自检**，自检不过就不调模型。`--verify-models` 先问平台"你到底有哪些模型"（平台上的 ID 与厂商仓库名经常不一样，写错只会得到 404，容易被误读成"平台没有"） |
 | `scripts/debug-window.mjs` | **调试窗口**：实时显示"音频/收件箱/字幕总线/转发进程"四个环节，并直接判断**断在哪一环** |
 | `android/` | **安卓 App「虚拟眼镜」**：录音上传（识别在电脑上做）+ 40×3 字幕面板（零第三方依赖） |
 | `lib/artifacts.mjs` · `scripts/generate.mjs` | 产物生成（测试与 CLI 共用同一份实现） |
 | `lib/paths.mjs` | **运行时路径与文件名的唯一来源**（数据不能乱删的分层就是它定的，见 `docs/05`） |
 | `lib/composition.mjs` · `lib/fs-node.mjs` · `lib/keepalive.mjs` | 组合生成与两个共用的小插件 |
 | `lib/real-tools.mjs` · `lib/loader-links.mjs` | 加载检出里真实的构建产物 / 建 loader junction |
-| `tests/` | 沙箱复刻 + 两个适配器 + 契约套件 + 桥套件 + 局域网套件 + 翻译后端接缝（152 项） |
+| `tests/` | 沙箱复刻 + 两个适配器 + 契约套件 + 桥套件 + 局域网套件 + 翻译后端接缝（216 项） |
 | `tests/python-suite.py` | **语音分段器与音频尾随**验证（106 项，不加载模型，含一条静默失败的回归测试） |
 | `tests/live/` | **真实 Cordis 组合**：真实 `ToolRuntime` + 真实执行流水线 + 真实 `timer` + 真实 `output.schema` 校验（组合现场生成，见该目录 README） |
 | `skills/leion-interpreter/SKILL.md` | **同传操作规范**：巴葡 vs 葡葡用词差异表、字幕长度纪律、调用顺序 |
