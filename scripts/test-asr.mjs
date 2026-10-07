@@ -89,6 +89,36 @@ const MODELS = [
 
 const keyOf = (model, device, compute) => `${model}@${device}/${compute}`
 
+/**
+ * 把 `--model <名字>` 解析成一个**被验证过**的配置。
+ *
+ * ⚠️ 为什么是"查表"而不是"猜"：
+ *    第一版按模型名猜设备（只有 large-v3/medium 猜 cuda，其余猜 cpu），
+ *    于是 `--model large-v3 --device cpu` 会去跑一个**从没测过的组合** ——
+ *    在 CPU 上跑 large-v3 要几分钟/句，而且没人知道那个数字意味着什么。
+ *    改成一查表：每个模型对应一条已经量过的配置，
+ *    `--device` 只用来**在同一个模型有多条配置时选一条**（现在只有 small 有两条：
+ *    CPU/int8 与 GPU/float16，两者实测结果几乎一样）。
+ */
+function resolveModel(options) {
+  const candidates = MODELS.filter(model => model.name === options.model)
+  if (candidates.length === 0) {
+    console.log(`不认识的模型：${options.model}`)
+    console.log('可选的：' + [...new Set(MODELS.map(m => m.name))].join('、'))
+    return null
+  }
+  const chosen = options.device === null
+    ? candidates[0]
+    : (candidates.find(model => model.device === options.device) ?? candidates[0])
+  return {
+    ...chosen,
+    compute: options.compute ?? chosen.compute,
+    note: options.device !== null && chosen.device !== options.device
+      ? `（这个模型没有 ${options.device} 的配置，改用 ${chosen.device}）`
+      : chosen.note,
+  }
+}
+
 function parseArgs(argv) {
   const options = {
     set: null, model: null, device: null, compute: null, language: null,
@@ -263,17 +293,27 @@ function main() {
     console.log(`⚠️ 目录里有 ${set.wavCount} 个 wav，清单只有 ${set.items.length} 条 —— 多出来的不会被测到`)
   }
 
-  // 决定这次跑哪些模型
+  // 决定这次跑哪些组合
   let plan
   if (options.compare) {
-    plan = MODELS.filter(model => model.device === 'cuda' || model.device === (options.device ?? 'cpu'))
+    plan = MODELS.filter(model => options.device === null || model.device === options.device)
+    if (plan.length === 0) {
+      console.log(`没有 device=${options.device} 的候选组合（可选：${[...new Set(MODELS.map(m => m.device))].join('、')}）`)
+      return
+    }
+    if (options.device === null && plan.length < MODELS.length) {
+      // 说清为什么不跑全部：CPU 上跑 large-v3 要几分钟，默认不拖这么久
+      const skipped = MODELS.filter(m => plan.includes(m) === false).length
+      console.log(`（--compare 缺省只跑 GPU 组合；想跑 CPU 那 ${skipped} 个加 --device cpu）`)
+    }
   } else if (options.model === null) {
     plan = [MODELS[0]]
     console.log('（没指定 --model，用缺省：' + keyOf(MODELS[0].name, MODELS[0].device, MODELS[0].compute) + '）')
   } else {
-    const device = options.device ?? (options.model === 'large-v3' || options.model === 'medium' ? 'cuda' : 'cpu')
-    const compute = options.compute ?? (device === 'cuda' ? 'float16' : 'int8')
-    plan = [{ name: options.model, device, compute, note: '（命令行指定）' }]
+    const resolved = resolveModel(options)
+    if (resolved === null) return
+    console.log(`（--model ${options.model} → ${keyOf(resolved.name, resolved.device, resolved.compute)}；${resolved.note}）`)
+    plan = [resolved]
   }
 
   for (const model of plan) {
