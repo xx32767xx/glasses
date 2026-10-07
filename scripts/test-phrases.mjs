@@ -104,7 +104,29 @@ export const PHRASES = [
 const TRADITIONAL = new Set('這說麼為個們來時會對開過實現學國產與東車門見長問間題讓從應該裡樣還進發經頭幾語聽讀寫電話點認識覺辦體條壓無萬業員實際處理總機關於當後馬鳥魚龍風飛隻億據處臟選擇觀運動圖書館總結經驗營運營養')
 
 const ECHO = ['请用简体中文输出', '以下是普通话的句子']
-const HALLUCINATION = ['请不吝点赞', '订阅', '转发', '打赏', '谢谢观看', 'amara.org', 'legendas', 'subtitles by']
+
+/**
+ * 幻听惯用语：Whisper 在**听不清或静音**时爱吐的套话（YouTube 字幕组的尾巴）。
+ *
+ * ⚠️ `legendas` 这一词的判法踩过误报，别改回去：
+ * 测试句「…从麦克风采集到**字幕**显示…」译成 `…até a exibição dos legendas…`
+ * 是**正确翻译**（字幕就是 legenda），但旧判据只看"译文里有没有 legendas"，
+ * 于是把一句好译文判成了事故 —— 而 Hunyuan-MT 恰好是这么译的。
+ * **判据误报的代价很实在：它会让译文质量好的模型看起来最差。**
+ * 所以现在要求它**没有出处**才算幻听：原文或译文里出现「字幕/caption/subtitle/legenda」
+ * 就说明这个词有来路，不判。
+ */
+const HALLUCINATION = ['请不吝点赞', '订阅', '转发', '打赏', '谢谢观看', 'amara.org',
+  'legendas pela comunidade', 'subtitles by', 'subtitles:', 'captioned by']
+const SUBTITLE_TERMS = ['字幕', 'caption', 'subtitle', 'legenda']
+
+/** 译文里那个词在**原文**里有出处吗（而不是模型凭空吐出来的）？ */
+function hasSubtitleSource(source, translation) {
+  // 原文是中文时就查原文，译成中文时就查译文 —— 哪边有「字幕」哪边就成立
+  const haystack = /\p{Script=Han}/u.test(String(source)) ? String(source) : String(translation)
+  const lower = haystack.toLowerCase()
+  return SUBTITLE_TERMS.some(term => lower.includes(term))
+}
 
 /** 与插件 fitSubtitle 同一套规则：汉字算 2 列，超出就折行。 */
 export function wrap(text, cols) {
@@ -156,6 +178,30 @@ export function digitsOf(text) {
     .join('|')
 }
 
+/**
+ * **量级检查**：中文的「亿 / 万」译成葡语时单位要换算，换错就是 10 倍、1000 倍的错。
+ *
+ * ⚠️ 这一条是实测漏掉真错之后补的，别删：
+ * 原句「去年我们的营收是 **2.7 亿**」正确译法是 `270 milhões`（2.7 亿 = 2.7 × 10⁸）。
+ * Qwen2.5-72B 译成 `2,7 bilhões`（= 27 亿）—— **整整差 10 倍**，
+ * 而**它自己另一句也译成了 270 milhões**，同一批里前后不一致。
+ * 旧判据只查"数字在不在"，`2.7` 和 `270` 归一化后对得上，于是这处真错被放过了。
+ * 而同传里**译错金额比译错语法严重得多**，所以必须单独量级。
+ *
+ * 判据：原文有「亿」但没有「十亿」，译文里出现 bilhão/bilhões 就是量级错。
+ * 只在原文确实提到"亿"时才判，避免误伤原文本来就有 billion 的情况。
+ */
+export function magnitudeProblem(source, translation) {
+  const src = String(source)
+  const target = String(translation).toLowerCase()
+  if (src.includes('十亿')) return null
+  if (/[0-9.]+\s*亿|[一二三四五六七八九十百千两]+\s*亿/.test(src) === false) return null
+  if (/bilh(ão|oes|ões)/.test(target)) {
+    return '量级可能译错：原文是「亿」（10⁸），却译成了 bilhão/bilhões（10⁹，即十亿）'
+  }
+  return null
+}
+
 /** 逐条判定，返回一组可打印的结论（纯函数，便于测试）。 */
 export function inspect(source, translation, options) {
   const cols = options.cols ?? 40
@@ -171,6 +217,10 @@ export function inspect(source, translation, options) {
       ? { level: 'ok', text: `数字都保留了（${wanted.join('、')}）` }
       : { level: 'bad', text: `数字可能丢了：${missing.join('、')}（也可能是被换算成了别的写法，比如 2.7 亿 → 270 milhões）` })
   }
+
+  // ①b 量级：数字"在"，但单位换错了（2.7 亿 → 2,7 bilhões 差 10 倍）
+  const magnitude = magnitudeProblem(source, translation)
+  if (magnitude !== null) notes.push({ level: 'bad', text: magnitude })
 
   // ② 葡葡说法：译文中出现了葡葡词就提醒（并给出应该用的巴葡词）
   const ptBr = options.terminology ?? []
@@ -197,7 +247,9 @@ export function inspect(source, translation, options) {
   if (ECHO.some(sample => String(translation).includes(sample))) {
     notes.push({ level: 'bad', text: '提示词被回显成了字幕' })
   }
-  if (HALLUCINATION.some(sample => String(translation).toLowerCase().includes(sample))) {
+  if (HALLUCINATION.some(sample => String(translation).toLowerCase().includes(sample))
+    || (String(translation).toLowerCase().includes('legendas') === true
+      && hasSubtitleSource(source, translation) === false)) {
     notes.push({ level: 'bad', text: '命中幻听惯用语' })
   }
   const traditional = [...String(translation)].filter(ch => TRADITIONAL.has(ch))

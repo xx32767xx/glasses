@@ -150,6 +150,36 @@ export async function runBenchSuite({ it, check, assert }) {
       '同上：变红说明收紧了，是好事')
   })
 
+  await it('量级判据：「2.7 亿」译成 bilhões 是差 10 倍的真错，别放过', async () => {
+    // 实测漏掉过这一处：Qwen2.5-72B 把「2.7 亿」译成 `2,7 bilhões`（= 27 亿），
+    // 而它自己另一句译成了 270 milhões —— 同一批里前后不一致。
+    // 旧判据只查"数字在不在"，2.7 与 270 归一化后对得上，于是放过了这处 10 倍错。
+    const source = '去年我们的营收是 2.7 亿，今年上半年的增长是 18.6%。'
+    const wrong = verdictOf(source, 'No ano passado, nossa receita foi de 2,7 bilhões. No primeiro semestre deste ano, o crescimento foi de 18,6%.', policy.terminology)
+    check('bilhões → 判量级错', wrong.fatal.includes('量级错'), JSON.stringify(wrong.fatal))
+    const right = verdictOf(source, 'No ano passado nosso faturamento foi de 270 milhões, com crescimento de 18,6%.', policy.terminology)
+    check('270 milhões → 不判量级错', right.fatal.includes('量级错') === false, JSON.stringify(right.fatal))
+    // 别误伤：原文本来就说了"十亿"时，bilhão 是对的
+    const billionSource = '这笔投资是 5 十亿。'
+    const billion = verdictOf(billionSource, 'Esse investimento é de 5 bilhões.', policy.terminology)
+    check('原文本来就有"十亿"时不判', billion.fatal.includes('量级错') === false, JSON.stringify(billion.fatal))
+  })
+
+  await it('幻听判据：legendas 是"字幕"的正确翻译，不该被误判', async () => {
+    // 真踩过的误报：Hunyuan-MT 把「…从麦克风采集到字幕显示…」译成
+    // `…até a exibição dos legendas…` —— 那是**正确翻译**，但旧判据只看有没有这个词。
+    // 判据误报的代价很实在：它会让译文质量好的模型看起来最差。
+    const withSource = verdictOf('这条测试语音是为了验证整条链路，从麦克风采集到字幕显示。',
+      'Este áudio de teste é para verificar toda a cadeia, desde a captação pelo microfone até a exibição dos legendas.',
+      policy.terminology)
+    check('原句提到"字幕"时，legendas 不算幻听',
+      withSource.fatal.includes('幻听') === false, JSON.stringify(withSource.fatal))
+
+    const noSource = verdictOf('我们今天的会议改到了下午三点。',
+      'Legendas pela comunidade. Obrigado por assistir.', policy.terminology)
+    check('无出处时仍然判幻听', noSource.fatal.includes('幻听'), JSON.stringify(noSource.fatal))
+  })
+
   await it('区域句集每个区域组都写清"为什么测"，每句都有期待词', async () => {
     check('至少有 4 个区域组（对应方案里的圣保罗/里约/南部/东北部）',
       REGIONAL.length >= 4, String(REGIONAL.length))

@@ -103,35 +103,55 @@ export const CANDIDATES = [
     baseUrl: 'https://api.siliconflow.cn/v1',
     model: 'tencent/Hunyuan-MT-7B',
     apiKeyEnv: 'SILICONFLOW_API_KEY',
-    note: '调研表里没有的：翻译专用模型、33 语种、官方称 WMT25 拿 30 个语种第一。7B → 将来可本地部署、数据不出域',
+    note: '翻译专用模型、33 语种、官方称 WMT25 拿 30 个语种第一。7B → 将来可本地部署、数据不出域。'
+      + '⚠️ 实测这是 SiliconFlow 上**唯一**的翻译专用模型（64 个 chat 模型里翻遍只剩这一个）',
   },
   {
-    key: 'hy-mt-1.5-7b',
-    label: 'HY-MT1.5-7B（腾讯 · 翻译专用 · 新版）',
+    key: 'qwen3.8',
+    label: 'Qwen3.8-27B（开源对照 · 当代）',
     tier: 'open',
     baseUrl: 'https://api.siliconflow.cn/v1',
-    model: 'tencent/HY-MT1.5-7B',
+    model: 'Qwen/Qwen3.8-27B',
     apiKeyEnv: 'SILICONFLOW_API_KEY',
-    note: '混元 1.5 代：官方称"效果超越商用 API"，仍是 33 语种。与上一代正面比 —— 同门两代谁更适合巴葡',
+    note: '中文母语团队做的**当代**通用 LLM。用来回答"专用翻译模型比同代通用模型强多少"',
   },
   {
-    key: 'hy-mt-1.5-1.8b',
-    label: 'HY-MT1.5-1.8B（腾讯 · 端侧可部署）',
-    tier: 'open',
-    baseUrl: 'https://api.siliconflow.cn/v1',
-    model: 'tencent/HY-MT1.5-1.8B',
-    apiKeyEnv: 'SILICONFLOW_API_KEY',
-    note: '只有 1.8B，官方称"手机 1GB 内存就能跑、效果超商用 API"。如果它够用，整条链路可以搬到端侧 —— 零云端成本、数据不出域，这是最有战略价值的一条',
-  },
-  {
-    key: 'qwen',
-    label: 'Qwen 通用大模型（开源对照）',
+    key: 'qwen2.5-72b',
+    label: 'Qwen2.5-72B（开源对照 · 上一代 · 大参数）',
     tier: 'open',
     baseUrl: 'https://api.siliconflow.cn/v1',
     model: 'Qwen/Qwen2.5-72B-Instruct',
     apiKeyEnv: 'SILICONFLOW_API_KEY',
-    note: '中文母语团队做的通用 LLM。用来回答"专用翻译模型比通用模型强多少"',
+    note: '上一代但参数大得多（72B）。用来回答"光靠堆参数能不能追上专用翻译模型"——'
+      + '如果 7B 的专用模型能赢 72B 的通用模型，那"专用模型"这条路就是真的',
   },
+  {
+    key: 'glm',
+    label: 'GLM-5.3（开源对照 · 另一家）',
+    tier: 'open',
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    model: 'zai-org/GLM-5.3',
+    apiKeyEnv: 'SILICONFLOW_API_KEY',
+    note: '智谱当代通用 LLM。多一家对照，免得"只测了 Qwen 一家就下结论"',
+  },
+]
+
+/**
+ * 上不了平台、只能本地部署的候选（**别删** —— 它们比上面几个更有战略价值）。
+ *
+ * HY-MT1.5 系列（腾讯混元 1.5 代）：官方称端侧可部署、**手机 1GB 内存就能跑**、
+ * 效果超越商用 API，仍是 33 语种。1.8B 那个如果够用，整条链路就能搬到端侧
+ * —— 零云端成本、数据不出域，这是最有战略价值的一条。
+ *
+ * 为什么现在测不了：**SiliconFlow 上没有**。实测 64 个 chat 模型里，混元家只有
+ * Hy4-preview / Hunyuan-A13B-Instruct / Hunyuan-MT-7B，**没有 1.5 代**。
+ * 要测只能本地部署（HF 上有 tencent/HY-MT1.5-7B 与 -1.8B，社区还有 AWQ 量化版）。
+ */
+export const DEFERRED = [
+  { key: 'hy-mt-1.5-1.8b', label: 'HY-MT1.5-1.8B', why: 'SiliconFlow 上没有；**端侧最有价值的一条**，HF 有 tencent/HY-MT1.5-1.8B' },
+  { key: 'hy-mt-1.5-7b', label: 'HY-MT1.5-7B', why: 'SiliconFlow 上没有；HF 有 tencent/HY-MT1.5-7B（含 fp8 版）' },
+  { key: 'seed-x-7b', label: 'Seed-X-Instruct-7B（字节 · 翻译专用）', why: 'SiliconFlow 上没有；HF 有 ByteDance-Seed/Seed-X-Instruct-7B' },
+  { key: 'madlad-400-7b', label: 'MADLAD-400-7B（Google · Apache-2.0）', why: 'SiliconFlow 上没有；要自托管，当纯开源对照组' },
 ]
 
 // ── 打分 ────────────────────────────────────────────────────────────────────
@@ -159,6 +179,9 @@ export function verdictOf(source, translation, terminology) {
     if (note.text.startsWith('出现葡葡说法')) fatal.push('欧葡词')
     if (note.text.startsWith('命中幻听惯用语')) fatal.push('幻听')
     if (note.text.startsWith('提示词被回显')) fatal.push('提示词回显')
+    // 量级错（2.7 亿 → 2,7 bilhões）是同传里最严重的一类：金额差 10 倍。
+    // 旧的"数字在不在"判据抓不到它 —— 因为 2.7 和 270 归一化后确实对得上。
+    if (note.text.startsWith('量级可能译错')) fatal.push('量级错')
   }
 
   return { fatal, bad, warn, wrapped: result.wrapped, shown: result.shown, notes: result.notes }
@@ -314,7 +337,13 @@ export async function callModel(candidate, systemPrompt, text, options, presetKe
     if (typeof content !== 'string') {
       return { ok: false, elapsed, failure: '返回里没有 choices[0].message.content：' + raw.slice(0, 200) }
     }
-    return { ok: true, elapsed, text: content.trim(), usage: parsed.usage ?? null, model: parsed.model ?? candidate.model }
+    // ⚠️ finish_reason 必须带回去。实测把 max_tokens 给小了会让模型**答到一半被截断**，
+    // 而截断的产物看起来就像"译错了/译了一半" —— 那是自己给的预算不够，不是模型不行。
+    // 不记这个字段，"跑批失败"和"结论错误"就分不开。
+    return {
+      ok: true, elapsed, text: content.trim(), usage: parsed.usage ?? null,
+      finish: choice.finish_reason ?? null, model: parsed.model ?? candidate.model,
+    }
   } catch (error) {
     const aborted = error !== null && typeof error === 'object' && error.name === 'AbortError'
     return {
@@ -329,8 +358,14 @@ export async function callModel(candidate, systemPrompt, text, options, presetKe
 
 export function parseArgs(argv) {
   const options = {
-    models: null, only: null, repeat: 1, temperature: 0.2, maxTokens: 512,
-    timeoutMs: 60000, system: true, list: false, dryRun: false, verify: false,
+    models: null, only: null, repeat: 1, temperature: 0.2,
+    // ⚠️ max_tokens 缺省给 512 会**把结论搞反**，别改小：
+    // 实测 Qwen3.8 翻一句话用了 1989 个 completion token（它在"想"），
+    // 512 会让它答到一半被**硬截断**，于是看起来像"译错了/译了一半"，
+    // 其实是自己把预算给错了 —— 而 Qwen2.5 只要 53 个 token。
+    // 差距 37 倍，所以按最大的给。finish_reason=stop 才算真的说完了。
+    maxTokens: 2048,
+    timeoutMs: 180000, system: true, list: false, dryRun: false, verify: false,
     markdown: null, json: null,
   }
   for (let index = 0; index < argv.length; index += 1) {
@@ -373,8 +408,8 @@ export function toMarkdown(rows, options) {
     byModel.get(row.model).push(row)
   }
   const lines = []
-  lines.push('| 模型 | 句数 | ❌ 事故 | 平均 | P50 | P95 | 欧葡词 | 数字丢失 | 超 3 行 |')
-  lines.push('|---|---|---|---|---|---|---|---|---|')
+  lines.push('| 模型 | 句数 | ❌ 事故 | ✂️ 截断 | 平均 | P50 | P95 | 平均 token | 欧葡词 | 数字丢失 | 超 3 行 |')
+  lines.push('|---|---|---|---|---|---|---|---|---|---|---|')
   for (const [model, list] of byModel) {
     const done = list.filter(row => row.ok)
     const latencies = done.map(row => row.elapsed)
@@ -383,16 +418,22 @@ export function toMarkdown(rows, options) {
     const digits = list.reduce((sum, row) => sum +
       row.notes.filter(n => n.text.startsWith('数字可能丢了')).length, 0)
     const over = list.filter(row => row.wrapped.length > 3).length
+    const cut = list.filter(row => row.truncated === true).length
+    const tokens = done.map(row => row.tokens).filter(value => typeof value === 'number')
     const average = latencies.length === 0 ? '—' : Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length) + 'ms'
     lines.push('| ' + [
-      cell(model), list.length, fatal,
+      cell(model), list.length, fatal, cut,
       average,
       latencies.length === 0 ? '—' : pct(latencies, 50) + 'ms',
       latencies.length === 0 ? '—' : pct(latencies, 95) + 'ms',
+      tokens.length === 0 ? '—' : Math.round(tokens.reduce((a, b) => a + b, 0) / tokens.length),
       eu, digits, over,
     ].join(' | ') + ' |')
   }
   lines.push('')
+  lines.push('> `✂️ 截断` 是被 max_tokens 截断的次数（`finish_reason !== stop`）——**那不是模型译错，是预算给少了**，'
+    + '它的译文不计入事故数。`平均 token` 是完成这段译文实际花的 token：'
+    + '实测同一个句子，Qwen2.5 只要 53 个，而 Qwen3.8 要 1989 个（它在"想"）。')
   if (options.system === false) lines.push('> 注：这次是 **--no-system**，没给产线提示词，测的是"光模型自己行不行"。')
   return lines.join('\n')
 }
@@ -421,6 +462,14 @@ async function main() {
       console.log(`  ${''.padEnd(14)} ${candidate.baseUrl}  model=${candidate.model}`)
       console.log(`  ${''.padEnd(14)} key=${candidate.apiKeyEnv} ${key.value === '' ? '❌ 没找到' : '✅ 找到了（来自 ' + key.from + '）'}`)
       console.log(`  ${''.padEnd(14)} ${candidate.note}`)
+    }
+    if (DEFERRED.length > 0) {
+      console.log('')
+      console.log('上不了平台、只能本地部署的（留在这儿，别当成"已经测过"）：')
+      for (const item of DEFERRED) {
+        console.log(`  ${item.key.padEnd(14)} ${item.label}`)
+        console.log(`  ${''.padEnd(14)} ${item.why}`)
+      }
     }
     console.log('')
     console.log(`句子：${phrases.length} 条（用 --only N 只跑一条）`)
@@ -489,15 +538,21 @@ async function main() {
           continue
         }
         const judged = verdictOf(phrase.text, result.text, policy.terminology)
-        const mark = judged.fatal.length > 0 ? '❌' : judged.warn.length > 0 ? '⚠️' : '✅'
+        // 被截断的回复既不能算"模型不行"，也不能静悄悄混进质量结论里 —— 单独标出来。
+        const truncated = result.finish !== null && result.finish !== 'stop'
+        const mark = truncated ? '✂️ 被截断' : judged.fatal.length > 0 ? '❌' : judged.warn.length > 0 ? '⚠️' : '✅'
         const tag = options.repeat > 1 ? ` (第 ${round} 遍)` : ''
-        console.log(`  [${index + 1}] ${mark} ${result.elapsed}ms${tag}  ${result.text}`)
+        const tokens = result.usage === null ? '' : `  ${result.usage.completion_tokens ?? '?'} tok`
+        console.log(`  [${index + 1}] ${mark} ${result.elapsed}ms${tokens}${tag}  ${result.text}`)
+        if (truncated) console.log(`       ✂️ finish_reason=${result.finish} —— 是 max_tokens 给少了，不是模型译错（用 --max-tokens 加大）`)
         if (judged.fatal.length > 0) console.log(`       ❌ ${judged.fatal.join('、')}`)
         if (judged.wrapped.length > 3) console.log(`       折行 ${judged.wrapped.length} 行 > 3（眼镜上会丢开头 ${judged.wrapped.length - 3} 行）`)
         rows.push({
           model: candidate.key, index: index + 1, round, ok: true, elapsed: result.elapsed,
-          text: result.text, usage: result.usage, source: phrase.text,
-          fatal: judged.fatal, notes: judged.notes, wrapped: judged.wrapped, shown: judged.shown,
+          text: result.text, usage: result.usage, source: phrase.text, truncated,
+          finish: result.finish, tokens: result.usage === null ? null : result.usage.completion_tokens ?? null,
+          fatal: truncated ? [] : judged.fatal, notes: judged.notes,
+          wrapped: judged.wrapped, shown: judged.shown,
         })
       }
     }
