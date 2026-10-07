@@ -12,6 +12,9 @@
 
 import { createServer } from 'node:http'
 import { TEST_DIR } from '../lib/paths.mjs'
+// 纯函数直接从源文件拿（core.mjs 零 import，在 node 里能直接加载）——
+// 这样判据可以**绕过链路直接单测**：链路里的假 LLM 输出是固定句型，造不出某些场景。
+import { proofreadRegression } from '../plugin/core.mjs'
 
 /** 按 system 提示词判断要产出哪种语言的译文，让语向断言是确定的。 */
 function cannedTranslation(options) {
@@ -788,7 +791,8 @@ export async function runContractSuite(adapter, { it, check, assert }) {
       const h = await tools.get('leion_history').execute({ limit: 5 })
       return h.entries.some(e => e.text === 'FIX(' + SECOND + ')')
     }, { timeout: 5000 })
-    check('第二句的校对正常生效（证明"丢弃"不是"校对整体坏了"）', secondFixed)
+    check('第二句的校对正常生效（证明"丢弃"不是"校对整体坏了"）', secondFixed,
+      '校对统计：' + JSON.stringify((await tools.get('leion_inbox').execute({ action: 'status' })).proofread))
 
     const history = await tools.get('leion_history').execute({ limit: 10 })
     check('第一句那份**过期**的校对结果没有覆盖屏幕',
@@ -831,6 +835,121 @@ export async function runContractSuite(adapter, { it, check, assert }) {
       history.entries.length === 1 && !history.entries[0].text.includes('离线演示'),
       JSON.stringify(history.entries.map(e => e.text)))
     await tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
+  await it('校对回归闸：丢数字 / 冒出葡葡说法 / 正常修订，判定三分', async () => {
+    // ⚠️ 为什么这一条直接调函数而不是走链路：链路上那个假 LLM 的"初译"是**固定句型**
+    //    （葡语那句里用的是 `décimo segundo` 词形，没有阿拉伯数字），
+    //    所以"初译里有数字、修订里丢了"这个场景在假链路里**造不出来** ——
+    //    第一版测试就是因此假失败（我以为是闸坏了，其实是测试选错了输入）。
+    //    判定的正确性用直接单测验；链路只验"计数器与日志一致"（见下一条）。
+    const policy = { terminology: [
+      { zh: '公交车', br: 'ônibus', ptpt: 'autocarro' },
+      { zh: '手机', br: 'celular', ptpt: 'telemóvel' },
+    ] }
+    const SOURCE = '地点从十二楼的第二会议室换到了八楼的 802 房间。'
+    const DRAFT = 'O local mudou da segunda sala no 12º andar para a sala 802 no 8º andar.'
+
+    // ① 丢数字 → 必须拦
+    const lost = proofreadRegression(SOURCE, DRAFT, 'O local da reunião foi alterado ontem à tarde.', policy)
+    check('丢了 12 与 802 → 拦住', lost !== null && lost.includes('12') && lost.includes('802'), String(lost))
+
+    // ② 只丢一个数字 → 也要拦（这是实测抓到的真错：只丢了原来的地点）
+    //    ⚠️ 修订里**必须留着别的数字**才测得准：如果修订里一个数字都没有，
+    //    那连"简单判据"都能拦下来，测不出"清单逐项核对"这条路径。
+    const halfLost = proofreadRegression(SOURCE, DRAFT,
+      'O local mudou para a sala 802 no 8º andar.', policy)
+    check('只丢了 12 楼（802 还在）→ 拦住', halfLost !== null && halfLost.includes('12'), String(halfLost))
+
+    // ③ 冒出欧洲葡语说法 → 必须拦（提示词里明令禁止）
+    const european = proofreadRegression('可以坐公交车或者手机买票。',
+      'pode pegar o ônibus e comprar pelo celular', 'pode pegar o autocarro e comprar pelo telemóvel', policy)
+    check('冒出 autocarro / telemóvel → 拦住', european !== null && european.includes('autocarro'), String(european))
+
+    // ④ 正常修订（数字都在、口径是巴葡）→ 一条都不许拦
+    const fine = proofreadRegression(SOURCE, DRAFT,
+      'O local mudou da segunda sala de reuniões no 12º andar para a sala 802 no 8º andar.', policy)
+    check('数字与口径都没问题 → 放行', fine === null, String(fine))
+
+    // ⑤ 把葡葡改成巴葡是**好事**，不许拦
+    const improved = proofreadRegression('坐公交车去。', 'vai de autocarro', 'vai de ônibus', policy)
+    check('把 autocarro 改成 ônibus → 放行', improved === null, String(improved))
+
+    // ⑥ 修订把数字写成葡语整词 → 必须能"把数找回来"，因此放行
+    //    ⚠️ 这条钉的是本文件里坑最多的那个解析器（wordFormNumbers）。它踩过三次：
+    //      · `e` 被当成数字从句的边界 → `trezentos e noventa` 被切成两段
+    //      · `mil` 的乘法结合错 → `três mil novecentos e oitenta` 算成 1980
+    //      · **基数词表漏了 `três`** → 上面那个数里 `três` 落到边界、`mil` 单独成 1000
+    //    所以这里把几种词形都验一遍，而不是只验一个 —— 表漏一项很难从输出上看出来。
+    // ⚠️ 一次只验一个数改成词形。**用例要贴近真实**：模型把数字写成词形时，
+    //    写的是百位以内的数（`cento e vinte`）或带大单位的（`dois mil`），
+    //    而房间号/金额那种 ≥1000 的值它**永远用阿拉伯数字**（那正是判据敢拦的依据）。
+    //    （第一版这里用了「3980 → três mil novecentos e oitenta」，那是四位数，
+    //      既不在"小数值"护栏里、`mil` 那档又算不出精确值 —— 是我用例选得不对，
+    //      不是判据不成立。判据的取舍已在 core.mjs 注释里写清。）
+    const wordFormCases = [
+      { source: '一共 398 台。', draft: '398 unidades', after: 'trezentos e noventa e oito unidades', note: '398 的整词写法' },
+      { source: '一共 120 台。', draft: '120 unidades', after: 'cento e vinte unidades', note: '120 的整词写法' },
+      { source: '下午三点二十开会。', draft: 'às 3h20', after: 'às três e vinte da tarde', note: '时间改成词形' },
+      { source: '在十二楼的会议室。', draft: 'na sala do 12º andar', after: 'na sala do décimo segundo andar', note: '12 楼的两词序数词写法' },
+      { source: '这批是 398000 元。', draft: '398000 reais', after: 'trezentos e noventa e oito mil reais', note: '398000 的写法（mil 那档）' },
+      { source: '2020 年的计划。', draft: 'o plano de 2020', after: 'o plano de dois mil e vinte', note: '2020 的写法（mil + e + 小数）' },
+    ]
+    for (const item of wordFormCases) {
+      const judged = proofreadRegression(item.source, item.draft, item.after, policy)
+      check(`数字改成词形也认得出来（${item.note}）→ 放行`, judged === null, String(judged))
+    }
+  })
+
+  await it('校对回归闸：装配正确（正常修订照常上屏、计数器与日志一致）', async () => {
+    // 这一段验的是"闸有没有被正确接进校对流程"，以及**它不会误拦正常修订**。
+    // 数字丢失那条判定由上一个测试直接验（链路里造不出那个场景）。
+    const store = new Map()
+    const path = inboxPathOf('proofread-regression.jsonl')
+    const FIXED = 'Bom dia! A nossa reunião de hoje passou para as três da tarde, na sala de reuniões do décimo segundo andar.'
+    const llm = makeProofreadLlm({ corrected: FIXED })
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: { inboxPath: path, inboxPollMs: 100, proofread: 'idle' },
+    })
+    const tools = box.tools
+    store.set(path, '早上好！我们今天的会议改到了下午三点，在十二楼的会议室。\n')
+    const shown = await waitFor(async () =>
+      (await tools.get('leion_history').execute({ limit: 3 })).entries.length >= 1)
+    check('初译已上屏', shown)
+    const settled = await waitFor(async () => {
+      const s = await tools.get('leion_inbox').execute({ action: 'status' })
+      return s.proofread !== null && s.proofread.settled >= 1
+    })
+    check('校对跑完了', settled)
+    const status = await tools.get('leion_inbox').execute({ action: 'status' })
+    check('正常修订被接受（fixed=1、rejected=0）',
+      status.proofread.fixed === 1 && status.proofread.rejected === 0, JSON.stringify(status.proofread))
+    const history = await tools.get('leion_history').execute({ limit: 5 })
+    check('屏幕上换成了修订版（而且只有一条，不是新增一行）',
+      history.entries.length === 1 && history.entries[0].text === FIXED,
+      JSON.stringify(history.entries.map(e => e.text)))
+    await tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
+  await it('校对回归闸：只在「中文→巴葡」方向跑（反方向不许误拦）', async () => {
+    // ⚠️ 这条是**假阳性护栏**，来自一个真踩到的 bug：
+    //    闸比的是「原文的数 ↔ 译文的数」，只有译成葡语时两边才可比。
+    //    反方向（葡语→中文）时译文本身就是中文，里面的汉字数字会被当成"数字"，
+    //    于是初译里的「十二楼」被判成"修订把 12 弄丢了"。
+    //    合同套件里"屏幕换页时丢弃过期校对"那条测试正是因此变红，诊断信息是
+    //    `修订把初译里的数字弄丢了（12）`，而那句的语向是 pt-BR→zh-CN。
+    const reverse = proofreadRegression(
+      'A reunião mudou para as três da tarde.',
+      '早上好！我们今天的会议改到了下午三点，在十二楼的会议室。',
+      '早上好！会议改到下午三点，在十二楼的会议室。',
+      { terminology: [] })
+    check('葡语原文 → 中文字幕：方向不适用，直接放过', reverse === null, String(reverse))
+
+    // 中文原文但译文里还夹着汉字（模型没译干净）→ 同样不适用，不该由这道闸来报
+    const messy = proofreadRegression('地点从十二楼换到了八楼。', '十二楼的会议室 sala de reuniões',
+      'sala de reuniões no 12º andar', { terminology: [] })
+    check('译文里还有汉字时也不适用（交给别的判据）', messy === null, String(messy))
   })
 
   await it('校对改的那一帧也带着**原文**（否则手机上会多出一行而不是原地改正）', async () => {

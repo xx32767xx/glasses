@@ -674,11 +674,289 @@ function proofreadSystem(policy, from, to) {
   return lines.join('\n')
 }
 
+const CN_DIGITS = { '〇': 0, '零': 0, 一: 1, 壹: 1, 二: 2, 两: 2, 贰: 2, 三: 3, 叁: 3, 四: 4, 肆: 4, 五: 5, 伍: 5, 六: 6, 陆: 6, 七: 7, 柒: 7, 八: 8, 捌: 8, 九: 9, 玖: 9 }
+const CN_UNITS = { 十: 10, 百: 100, 千: 1000 }
+const CN_DIGIT_CLASS = '〇零一壹二两贰三叁四肆五伍六陆七柒八捌九玖十百千'
+const LARGE_UNIT = { 亿: 1e8, 万: 1e4, 千: 1e3, 百万: 1e6 }
+
+/** 葡语大单位词；出现它们说明这一版在用**词形**写数字（见 proofreadRegression）。 */
+const PT_LARGE = { mil: 1000, milhão: 1e6, milhao: 1e6, milhões: 1e6, milhoes: 1e6, bilhão: 1e9, bilhao: 1e9, bilhões: 1e9, bilhoes: 1e9 }
+/**
+ * 葡语基数词（百位以内）。只用于 `largeWordFormNumbers` 把 `trezentos e noventa e oito mil`
+ * 这类表达式里的数值算出来 —— **不用于报错**，所以表不全只会让判据更严格（漏报），不会误报。
+ */
+const PT_SMALL = {
+  um: 1, uma: 1, dois: 2, duas: 2, tres: 3, 'três': 3, quatro: 4, cinco: 5,
+  seis: 6, sete: 7, oito: 8, nove: 9, dez: 10, onze: 11, doze: 12, treze: 13,
+  quatorze: 14, catorze: 14, quinze: 15, dezesseis: 16, dezessete: 17, dezoito: 18,
+  dezenove: 19, vinte: 20, trinta: 30, quarenta: 40, cinquenta: 50, sessenta: 60,
+  setenta: 70, oitenta: 80, noventa: 90, cem: 100, cento: 100, duzentos: 200,
+  trezentos: 300, quatrocentos: 400, quinhentos: 500, seiscentos: 600,
+  setecentos: 700, oitocentos: 800, novecentos: 900,
+}
+/**
+ * 序数词 → 数值。**显式表，别用下标算**（第一版用 `index % 11 + 1` 从数组下标推数值，
+ * 下标 0..11 对应的是 1..10，`décimo`（第 10）被算成了 11）。
+ */
+const PT_ORDINAL_VALUES = {
+  primeiro: 1, segundo: 2, terceiro: 3, quarto: 4, quinto: 5, sexto: 6,
+  'sétimo': 7, setimo: 7, oitavo: 8, nono: 9, 'décimo': 10, decimo: 10,
+}
+
+/** 中文数字 → 数值（「十二」=12；单独一个「十」也是 10）。 */
+function chineseNumber(text) {
+  let total = 0
+  let current = 0
+  let seen = false
+  for (const ch of String(text)) {
+    if (CN_DIGITS[ch] !== undefined) {
+      current = current * 10 + CN_DIGITS[ch]
+      seen = true
+    } else if (CN_UNITS[ch] !== undefined) {
+      total += (current === 0 ? 1 : current) * CN_UNITS[ch]
+      current = 0
+      seen = true
+    } else {
+      return null
+    }
+  }
+  return seen ? total + current : null
+}
+
+/**
+ * 取出文本里的数字（数值集合）。**只做可靠的两种来源**：阿拉伯数字、中文数字。
+ *
+ * ⚠️ 刻意**不解析葡语的词形数字** —— 那不是"懒得做"，是试过之后发现不划算：
+ *    作同一个数有无数种词形写法（`12º` / `décimo segundo` / `andar doze` /
+ *    `três mil novecentos e oitenta`），解析器漏一种写法就会把它误判成"数字丢了"，
+ *    而每次误判的代价是**一次已经花钱跑完的校对白费**。
+ *    改用"看到词形迹象就放过"（见 proofreadRegression），简单且不会误报。
+ */
+function numbersIn(text) {
+  const raw = String(text)
+  const out = new Set()
+  const read = value => {
+    if (value >= 10 && value < 1e15) out.add(Math.round(value))
+  }
+  for (const match of raw.matchAll(/(\d+)(?:[.,](\d+))?\s*(亿|万|千|百万)?/g)) {
+    const after = raw.slice(match.index + match[0].length)
+    // `15h20` 是"15 点 20 分"，不是 15.2 这个数 —— 只取小时，否则会算出一个不存在的数。
+    if (/^[hH:]/.test(after) === true) {
+      read(Number(match[1]))
+      continue
+    }
+    const decimals = match[2] === undefined ? '' : '.' + match[2]
+    let value = Number(match[1] + decimals) * (LARGE_UNIT[match[3]] ?? 1)
+    // 阿拉伯数字后面跟词形单位也要乘：`270 milhões` = 270×10⁶
+    const nextWord = (after.toLowerCase().match(/^\s*([a-zà-ÿ]+)/) ?? [])[1]
+    if (nextWord !== undefined && PT_LARGE[nextWord] !== undefined) value *= PT_LARGE[nextWord]
+    read(value)
+  }
+  const chinese = new RegExp('([' + CN_DIGIT_CLASS + ']{1,6})', 'g')
+  for (const match of raw.matchAll(chinese)) {
+    const value = chineseNumber(match[1])
+    if (value !== null) read(value)
+  }
+  return out
+}
+
+/** 词边界匹配：`tu` 不能命中 faturamento/tudo，`metro` 不能命中 parâmetros（真踩过）。 */
+function hasWord(haystack, needle) {
+  const text = String(haystack).toLowerCase()
+  const word = String(needle).toLowerCase()
+  if (word === '') return false
+  const isLetter = ch => ch !== undefined && /\p{L}/u.test(ch)
+  let from = 0
+  for (;;) {
+    const at = text.indexOf(word, from)
+    if (at < 0) return false
+    if (isLetter(text[at - 1]) === false && isLetter(text[at + word.length]) === false) return true
+    from = at + 1
+  }
+}
+
+/**
+ * 校对回归闸：这条"修正"有没有**把初译里本来对的东西弄坏**。
+ *
+ * 为什么需要它 —— 现有那道验收闸（`revisionProblem`）只量两件事（变长太多、折行超预算），
+ * 都是**格式**，不看内容。于是"修订把 `12º andar` 删了"或"把 `ônibus` 换成 `autocarro`"
+ * 这类**内容回归**会被放行，屏幕上原地改坏。
+ *
+ * ⚠️ **只在「中文 → 巴葡」方向上跑**。这不是优化，是正确性：
+ *    判据比的是「原文的数 ↔ 译文的数」，只有**译成葡语**时两边才可比。
+ *    反方向（葡语 → 中文）时译文本身就是中文，里面的汉字数字会被当成"数字"，
+ *    于是初译里的「十二楼」被判成"修订把 12 弄丢了" —— **假阳性**。
+ *    这个坑是真踩出来的：合同套件里"屏幕换页时丢弃过期校对"那条测试因此变红，
+ *    诊断信息正是 `修订把初译里的数字弄丢了（12）`，而那句的语向是 pt-BR→zh-CN。
+ *
+ * ⚠️ **不增加任何延迟**：纯本地字符串计算，不调模型、不联网。
+ *    一句译文的量级，微秒级 —— 相对"一次模型调用几百毫秒到几秒"可以忽略。
+ *
+ * ⚠️ 取舍一律偏向"宁可不报"：漏判只是少拦一次，
+ *    而误拦会让一次已经花钱跑完的校对白费、用户看到的还是旧译文。
+ *
+ * @return 有问题返回原因字符串；没问题（含"方向不对，不适用"）返回 null。
+ */
+function proofreadRegression(source, draft, corrected, policy) {
+  const text = String(source)
+  const before = String(draft)
+  const after = String(corrected)
+
+  const hasHan = value => /\p{Script=Han}/u.test(String(value))
+  if (hasHan(text) === false || hasHan(before) === true) return null
+
+  // 数字回归：原文数字当**核对清单**，要求"初译里有、修订里没有"才算回归。
+  //
+  // ⚠️ 这一处我改了六版才对，把结论与理由留在这儿，别再走回头路。
+  //
+  // 最直觉的做法是"把修订里的词形数字**精确解析**出来，再跟清单做差集"。它要求解析器
+  // 覆盖 `12º andar` / `décimo segundo andar` / `três mil novecentos e oitenta` /
+  // `cada um três mil...` 全部写法，**漏一种写法就把它误判成"数字丢了"**，
+  // 而每次误判的代价都是**一次已经花钱跑完的校对白费**。我确实把那台解析器写出来了，
+  // 结果是每修一个假阳性就冒出下一个（`e` 被当边界、`mil` 的乘法结合、
+  // 量词 `um` 被并进数字、序数词两词写法……）。
+  //
+  // ⚠️ 走到这一步的经验：**判据里凡是"解析自然语言"的部分都会持续出错。**
+  //    所以现在**不做精确解析，只比大小**（见下面的 biggestSeen），
+  //    并保留一个只认大单位的粗解析器用于"证明大数还在"。
+  //
+  // 结果是三件事的组合，缺一不可：
+  //   ① 初译里没有的数不算清单（那是初译的错，不是"改坏"）；
+  //   ② 修订里逐字还在的数 → 没问题；
+  //   ③ **修订里还有一个 ≥ 这个数** 的值 → 认为它在用另一套写法（词形/单位换算），放过。
+  //      "≥"而不是"整个放过"，是为了让**降级**拦得住：`Do 12º andar para o 6º andar`
+  //      → `Do 6º andar` 里，修订只剩 6，没有 ≥12 的值，所以 12 的丢失照样报出来。
+  //      （这里曾经写成 biggestSeen ≥ value 但取的是全句最大数，
+  //        于是同句里另一个更大的数 802 会把 12 的丢失掩盖掉 —— 必须比同名量级才对。）
+  const draftNumbers = numbersIn(before)
+  const afterNumbers = numbersIn(after)
+  // 修订里可能把数写成了词形（`3980` → `três mil novecentos e oitenta`、
+  // `12` → `décimo segundo andar`）—— 单独解析一遍，用来"证明这个数还在"。
+  const recoveredLarge = largeWordFormNumbers(after)
+  // 修订里出现过的**最大数值**：只要它 ≥ 某个丢失的数，就说明修订在用另一套写法
+  // 描述同一个量级（词形、单位换算），不能因为"字面数字对不上"就判丢失。
+  //
+  // ⚠️ 这一条是**"别误拦"的总保险**，替掉了前面好几版零散的护栏（小数值放过、
+  //    大单位迹象放过……）。那些散判据每加一条就发现新的漏网情况，而这条只是比大小，
+  //    **没有解析、也就没有解析 bug**。
+  // ⚠️ 但它必须"按值比"而不是"整个放过"：第四版是"修订里有词形数字就整个跳过检查"，
+  //    于是 `…sala 802 no 8º andar` → `…o oitavo andar` 里那个 802 丢了也没发现。
+  const biggestSeen = afterNumbers.size === 0 && recoveredLarge.size === 0
+    ? 0
+    : Math.max(...afterNumbers, ...recoveredLarge)
+  // ⚠️ **楼层语境的序数词**也算"在用词形写数"（`décimo segundo andar` = 12 楼）。
+  //    这里必须限定"后面紧挨着 andar / piso"，**不能把序数词无条件当数字迹象** ——
+  //    葡语里 `segundo`（根据）、`primeiro`（首先）是极常见的普通词，
+  //    无条件接受会让召回崩掉（实测 `Do 12º andar para o 6º andar` → `Do 6º andar`
+  //    里"12 楼丢了"被放过，就是因为句中的普通词命中了序数词表）。
+  const words = after.toLowerCase().split(/[^a-zà-ÿ]+/).filter(item => item !== '')
+  const usesFloorOrdinal = words.some((word, index) => {
+    if (PT_ORDINAL_VALUES[word] === undefined) return false
+    const next = words[index + 1] ?? ''
+    return next === 'andar' || next === 'piso'
+  })
+  const hasNumberWord = usesFloorOrdinal === true
+    || words.some(word => PT_LARGE[word] !== undefined)
+  const lost = [...numbersIn(text)].filter(value => {
+    if (draftNumbers.has(value) === false) return false     // 初译本来就没译出来 → 不是"改坏"
+    if (afterNumbers.has(value) === true) return false      // 修订里还在
+    if (recoveredLarge.has(value) === true) return false    // 粗解析对上了（含大单位写法），还在
+    // ⚠️ **小数值（< 1000）遇上"在用词形写数"的迹象就放过。**
+    //    理由：这个量级的词形写法会让上面那个粗解析**算出偏小的值**
+    //    （`três mil novecentos e oitenta` 只能算到 3000、`décimo segundo` 只有单独处理才对上），
+    //    所以"解析不出来"不能当"丢了"的证据。它覆盖楼层（`12` ↔ `décimo segundo`）、
+    //    数量（`120` ↔ `cento e vinte`）、百分数这些真实场景。
+    //    而 ≥100 的数（房间号 `802`、金额 `3980`、`398000`）**模型永远用阿拉伯数字写**，
+    //    必须拿出精确证据（真出现那个数）才放行 —— 否则就是真丢了。
+    //    阈值取 100 而不是 1000：**房间号是三位数**（802），
+    //    取 1000 会把"802 丢了"也放过（实测踩到过）。
+    if (hasNumberWord === true && value < 100) return false
+    // 修订里存在一个 ≥ 它的值，且那个值在**初译里没有别的归属** → 认为这就是它换了套写法
+    // （大额的单位换算：`2.7 亿` ↔ `270 milhões`）。这一条不需要解析，只是比大小。
+    // "在初译里没有别的归属"是关键：同句另一个本来就存在的大数不能当"它被改写"的证据，
+    // 否则真丢失会被掩盖（`3980 reais ... 3582 reais` 里 3582 丢了会被 3980 盖住）。
+    if (biggestSeen >= value && draftNumbers.has(biggestSeen) === false) return false
+    return true
+  })
+  if (lost.length > 0) {
+    return '修订把初译里的数字弄丢了（' + lost.join('、') + '）—— 同传里丢数字比语法错严重得多'
+  }
+
+  // 口径回归：修订里冒出了欧洲葡语说法（提示词里明令禁止）。
+  // 初译本来就有则不算回归 —— 这道闸管的是"别改坏"，不是"改好"。
+  const terminology = policy === undefined || policy === null || Array.isArray(policy.terminology) === false
+    ? []
+    : policy.terminology
+  for (const entry of terminology) {
+    if (entry.ptpt === undefined || entry.ptpt === '') continue
+    if (hasWord(before, entry.ptpt) === true) continue
+    if (hasWord(after, entry.ptpt) === true) {
+      return '修订里出现了欧洲葡语说法 ' + entry.ptpt + '（巴葡应为 ' + entry.br + '）'
+    }
+  }
+  return null
+}
+
+/**
+ * 葡语**大单位表达式**里的数值（`trezentos e noventa e oito mil` → 398000）。
+ *
+ * 只认"大单位词"，因为只有这一档需要它：
+ *   · `mil / milhão / bilhão` 后面跟着的数值一定是大数，而大数**不会被写成词**的假设
+ *     正是第四版误判 398000 的原因 —— 模型确实会写 `trezentos e noventa e oito mil`。
+ *   · 小数字（< 100）由"词形迹象 + 小数值"那条护栏覆盖，不需要在这里解析。
+ *
+ * ⚠️ 只在"证明某个大数还在"时用（往集合里加），不报错 —— 所以宁可多算几个也不漏算。
+ * ⚠️ 数值算错也无妨：真正要证明的那个数（398000）一定会以某个中间形态出现
+ *    （`mil` 处会算出 398000；即使累加次序不完美，目标值通常仍在集合里）。
+ *    而**算不出来只会让判据更严格** —— 那是漏报，不是误报，可以接受。
+ */
+function largeWordFormNumbers(text) {
+  const out = new Set()
+  const words = String(text).toLowerCase().split(/[^a-zà-ÿ]+/).filter(item => item !== '')
+  let run = 0
+  let hasRun = false
+  const read = () => {
+    if (hasRun === true && run >= 10 && run < 1e15) out.add(Math.round(run))
+    run = 0
+    hasRun = false
+  }
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index]
+    const large = PT_LARGE[word]
+    if (large !== undefined) {
+      run = (run === 0 ? 1 : run) * large
+      hasRun = true
+      continue
+    }
+    const small = PT_SMALL[word]
+    if (small !== undefined) {
+      // ⚠️ 这里**绝不能 read()** —— 这是踩过的坑：
+      //    `três mil trezentos e oitenta` 里，`trezentos` 若触发收尾，
+      //    就把中间的 3000 当成结果吐出去（而真值是 3380），**真值反而不在集合里**。
+      //    数词与大单位都只累积，收尾只发生在真边界（非数字词）与结尾。
+      // 数字之间没有 `e` 连接就是两个数（`cada um três mil` = 各 1 + 三千），有 `e` 才是相加
+      if (hasRun === true && words[index - 1] !== 'e') run = 0
+      run += small
+      hasRun = true
+      continue
+    }
+    // `e` 是数字内部的连接词（`trezentos e noventa e oito mil`），不是边界
+    if (word === 'e') continue
+    read()
+  }
+  read()
+  // ⚠️ 把收尾时手里的累积值也收进来。它是"改写成了词形"的证据，哪怕值不完全精确：
+  //    `décimo segundo andar` → 累积到 12（真值就是 12）；
+  //    `três mil novecentos e oitenta` → 只能算到 3000（真值 3980）——
+  //    所以调用方那边还要配一条"< 1000 时只要有大单位迹象就放过"（见 proofreadRegression）。
+  if (run > 0 && run < 1e15) out.add(Math.round(run))
+  return out
+}
+
 /**
  * 校对结果的验收闸：这条"修正"到底能不能上屏？
  *
- * 为什么必须有：提示词里写了"不许比原译文更长"，但**模型不保证守规矩**。
- * 而且这里还有一个更阴的失败方式 —— 读代码时发现的：
+ * 为什么必须有：提示词里写了"不许比原译文更长"，但**模型不保证守规矩**。 而且这里还有一个更阴的失败方式 —— 读代码时发现的：
  * 离线演示用的例句表适配器（scripts/demo-phrasebook.mjs）对查不到的输入会回一句
  * 「（离线演示：例句表里没有这一句，原文为「…」）」。校对请求当然查不到，
  * 于是它会**被当成校对结果**，把一句本来正确的字幕覆盖成这句演示提示。
@@ -980,6 +1258,17 @@ function createInterpreter(ctx, rawConfig, deps) {
         state.proofread.rejected += 1
         state.proofread.lastNote = '校对结果没通过验收（保持初译）：' + problem
         console.log('[leion-pro] ✗ 校对结果不可用，已丢弃：' + problem)
+        return true
+      }
+      // 回归闸：格式过关了，但内容有没有被改坏（丢数字 / 冒出葡葡说法）。
+      // 两道闸分开是为了让日志说清"是格式不对还是内容改坏了" ——
+      // 前者说明模型没守格式约定，后者说明它真的引入了错误，排查方向完全不同。
+      // 只用 item.source（原文）与两版译文做本地比对，**不增加任何模型调用**。
+      const regression = proofreadRegression(item.source, item.draft, corrected, policy)
+      if (regression !== null) {
+        state.proofread.rejected += 1
+        state.proofread.lastNote = '校对把初译改坏了（保持初译）：' + regression
+        console.log('[leion-pro] ✗ 校对结果改坏了内容，已丢弃：' + regression)
         return true
       }
       // 最后一道闸：重新确认屏幕没变过（模型调用期间可能已经出了下一句）。
