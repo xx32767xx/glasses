@@ -26,6 +26,7 @@ import { runRelaySuite } from './relay-suite.mjs'
 import { runDebugSuite } from './debug-suite.mjs'
 import { runStartAllSuite } from './start-all-suite.mjs'
 import { runNetDoctorSuite } from './net-doctor-suite.mjs'
+import { runBenchSuite } from './bench-suite.mjs'
 import { runLive } from './live/run.mjs'
 
 let passed = 0
@@ -164,6 +165,14 @@ await runStartAllSuite(helpers)
 
 heading('网络体检（net-doctor：换个网络就连不上时，判断卡在哪一环）')
 await runNetDoctorSuite(helpers)
+
+// ── 7c. 翻译模型横评的判据（"哪个模型翻译得好"全靠它下结论）─────────────────
+// 横评表好看不等于结论可信：判据写错一点，就会变成"所有模型都满分"。
+// 所以这里既不验模型（那要联网花钱），也不验句集，只验**判据本身**
+// —— 尤其把 faturamento / parâmetros / equipamentos 这类子串误报钉死。
+
+heading('翻译模型横评（bench-models：判据自检与"哪来的提示词"）')
+await runBenchSuite(helpers)
 
 // ── 8. 真实 Cordis 组合（真实 ToolRuntime + 真实执行流水线） ─────────────────
 
