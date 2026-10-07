@@ -33,6 +33,7 @@ import { join } from 'node:path'
 
 import { PHRASES, inspect } from './test-phrases.mjs'
 import { translationSystem } from '../plugin/core.mjs'
+import { lintTranslation } from '../lib/translation-lint.mjs'
 
 const policy = JSON.parse(readFileSync(join(process.cwd(), 'policy', 'br-pt.json'), 'utf8'))
 
@@ -162,6 +163,10 @@ export const DEFERRED = [
  * ❌ 的判据刻意收得很紧 —— 同传里这几类错是**事故级**的：
  *    不回译（用户完全看不懂）、出现葡葡词（方案点名的硬约束）、
  *    回显原文 / 假字幕（等于没翻）、加解释（屏幕上多出一段话）。
+ *
+ * 另外跑三层**词汇级**质检（`lib/translation-lint.mjs`，见 docs/08 第 4 节）：
+ *   ① 专名被音译/新造  ② 实体槽丢了（楼层/房间号）  ③ 性数不一致
+ * 这三层都按"宁可不报，不可误报"设计 —— 误报会让好模型排名垫底。
  */
 export function verdictOf(source, translation, terminology) {
   const result = inspect(source, translation, { cols: 40, lineBudget: 3, terminology, sourceIsChinese: true })
@@ -179,12 +184,16 @@ export function verdictOf(source, translation, terminology) {
     if (note.text.startsWith('出现葡葡说法')) fatal.push('欧葡词')
     if (note.text.startsWith('命中幻听惯用语')) fatal.push('幻听')
     if (note.text.startsWith('提示词被回显')) fatal.push('提示词回显')
-    // 量级错（2.7 亿 → 2,7 bilhões）是同传里最严重的一类：金额差 10 倍。
-    // 旧的"数字在不在"判据抓不到它 —— 因为 2.7 和 270 归一化后确实对得上。
-    if (note.text.startsWith('量级可能译错')) fatal.push('量级错')
   }
 
-  return { fatal, bad, warn, wrapped: result.wrapped, shown: result.shown, notes: result.notes }
+  // 词汇级三层质检（需要 policy 数据，所以在这里跑而不是 inspect 里）
+  const lint = lintTranslation(source, translation, policy)
+  for (const note of lint.fatal) fatal.push(note.kind ?? note.text)
+
+  return {
+    fatal: [...new Set(fatal)], bad, warn: warn.concat(lint.warn), lint,
+    wrapped: result.wrapped, shown: result.shown, notes: result.notes,
+  }
 }
 
 // ── 自检：判据本身对不对 ────────────────────────────────────────────────────
@@ -546,6 +555,9 @@ async function main() {
         console.log(`  [${index + 1}] ${mark} ${result.elapsed}ms${tokens}${tag}  ${result.text}`)
         if (truncated) console.log(`       ✂️ finish_reason=${result.finish} —— 是 max_tokens 给少了，不是模型译错（用 --max-tokens 加大）`)
         if (judged.fatal.length > 0) console.log(`       ❌ ${judged.fatal.join('、')}`)
+        for (const note of judged.lint.notes) {
+          console.log(`       ${note.level === 'bad' ? '↳' : '⚠️'} ${note.text}`)
+        }
         if (judged.wrapped.length > 3) console.log(`       折行 ${judged.wrapped.length} 行 > 3（眼镜上会丢开头 ${judged.wrapped.length - 3} 行）`)
         rows.push({
           model: candidate.key, index: index + 1, round, ok: true, elapsed: result.elapsed,

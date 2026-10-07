@@ -27,6 +27,7 @@ import { runDebugSuite } from './debug-suite.mjs'
 import { runStartAllSuite } from './start-all-suite.mjs'
 import { runNetDoctorSuite } from './net-doctor-suite.mjs'
 import { runBenchSuite } from './bench-suite.mjs'
+import { runLintSuite } from './lint-suite.mjs'
 import { runLive } from './live/run.mjs'
 
 let passed = 0
@@ -173,6 +174,14 @@ await runNetDoctorSuite(helpers)
 
 heading('翻译模型横评（bench-models：判据自检与"哪来的提示词"）')
 await runBenchSuite(helpers)
+
+// ── 7d. 译文质检判据（三层：专名 / 实体槽 / 性数一致）───────────────────────
+// 这一套的重点是**"不该报的不报"**：判据误报一次，就会让译文质量好的模型
+// 排名垫底（真踩过 —— Hunyuan-MT 把「字幕」正确译成 legendas 却被判成事故）。
+// 所以每个判据都配了成对负对照：左边验"真错必须报"，右边验"正确译法一个都不许报"。
+
+heading('译文质检判据（专名音译 / 楼层房间号丢失 / 葡语性数不一致）')
+await runLintSuite(helpers)
 
 // ── 8. 真实 Cordis 组合（真实 ToolRuntime + 真实执行流水线） ─────────────────
 
