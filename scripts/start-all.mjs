@@ -31,7 +31,7 @@
 import { spawn } from 'node:child_process'
 import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { connect } from 'node:net'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { ROOT, LOGS_DIR, WHISPER_CACHE_DIR, defaultAudioIn, defaultBus, defaultInbox, defaultSecret } from '../lib/paths.mjs'
 import { DEFAULT_DATA_DIR } from '../relay/lan-relay.mjs'
@@ -114,6 +114,15 @@ export function parseArgs(argv) {
     if (!Number.isInteger(options[key]) || options[key] <= 0) {
       throw new Error(`--${key} 必须是正整数，收到 ${JSON.stringify(options[key])}`)
     }
+  }
+  // ⚠️ 数据目录必须解析成**绝对路径**。
+  //    踩过的坑：`--data-dir var/test/x` 这样的相对路径会被原样写进插件配置，
+  //    接着收件箱路径也是相对的，插件那边**静默读不到**：继电器照写、屏幕上永远没字幕、
+  //    一个错都不报 —— 表现和"翻译坏了"一模一样，害我查了半天。
+  //    在入口处解析成绝对路径，往外传的就永远是绝对的。
+  options.dataDir = resolve(options.dataDir)
+  for (const key of ['inbox', 'bus', 'audio']) {
+    if (options[key] !== undefined) options[key] = resolve(options[key])
   }
   options.inbox = options.inbox ?? defaultInbox(options.dataDir)
   options.bus = options.bus ?? defaultBus(options.dataDir)

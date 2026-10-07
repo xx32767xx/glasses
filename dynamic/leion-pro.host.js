@@ -260,6 +260,19 @@ const DEVICE = {
 const ZH = 'zh-CN'
 const PT = 'pt-BR'
 
+/**
+ * 这个路径看起来是不是绝对路径？
+ *
+ * 刻意不引 `node:path` —— core.mjs 是**零 import** 的（动态插件在沙箱里跑，
+ * 拿不到 node 内置模块）。所以这里用最朴素的判断，覆盖三种真实写法：
+ *   C:\... / C:/... / \\server\share\... / /usr/...
+ */
+function looksAbsolutePath(value) {
+  const text = String(value)
+  return /^[A-Za-z]:[\\/]/.test(text) || text.startsWith('\\\\') || text.startsWith('/')
+}
+
+/** 一个片段一句话（同传里一条字幕就是一句话）。 */
 const HISTORY_CAP = 200
 
 /**
@@ -806,7 +819,13 @@ function createInterpreter(ctx, rawConfig, deps) {
         return true
       }
 
-      const frame = buildFrame({ text: corrected, speaker: item.displaySpeaker, lang: item.to })
+      const frame = buildFrame({ text: corrected, speaker: item.displaySpeaker, lang: item.to,
+        // ⚠️ 必须带上**原文**。这是个真踩过的坑：这一行原本没传 source，于是修订帧的
+        //    source 退化成译文本身，而手机端是**按原文认"这是同一条字幕"**的 ——
+        //    结果"校对改正"到了屏幕上不是原地替换，而是**多出一行**
+        //    （那一行的"原文"位置还会显示成译文）。它是合并两个分支时才暴露的：
+        //    写校对那会儿，帧里还没有 source 这个字段。
+        source: item.source, sourceLang: item.from })
       await sendRaw(frame)
       state.lastGoodFrame = frame
       // 历史里那一条要**替换**，不能追加 —— 否则双语历史会多出一条重复的话，
@@ -1097,6 +1116,14 @@ function createInterpreter(ctx, rawConfig, deps) {
     if (inbox.running) return
     if (config.inboxPath === '') {
       throw new Error("未配置 inboxPath，收件箱无法启动（在 cordis.yml 的 config 里设置，或改 CONFIG_OVERRIDE）")
+    }
+    // ⚠️ 相对路径**实测会静默失效**：继电器照样往文件里写，插件这边读不到，
+    //    既不报错也不出字幕，看上去像"翻译坏了"。所以这里直接拒绝，
+    //    并把话说到能照着改（由调用方 catch 后记进 lastError + 打日志）。
+    if (!looksAbsolutePath(config.inboxPath)) {
+      throw new Error('inboxPath 必须是**绝对路径**，收到 ' + JSON.stringify(config.inboxPath)
+        + '。相对路径会让收件箱静默读不到（继电器在写、插件读不到、还不报错）—— '
+        + '用绝对路径，或在启动脚本里把 --data-dir 解析成绝对路径（scripts/start-all.mjs 已经这么做了）')
     }
     inbox.stopWatcher = ctx.interval(() => {
       void (async () => {
@@ -1584,6 +1611,9 @@ function createInterpreter(ctx, rawConfig, deps) {
     } catch (error) {
       inbox.errors += 1
       inbox.lastError = String(error && error.message ? error.message : error)
+      // 必须说出来：收件箱起不来的话整个同传是"静默不动"的（外部照样在写，
+      // 屏幕上永远没字幕），只记 lastError 的话得到有人想起来去查工具才知道。
+      console.log('[leion-pro] ✗ 收件箱没能启动：' + inbox.lastError)
     }
   }
   return api

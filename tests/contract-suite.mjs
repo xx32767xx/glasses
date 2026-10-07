@@ -833,6 +833,56 @@ export async function runContractSuite(adapter, { it, check, assert }) {
     await tools.get('leion_inbox').execute({ action: 'stop' })
   })
 
+  await it('校对改的那一帧也带着**原文**（否则手机上会多出一行而不是原地改正）', async () => {
+    // 这条钉的是一个只在"校对 + 新界面"合起来时才暴露的 bug：
+    //   修订帧原先没传 source，于是它的 source 退化成译文本身；
+    //   而手机端是**按原文认"这是同一条字幕"**的 —— 认不出来就当成新句子，
+    //   屏幕上于是多出一行，那一行的"原文"位置还显示成译文。
+    // 所以这里直接看**总线上的帧**（用 file 传输 + 假 fs 截下来），不看内部状态。
+    const store = new Map()
+    const path = inboxPathOf('proofread-source.jsonl')
+    const busPath = 'E:/GlassesHarness/var/test/proofread-bus.json'
+    const SOURCE = '这是一条测试语音。'
+    const FIXED = 'Esta é uma mensagem de teste.'
+    const llm = makeProofreadLlm({ corrected: FIXED })
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: { inboxPath: path, inboxPollMs: 100, proofread: 'idle',
+        transport: 'file', sinkPath: busPath },
+    })
+    const tools = box.tools
+    store.set(path, SOURCE + '\n')
+
+    const revised = await waitFor(() => String(store.get(busPath) ?? '').includes(FIXED),
+      { timeout: 6000 })
+    check('校对结果落到了总线文件上', revised, String(store.get(busPath) ?? '').slice(0, 120))
+
+    const frame = JSON.parse(String(store.get(busPath)))
+    check('修订帧的译文是校对后的那版', frame.text === FIXED, frame.text)
+    check('修订帧的**原文仍然是原文**（手机靠它认同一条字幕）', frame.source === SOURCE,
+      `source=${JSON.stringify(frame.source)}（应该是 ${JSON.stringify(SOURCE)}）`)
+    check('修订帧标了原文语种', frame.sourceLang === 'zh-CN', String(frame.sourceLang))
+    check('修订帧不是"生成中"', frame.partial === false, String(frame.partial))
+    await tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
+  await it('收件箱配了相对路径时**响亮报错**，不再静默失效', async () => {
+    // 真实踩过：`--data-dir var/test/x` 让收件箱路径变成相对的，
+    // 继电器照写、插件读不到、一个错都不报 —— 表现和"翻译坏了"一样。
+    // 现在直接拒绝启动并把原因说清楚（正常的用法由 start-all / harness-side 解析绝对路径兜住）。
+    const store = new Map()
+    const box = await adapter.create({
+      llm: makeFakeLlm(), fs: makeFakeFs(store),
+      config: { inboxPath: 'var/test/relative-inbox.jsonl', inboxPollMs: 100 },
+    })
+    const status = await box.tools.get('leion_inbox').execute({ action: 'status' })
+    check('收件箱没有跑起来', status.running === false, String(status.running))
+    check('错误里明确说是相对路径的问题',
+      String(status.lastError).includes('绝对路径'), String(status.lastError))
+    check('错误里给了怎么改（提到 data-dir）',
+      String(status.lastError).includes('data-dir'), String(status.lastError))
+  })
+
   await it('只处理以换行结束的完整行：半行不算，补齐后才算一条', async () => {
     const store = new Map()
     const path = inboxPathOf('inbox-partial.jsonl')

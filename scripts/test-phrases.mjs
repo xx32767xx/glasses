@@ -211,17 +211,29 @@ export function inspect(source, translation, options) {
 // ── 跑批 ────────────────────────────────────────────────────────────────────
 
 export function parseArgs(argv) {
-  const options = { url: 'http://127.0.0.1:8788', timeout: 12000, only: null, list: false, readAloud: false }
+  const options = { url: 'http://127.0.0.1:8788', timeout: 12000, settle: 2500,
+    only: null, list: false, readAloud: false, secret: null }
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (token === '--list') { options.list = true; continue }
     if (token === '--read-aloud') { options.readAloud = true; continue }
     if (token === '--url') { options.url = argv[++index]; continue }
+    if (token === '--secret') { options.secret = argv[++index]; continue }
     if (token === '--only') { options.only = Number(argv[++index]); continue }
     if (token === '--timeout') { options.timeout = Number(argv[++index]); continue }
+    if (token === '--settle') { options.settle = Number(argv[++index]); continue }
     throw new Error(`看不懂的参数：${token}`)
   }
   return options
+}
+
+/** 当前帧（不看 changed，直接要 service 手里的那一帧）。 */
+async function currentFrame(url, secret) {
+  const response = await fetch(`${url}/frame?since=0&secret=${encodeURIComponent(secret)}`,
+    { signal: AbortSignal.timeout(5000) })
+  if (!response.ok) return null
+  const body = await response.json()
+  return body.frame ?? null
 }
 
 function readSecret() {
@@ -242,30 +254,41 @@ async function submit(url, secret, text) {
   return response.json()
 }
 
-async function waitForFrame(url, secret, source, timeout) {
+/**
+ * 等到这一句"尘埃落定"，返回它最终的帧。
+ *
+ * 为什么要等：开了大模型校对时，屏幕上会先出现初译（定稿帧），
+ * 过一会儿**再被改一次**。只看"第一帧定稿"就停下来，量到的永远是初译 ——
+ * 那样"校对有没有用"就永远测不出来。
+ *
+ * 怎么知道后面那一帧还是这一句：本脚本是**一句一句串着发的**，
+ * 所以等待期间出现的任何新帧都只可能属于当前这句（下一句还没发）。
+ */
+async function waitForSettledFrame(url, secret, source, timeout, settleMs) {
   const deadline = Date.now() + timeout
-  const ask = async () => {
-    // ⚠️ 不能写 since=-1：继电器会直接回 {"ok":false,"error":"since 必须是非负数字"}，
-    //    于是每一句都"等不到字幕"——而字幕其实早就出来了。0 就够了：
-    //    正常跑着的链路 seq 一定大于 0，于是 changed=true 并把当前帧带回来。
-    const response = await fetch(`${url}/frame?since=0&secret=${encodeURIComponent(secret)}`,
-      { signal: AbortSignal.timeout(5000) })
-    if (!response.ok) return null
-    const body = await response.json()
-    const frame = body.frame
-    if (frame === undefined || frame === null) return null
-    // 认帧：原文对上**并且已经定稿**才算到。
-    // 只认原文是不够的 —— 流式增量帧也带同样的 source，那样会拿"第一个字"
-    // （实测拿到过 "A" / "Se" / "N"）当成译文来判，看着像翻译坏了，其实是自己取早了。
-    if ((frame.source === source || frame.text === source) && frame.partial === false) return frame
-    return null
-  }
+  let draft = null
   while (Date.now() < deadline) {
-    const frame = await ask().catch(() => null)
-    if (frame !== null) return frame
+    const frame = await currentFrame(url, secret).catch(() => null)
+    if (frame !== null && (frame.source === source || frame.text === source)
+        && frame.partial === false) {
+      draft = frame
+      break
+    }
     await new Promise(resolve => setTimeout(resolve, 150))
   }
-  return null
+  if (draft === null) return null
+
+  // 初译到了之后再盯一会儿，看有没有"第二遍"把它改掉
+  const settleUntil = Date.now() + settleMs
+  let latest = draft
+  while (Date.now() < settleUntil) {
+    await new Promise(resolve => setTimeout(resolve, 200))
+    const frame = await currentFrame(url, secret).catch(() => null)
+    if (frame !== null && frame.partial === false && frame.text !== latest.text) {
+      latest = frame
+    }
+  }
+  return { draft, settled: latest, revised: latest.text !== draft.text }
 }
 
 async function main() {
@@ -293,9 +316,9 @@ async function main() {
     return
   }
 
-  const secret = readSecret()
+  const secret = options.secret !== null && options.secret !== '' ? options.secret : readSecret()
   if (secret === '') {
-    console.log('读不到 var/live/relay-secret.txt —— 转发进程还没起来过？')
+    console.log('读不到 var/live/relay-secret.txt —— 转发进程还没起来过？（也可以用 --secret 直接给）')
     return
   }
   const policy = JSON.parse(readFileSync(join(process.cwd(), 'policy', 'br-pt.json'), 'utf8'))
@@ -309,6 +332,7 @@ async function main() {
 
   let bad = 0
   let warn = 0
+  let revised = 0
   let group = ''
   for (let index = 0; index < PHRASES.length; index += 1) {
     const phrase = PHRASES[index]
@@ -319,23 +343,25 @@ async function main() {
       console.log('── ' + group + ' ──')
     }
     const started = Date.now()
-    let frame = null
+    let outcome = null
     try {
       await submit(options.url, secret, phrase.text)
-      frame = await waitForFrame(options.url, secret, phrase.text, options.timeout)
+      outcome = await waitForSettledFrame(options.url, secret, phrase.text,
+        options.timeout, options.settle)
     } catch (error) {
       console.log(`[${index + 1}] ✗ 提交失败：${String(error && error.message ? error.message : error)}`)
       bad += 1
       continue
     }
     const elapsed = Date.now() - started
-    if (frame === null) {
+    if (outcome === null) {
       console.log(`[${index + 1}] ✗ ${options.timeout}ms 内没等到字幕（这句话没有产出结果）`)
       console.log(`     为什么测：${phrase.why}`)
       bad += 1
       continue
     }
 
+    const frame = outcome.settled
     const result = inspect(phrase.text, frame.text, {
       cols: frame.cols ?? 40,
       lineBudget: frame.lineBudget ?? 3,
@@ -345,10 +371,12 @@ async function main() {
     const warns = result.notes.filter(n => n.level === 'warn')
     bad += marks.length > 0 ? 1 : 0
     warn += warns.length > 0 && marks.length === 0 ? 1 : 0
+    if (outcome.revised) revised += 1
 
-    console.log(`[${index + 1}] ${frame.lang ?? ''}  ${elapsed}ms`)
+    console.log(`[${index + 1}] ${frame.lang ?? ''}  ${elapsed}ms${outcome.revised ? '  ✎ 被改过一次' : ''}`)
     console.log(`     原文：${phrase.text}`)
-    console.log(`     译文：${frame.text}`)
+    if (outcome.revised) console.log(`     初译：${outcome.draft.text}`)
+    console.log(`     ${outcome.revised ? '校对' : '译文'}：${frame.text}`)
     console.log(`     眼镜上（${frame.cols ?? 40}×${frame.lineBudget ?? 3}）：`)
     result.shown.forEach(line => console.log(`        |${line}`))
     result.notes.forEach(note => {
@@ -361,6 +389,7 @@ async function main() {
 
   console.log('─'.repeat(72))
   console.log(`小结：有问题的 ${bad} 条，有提醒的 ${warn} 条，共 ${PHRASES.length} 条`)
+  console.log(`其中被第二遍改过的：${revised} 条（开没开校对，这个数一看就知道）`)
   console.log('判据说明：')
   console.log('  ❌ = 数字可能丢了 / 出现葡葡说法 / 译文超过 3 行（眼镜上开头被截）/ 假字幕')
   console.log('  ⚠️  = 需要人判断的（例如口吻、成语意译是否到位）')

@@ -27,11 +27,16 @@ export async function runStartAllSuite({ it, check, assert }) {
       steps.every(s => typeof s.color === 'string' && s.color.startsWith('\x1b[')))
   })
 
-  await it('转发进程带上数据目录与端口', async () => {
+  await it('转发进程带上数据目录与端口，且数据目录被解析成**绝对路径**', async () => {
     const relay = buildSteps(parseArgs(['--port', '9000', '--data-dir', 'var/x'])).find(s => s.key === 'relay')
     check('脚本指向 relay/lan-relay.mjs', relay.script.endsWith('lan-relay.mjs'), relay.script)
     check('带上 --port 9000', argsOf(relay).includes('--port 9000'), argsOf(relay))
-    check('带上 --data-dir var/x', argsOf(relay).includes('--data-dir var/x'), argsOf(relay))
+    // 相对路径必须被解析成绝对路径再往外传：原样传下去会让插件的收件箱**静默读不到**
+    // （继电器照写、屏幕上永远没字幕、一个错都不报 —— 真实踩过，见 docs/07）。
+    const dataDir = relay.args[relay.args.indexOf('--data-dir') + 1]
+    check('--data-dir 是绝对路径', /^[A-Za-z]:[\\/]/.test(dataDir) || dataDir.startsWith('/'), dataDir)
+    check('解析后仍指向同一个位置（以 var/x 结尾）',
+      dataDir.replace(/\\/g, '/').endsWith('var/x'), dataDir)
   })
 
   await it('识别进程：**不写 python | node 管道**，而用 --whisper-follow 让桥自己起子进程', async () => {
@@ -91,18 +96,27 @@ export async function runStartAllSuite({ it, check, assert }) {
     assert.throws(() => parseArgs(['--nope']), /未知选项/)
   })
 
-  await it('自定义路径时不覆盖（inbox/bus/audio 都能单独指定）', async () => {
+  await it('自定义路径时不覆盖（inbox/bus/audio 都能单独指定），并且都解析成绝对路径', async () => {
     const options = parseArgs(['--inbox', 'a.jsonl', '--bus', 'b.json', '--audio', 'c.pcm'])
-    check('inbox 用了传入的', options.inbox === 'a.jsonl', options.inbox)
-    check('bus 用了传入的', options.bus === 'b.json', options.bus)
-    check('audio 用了传入的', options.audio === 'c.pcm', options.audio)
+    const absolute = value => /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('/')
+    const endsWith = (value, tail) => value.replace(/\\/g, '/').endsWith(tail)
+    check('inbox 用了传入的', endsWith(options.inbox, 'a.jsonl'), options.inbox)
+    check('bus 用了传入的', endsWith(options.bus, 'b.json'), options.bus)
+    check('audio 用了传入的', endsWith(options.audio, 'c.pcm'), options.audio)
+    check('三个都变成绝对路径了',
+      absolute(options.inbox) && absolute(options.bus) && absolute(options.audio),
+      JSON.stringify([options.inbox, options.bus, options.audio]))
   })
 
   await it('缺省路径来自 lib/paths.mjs（不是脚本里另写一份字面量）', async () => {
+    // 相对 --data-dir 会被解析成绝对路径，所以拿"解析后的那个目录"去问 lib/paths.mjs，
+    // 两边算出来的必须一致 —— 这样既验证了来源唯一，也验证了路径没被写歪。
     const options = parseArgs(['--data-dir', 'var/zzz'])
-    check('inbox', options.inbox === defaultInbox('var/zzz'), options.inbox)
-    check('bus', options.bus === defaultBus('var/zzz'), options.bus)
-    check('audio', options.audio === defaultAudioIn('var/zzz'), options.audio)
+    check('inbox', options.inbox === defaultInbox(options.dataDir), options.inbox)
+    check('bus', options.bus === defaultBus(options.dataDir), options.bus)
+    check('audio', options.audio === defaultAudioIn(options.dataDir), options.audio)
+    check('而且确实落在 var/zzz 下',
+      options.inbox.replace(/\\/g, '/').includes('var/zzz/'), options.inbox)
   })
 
   // ── 3. 端口检查：这是"以为重启了其实还是旧进程"的头号来源 ───────────────────

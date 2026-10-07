@@ -29,7 +29,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { CHECKOUT } from '../lib/real-tools.mjs'
 import { ensureLoaderLinks } from '../lib/loader-links.mjs'
 import { buildComposition, LIVE_DATA_DIR, repoFile } from '../lib/composition.mjs'
@@ -92,6 +92,13 @@ export function parseArgs(argv) {
     if (!Number.isInteger(options[key]) || options[key] <= 0) {
       throw new Error(`${key} 必须是正整数，收到 ${JSON.stringify(options[key])}`)
     }
+  }
+  // ⚠️ 必须解析成**绝对路径**：相对路径会一路传到插件配置里，
+  //    然后收件箱**静默读不到**（继电器照写、屏幕上永远没字幕、一个错都不报）。
+  //    start-all 那边也做了同样的事，这里是防"单独起 harness-side"时踩到。
+  options.dataDir = resolve(options.dataDir)
+  for (const key of ['inbox', 'bus']) {
+    if (options[key] !== undefined) options[key] = resolve(options[key])
   }
   options.inbox = options.inbox ?? defaultInbox(options.dataDir)
   options.bus = options.bus ?? defaultBus(options.dataDir)
