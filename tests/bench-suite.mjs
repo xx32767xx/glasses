@@ -18,6 +18,7 @@
 import { readFileSync } from 'node:fs'
 
 import { verdictOf, selfCheck, toMarkdown, CANDIDATES } from '../scripts/bench-models.mjs'
+import { judgeRegional, REGIONAL } from '../scripts/bench-regional.mjs'
 import { translationSystem } from '../plugin/core.mjs'
 
 export async function runBenchSuite({ it, check, assert }) {
@@ -120,5 +121,45 @@ export async function runBenchSuite({ it, check, assert }) {
     check('模型名里的竖线被转义了', dataLines[0].includes('m\\|1'), dataLines[0])
     check('表头行数正确', table.split('\n')[0].startsWith('| 模型 | 句数 |'), table.split('\n')[0])
     assert.ok(table.includes('P95'), '汇总表里应该有 P95')
+  })
+
+  // ── 巴葡区域变体那一套 ────────────────────────────────────────────────────
+  //
+  // 方案把"巴葡口音适配（圣保罗、里约、南部、东北部）"列为**核心指标**，
+  // 而原来的句集一条都没覆盖。这一组补上，但它的判据天生比数字/术语那套**松**
+  // —— 所以既验"它认得出正确的"，也验"它挡得住明显错的"，
+  // 并且把它的两个已知漏洞写在断言里（漏了会让人误以为这个判据很可靠）。
+
+  await it('区域说法判据：认得出正确的，挡得住明显错的', async () => {
+    const spec = REGIONAL[0].items[0]
+    check('正确译文判过',
+      judgeRegional('A gente pode se reunir amanhã de manhã pra conversar sobre isso.', spec).ok === true)
+    check('完全翻错判不过', judgeRegional('Eu vou comer arroz hoje.', spec).ok === false)
+    check('原样抄回中文判不过', judgeRegional(spec.text, spec).ok === false)
+  })
+
+  await it('区域判据的两个已知漏洞（写下来，别让人以为它很可靠）', async () => {
+    // 漏洞一：只命中一个常用词就算过 —— 「vamos」这种日常词太容易蒙中
+    const loose = REGIONAL[3].items[1]
+    check('⚠️ 只蒙中一个常用词就算过（判据偏松，这是已知的）',
+      judgeRegional('Vamos embora daqui agora.', loose).ok === true,
+      '这个断言如果变红，说明判据收紧了 —— 那是好事，请把这条注释一起改掉')
+    // 漏洞二：只翻对一半（"贵"翻出来了、"别买"没有）也算过
+    check('⚠️ 只翻对一半也算过（判据偏松，这是已知的）',
+      judgeRegional('Isso é caro.', REGIONAL[0].items[1]).ok === true,
+      '同上：变红说明收紧了，是好事')
+  })
+
+  await it('区域句集每个区域组都写清"为什么测"，每句都有期待词', async () => {
+    check('至少有 4 个区域组（对应方案里的圣保罗/里约/南部/东北部）',
+      REGIONAL.length >= 4, String(REGIONAL.length))
+    for (const group of REGIONAL) {
+      check(`${group.region} 写了 why`, typeof group.why === 'string' && group.why.length > 8)
+      check(`${group.region} 至少 2 句`, group.items.length >= 2, String(group.items.length))
+      for (const item of group.items) {
+        check(`${group.region}｜${item.text.slice(0, 8)}… 有期待词`,
+          Array.isArray(item.expectAny) && item.expectAny.length > 0)
+      }
+    }
   })
 }

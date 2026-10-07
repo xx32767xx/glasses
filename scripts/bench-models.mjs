@@ -269,8 +269,8 @@ function roughlyMatches(id, model) {
 
 // ── 调模型 ──────────────────────────────────────────────────────────────────
 
-async function callModel(candidate, systemPrompt, text, options) {
-  const key = findKey(candidate.apiKeyEnv)
+export async function callModel(candidate, systemPrompt, text, options, presetKey) {
+  const key = presetKey === undefined ? findKey(candidate.apiKeyEnv) : { value: presetKey, from: '调用方传入' }
   if (key.value === '') {
     return { ok: false, failure: `拿不到 ${candidate.apiKeyEnv}`
       + `（环境变量、~/.dsh/.credentials.yaml、仓库根的 .env 里都没有）`, skipped: true }
