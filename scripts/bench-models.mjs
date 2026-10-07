@@ -106,6 +106,24 @@ export const CANDIDATES = [
     note: '调研表里没有的：翻译专用模型、33 语种、官方称 WMT25 拿 30 个语种第一。7B → 将来可本地部署、数据不出域',
   },
   {
+    key: 'hy-mt-1.5-7b',
+    label: 'HY-MT1.5-7B（腾讯 · 翻译专用 · 新版）',
+    tier: 'open',
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    model: 'tencent/HY-MT1.5-7B',
+    apiKeyEnv: 'SILICONFLOW_API_KEY',
+    note: '混元 1.5 代：官方称"效果超越商用 API"，仍是 33 语种。与上一代正面比 —— 同门两代谁更适合巴葡',
+  },
+  {
+    key: 'hy-mt-1.5-1.8b',
+    label: 'HY-MT1.5-1.8B（腾讯 · 端侧可部署）',
+    tier: 'open',
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    model: 'tencent/HY-MT1.5-1.8B',
+    apiKeyEnv: 'SILICONFLOW_API_KEY',
+    note: '只有 1.8B，官方称"手机 1GB 内存就能跑、效果超商用 API"。如果它够用，整条链路可以搬到端侧 —— 零云端成本、数据不出域，这是最有战略价值的一条',
+  },
+  {
     key: 'qwen',
     label: 'Qwen 通用大模型（开源对照）',
     tier: 'open',
@@ -186,6 +204,69 @@ export function selfCheck(terminology) {
   return problems
 }
 
+// ── 核对模型 ID ─────────────────────────────────────────────────────────────
+//
+// ⚠️ 这一步不是可有可无的洁癖。平台上的模型 ID 与厂商发布的仓库名**经常不一样**，
+// 写错了只会得到一个 404，很容易被误读成"这个模型不能用/平台没有"。
+// 所以先问平台"你到底有哪些"，再决定发什么。
+//
+// ⚠️ 但 /models 这个列表**不能当判据**：实测 DeepSeek 的 /models 只回 2 个名字
+//    （deepseek-flash / deepseek-v4-pro），而产线一直在用的 deepseek-chat 并不在其中
+//    —— 它照样能调通（HTTP 200）。所以这里只做**提示**（"列表里没有，相近的是…"），
+//    绝不因为"列表里没有"就拦下候选。真正说话算数的是那次实际请求。 
+
+async function listPlatformModels(baseUrl, apiKeyEnv) {
+  const key = findKey(apiKeyEnv)
+  if (key.value === '') return { ok: false, failure: `拿不到 ${apiKeyEnv}` }
+  try {
+    const response = await fetch(baseUrl + '/models', {
+      headers: { authorization: 'Bearer ' + key.value },
+      signal: AbortSignal.timeout(20000),
+    })
+    if (response.ok !== true) return { ok: false, failure: `HTTP ${response.status}：${(await response.text()).slice(0, 200)}` }
+    const parsed = JSON.parse(await response.text())
+    return { ok: true, ids: (parsed.data ?? []).map(item => item.id) }
+  } catch (error) {
+    return { ok: false, failure: String(error && error.message ? error.message : error) }
+  }
+}
+
+export async function verifyModels(candidates) {
+  const byBase = new Map()
+  for (const candidate of candidates) {
+    if (byBase.has(candidate.baseUrl) === false) byBase.set(candidate.baseUrl, [])
+    byBase.get(candidate.baseUrl).push(candidate)
+  }
+  const report = []
+  for (const [baseUrl, group] of byBase) {
+    const listed = await listPlatformModels(baseUrl, group[0].apiKeyEnv)
+    if (listed.ok !== true) {
+      for (const candidate of group) {
+        report.push({ key: candidate.key, model: candidate.model, status: 'unlisted',
+          detail: listed.failure, suggestions: [] })
+      }
+      continue
+    }
+    for (const candidate of group) {
+      report.push({
+        key: candidate.key, model: candidate.model,
+        // 'exact' = 平台列表里有；'unlisted' = 列表里没有（只提示，不拦）
+        status: listed.ids.includes(candidate.model) ? 'exact' : 'unlisted',
+        suggestions: listed.ids.filter(id => roughlyMatches(id, candidate.model)).slice(0, 5),
+        total: listed.ids.length,
+      })
+    }
+  }
+  return report
+}
+
+/** 宽松匹配：只看模型名里最后一段，忽略大小写与连字符。 */
+function roughlyMatches(id, model) {
+  const tail = value => String(value).split('/').pop().toLowerCase().replace(/[-_.]/g, '')
+  const wanted = tail(model)
+  return tail(id).includes(wanted.slice(0, 6)) || wanted.includes(tail(id).slice(0, 6))
+}
+
 // ── 调模型 ──────────────────────────────────────────────────────────────────
 
 async function callModel(candidate, systemPrompt, text, options) {
@@ -249,12 +330,14 @@ async function callModel(candidate, systemPrompt, text, options) {
 export function parseArgs(argv) {
   const options = {
     models: null, only: null, repeat: 1, temperature: 0.2, maxTokens: 512,
-    timeoutMs: 60000, system: true, list: false, dryRun: false, markdown: null, json: null,
+    timeoutMs: 60000, system: true, list: false, dryRun: false, verify: false,
+    markdown: null, json: null,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (token === '--list') { options.list = true; continue }
     if (token === '--dry-run') { options.dryRun = true; continue }
+    if (token === '--verify-models') { options.verify = true; continue }
     if (token === '--no-system') { options.system = false; continue }
     if (token === '--model') { options.models = String(argv[++index]).split(','); continue }
     if (token === '--only') { options.only = Number(argv[++index]); continue }
@@ -350,6 +433,22 @@ async function main() {
   if (candidates.length === 0) {
     console.log('没有匹配的候选模型。用 --list 看有哪些。')
     return
+  }
+
+  // 先核对模型 ID，再花钱 —— 404 很容易被误读成"这个模型平台没有"。
+  // --dry-run 时跳过（干跑就该不联网）。
+  if (options.dryRun === false) {
+    console.log('核对模型 ID（只做提示：平台的 /models 列表不完整，能调通才算数）：')
+    for (const row of await verifyModels(candidates)) {
+      if (row.status === 'exact') {
+        console.log(`  ✅ ${row.key}  ${row.model}`)
+      } else {
+        console.log(`  ⚠️  ${row.key}  ${row.model} —— 平台的模型列表里没有它（共 ${row.total ?? '?'} 个）`)
+        if ((row.suggestions ?? []).length > 0) console.log(`     相近的：${row.suggestions.join('、')}`)
+        if (row.detail !== undefined) console.log(`     列表没拿到：${row.detail}`)
+      }
+    }
+    if (options.verify) return
   }
 
   const systemPrompt = options.system ? translationSystem(policy, 'zh-CN', 'pt-BR') : null
