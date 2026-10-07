@@ -235,8 +235,26 @@ def main():
         for item in manifest:
             handle.write(json.dumps(item, ensure_ascii=False) + "\n")
 
+    # ⚠️ **清掉不在清单里的旧 wav**。这一步是必须的，不是洁癖：
+    #    重抽时（换了 --per-accent / --seed / 分片）会写出不同的文件名，
+    #    而旧文件**不会自动消失** —— 实测先抽 15 条再抽 5 条，目录里会留 15 个 wav
+    #    而清单只有 5 条（10 个孤儿文件）。
+    #    危害不是评分数错（test-asr 只测清单里的），而是：
+    #      · 你以为目录里是 5 条，其实是 15 条，占着体积还让人对不上数
+    #      · 更糟的是**不知道哪套才是当前这套**，回看结果时会把两批混在一起理解
+    #    所以这里按清单反向清理：清单里没有的 .wav 一律删掉。
+    kept = {item["file"] for item in manifest}
+    removed = 0
+    for name in os.listdir(args.out):
+        if not name.endswith(".wav") or name in kept:
+            continue
+        os.remove(os.path.join(args.out, name))
+        removed += 1
+
     print("")
     print(f"✅ 写出 {len(manifest)} 条 → {args.out}")
+    if removed > 0:
+        print(f"   清掉 {removed} 个不在清单里的旧 wav（重抽时换了条数/种子/分片会留下它们）")
     for accent, count in Counter(item["accent"] for item in manifest).most_common():
         print(f"   {accent:24s} {count} 条")
     total = sum(item["seconds"] for item in manifest)
