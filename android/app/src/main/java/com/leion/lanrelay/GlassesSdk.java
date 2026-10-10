@@ -541,22 +541,51 @@ public class GlassesSdk {
     }
 
     /**
-     * 开 LCD、开双眼端口。返回一行给界面看的说明。
+     * 投屏前的准备：关掉相机预览铺底、开 LCD、开双眼端口。返回一行给界面看的说明。
      *
-     * <p>依据是官方样例 {@code DisplayTestViewModel.setPort()} —— 它在开眼位之前
-     * 会先 {@code setSwitch(true)} 把 LCD 打开，并且它的界面文案里有一句
-     * "还没开始投屏"的提示，说明眼位和投屏是两件要分别做的事。
+     * <p>三步的来历各不相同，都是真机上撞出来的：
+     *
+     * <p><b>① 关相机预览（{@code setCameraPreviewOnLcdScreen(false)}）</b><br>
+     * 不做这一步，眼镜上会看到<b>摄像头画面铺底 + 我们的字幕叠在上面</b>。
+     * 因为 LCD 默认会把相机预览当作背景层。
+     * 样例里三处用到这个 API（相机测试、RTSP 推流、AI 测试）**全部传 false**，
+     * 而且都是在 {@code createCaptureScreen} 之前调 —— 位置和这里一致。
+     *
+     * <p>为什么我们一定要关：眼镜是**透视**的，真实世界本来就直接看得见，
+     * 再叠一层相机画面只会重影（相机在鼻梁中间，和人眼位置还有偏差）。
+     *
+     * <p><b>② 开 LCD（{@code setSwitch(true)}）+ ③ 开双眼端口</b><br>
+     * 依据是样例 {@code DisplayTestViewModel.setPort()}：它先 {@code setSwitch(true)}
+     * 再 {@code setDisplayPortNumber(port, v)}。少了这两步，
+     * {@code createCaptureScreen} 会返回成功但**眼镜上什么都不变**
+     * （依旧停在固件自己的"请在手机上进行操作"那一屏）。
+     *
+     * <p>三步都**不中止流程**：失败时可能只是部分可见，继续走比不投更有信息量。
      */
     private String prepareDisplay(Object display) {
         StringBuilder note = new StringBuilder();
+
+        // ① 关掉相机预览铺底
         try {
-            // setSwitch(true)：打开 LCD
+            Method setPreview = display.getClass()
+                    .getMethod("setCameraPreviewOnLcdScreen", boolean.class);
+            // 这个方法是 void，没有返回值可比对 —— 只要不抛就是执行了
+            setPreview.invoke(display, false);
+            note.append("相机预览=已关");
+        } catch (Throwable error) {
+            note.append("关相机预览失败(").append(shortMessage(error)).append(")");
+        }
+
+        // ② 开 LCD
+        try {
             Method setSwitch = display.getClass().getMethod("setSwitch", boolean.class);
             Object switched = setSwitch.invoke(display, true);
-            note.append("LCD开关=").append(switched);
+            note.append(" LCD开关=").append(switched);
         } catch (Throwable error) {
-            note.append("setSwitch失败(").append(shortMessage(error)).append(")");
+            note.append(" setSwitch失败(").append(shortMessage(error)).append(")");
         }
+
+        // ③ 开双眼端口
         try {
             Class<?> displayClass = Class.forName("com.llvision.glass3.core.lcd.client.IGlassDisplay");
             int port = displayClass.getField("DOUBLE_EYE_PORT").getInt(null);
@@ -567,6 +596,7 @@ public class GlassesSdk {
         } catch (Throwable error) {
             note.append(" 眼位失败(").append(shortMessage(error)).append(")");
         }
+
         Log.i(TAG, "prepareDisplay: " + note);
         return note.toString();
     }

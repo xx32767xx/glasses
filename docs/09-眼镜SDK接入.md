@@ -108,13 +108,42 @@ disp.stopCaptureScreen();
 // boolean setSwitch(boolean);  boolean setLuminance(int);
 // boolean setBackLightAuto(boolean);
 // int setDisplayPortNumber(int port, int on);   // ← 双眼是这里，不是 setPort
-// void setCameraPreviewOnLcdScreen(boolean);
+// void setCameraPreviewOnLcdScreen(boolean);   // ← 相机预览铺底，默认是开的！见下
 // LCDInfo getLCDInfo();                         // open/backLightAuto/level/displayMode
 // 常量：LEFT_EYE_PORT / RIGHT_EYE_PORT / DOUBLE_EYE_PORT（实测 DOUBLE_EYE_PORT = 2）
 //       LUM_LEVEL_0..3 / LUM_LEVEL_MAX
 // int ResultCode.SUCCESS = 0;                   // setDisplayPortNumber 的返回比它
+disp.setCameraPreviewOnLcdScreen(false);        // ← 必须调，否则眼镜上是"相机画面+字幕"
+disp.setSwitch(true);                           // 开 LCD
 disp.setDisplayPortNumber(IGlassDisplay.DOUBLE_EYE_PORT, 1);
 ```
+
+### ⚠️ 相机预览默认是**开着**的 —— 它会在字幕下面铺一层摄像头画面
+
+真机上看到的症状：字幕能显示了，但**整个画面是"摄像头看到的内容 + 我们的字幕"**。
+原因是 LCD 默认把相机预览当作背景层。
+
+样例里用到 `setCameraPreviewOnLcdScreen` 的三处（相机测试 / RTSP 推流 / AI 测试）
+**全部传 `false`**，而且都在 `createCaptureScreen` **之前**调 —— 位置就是上面那段。
+
+为什么我们一定要关：
+- 眼镜是**透视**的，真实世界本来就直接看得见，再叠一层相机画面只会**重影**
+  （相机在鼻梁中间，和人眼位置还有偏差）；
+- 字幕是给"看着对方说"用的，画面里多一层相机取景框只会干扰。
+
+### ⚠️ 一处我自己制造的错误推断（记下来当反面例子）
+
+我在前面几个版本里写过"样例给投屏 View 设过 `setAspectRatio(8.0/5.0)`，
+说明 SDK 对采集尺寸有预期"，并把它当成了"画布必须按比例设"的依据。
+
+**这是错的。** `setAspectRatio` 是**样例自己的** `FaceBoxCameraTextureView` 类的
+方法（用来定相机预览的比例），**不是 SDK 的 API** —— `IGlassDisplay` 上根本没有
+`setAspectRatio`。我把它看成了 SDK 要求，于是推出了一个不存在的约束。
+
+> 同一个毛病犯了两次（另一次是眼位，见第 10 节）：
+> **看到样例里有一行调用，就假定它是 SDK 的规矩。**
+> 判断之前先确认那个方法**到底属于谁** —— 用 `javap` 看 SDK 的接口有没有它。
+> 样例里有一半代码是它自己的工具类。
 
 **没有 `sendText` / `drawText` / `setText`。** 别再去找了。
 
@@ -156,8 +185,9 @@ display.createCaptureScreen(activity, view.getView());
    String w = info.getResolutionWidth();    // ⚠️ 返回的是 **String**，不是 int
    String h = info.getResolutionHeight();   //    按 int 读会静默拿到 0
    ```
-   样例里给 View 设过 `setAspectRatio(8.0/5.0)`，说明投屏会按比例缩放，
-   所以要按眼镜的长宽比做，不要按手机的。
+   画布尺寸**等于眼镜分辨率**（见第 10 节「投屏画布的尺寸」）。
+   ⚠️ 别被样例里那句 `setAspectRatio(8.0/5.0)` 误导 —— 那是它自己相机 View 的方法，
+   不是 SDK 的要求。
 
 ---
 
