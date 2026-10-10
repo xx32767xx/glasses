@@ -33,15 +33,18 @@
  *    不是 16 kHz 就明确报警。
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 
-import { WHISPER_CACHE_DIR } from '../lib/paths.mjs'
+// 路径从 lib/paths.mjs 取 —— 仓库的规矩是"凡是落盘的路径都从这里取"。
+// ⚠️ 第一版这里用 process.cwd() 自己拼了 var/audio 与 var/logs/asr-eval，
+//    等于在别处又写了一份路径字面量（正是 paths.mjs 文件头禁止的做法）。
+//    用常量之后，路径改一处就够，而且和 fetch-coraa 用的是同一份定义。
+import { AUDIO_DIR, ASR_EVAL_DIR, WHISPER_CACHE_DIR } from '../lib/paths.mjs'
 
 const ROOT = process.cwd()
-const AUDIO_DIR = join(ROOT, 'var', 'audio')
-const RESULT_DIR = join(ROOT, 'var', 'logs', 'asr-eval')
+const RESULT_DIR = ASR_EVAL_DIR
 
 /**
  * 给 Python 子进程准备环境变量。
