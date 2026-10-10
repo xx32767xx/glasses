@@ -468,8 +468,17 @@ public class GlassesSdk {
             step = "④ 已投屏";
             report("眼镜投屏中", true);
 
-            // ④ 打开双眼（失败不影响投屏本身）
-            tryOpenBothEyes();
+            // ⚠️ 这里**刻意不再调 setDisplayPortNumber**。
+            //
+            //    官方样例的 overlay 路径（startOverlayTransfer）只调 createCaptureScreen，
+            //    没有碰眼位；setDisplayPortNumber 只出现在它的"眼位测试"小工具里。
+            //    也就是说"开双眼"这件事**默认就应该是对的**，我们主动去设属于多此一举。
+            //
+            //    而它是在投屏刚建立的那一刻做的又一个 SDK 状态变更 ——
+            //    正在查闪退的时候，一次只引入一个未经证实的调用。
+            //
+            //    如果真机上发现只有一只眼睛有画面，再打开下面这行（方法还在）。
+            // tryOpenBothEyes();
         });
     }
 
