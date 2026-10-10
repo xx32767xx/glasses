@@ -229,23 +229,41 @@ LLVisionGlass3SDK.getInstance().destroy();
 | `minSdk` | **≥ 24**（AAR 自己声明 `minSdkVersion="24"`） | AAR 清单 |
 | `compileSdk` | 我们现有 34 可用；样例用 36 | — |
 | `abiFilters` | **只 `arm64-v8a`** | AAR 只有 arm64 原生库；不限制会在别的架构上报错 |
-| AndroidX | **必须开**（AAR 清单依赖 Glide / AppCompat 资源） | `app/build.gradle.kts` 注释 |
-| 必须同行的依赖 | `glide` + `glide-gifdecoder`（4.11.0 在本地 Gradle 缓存里）、`appcompat`、`material` | 同上 |
+| AndroidX | **必须开**（AAR 的 `classes.jar` 里有 460 处 `androidx.*` 引用） | 反编译核对 |
+| 必须同行的依赖 | `appcompat` + `core`（**不需要 Glide**） | 见下面「依赖这件事的一个纠正」 |
 | Java | 17 | 与我们现有一致 |
 | `glEsVersion` | 2.0 required（AAR 声明，自动合并） | AAR 清单 |
 
-### 权限的处理（重要）
+### 权限的处理（重要 —— 这里有我踩过的坑）
 
-AAR 清单会带进一堆我们**不需要**的权限。用 manifest 合并规则删掉：
+AAR 清单会带进一堆我们**不需要**的权限，用 manifest 合并规则删掉。
+**但删之前先看清哪些是 SDK 的前置条件。**
 
 ```xml
-<uses-permission android:name="android.permission.CAMERA" tools:node="remove" />
-<uses-permission android:name="android.permission.RECORD_AUDIO" tools:node="remove" />
-<!-- 存储那堆、DEVICE_POWER、SYSTEM_ALERT_WINDOW、PHONE_STATE 同理 -->
+<!-- ✅ 该删的：上架审核会因为这些拒你，而且与眼镜无关 -->
+<uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:node="remove" />
+<uses-permission android:name="android.permission.MOUNT_UNMOUNT_FILESYSTEMS" tools:node="remove" />
+<uses-permission android:name="android.permission.READ_PHONE_STATE" tools:node="remove" />
+<uses-permission android:name="android.permission.READ_PHONE_NUMBERS" tools:node="remove" />
+<uses-permission android:name="android.permission.DEVICE_POWER" tools:node="remove" />
+<uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" tools:node="remove" />
+<!-- ACCESS_NETWORK_STATE / ACCESS_WIFI_STATE：我们用局域网直连，不需要 -->
 ```
 
-**但**：`RECORD_AUDIO` 我们**本来就要**（手机当麦克风），别删；
-`MANAGE_EXTERNAL_STORAGE`（全盘访问）**必须删** —— 装应用商店会因为这条被拒。
+> ### ⚠️⚠️ 不要删这几条 —— 它们是 SDK 的前置条件
+>
+> ```xml
+> <!-- ❌ 我曾经"按最小权限原则"删掉了下面这些，理由是"眼镜用来显示字幕，不需要相机" -->
+> <!--    真机结果：官方 App 会弹的「允许访问眼镜吗」我们一次都不弹，眼镜连不上。 -->
+> CAMERA · READ_MEDIA_IMAGES / VIDEO / AUDIO · WRITE/READ_EXTERNAL_STORAGE
+> SYSTEM_ALERT_WINDOW（悬浮窗）· WAKE_LOCK · FOREGROUND_SERVICE
+> ```
+>
+> 官方 `glassRuntimePermissions()` 要的就是这些，而且**必须在 SDK init 之前拿到**
+> （见第 4 节「第 0 步」）。`RECORD_AUDIO` 我们**本来就要**（手机当麦克风），也别删。
+>
+> **教训**：SDK 声明的权限是它的**运行前提**，不是我们能替它省的东西。
+> "最小权限"这条原则在这里会让功能直接不可用。
 
 > 规范：**每删一条权限都要在注释里写"为什么不需要"**。这份清单以后要交给老师/审核，
 > 空着解释的权限删除记录等于没写。
@@ -316,7 +334,8 @@ AAR 清单会带进一堆我们**不需要**的权限。用 manifest 合并规�
 | 代码写了吗 | ✅ 写了：`android/` 里 `GlassesSdk.java`（反射桥接）+ `GlassesSubtitleView.java`（眼镜字幕 View）+ MainActivity 接线 |
 | **编译过吗** | ✅ **过了**。`assembleDebug` 成功，APK 35.9 MB，含 23 个 arm64 原生库 |
 | **插上真机了吗** | ✅ 插上了 —— USB 认到设备、SDK 初始化成功、设备数 1 |
-| **投屏成功了吗** | ❌ **还没**。见下面「实机两次失败」—— 两个原因都已定位并修掉，等下一次装机复验 |
+| **投屏成功了吗** | ❌ **还没**。四轮实机排查，每轮都修掉了实测确认的问题；详见下面 |
+| **反射签名对吗** | ✅ **对上了** —— 按 `javap` 逐个核对（第 3 节） |
 
 ### 已验证到的程度（有据可查）
 
@@ -372,6 +391,75 @@ requestCast(view)   // 界面只说"我要投屏"
 
 `startServices()` 的 `finally` 里**无论成败都置 ready** ——
 只在成功时置的话，服务起失败就永远卡在"等服务就绪"，表现又变回"点了没反应"。
+
+### ⚠️⚠️ 错误码 15 = `DEVICE_NEED_REPLUG`：闪退/强杀之后的眼镜脏态
+
+这是**最容易被误判**的一条，值得单开一节。
+
+`onError(int, String)` 的码表在 AAR 的 `com.llvision.glass3.platform.ErrorCode` 里
+（注意它**不是** `ResultCode` —— `ResultCode` 全是负数，`ErrorCode` 是正数）：
+
+```
+1 NOT_PERMISSION_STORAGE   2 NOT_PERMISSION_AUDIO   3 NOT_PERMISSION_OVERLAY
+4 NOT_PERMISSION_USB       5 SERVICE_OCCUPIED       6 SERVICE_NOT_BIND
+7 CLIENT_NOT_FOUND         8..14 FIRMWARE_*
+10 FIRMWARE_NO_DEVICE      15 DEVICE_NEED_REPLUG
+```
+
+官方样例的注释把 15 解释得很清楚：
+
+> 杀进程后眼镜仍停留在已连接脏态：平台层为避免打崩内核 USB 主控已主动放弃自动复位，
+> 回调 DEVICE_NEED_REPLUG。
+
+也就是说：**进程被强杀（闪退 / force-stop / `adb install -r` 装新包）时，
+眼镜会留在"以为自己还连着"的脏态，而且 SDK 故意不会自己修**。
+
+后果是一整套看着像别的毛病的现象：
+
+```
+getGlass3DeviceList() → List(size=0)      ← 设备列表空了
+device：null                               ← 连接状态没了
+LCD 服务就绪：否
+点击投屏 → 未连接
+```
+
+**唯一解法：把眼镜拔下来再插上。** 用户会本能地去反复重装、重启手机，
+而正确动作只有拔插一次 —— 所以 App 必须把这句话直接说出来，
+而不是显示"投屏失败"让人继续猜。
+
+代码里的处理（`GlassesSdk.onSdkError`）：收到 15 就清干净本地状态
+（device / display / casting / servicesReady / pendingCast）并明确提示拔插。
+
+> 顺带说明为什么开发期特别容易撞上这条：**每次 `install -r` 装新包都会杀进程**，
+> 所以改一版装一版的过程本身就在制造脏态。
+> 调试期间装机之后先拔插一次眼镜，能省掉很多"明明改对了却没反应"的困惑。
+
+### 投屏画布的尺寸：必须等于眼镜的分辨率
+
+这是「数据越界」和这次闪退的共同根因。
+
+SDK 的 LCD 传输**按设备分辨率分配缓冲**，再从投屏的 View 里取像素。
+所以画布尺寸必须和眼镜一致。我前一版按**手机屏幕宽度**算：
+
+```java
+int width  = metrics.widthPixels;          // ❌ 1080（手机的）
+int height = Math.round(width / ratio);    //    1440
+```
+
+比例虽然对（3:4），但像素比眼镜大了一倍多 → 缓冲装不下 →「数据越界」，严重时直接闪退。
+
+现在（`GlassesSubtitleView.setDisplaySize`）：
+
+| 情况 | 做法 |
+|---|---|
+| 读到真实分辨率 | LayoutParams 定为那个像素尺寸 + 自己 `measure`/`layout`，保证 `getWidth()` 不为 0 |
+| **读不到** | 只用 `MATCH_PARENT`，**不自己 measure** —— 完全照官方样例（样例的 overlay 就是一个没有 LayoutParams 的 FrameLayout） |
+
+读不到时**绝不去猜尺寸**：猜错就是「数据越界」，那比不投还糟。
+
+字号也跟着改成**按画布尺寸算的 PX**：这个 View 的 density 是**手机**的，
+继续用 SP 的话，34sp 在 density 2.75 的手机上 ≈ 93px，
+而 480 宽的眼镜画布一行只放得下 5 个字。
 
 ### `probeApi()`：长按诊断行就能看见 SDK 的真实结构
 

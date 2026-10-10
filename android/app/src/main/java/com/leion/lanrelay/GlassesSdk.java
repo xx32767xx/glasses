@@ -208,11 +208,7 @@ public class GlassesSdk {
                                         ? (Integer) args[0] : -1;
                                 String message = args != null && args.length > 1
                                         ? String.valueOf(args[1]) : "";
-                                // code=10 是 FIRMWARE_NO_DEVICE：插拔眼镜时的瞬时提示，
-                                // 样例里明确忽略（不影响连接）。这里也忽略，免得刷屏。
-                                if (code != 10) {
-                                    main.post(() -> report("眼镜 SDK 报错 " + code + "：" + message, false));
-                                }
+                                main.post(() -> onSdkError(code, message));
                             }
                             return null;
                         });
@@ -475,6 +471,57 @@ public class GlassesSdk {
             // ④ 打开双眼（失败不影响投屏本身）
             tryOpenBothEyes();
         });
+    }
+
+    /**
+     * SDK 的 {@code onError} 回调。三个码要区别对待。
+     *
+     * <p>码表来自 AAR 里的 {@code com.llvision.glass3.platform.ErrorCode}：
+     * <pre>
+     *  1 NOT_PERMISSION_STORAGE   2 NOT_PERMISSION_AUDIO    3 NOT_PERMISSION_OVERLAY
+     *  4 NOT_PERMISSION_USB       5 SERVICE_OCCUPIED        6 SERVICE_NOT_BIND
+     *  7 CLIENT_NOT_FOUND         8..14 FIRMWARE_*
+     * 10 FIRMWARE_NO_DEVICE       15 DEVICE_NEED_REPLUG
+     * </pre>
+     *
+     * <p><b>15 = DEVICE_NEED_REPLUG 是关键的一条。</b>官方样例的注释写得很清楚：
+     * <blockquote>
+     * 杀进程后眼镜仍停留在已连接脏态：平台层为避免打崩内核 USB 主控
+     * 已主动放弃自动复位，回调 DEVICE_NEED_REPLUG。
+     * </blockquote>
+     * 也就是说 <b>进程被强杀（闪退、force-stop、install -r 装新包）时，
+     * 眼镜会留在"以为自己还连着"的脏态，而且 SDK 不会自己修</b>。
+     * 唯一解法是**拔掉再插上**。
+     *
+     * <p>这条值得单独处理，因为它的现象极容易被误判：设备列表变 0、连接状态没了、
+     * 投屏必然失败，但报的错和"没插眼镜""驱动坏了"看起来一样 ——
+     * 用户会去反复重装、重启手机，而正确动作只是拔插一次。
+     */
+    private void onSdkError(int code, String message) {
+        if (code == 10) {
+            // FIRMWARE_NO_DEVICE：插拔眼镜时固件模块先于设备枚举触发，
+            // 属已知瞬时提示，不影响连接（样例明确忽略）。忽略，免得刷屏。
+            Log.i(TAG, "onError ignored (benign): FIRMWARE_NO_DEVICE");
+            return;
+        }
+        if (code == 15) {
+            // DEVICE_NEED_REPLUG：脏态，SDK 不会自愈。清干净本地状态并明确要求拔插，
+            // 否则后面每个操作都会以"没连接"失败，让人以为是别的问题。
+            device = null;
+            display = null;
+            casting = false;
+            servicesReady = false;
+            pendingCast = null;
+            main.removeCallbacks(pendingCastFallback);
+            lastError = "眼镜处于脏态，需要拔掉重新插上（错误码 15 DEVICE_NEED_REPLUG）";
+            if (listener != null) listener.onGlassesStatus(
+                    "⚠ 请拔掉眼镜再插上（上次退出时眼镜被留在了连接状态）", false);
+            return;
+        }
+        lastError = "SDK 报错 " + code + "：" + message;
+        if (listener != null) {
+            listener.onGlassesStatus("眼镜 SDK 报错 " + code + "：" + message, device != null);
+        }
     }
 
     /** 报告时带上"卡在第几步"+ 最内层异常类型与消息。 */

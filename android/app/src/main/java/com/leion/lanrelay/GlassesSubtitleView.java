@@ -35,19 +35,20 @@ public class GlassesSubtitleView {
     private static final int MAX_LINES = 4;
 
     /**
-     * 投屏画面的宽高比（宽 : 高）。
+     * 投屏画布尺寸（= 眼镜的真实分辨率）。0 表示还不知道。
      *
-     * ⚠️ 这个值**必须**设，不能让它按手机屏幕的尺寸去采集。
-     *    官方样例给投屏 View 明确设过宽高比：
-     *      {@code setAspectRatio(8.0 / 5.0)} —— 说明 SDK 对采集尺寸有预期，
-     *    尺寸不匹配时真机上报的是「数据越界」（SDK 按设备分辨率分配缓冲，
-     *    却从一块尺寸对不上的 View 里取像素）。
+     * <p><b>为什么要跟眼镜一致，而不是用手机屏幕尺寸</b>：
+     * SDK 的 LCD 传输按**设备分辨率**分配缓冲，再从这块 View 里取像素。
+     * 尺寸给大了就是「数据越界」（真机上还见过直接闪退）。
      *
-     * 0.75 = 3:4 竖屏，是光波导单片显示器的常见比例（480×640）。
-     * ⚠️ **待真机确认**：拿到眼镜后从 {@code device.getDeviceInfo().getResolutionWidth()/Height()}
-     *    读出真实值再改这里。注意那两个 getter 返回的是 **String**（见 {@code GlassesSdk.queryDisplaySize}）。
+     * <p>⚠️ 第一版我按**手机屏幕宽度**（1080）算画布，比例虽然对，但像素尺寸差了一倍多 ——
+     *    这正是「数据越界」的来源。现在改成从 {@code DeviceInfo} 读真实分辨率。
+     *
+     * <p>读不到时（= 0）不去猜：退回**官方样例的写法**（MATCH_PARENT、不自己 measure），
+     * 把测量交给 SDK。样例的 overlay 就是这么做的，已知可用。
      */
-    private static final float ASPECT_RATIO = 0.75f;
+    private int canvasWidth = 0;
+    private int canvasHeight = 0;
 
     private final FrameLayout root;
     private final TextView subtitle;
@@ -57,8 +58,8 @@ public class GlassesSubtitleView {
     private final LinearLayout idleGroup;
     private final TextView idleTitle;
     private final TextView idleNote;
-    /** 当前宽高比（见 ASPECT_RATIO） */
-    private float aspectRatio = ASPECT_RATIO;
+    /** 当前宽高比残留字段已删除：尺寸现在由 setDisplaySize 给的真实分辨率决定。 */
+    private final android.widget.LinearLayout column;
 
     public GlassesSubtitleView(Context context) {
         root = new FrameLayout(context);
@@ -67,11 +68,9 @@ public class GlassesSubtitleView {
         root.setFocusable(false);
         root.setClickable(false);
 
-        LinearLayout column = new LinearLayout(context);
+        column = new LinearLayout(context);
         column.setOrientation(LinearLayout.VERTICAL);
         column.setGravity(Gravity.CENTER_VERTICAL);
-        int pad = dp(context, 24);
-        column.setPadding(pad, pad, pad, pad);
         root.addView(column, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
@@ -84,14 +83,12 @@ public class GlassesSubtitleView {
 
         status = new TextView(context);
         status.setTextColor(context.getColor(R.color.screen_ink_dim));
-        status.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
         status.setSingleLine(true);
         topRow.addView(status, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
 
         hint = new TextView(context);
         hint.setTextColor(context.getColor(R.color.screen_ink_dim));
-        hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
         hint.setSingleLine(true);
         topRow.addView(hint);
 
@@ -100,13 +97,10 @@ public class GlassesSubtitleView {
         subtitle = new TextView(context);
         subtitle.setTextColor(context.getColor(R.color.screen_ink));
         subtitle.setTypeface(Typeface.DEFAULT_BOLD);
-        subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 30);
-        subtitle.setLineSpacing(dp(context, 6), 1f);
         // 字幕会一个字一个字地更新，不能让它跳来跳去
         subtitle.setGravity(Gravity.START);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f);
-        params.topMargin = dp(context, 12);
         column.addView(subtitle, params);
 
         // ── 待机提示：连接上眼镜但还没开始同传时显示 ─────────────────────────────
@@ -121,57 +115,99 @@ public class GlassesSubtitleView {
         idleTitle.setText("等待输入");
         idleTitle.setTextColor(context.getColor(R.color.screen_ink));
         idleTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        idleTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 34);
         idleTitle.setGravity(Gravity.CENTER);
         idleGroup.addView(idleTitle);
 
         idleNote = new TextView(context);
         idleNote.setText("眼镜已连接 · 开始同传后这里显示字幕");
         idleNote.setTextColor(context.getColor(R.color.screen_ink_dim));
-        idleNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         idleNote.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams noteParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        noteParams.topMargin = dp(context, 10);
-        idleGroup.addView(idleNote, noteParams);
+        idleGroup.addView(idleNote);
 
         LinearLayout.LayoutParams idleParams = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f);
-        idleParams.topMargin = dp(context, 12);
         column.addView(idleGroup, idleParams);
 
-        // 投屏 View **必须有一个确定的尺寸**：SDK 要按宽高比采集画面。
-        // 不设的话它按父容器（手机屏幕）的尺寸走，真机上会「数据越界」。
-        setAspectRatio(ASPECT_RATIO);
+        // 尺寸还不知道 → 先按官方样例的写法（MATCH_PARENT），等 setDisplaySize 给真实分辨率
+        applyCanvasSize();
 
         showIdle(true);
         setStatus("眼镜未连接", "");
     }
 
     /**
-     * 给投屏画面定一个固定的宽高比，并**立刻**把尺寸定下来。
+     * 设定投屏画布的像素尺寸（= 眼镜真实分辨率，从 {@code DeviceInfo} 读）。
      *
-     * <p>⚠️ 这里刻意**不用 {@code view.post()}**，而是同步算 + 主动 measure/layout。
-     *    原因：这个 View 从不 attach 到窗口（它只是被 SDK 采样的一块画布），
-     *    而 detached View 的 {@code post()} 会被排进 {@code HandlerActionQueue}，
-     *    **要等 attach 才执行** —— 它永远不会 attach，于是那段代码永不执行，
-     *    {@code setLayoutParams} 不生效、root 尺寸一直是 0×0。
-     *    第一版就是这么写的，等于"设了宽高比"这件事根本没发生。
+     * <p>必须在 {@code createCaptureScreen} **之前**调用 —— SDK 是在投屏那一刻
+     * 把这块 View 采样成画面的，之后再改尺寸已经晚了。
      *
-     * <p>尺寸按屏幕宽度推、再由宽高比算高度；随后 `measure` + `layout` 一遍，
-     * 保证 SDK 拿去 {@code draw()} 时 {@code getWidth()/getHeight()} 不为 0。
+     * @param width  眼镜分辨率宽；&lt;= 0 表示没读到
+     * @param height 眼镜分辨率高；&lt;= 0 表示没读到
      */
-    public void setAspectRatio(float ratio) {
-        this.aspectRatio = ratio <= 0f ? ASPECT_RATIO : ratio;
-        android.util.DisplayMetrics metrics = root.getResources().getDisplayMetrics();
-        int width = Math.max(1, metrics.widthPixels);
-        int height = Math.max(1, Math.round(width / this.aspectRatio));
-        root.setLayoutParams(new ViewGroup.LayoutParams(width, height));
+    public void setDisplaySize(int width, int height) {
+        this.canvasWidth = width;
+        this.canvasHeight = height;
+        applyCanvasSize();
+    }
+
+    /**
+     * 按当前已知尺寸重排：定 LayoutParams、定字号、必要时自己 measure。
+     *
+     * <p>两个分支都是刻意的：
+     * <ul>
+     *   <li><b>知道分辨率</b>：把 LayoutParams 定成那个像素尺寸，并且自己 measure + layout。
+     *       这样即使 SDK 不测量直接 draw，{@code getWidth()/getHeight()} 也是对的。</li>
+     *   <li><b>不知道分辨率</b>：只用 MATCH_PARENT，**不自己 measure** ——
+     *       完全照官方样例（样例的 overlay 就是一个没有 LayoutParams 的 FrameLayout）。
+     *       猜一个尺寸反而会「数据越界」，那比不投还糟。</li>
+     * </ul>
+     *
+     * <p>字号统一用 **PX 并按画布尺寸算**：这个 View 的 density 是**手机**的，
+     * 用 SP 的话在 480×640 的眼镜画布上会被放大成没法看的字号
+     * （手机 density 2.75 → 34sp ≈ 93px，画布才 480 宽）。
+     */
+    private void applyCanvasSize() {
+        boolean known = canvasWidth > 0 && canvasHeight > 0;
+        if (!known) {
+            root.setLayoutParams(new ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT));
+            log("画布尺寸未知 → 交给 SDK 测量（官方样例写法）");
+            return;
+        }
+
+        root.setLayoutParams(new ViewGroup.LayoutParams(canvasWidth, canvasHeight));
         root.measure(
-                View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY));
-        root.layout(0, 0, width, height);
-        log("投屏画布尺寸 " + width + "×" + height + "（比例 " + this.aspectRatio + "）");
+                View.MeasureSpec.makeMeasureSpec(canvasWidth, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(canvasHeight, View.MeasureSpec.EXACTLY));
+        root.layout(0, 0, canvasWidth, canvasHeight);
+
+        int pad = Math.round(canvasWidth * 0.05f);
+        column.setPadding(pad, pad, pad, pad);
+        // 顶部状态行做得很淡、很小 —— 它只是线索，不该抢译文
+        setPx(status, canvasHeight * 0.028f);
+        setPx(hint, canvasHeight * 0.028f);
+        setPx(idleTitle, canvasHeight * 0.10f);
+        setPx(idleNote, canvasHeight * 0.038f);
+        applySubtitleSize(1);
+        log("投屏画布尺寸 " + canvasWidth + "×" + canvasHeight + "（按眼镜真实分辨率）");
+    }
+
+    private static void setPx(TextView view, float px) {
+        view.setTextSize(TypedValue.COMPLEX_UNIT_PX, Math.max(1f, px));
+    }
+
+    /** 按行数选字号：字号 = 画布高度的比例。行数越多字号越小，不截断。 */
+    private void applySubtitleSize(int lines) {
+        if (canvasHeight <= 0) {
+            // 尺寸未知：退回 SP（只能在手机 density 下近似，等知道分辨率再纠正）
+            float sp = lines <= 2 ? 34f : lines == 3 ? 28f : lines == 4 ? 23f : 19f;
+            subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+            return;
+        }
+        float ratio = lines <= 1 ? 0.095f : lines == 2 ? 0.085f
+                : lines == 3 ? 0.068f : lines == 4 ? 0.056f : 0.046f;
+        setPx(subtitle, canvasHeight * ratio);
     }
 
     /** 切换"待机提示 / 字幕"两种状态。有字幕了就把待机提示收起来。 */
@@ -209,15 +245,22 @@ public class GlassesSubtitleView {
         // 这样"还没开始同传"和"正在同传"两个状态不会互相覆盖。
         showIdle(value.isEmpty());
         if (value.isEmpty()) {
-            subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 30);
+            applySubtitleSize(1);
             return;
         }
-        int lines = Math.max(1, countLines(value, 20));
-        float size = lines <= 2 ? 34f : lines == 3 ? 28f : lines == 4 ? 23f : 19f;
-        subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, size);
+        int lines = Math.max(1, countLines(value, columnsPerLine()));
+        applySubtitleSize(lines);
     }
 
-    /** 粗略估行数：按 20 列折行算（眼镜上大约就是这么宽）。只用来选字号，不需要精确。 */
+    /** 画布一行大约放得下几个汉字 —— 按画布宽度和字号粗估，只用来选字号。 */
+    private int columnsPerLine() {
+        if (canvasWidth <= 0 || canvasHeight <= 0) return 20;
+        float fontPx = canvasHeight * 0.085f;           // 取中间档字号估
+        int usable = Math.round(canvasWidth * 0.9f);    // 扣掉左右留白
+        return Math.max(6, Math.round(usable / Math.max(1f, fontPx)));
+    }
+
+    /** 粗略估行数：按当前画布能放多少列来折行算。只用来选字号，不需要精确。 */
     private static int countLines(String text, int cols) {
         int lines = 1;
         int width = 0;

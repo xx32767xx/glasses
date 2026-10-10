@@ -231,6 +231,9 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     protected void onCreate(Bundle savedInstanceState) {
         setTheme("dark".equals(themeMode) ? R.style.AppTheme_Dark : R.style.AppTheme);
         super.onCreate(savedInstanceState);
+        // 装在最早：后面任何一步崩了都要留下堆栈。
+        // 真机上 adb 不一定能用，而"闪退"没有堆栈就只能靠猜。
+        CrashLog.install(getApplicationContext());
         setContentView(R.layout.activity_main);
 
         records = new Records(this);
@@ -298,17 +301,13 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             // listener 又看到"没在投屏"就再投一次 —— 失败 → 回调 → 再投，无限循环，
             // 主线程被自己的 post 塞满。真机上"点了开始投屏没反应"就是它。
             if (justConnected && glasses != null && glasses.isConnected() && !glasses.isCasting()) {
+                applyGlassesCanvasSize();
                 glasses.requestCast(glassesView.getView());
             }
             // 投屏一旦成功，先给一个**待机画面**。
             // 为什么要这个：不开同传时眼镜上也得有东西，否则没法判断
             // "投屏到底成没成" —— 黑屏和投屏失败在眼镜上看起来一模一样。
             if (glasses != null && glasses.isCasting()) {
-                // 按**眼镜的真实分辨率**定画布宽高比 —— 写死会「数据越界」
-                int[] size = glasses.queryDisplaySize();
-                if (size[0] > 0 && size[1] > 0) {
-                    glassesView.setAspectRatio((float) size[0] / size[1]);
-                }
                 glassesView.showIdle(true);
                 glassesView.setIdleText("等待输入", idleNoteText());
             }
@@ -316,6 +315,28 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         });
 
         requestGlassesPermissions();
+    }
+
+    /**
+     * 按**眼镜的真实分辨率**定投屏画布大小。
+     *
+     * <p>必须在 {@code requestCast} 之前调 —— SDK 是在投屏那一刻把 View 采样成画面的。
+     *
+     * <p>⚠️ 这里曾经按**手机屏幕宽度**算画布（1080×1440）。比例虽然对，但像素尺寸
+     * 比眼镜大了一倍多，而 SDK 按设备分辨率分配缓冲、再从这块 View 取像素 ——
+     * 真机上报「数据越界」，严重时直接闪退。
+     * 现在从 {@code DeviceInfo} 读真实分辨率；读不到就交给 SDK 测量（官方样例写法），
+     * **不猜尺寸**。
+     */
+    private void applyGlassesCanvasSize() {
+        if (glasses == null || glassesView == null) return;
+        int[] size = glasses.queryDisplaySize();
+        glassesView.setDisplaySize(size[0], size[1]);
+        if (size[0] > 0 && size[1] > 0) {
+            glassesCanvasNote = "画布 " + size[0] + "×" + size[1];
+        } else {
+            glassesCanvasNote = "画布尺寸未知（交给 SDK 测量）";
+        }
     }
 
     /** 眼镜 SDK 需要的那几条运行时权限（照官方 glassRuntimePermissions() 的分档）。 */
@@ -1543,6 +1564,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private TextView glassesRealDiag = null;
     /** 上一次检查时缺了几项眼镜权限（诊断用）。 */
     private int glassesPermMissing = 0;
+    /** 当前投屏画布用了什么尺寸（诊断用）：读到真实分辨率、还是交给 SDK 测量。 */
+    private String glassesCanvasNote = "画布未定";
 
     private void openGlassesPreview() {
         View view = pushOverlay(R.layout.overlay_glasses);
@@ -1608,6 +1631,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             glasses.stopCast();
         } else if (glasses.isConnected()) {
             glassesStatus = "正在投屏…";
+            applyGlassesCanvasSize();
             glasses.requestCast(glassesView.getView());
         } else {
             // 设备列表和连接状态分开报：这两个数字对不上才是真正要查的问题
@@ -1638,11 +1662,17 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             .append(" · 设备 ").append(glasses == null ? "?" : glasses.getDeviceCount()).append(" 个")
             .append(" · 服务 ").append(glasses == null ? "?" : (glasses.isServicesReady() ? "就绪" : "启动中"))
             .append(" · ").append(casting ? "投屏中" : "未投屏");
+        diag.append("\n").append(glassesCanvasNote);
         if (glasses != null && glasses.getStep().length() > 0) {
             diag.append("\n投屏步：").append(glasses.getStep());
         }
         if (glasses != null && glasses.getLastError().length() > 0) {
             diag.append("\n最近错误：").append(glasses.getLastError());
+        }
+        // 上次崩溃的堆栈：真机 adb 不一定能用，只能让 App 自己把话留下
+        String crash = CrashLog.last(this);
+        if (crash.length() > 0) {
+            diag.append("\n⚠ 上次闪退：").append(firstLines(crash, 3));
         }
         diag.append("\n（长按本行看 API 探测）");
         glassesRealDiag.setText(diag.toString());
@@ -1662,6 +1692,17 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         return Build.VERSION.SDK_INT < 23 || Settings.canDrawOverlays(this);
     }
 
+    /** 取一段文本的前几行（诊断行空间有限，只显示开头）。 */
+    private static String firstLines(String text, int count) {
+        String[] lines = text.split("\n");
+        StringBuilder out = new StringBuilder();
+        for (int index = 0; index < lines.length && index < count; index += 1) {
+            if (index > 0) out.append(" / ");
+            out.append(lines[index].trim());
+        }
+        return out.toString();
+    }
+
     /**
      * 长按诊断行 → 弹出 SDK 的 API 探测结果。
      *
@@ -1671,10 +1712,19 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
      */
     private void showGlassesApiProbe() {
         if (glasses == null) return;
-        String text = GlassesSdk.probeAvailability() + "\n\n" + glasses.probeApi();
+        StringBuilder text = new StringBuilder();
+        // 崩溃堆栈放最前面 —— 它是当前最想知道的东西
+        String crash = CrashLog.last(this);
+        if (crash.length() > 0) {
+            text.append("═══ 上次闪退堆栈 ═══\n").append(crash).append('\n');
+            CrashLog.clear(this);          // 看过就清，免得下次又弹同一个旧的
+        }
+        text.append("═══ SDK 探测 ═══\n")
+            .append(GlassesSdk.probeAvailability()).append("\n\n")
+            .append(glasses.probeApi());
 
         TextView box = new TextView(this);
-        box.setText(text);
+        box.setText(text.toString());
         box.setTextSize(11f);
         // 等宽：签名对齐才好比对参数类型
         box.setTypeface(Typeface.MONOSPACE);
