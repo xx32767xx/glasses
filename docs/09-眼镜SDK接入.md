@@ -108,6 +108,30 @@ display.createCaptureScreen(activity, view);
 
 ## 4. 接入五步（照这个顺序写）
 
+> ### ⚠️⚠️ 第 0 步（真机踩出来的，最容易漏）：先把权限要齐，再 init SDK
+>
+> **症状**：插上眼镜**完全不弹「允许访问眼镜吗」**，官方 App 会弹。
+>
+> **根因**：SDK 初始化是有**前置条件**的，不满足它根本走不到请求 USB 授权那一步。
+> 官方样例把这件事写得很明白（`GlassMainViewModel.kt:48-50`）：
+>
+> > 「**权限与悬浮窗就绪后**，由界面调用以初始化 Glass SDK（仅调用一次）」
+>
+> 官方还有一道 `GlassPermissionFlow` 权限门禁，要求这几样**全给齐**才往下走：
+>
+> | 类型 | 具体 |
+> |---|---|
+> | 运行时权限 | `CAMERA`、`RECORD_AUDIO`、`READ_MEDIA_IMAGES/VIDEO/AUDIO`、`READ_MEDIA_VISUAL_USER_SELECTED`（Android 33/34 分档） |
+> | 悬浮窗 | `Settings.canDrawOverlays()` 必须为 true（`SYSTEM_ALERT_WINDOW`） |
+> | 前台服务 | `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_CAMERA`（第三方 UVC 相机服务要用） |
+>
+> **所以：不要为了"权限干净"把这些删掉。** CAMERA 不是"我们不做视觉就不用给" ——
+> 它是 SDK 建立连接的前提。`WAKE_LOCK`、`FOREGROUND_SERVICE*` 同理。
+>
+> **但也不必做成官方那种"不给权限就不让用"的门禁**：手机端的同传功能
+> （录音上传、字幕显示）和眼镜是两件事，不该因为眼镜没授权就把整个 App 拦住。
+> 只请求眼镜需要的那几条，拿到才 `init()`；没拿到就在状态行里说清原因。
+
 ```java
 // ① 初始化（在 Activity 里，越早越好）；要一个连接状态回调
 LLVisionGlass3SDK.getInstance().init(applicationContext, connectionListener);

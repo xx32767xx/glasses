@@ -11,6 +11,7 @@ import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Paint;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -65,6 +66,11 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     // ── 常量 ────────────────────────────────────────────────────────────────
 
     private static final int REQUEST_RECORD_AUDIO = 1001;
+    /**
+     * 眼镜 SDK 需要的运行时权限（CAMERA + 媒体访问）。
+     * 与录音那条分开是因为它们是**两件事**：录音是同传功能，这条只是"让眼镜能连"。
+     */
+    private static final int REQUEST_GLASSES_PERMISSIONS = 1002;
     private static final String PREFS = "leion";
     private static final String KEY_HOST = "host";
     private static final String KEY_SECRET = "secret";
@@ -253,13 +259,21 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     }
 
     /**
-     * 眼镜：初始化 SDK、建投屏用的字幕 View。
+     * 眼镜：**先要权限、再初始化 SDK**。
      *
-     * <p>这一步在 onCreate 里做，因为 SDK 要一个 Activity 做屏幕采集
-     * （{@code createCaptureScreen(activity, view)}）。
+     * <p>这一步照官方样例的顺序来（{@code GlassMainViewModel.onHostReady} 的注释：
+     * 「权限与悬浮窗就绪后，由界面调用以初始化 Glass SDK（仅调用一次）」）。
+     * 官方还有一道 `GlassPermissionFlow` 权限门禁，要求
+     * CAMERA + RECORD_AUDIO + READ_MEDIA_* 全给、并且能画悬浮窗，才往下走。
      *
-     * <p>初始化失败**不影响手机端功能** —— 手机自己那一套字幕照常工作，
-     * 只是眼镜上不显示。所以这里不弹窗、不阻断，只在眼镜状态行里说明。
+     * <p>⚠️ 顺序不能省。之前我在 onCreate 里**直接 init SDK**，而且把 CAMERA /
+     * 媒体 / 悬浮窗权限都删了 —— 真机上的表现是**插上眼镜完全不弹「允许访问眼镜吗」**，
+     * 而官方 App 会弹。原因就是 SDK 的前提（权限 + 悬浮窗）没满足，
+     * 它根本走不到请求 USB 授权那一步。见 docs/09 第 5 节。
+     *
+     * <p>这里**不做成官方那种"不给权限就不让用"的门禁**：手机端的同传功能
+     * （录音上传、字幕显示）和眼镜是两件事，不该因为眼镜没授权就把整个 App 拦住。
+     * 所以只请求眼镜需要的那几条，拿到了才 init；没拿到就在状态行里说清楚。
      */
     private void setupGlasses() {
         glassesView = new GlassesSubtitleView(this);
@@ -277,8 +291,95 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             }
             renderGlassesRealStatus();
         });
+
+        requestGlassesPermissions();
+    }
+
+    /** 眼镜 SDK 需要的那几条运行时权限（照官方 glassRuntimePermissions() 的分档）。 */
+    private String[] glassesPermissions() {
+        List<String> wanted = new ArrayList<>();
+        wanted.add(Manifest.permission.CAMERA);
+        wanted.add(Manifest.permission.RECORD_AUDIO);
+        if (Build.VERSION.SDK_INT >= 34) {
+            wanted.add("android.permission.READ_MEDIA_IMAGES");
+            wanted.add("android.permission.READ_MEDIA_VIDEO");
+            wanted.add("android.permission.READ_MEDIA_AUDIO");
+            wanted.add("android.permission.READ_MEDIA_VISUAL_USER_SELECTED");
+        } else if (Build.VERSION.SDK_INT >= 33) {
+            wanted.add("android.permission.READ_MEDIA_IMAGES");
+            wanted.add("android.permission.READ_MEDIA_VIDEO");
+            wanted.add("android.permission.READ_MEDIA_AUDIO");
+        }
+        return wanted.toArray(new String[0]);
+    }
+
+    private void requestGlassesPermissions() {
+        List<String> missing = new ArrayList<>();
+        for (String permission : glassesPermissions()) {
+            if (checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
+                missing.add(permission);
+            }
+        }
+        if (!missing.isEmpty()) {
+            glassesStatus = "等待眼镜权限（相机/媒体）";
+            renderGlassesRealStatus();
+            requestPermissions(missing.toArray(new String[0]), REQUEST_GLASSES_PERMISSIONS);
+            return;
+        }
+        afterRuntimePermissions();
+    }
+
+    /** 运行时权限这一关过了 → 再看悬浮窗（官方把它并列为前置条件）。 */
+    private void afterRuntimePermissions() {
+        if (Build.VERSION.SDK_INT >= 23 && Settings.canDrawOverlays(this) == false) {
+            glassesStatus = "还需要「显示在其他应用上层」权限";
+            renderGlassesRealStatus();
+            new AlertDialog.Builder(this)
+                    .setTitle("眼镜需要悬浮窗权限")
+                    .setMessage("眼镜 SDK 要求「显示在其他应用上层」才肯连接。\n\n"
+                            + "点「去开启」后在列表里找到本应用并打开开关，回来就会自动连接。\n"
+                            + "（这条与上架审核无关，是正常权限。）")
+                    .setPositiveButton("去开启", (dialog, which) -> {
+                        try {
+                            startActivity(new Intent(
+                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    Uri.parse("package:" + getPackageName())));
+                        } catch (Exception error) {
+                            // 部分 ROM 不支持按包名直达，退回应用详情页
+                            startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                    Uri.parse("package:" + getPackageName())));
+                        }
+                    })
+                    .setNegativeButton("稍后", (dialog, which) -> {
+                        glassesStatus = "缺悬浮窗权限，眼镜可能连不上";
+                        renderGlassesRealStatus();
+                    })
+                    .show();
+            return;
+        }
+        startGlassesSdk();
+    }
+
+    /** 权限与悬浮窗都就绪 —— 这才初始化 SDK（官方也是在这里才 init）。 */
+    private void startGlassesSdk() {
+        if (glasses == null) return;
+        glassesStatus = "正在初始化眼镜 SDK…";
+        renderGlassesRealStatus();
         glasses.init();
-        glassesView.setStatus("○ 眼镜未连接", "");
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // 从"悬浮窗设置页"回来时补一次 —— 用户去开了权限，这里要接着往下走
+        if (glasses != null && glassesSdkStarted() == false) {
+            requestGlassesPermissions();
+        }
+    }
+
+    /** SDK 已经开始初始化了吗（init 里没法直接问） */
+    private boolean glassesSdkStarted() {
+        return glasses != null && glasses.isInitialized();
     }
 
     @Override
@@ -1548,6 +1649,22 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        // 眼镜 SDK 的权限（相机 + 媒体）：拿到就继续初始化 SDK，没拿到就在眼镜状态行里说明。
+        // 与录音那条**分开处理**：它们是两件事（录音是同传功能，这条只是"让眼镜能连"），
+        // 而且眼镜没授权**不该拦住整个 App** 的同传功能。
+        if (requestCode == REQUEST_GLASSES_PERMISSIONS) {
+            boolean allGranted = grantResults.length > 0;
+            for (int result : grantResults) {
+                if (result != PackageManager.PERMISSION_GRANTED) allGranted = false;
+            }
+            if (allGranted) {
+                afterRuntimePermissions();
+            } else {
+                glassesStatus = "眼镜权限被拒（相机/媒体），眼镜连不上";
+                renderGlassesRealStatus();
+            }
+            return;
+        }
         if (requestCode != REQUEST_RECORD_AUDIO) return;
         boolean granted = grantResults.length > 0
                 && grantResults[0] == PackageManager.PERMISSION_GRANTED;

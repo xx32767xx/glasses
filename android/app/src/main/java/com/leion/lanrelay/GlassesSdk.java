@@ -54,6 +54,8 @@ public class GlassesSdk {
     private Object display;
     private boolean destroyed;
     private boolean casting;
+    /** init() 是否已经调用过（界面用它避免重复初始化，以及判断"从设置页回来要不要补跑"）。 */
+    private boolean initialized;
     private String lastError = "";
 
     public interface Listener {
@@ -68,6 +70,11 @@ public class GlassesSdk {
 
     public boolean isConnected() {
         return device != null;
+    }
+
+    /** init() 调用过了吗。**幂等**：重复调用直接返回，不会重复注册回调。 */
+    public boolean isInitialized() {
+        return initialized;
     }
 
     public boolean isCasting() {
@@ -88,6 +95,8 @@ public class GlassesSdk {
      * 只该显示"眼镜未连接"。
      */
     public void init() {
+        if (initialized || destroyed) return;
+        initialized = true;
         main.post(() -> {
             try {
                 Class<?> sdkClass = Class.forName(CLS_SDK);

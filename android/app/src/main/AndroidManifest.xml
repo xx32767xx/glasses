@@ -10,47 +10,63 @@
     <!--
       ══════════════════════════════════════════════════════════════════════════
       眼镜 SDK（platform-4.8.0.4-release.aar）会把自己的清单合并进来，
-      带了一大堆**我们用不到**的权限。下面用 tools:node="remove" 逐条删掉。
-      规范（见 docs/09）：**每删一条都写清理由** —— 这份清单要交给老师/审核，
-      没有解释的权限删除记录等于没写。
+      带了一大堆权限。下面用 tools:node="remove" 删掉**确定用不到**的，
+      剩下的**必须留着** —— 理由逐条写在下面。
+
+      ⚠️ 血泪教训（真机上踩到）：先版本我把 CAMERA / 媒体 / 悬浮窗 全删了，
+         结果**插上眼镜完全不弹「允许访问眼镜吗」**，而官方 App 会弹。
+         对齐官方样例（GlassPermissionFlow.kt 的 glassRuntimePermissions() 与
+         GlassMainViewModel: "权限与悬浮窗就绪后，由界面调用以初始化 Glass SDK"）
+         之后才明白：**SDK 的前提是这些权限已经给齐**。见 docs/09 第 5 节。
       ══════════════════════════════════════════════════════════════════════════
     -->
 
-    <!-- 不做视觉：SDK 自带的人脸/相机功能我们一个都不用（也没引入 core_ai AAR） -->
-    <uses-permission android:name="android.permission.CAMERA" tools:node="remove" />
+    <!-- 眼镜 SDK 需要：它要访问眼镜的相机（UVC）才能建立与通电。
+         我们不显示画面，但**必须给权限**，否则 SDK 起不来、USB 授权也不会弹。 -->
+    <uses-permission android:name="android.permission.CAMERA" />
 
-    <!-- 存储：我们只往自己的应用目录写记录文件，不需要读外部存储 -->
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" tools:node="remove" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" tools:node="remove" />
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" tools:node="remove" />
-    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" tools:node="remove" />
-    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" tools:node="remove" />
-    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" tools:node="remove" />
-    <!-- ⚠️ 这条最关键：MANAGE_EXTERNAL_STORAGE（全盘访问）**上架必被拒**，绝不能留 -->
+    <!-- 眼镜 SDK 的媒体访问（官方 glassRuntimePermissions() 里就有这几条，
+         Android 13/14 分档请求）。给不全时 SDK 的连接流程会卡住。 -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+
+    <!-- 存储：Android 12 及以下要这两条（官方的 else 分支就是这么给的） -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
+    <!-- 悬浮窗：官方把它和运行时权限并列为"初始化 SDK 的前置条件"之一
+         （canDrawOverlays 不给就不往下走）。SDK 的投屏相关流程会用到。
+         ⚠️ 这条与"上架审核"无关：SYSTEM_ALERT_WINDOW 是正常权限，不是全盘访问。 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- 第三方 USB 相机（StdUVCCameraService）与投屏前台服务要用 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+
+    <!--
+      以下**仍然删掉**（逐条理由）：
+    -->
+    <!-- ⚠️ 全盘访问（MANAGE_EXTERNAL_STORAGE）**上架必被拒**，且我们只写自己的应用目录 -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:node="remove" />
-    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" tools:node="remove" />
-
-    <!-- 悬浮窗：SDK 用它做某种叠层显示；我们的字幕走投屏（createCaptureScreen），不用悬浮窗 -->
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" tools:node="remove" />
-
-    <!-- 设备电源 / 电话号码：与业务无关，SDK 带进来的 -->
+    <!-- 投屏（MEDIA_PROJECTION）与麦克风前台服务：我们投的是**自己构造的 View**，
+         不是录屏；RECORD_AUDIO 我们已经有自己的用途（手机当麦克风），
+         不需要额外的前台服务声明。真机若报缺这条再加回来。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" tools:node="remove" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" tools:node="remove" />
+    <!-- 设备电源 / 电话：与业务无关 -->
     <uses-permission android:name="android.permission.DEVICE_POWER" tools:node="remove" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" tools:node="remove" />
     <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" tools:node="remove" />
+    <uses-permission android:name="android.permission.MOUNT_UNMOUNT_FILESYSTEMS" tools:node="remove" />
+    <!-- 网络状态：我们只直连 http://ip:port，不判断网络类型 -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" tools:node="remove" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" tools:node="remove" />
-
-    <!--
-      前台服务：SDK 带进来 4 条（相机/录音/投屏/通用）。我们**只投屏**，
-      不跑 SDK 的前台服务（不做相机、不录音到对方、不录屏存文件），所以不需要。
-      ⚠️ 如果将来要用「眼镜端音频播报」（GlassNativeAudioEngine），
-         这条 MICROPHONE 可能要加回来 —— 到时候再说，别现在留着。
-    -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" tools:node="remove" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" tools:node="remove" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" tools:node="remove" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" tools:node="remove" />
 
     <application
         android:label="@string/app_name"
