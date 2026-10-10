@@ -129,12 +129,41 @@ public class GlassesSdk {
                 // init(Context, ConnectionStatusListener)
                 Method init = sdkClass.getMethod("init", Context.class, listenerClass);
                 init.invoke(sdk, activity.getApplicationContext(), connectionListener);
-                report("眼镜未连接（等插上眼镜）", false);
+
+                // ⚠️ 补查一次"已经插着的"设备。
+                //    只在 onDeviceConnect 回调里投屏会漏一种常见情况：
+                //    **眼镜先插着、再打开 App** —— 那时"插入"这个事件早就过去了，
+                //    回调不会再触发，于是永远不会开始投屏，而界面上什么都不显示。
+                //    样例里有 queryHasConnectedDevice()（也是它的"连接状态"初始化方式）。
+                if (queryHasConnectedDevice(sdkClass)) {
+                    report("眼镜已连接（启动时就在）", true);
+                    onDeviceConnected(null);
+                } else {
+                    report("眼镜未连接（等插上眼镜）", false);
+                }
             } catch (Throwable error) {
                 report("眼镜 SDK 初始化失败：" + shortMessage(error), false);
                 Log.w(TAG, "init failed", error);
             }
         });
+    }
+
+    /** SDK: {@code getGlass3DeviceList()?.isNotEmpty()} —— 不依赖回调判断"现在插着没有"。 */
+    private boolean queryHasConnectedDevice(Class<?> sdkClass) {
+        try {
+            Object list = sdkClass.getMethod("getGlass3DeviceList").invoke(sdk);
+            if (list instanceof java.util.List) {
+                java.util.List<?> devices = (java.util.List<?>) list;
+                if (!devices.isEmpty()) {
+                    // 顺手把设备对象留下 —— 后面投屏要用它
+                    if (device == null) device = devices.get(0);
+                    return true;
+                }
+            }
+        } catch (Throwable error) {
+            Log.i(TAG, "getGlass3DeviceList skipped: " + shortMessage(error));
+        }
+        return false;
     }
 
     private void onDeviceConnected(Object connectedDevice) {
