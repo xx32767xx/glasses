@@ -298,7 +298,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             // listener 又看到"没在投屏"就再投一次 —— 失败 → 回调 → 再投，无限循环，
             // 主线程被自己的 post 塞满。真机上"点了开始投屏没反应"就是它。
             if (justConnected && glasses != null && glasses.isConnected() && !glasses.isCasting()) {
-                glasses.cast(glassesView.getView());
+                glasses.requestCast(glassesView.getView());
             }
             // 投屏一旦成功，先给一个**待机画面**。
             // 为什么要这个：不开同传时眼镜上也得有东西，否则没法判断
@@ -1608,7 +1608,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             glasses.stopCast();
         } else if (glasses.isConnected()) {
             glassesStatus = "正在投屏…";
-            glasses.cast(glassesView.getView());
+            glasses.requestCast(glassesView.getView());
         } else {
             // 设备列表和连接状态分开报：这两个数字对不上才是真正要查的问题
             glassesStatus = "眼镜未连接（设备列表 " + glasses.getDeviceCount() + " 个）——重插一下眼镜";
@@ -1636,6 +1636,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             .append(" · 悬浮窗 ").append(canDrawOverlaysNow() ? "有" : "无")
             .append(" · SDK ").append(inited ? "已初始化" : "未初始化")
             .append(" · 设备 ").append(glasses == null ? "?" : glasses.getDeviceCount()).append(" 个")
+            .append(" · 服务 ").append(glasses == null ? "?" : (glasses.isServicesReady() ? "就绪" : "启动中"))
             .append(" · ").append(casting ? "投屏中" : "未投屏");
         if (glasses != null && glasses.getStep().length() > 0) {
             diag.append("\n投屏步：").append(glasses.getStep());

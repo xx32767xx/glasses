@@ -65,6 +65,25 @@ public class GlassesSdk {
      */
     private String step = "";
 
+    /**
+     * LCD 服务是否已经拉起来（{@code GlassServiceManager.initAllServices} 回来）。
+     *
+     * <p>为什么要这个标志：投屏依赖 LCD 服务。样例里连接之后要**等 3 秒**
+     * （{@code SERVICE_INIT_DELAY_MS}）才拉服务，抢在它前面投屏，
+     * 第 ② 步 {@code getGlassDisplay} 就会拿到 null。
+     * 所以"想投屏"和"能投屏"必须分开 —— 见 {@link #requestCast(View)}。
+     */
+    private boolean servicesReady;
+    /** 界面交来的"想投屏"的 View，等服务就绪后再真的投。 */
+    private View pendingCast;
+    /** 兜底：万一服务一直没回报，到点也强行试一次（不能让人对着按钮干等）。 */
+    private final Runnable pendingCastFallback = () -> {
+        if (pendingCast != null && !casting) {
+            Log.w(TAG, "服务就绪回报超时，仍然尝试投屏");
+            tryPendingCast(true);
+        }
+    };
+
     public interface Listener {
         /** 状态变化（连接、投屏、错误）。每条都会带上"发生了什么"，界面直接显示。 */
         void onGlassesStatus(String status, boolean connected);
@@ -113,6 +132,11 @@ public class GlassesSdk {
     /** 上一次投屏走到哪一步（界面诊断行显示它，用来定位"点了没反应"）。 */
     public String getStep() {
         return step;
+    }
+
+    /** LCD 服务拉起来了吗（界面诊断行显示它 —— 没就绪时投屏是排队等待，不是没反应）。 */
+    public boolean isServicesReady() {
+        return servicesReady;
     }
 
     // ── 初始化 ─────────────────────────────────────────────────────────────
@@ -274,11 +298,20 @@ public class GlassesSdk {
         device = null;
         display = null;
         casting = false;
+        // 拔了眼镜，服务显然也不在了 —— 下次插上要重新等服务就绪再投屏
+        servicesReady = false;
+        pendingCast = null;
+        main.removeCallbacks(pendingCastFallback);
         report("眼镜已断开", false);
     }
 
     private void startServices() {
-        if (device == null || destroyed) return;
+        if (destroyed) return;
+        if (device == null) {
+            // 设备没了（拔了）—— 别再往下走了，但也不留一个永远不 ready 的标志
+            servicesReady = true;
+            return;
+        }
         try {
             Class<?> manager = Class.forName(CLS_SERVICE_MANAGER);
             // initAllServices(Context, IGlass3Device)
@@ -289,7 +322,48 @@ public class GlassesSdk {
             // 服务拉不起来不一定是致命的：投屏可能仍然能用。记下来继续。
             Log.w(TAG, "initAllServices failed", error);
             report("眼镜服务启动异常（可能仍可投屏）：" + shortMessage(error), true);
+        } finally {
+            // ⚠️ 无论成功失败都置 ready。
+            //    如果只在成功时置，失败就永远卡在"等服务就绪"，
+            //    表现又变成"点了没反应" —— 那正是我们正在修的病。
+            servicesReady = true;
         }
+        // 服务就绪 → 把界面之前排队的投屏请求放行
+        tryPendingCast(false);
+    }
+
+    /**
+     * 界面说"我要投屏" → 记下来，等服务就绪后再真的投。
+     *
+     * <p>为什么不让界面直接调 {@link #cast(View)}：投屏依赖 LCD 服务，
+     * 而服务在连接后 3 秒才拉起来。界面不知道这个时序，直接投就会在
+     * 第 ② 步拿到 null。把时序**收进 SDK 内部**，界面只管说"我要投屏"。
+     *
+     * <p>同时挂一个兜底：万一服务就绪的回报一直不来，到点也强行试一次 ——
+     * 不能让用户对着按钮干等（这是"点了没反应"最坏的一种）。
+     */
+    public void requestCast(View view) {
+        if (view == null) return;
+        pendingCast = view;
+        main.removeCallbacks(pendingCastFallback);
+        if (servicesReady) {
+            tryPendingCast(false);
+        } else {
+            main.postDelayed(pendingCastFallback, SERVICE_INIT_DELAY_MS + 2000L);
+        }
+    }
+
+    /**
+     * @param force true = 服务还没回报也硬投（兜底路径）
+     */
+    private void tryPendingCast(boolean force) {
+        if (pendingCast == null || destroyed || casting) return;
+        if (!servicesReady && !force) return;
+        if (device == null) return;
+        View view = pendingCast;
+        pendingCast = null;
+        main.removeCallbacks(pendingCastFallback);
+        cast(view);
     }
 
     // ── 投屏 ───────────────────────────────────────────────────────────────
@@ -543,6 +617,7 @@ public class GlassesSdk {
         }
 
         out.append("device：").append(device == null ? "null" : device.getClass().getName()).append("\n");
+        out.append("LCD 服务就绪：").append(servicesReady ? "是" : "否（投屏会排队等服务就绪）").append("\n");
         out.append("投屏步：").append(step.length() == 0 ? "（还没点过开始投屏）" : step).append("\n");
         return out.toString();
     }

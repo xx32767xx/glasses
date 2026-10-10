@@ -303,6 +303,21 @@ armeabi-v7a / x86 / x86_64 的库：0 个          ← abiFilters 生效
 > 这两条都属于**反射桥接特有的坑**：没有编译期校验，错误不会崩，
 > 只会静默地什么都不做。所以下面这个探测工具是必需品，不是可选项。
 
+**顺手修掉的第三个：投屏抢在服务初始化之前。**
+样例里连接之后要**等 3 秒**（`SERVICE_INIT_DELAY_MS`）才 `initAllServices`，
+而界面是连上一瞬间就投屏的 —— 第 ② 步 `getGlassDisplay` 会在服务还没起来时拿到 null。
+这个时序界面根本不知道，所以**收进 SDK 内部**：
+
+```java
+requestCast(view)   // 界面只说"我要投屏"
+  → 服务已就绪？立刻投
+  → 还没就绪？排队，等 startServices() 回来放行
+  → 兜底：服务就绪回报超时（3s+2s）也强行试一次，不让人对着按钮干等
+```
+
+`startServices()` 的 `finally` 里**无论成败都置 ready** ——
+只在成功时置的话，服务起失败就永远卡在"等服务就绪"，表现又变回"点了没反应"。
+
 ### `probeApi()`：长按诊断行就能看见 SDK 的真实结构
 
 反射调用唯一可靠的排查手段是**把真实结构打出来**。所以眼镜预览页的诊断行
@@ -321,6 +336,7 @@ armeabi-v7a / x86 / x86_64 的库：0 个          ← abiFilters 生效
 ⑥ ✓ createCaptureScreen(Activity, View) 存在
 ⑦ ✓ DOUBLE_EYE_PORT = 0
 device：com.llvision...ZzzImpl
+LCD 服务就绪：是
 投屏步：③ createCaptureScreen
 ```
 
