@@ -66,43 +66,98 @@
 
 ## 3. 显示 API：全部能力就这些
 
-从 `samplecode` 里把所有 `IGlassDisplay` 调用找齐了，**这就是边界**：
+下面这段是**从 AAR 的字节码里 `javap` 出来的**，不是从样例"看"出来的。
 
-```kotlin
-// 拿显示对象
-val lcd  = LLVisionGlass3SDK.getInstance()
-             .getGlass3Client(IGlass3Device.Glass3DeviceClient.LCD) as ILCDClient
-val disp = lcd.getGlassDisplay(device)
+> ⚠️ 为什么强调这个：我一开始是照着样例代码**推**签名的，结果四处全错，
+> 而且错法很隐蔽（Kotlin 和 Java 的写法差异 + 继承关系 + 注解常量 vs 枚举）。
+> 反射调用没有编译期校验，错了不崩、只是静默什么都不做。
+> **凡是 反射 / SDK 调用，签名一律以 `javap` 为准。**
 
-// ★ 投屏：整个 Activity，或任意一个 View
-disp.createCaptureScreen(activity)              // 镜像整个界面
-disp.createCaptureScreen(activity, myView)      // ★ 只投这个 View（我们要的）
-disp.stopCaptureScreen()
+```java
+// ── 取客户端：注意 LCD 是 **int 常量**，不是枚举 ─────────────────────────────
+// public interface IGlass3Device$Glass3DeviceClient extends java.lang.annotation.Annotation {
+//     public static final int CAMERA; LCD; SENSOR; KEY; AI;
+// }
+// public IBaseClient getGlass3Client(int) throws GlassException;
+int lcd = IGlass3Device.Glass3DeviceClient.LCD;          // int
+ILCDClient lcdClient = (ILCDClient) sdk.getGlass3Client(lcd);
 
-// 显示参数
-disp.setLuminance(level)                        // 亮度（0..IGlassDisplay.LUM_LEVEL_MAX-1）
-disp.setBackLightAuto(on)
-disp.setPort(IGlassDisplay.LEFT_EYE_PORT / RIGHT_EYE_PORT / DOUBLE_EYE_PORT, on)
-disp.setCameraPreviewOnLcdScreen(false)
+// ── 取 display：参数是 library.IGlassDevice ─────────────────────────────────
+// public interface ILCDClient extends IBaseClient {
+//     IGlassDisplay getGlassDisplay(com.llvision.glass3.library.IGlassDevice) throws BaseException;
+// }
+// 而 platform.IGlass3Device extends library.IGlassDevice  ← 是**父子关系**
+//   传参没问题，但 getMethod 必须用声明类型 library.IGlassDevice
+IGlassDisplay disp = lcdClient.getGlassDisplay(device);
+
+// ── 投屏 ──────────────────────────────────────────────────────────────────
+// public interface IGlassDisplay extends IDeviceAbility {
+//     void createCaptureScreen(android.content.Context);                                  // 镜像整屏
+//     void createCaptureScreen(android.content.Context, android.view.View);               // ★ 用这个
+//     void createCaptureScreen(android.content.Context, Fragment, FragmentManager);
+//     void createCaptureScreen(android.content.Context, android.view.View, int, int)
+//             throws IllegalArgumentException;                                            // 显式宽高
+//     void createCaptureScreen(android.content.Context, android.view.View, int, int, Drawable)
+//             throws IllegalArgumentException;
+//     void stopCaptureScreen();
+// }
+disp.createCaptureScreen(activity, myView);   // Activity 是 Context 的子类，能传
+disp.stopCaptureScreen();
+
+// ── 显示参数（注意：**没有 setPort**）──────────────────────────────────────
+// boolean setSwitch(boolean);  boolean setLuminance(int);
+// boolean setBackLightAuto(boolean);
+// int setDisplayPortNumber(int port, int on);   // ← 双眼是这里，不是 setPort
+// void setCameraPreviewOnLcdScreen(boolean);
+// LCDInfo getLCDInfo();                         // open/backLightAuto/level/displayMode
+// 常量：LEFT_EYE_PORT / RIGHT_EYE_PORT / DOUBLE_EYE_PORT（实测 DOUBLE_EYE_PORT = 2）
+//       LUM_LEVEL_0..3 / LUM_LEVEL_MAX
+// int ResultCode.SUCCESS = 0;                   // setDisplayPortNumber 的返回比它
+disp.setDisplayPortNumber(IGlassDisplay.DOUBLE_EYE_PORT, 1);
 ```
 
 **没有 `sendText` / `drawText` / `setText`。** 别再去找了。
+
+### 我们踩过的四个签名坑（都在这里了）
+
+| 我写错的 | 真的 | 真机表现 |
+|---|---|---|
+| `getGlass3Client(Glass3DeviceClient)` | `getGlass3Client(int)` | `getEnumConstants()` 返回 null → NPE，**卡在第①步** |
+| `getGlassDisplay(platform.IGlass3Device)` | `getGlassDisplay(library.IGlassDevice)` | `NoSuchMethodException` |
+| `createCaptureScreen(Activity, View)` | `createCaptureScreen(Context, View)` | `NoSuchMethodException` |
+| `setPort(int, boolean)` | `setDisplayPortNumber(int, int)` | 静默失败（包在 try/catch 里，只留一行日志） |
+
+第 1 条最容易被误判：报的是 `NullPointerException: Attempt to get length of null array`，
+**看起来像数组越界，其实是在说"这个类不是枚举"**。`Glass3DeviceClient` 是 `@IntDef` 注解接口。
 
 ### 所以我们的字幕要这么做
 
 ```java
 // 一个专给眼镜用的 View：黑底、白字、特大字号、只放译文
-GlassesTextView view = new GlassesTextView(activity);
-view.setText(translatedText);
+GlassesSubtitleView view = new GlassesSubtitleView(activity);
+view.setSubtitle(translatedText);
 
 // 投上去
-display.createCaptureScreen(activity, view);
+display.createCaptureScreen(activity, view.getView());
 ```
 
-**注意尺寸**：眼镜屏是 480×640（竖屏，Rokid 那档；Leion Pro 具体分辨率要从
-`device.deviceInfo.resolutionWidth/Height` 读，别写死）。
-样例里给 View 设过 `setAspectRatio(8.0/5.0)`，说明**投屏会按比例缩放**，
-所以我们的 View 要按眼镜的长宽比来做，不要按手机的。
+**尺寸有两件事要注意：**
+
+1. **画布必须有确定的宽高。** `createCaptureScreen` 只接收一个 View，
+   SDK 会把它采样成画面。View 尺寸是 0×0 就没画面，尺寸和眼镜对不上就报
+   「数据越界」（SDK 按设备分辨率分配缓冲，却从一块尺寸不符的 View 取像素）。
+   ⚠️ 而且**不能用 `view.post()` 去设尺寸** —— 这个 View 从不 attach 到窗口，
+   detached View 的 `post()` 要等 attach 才执行，也就是**永远不执行**。
+   必须同步 `setLayoutParams` + `measure` + `layout`。
+
+2. **实际分辨率从设备读**，别写死：
+   ```java
+   DeviceInfo info = device.getDeviceInfo();
+   String w = info.getResolutionWidth();    // ⚠️ 返回的是 **String**，不是 int
+   String h = info.getResolutionHeight();   //    按 int 读会静默拿到 0
+   ```
+   样例里给 View 设过 `setAspectRatio(8.0/5.0)`，说明投屏会按比例缩放，
+   所以要按眼镜的长宽比做，不要按手机的。
 
 ---
 

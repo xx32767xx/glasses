@@ -44,8 +44,8 @@ public class GlassesSubtitleView {
      *    却从一块尺寸对不上的 View 里取像素）。
      *
      * 0.75 = 3:4 竖屏，是光波导单片显示器的常见比例（480×640）。
-     * ⚠️ **待真机确认**：拿到眼镜后从 {@code device.deviceInfo.resolutionWidth/Height}
-     *    读出真实值再改这里（见 {@code docs/09} 第 10 节的待验证项）。
+     * ⚠️ **待真机确认**：拿到眼镜后从 {@code device.getDeviceInfo().getResolutionWidth()/Height()}
+     *    读出真实值再改这里。注意那两个 getter 返回的是 **String**（见 {@code GlassesSdk.queryDisplaySize}）。
      */
     private static final float ASPECT_RATIO = 0.75f;
 
@@ -149,25 +149,29 @@ public class GlassesSubtitleView {
     }
 
     /**
-     * 给投屏画面定一个固定的宽高比。
+     * 给投屏画面定一个固定的宽高比，并**立刻**把尺寸定下来。
      *
-     * <p>做法：把 root 的 LayoutParams 从"match_parent"改成"按比例算出的具体像素"，
-     * 并且**让 View 独立于手机屏幕布局**（不用 addView 到界面里，它只是被 SDK 采样的一块画布）。
-     * 尺寸按父窗口宽度推，再由宽高比算出高度。
+     * <p>⚠️ 这里刻意**不用 {@code view.post()}**，而是同步算 + 主动 measure/layout。
+     *    原因：这个 View 从不 attach 到窗口（它只是被 SDK 采样的一块画布），
+     *    而 detached View 的 {@code post()} 会被排进 {@code HandlerActionQueue}，
+     *    **要等 attach 才执行** —— 它永远不会 attach，于是那段代码永不执行，
+     *    {@code setLayoutParams} 不生效、root 尺寸一直是 0×0。
+     *    第一版就是这么写的，等于"设了宽高比"这件事根本没发生。
+     *
+     * <p>尺寸按屏幕宽度推、再由宽高比算高度；随后 `measure` + `layout` 一遍，
+     * 保证 SDK 拿去 {@code draw()} 时 {@code getWidth()/getHeight()} 不为 0。
      */
     public void setAspectRatio(float ratio) {
-        this.aspectRatio = ratio;
-        root.post(() -> {
-            int width = root.getWidth();
-            if (width <= 0) {
-                // 还没测量出来（没 attach 到窗口时 getWidth() 是 0）——
-                // 用一个保守的缺省宽度兜底，之后再被 post 的那次纠正过来
-                width = Math.round(360 * root.getResources().getDisplayMetrics().density);
-            }
-            int height = Math.round(width / ratio);
-            root.setLayoutParams(new ViewGroup.LayoutParams(width, height));
-            log("投屏画布尺寸 " + width + "×" + height + "（比例 " + ratio + "）");
-        });
+        this.aspectRatio = ratio <= 0f ? ASPECT_RATIO : ratio;
+        android.util.DisplayMetrics metrics = root.getResources().getDisplayMetrics();
+        int width = Math.max(1, metrics.widthPixels);
+        int height = Math.max(1, Math.round(width / this.aspectRatio));
+        root.setLayoutParams(new ViewGroup.LayoutParams(width, height));
+        root.measure(
+                View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(height, View.MeasureSpec.EXACTLY));
+        root.layout(0, 0, width, height);
+        log("投屏画布尺寸 " + width + "×" + height + "（比例 " + this.aspectRatio + "）");
     }
 
     /** 切换"待机提示 / 字幕"两种状态。有字幕了就把待机提示收起来。 */

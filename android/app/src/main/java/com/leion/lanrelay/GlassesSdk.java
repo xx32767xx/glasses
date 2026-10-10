@@ -40,6 +40,34 @@ public class GlassesSdk {
     private static final String CLS_SDK = "com.llvision.glass3.platform.LLVisionGlass3SDK";
     private static final String CLS_SERVICE_MANAGER = "com.llvision.glxss.common.service.GlassServiceManager";
     private static final String CLS_DEVICE = "com.llvision.glass3.platform.IGlass3Device";
+    /**
+     * ⚠️ {@code ILCDClient.getGlassDisplay} 的参数类型是 {@code library.IGlassDevice}，
+     * **不是** {@code platform.IGlass3Device}。
+     *
+     * <p>两者是继承关系（{@code platform.IGlass3Device extends library.IGlassDevice}），
+     * 所以传进去的对象没问题，但**反射查找必须用声明时的那个类型** ——
+     * 用子接口去 {@code getMethod} 会直接 NoSuchMethodException。
+     * 我就是这么错的（`javap` 核对后才发现）。
+     */
+    private static final String CLS_LCD_DEVICE = "com.llvision.glass3.library.IGlassDevice";
+
+    /**
+     * ⚠️ {@code Glass3DeviceClient} 是 **{@code @IntDef} 注解接口，不是枚举**。
+     *
+     * <p>Kotlin 里 {@code IGlass3Device.Glass3DeviceClient.LCD} 的写法枚举和静态常量
+     * 长得一模一样，我按枚举写成了 {@code getEnumConstants()} —— 结果是
+     * {@code NullPointerException: Attempt to get length of null array}，
+     * 于是永远取不到 LCD 客户端。
+     *
+     * <p>实际结构（{@code javap} 实测）：
+     * <pre>
+     * public interface IGlass3Device$Glass3DeviceClient extends java.lang.annotation.Annotation {
+     *     public static final int CAMERA;  LCD;  SENSOR;  KEY;  AI;
+     * }
+     * </pre>
+     * 对应方法是 {@code getGlass3Client(int)}。
+     */
+    private static final String CLS_DEVICE_CLIENT = CLS_DEVICE + "$Glass3DeviceClient";
 
     /** 样例里的延迟：设备连上后要等一会儿再拉服务（SERVICE_INIT_DELAY_MS = 3000L）。 */
     private static final long SERVICE_INIT_DELAY_MS = 3000L;
@@ -247,35 +275,33 @@ public class GlassesSdk {
         try {
             Object info = device.getClass().getMethod("getDeviceInfo").invoke(device);
             if (info == null) return new int[] { 0, 0 };
-            int width = readInt(info, "resolutionWidth");
-            int height = readInt(info, "resolutionHeight");
+            // ⚠️ DeviceInfo.getResolutionWidth()/Height() 返回的是 **String**，不是 int
+            //    （javap 实测）。按 int 读会静默拿到 0，于是"分辨率读到了"变成"没读到"。
+            int width = parseSize(info, "getResolutionWidth");
+            int height = parseSize(info, "getResolutionHeight");
             if (width > 0 && height > 0) {
                 Log.i(TAG, "眼镜分辨率 " + width + "×" + height);
                 return new int[] { width, height };
             }
+            Log.i(TAG, "分辨率读到 " + width + "×" + height + "（不合法，退回缺省）");
         } catch (Throwable error) {
             Log.i(TAG, "queryDisplaySize skipped: " + shortMessage(error));
         }
         return new int[] { 0, 0 };
     }
 
-    /** 先试 getter，再试同名字段（Kotlin data class 两种写法都可能）。 */
-    private static int readInt(Object target, String name) {
-        String getter = "get" + Character.toUpperCase(name.charAt(0)) + name.substring(1);
+    /** 读一个"字符串形式的尺寸"字段并转 int（读不到或不是数字都返回 0）。 */
+    private static int parseSize(Object target, String getter) {
         try {
             Object value = target.getClass().getMethod(getter).invoke(target);
+            if (value == null) return 0;
+            // 可能是 String（实测），也可能是 Integer（换固件后），两种都认
             if (value instanceof Integer) return (Integer) value;
+            String text = String.valueOf(value).trim();
+            return text.isEmpty() ? 0 : Integer.parseInt(text);
         } catch (Throwable ignored) {
-            // 落到字段那条路
+            return 0;
         }
-        try {
-            java.lang.reflect.Field field = target.getClass().getField(name);
-            Object value = field.get(target);
-            if (value instanceof Integer) return (Integer) value;
-        } catch (Throwable ignored) {
-            // 读不到就算了
-        }
-        return 0;
     }
 
     private void onDeviceConnected(Object connectedDevice) {
@@ -404,9 +430,7 @@ public class GlassesSdk {
             // ② getGlassDisplay(device)
             step = "② getGlassDisplay";
             try {
-                Class<?> deviceClass = Class.forName(CLS_DEVICE);
-                Method method = lcdClient.getClass().getMethod("getGlassDisplay", deviceClass);
-                display = method.invoke(lcdClient, device);
+                display = getGlassDisplay(lcdClient);
             } catch (Throwable error) {
                 reportWithStep("② getGlassDisplay 失败", error);
                 return;
@@ -416,17 +440,29 @@ public class GlassesSdk {
                 return;
             }
 
-            // ③ createCaptureScreen(activity, view)
+            // ③ createCaptureScreen(Context, View)
+            //
+            // ⚠️ 是 **Context**，不是 Activity。样例里传的是 ComponentActivity，
+            //    因为 Activity 是 Context 的子类所以看起来像传 Activity，
+            //    但接口声明的是 Context —— 用 Activity.class 去 getMethod 会找不到方法。
+            //    （这里之前就是这么错的，表现为③ NoSuchMethodException。）
             step = "③ createCaptureScreen";
             try {
                 Method create = display.getClass()
-                        .getMethod("createCaptureScreen", Activity.class, View.class);
+                        .getMethod("createCaptureScreen", Context.class, View.class);
                 create.invoke(display, activity, view);
             } catch (NoSuchMethodException error) {
-                // 单独给这条：说明方法签名与样例不一致，得看 API 探测结果
-                report("③ 没有 createCaptureScreen(Activity, View) 这个方法 —— 看 API 探测", true);
-                Log.w(TAG, "createCaptureScreen(Activity,View) not found", error);
+                report("③ 没有 createCaptureScreen(Context, View) 这个方法 —— 看 API 探测", true);
+                Log.w(TAG, "createCaptureScreen(Context,View) not found", error);
                 return;
+            } catch (IllegalArgumentException error) {
+                // SDK 嫌画面尺寸不对时会抛 IllegalArgumentException（真机上表现为「数据越界」：
+                // 它按设备分辨率分配缓冲，却从一块尺寸对不上的 View 里取像素）。
+                // 兜底：改用带显式宽高的重载，把从 DeviceInfo 读到的真实分辨率报给它。
+                if (!castWithExplicitSize(display, view)) {
+                    reportWithStep("③ createCaptureScreen 抛异常（且显式尺寸兜底也失败）", error);
+                    return;
+                }
             } catch (Throwable error) {
                 reportWithStep("③ createCaptureScreen 抛异常", error);
                 return;
@@ -449,6 +485,38 @@ public class GlassesSdk {
         if (listener != null) listener.onGlassesStatus(where + "：" + detail, device != null);
     }
 
+    /**
+     * 用**显式宽高**的重载投屏：{@code createCaptureScreen(Context, View, int, int)}。
+     *
+     * <p>只在 2 参重载因尺寸问题（{@code IllegalArgumentException}）失败时走这条路。
+     * 宽高取 {@link #queryDisplaySize()} 从 {@code DeviceInfo} 读到的真实分辨率 ——
+     * 「数据越界」的成因就是 SDK 按设备分辨率分配缓冲、而 View 的尺寸对不上，
+     * 所以把真实分辨率**明确告诉它**是最直接的修法。
+     *
+     * <p>⚠️ 这两个 int 的语义我没能从 AAR 里确认（字节码里没有参数名，
+     * 样例也没用过这个重载），所以我把它当作 width/height 用。
+     * 真机上如果这条也失败，探测输出会把它记下来。
+     *
+     * @return 是否成功
+     */
+    private boolean castWithExplicitSize(Object display, View view) {
+        int[] size = queryDisplaySize();
+        if (size[0] <= 0 || size[1] <= 0) {
+            Log.w(TAG, "显式尺寸兜底跳过：分辨率读不到");
+            return false;
+        }
+        try {
+            Method create = display.getClass()
+                    .getMethod("createCaptureScreen", Context.class, View.class, int.class, int.class);
+            create.invoke(display, activity, view, size[0], size[1]);
+            Log.i(TAG, "改用显式尺寸投屏 " + size[0] + "×" + size[1]);
+            return true;
+        } catch (Throwable error) {
+            Log.w(TAG, "createCaptureScreen(Context,View,int,int) failed", error);
+            return false;
+        }
+    }
+
     public void stopCast() {
         main.post(() -> {
             if (display == null || !casting) return;
@@ -466,41 +534,53 @@ public class GlassesSdk {
     /**
      * 打开双眼显示。
      *
-     * <p>用反射取静态常量而不是直接引用：常量名（LEFT_EYE_PORT / RIGHT_EYE_PORT /
-     * DOUBLE_EYE_PORT）来自样例代码，但**我没验证过它们的实际值**。
-     * 取不到就跳过 —— 大多数情况下默认就是双眼。
+     * <p>正确 API 是 {@code setDisplayPortNumber(int port, int on)}，
+     * 对应样例 {@code g.setDisplayPortNumber(port, if (on) 1 else 0)}，
+     * 返回值与 {@code ResultCode.SUCCESS}（= 0）比较。
+     *
+     * <p>⚠️ 我第一版写的是 {@code setPort(int, boolean)} —— 那个方法**根本不存在**
+     * （{@code IGlassDisplay} 上只有 {@code setDisplayPortNumber}）。
+     * 因为调用是包在 try/catch 里的，它一直静默失败，只在日志里留一行。
+     *
+     * <p>常量从 {@code IGlassDisplay.DOUBLE_EYE_PORT} 反射读，不写死具体数值。
      */
     private void tryOpenBothEyes() {
         try {
-            Object lcdClient = getLcdClient();
-            if (lcdClient == null) return;
-            Class<?> deviceClass = Class.forName(CLS_DEVICE);
-            Method getDisplay = lcdClient.getClass().getMethod("getGlassDisplay", deviceClass);
-            Object target = getDisplay.invoke(lcdClient, device);
-
+            Object target = getGlassDisplay(getLcdClient());
+            if (target == null) return;
             Class<?> displayClass = Class.forName("com.llvision.glass3.core.lcd.client.IGlassDisplay");
             int port = displayClass.getField("DOUBLE_EYE_PORT").getInt(null);
-            Method setPort = displayClass.getMethod("setPort", int.class, boolean.class);
-            setPort.invoke(target, port, true);
+            Method setPort = displayClass.getMethod("setDisplayPortNumber", int.class, int.class);
+            Object result = setPort.invoke(target, port, 1);
+            Log.i(TAG, "setDisplayPortNumber(DOUBLE_EYE_PORT=" + port + ", 1) → " + result);
         } catch (Throwable error) {
             // 不是致命问题：默认通常就是双眼
-            Log.i(TAG, "setPort(DOUBLE_EYE_PORT) skipped: " + shortMessage(error));
+            Log.i(TAG, "setDisplayPortNumber skipped: " + shortMessage(error));
         }
     }
 
+    /**
+     * 取 LCD 客户端。
+     *
+     * <p>对应 Kotlin：{@code sdk.getGlass3Client(IGlass3Device.Glass3DeviceClient.LCD) as ILCDClient}
+     *
+     * <p>⚠️ 常量是 {@code int} 而不是枚举常量（见 {@link #CLS_DEVICE_CLIENT} 的注释），
+     * 所以走 {@code getField("LCD").getInt(null)} + {@code getGlass3Client(int)}。
+     */
     private Object getLcdClient() throws Exception {
         Class<?> sdkClass = Class.forName(CLS_SDK);
         Object instance = sdkClass.getMethod("getInstance").invoke(null);
-        // getGlass3Client(IGlass3Device.Glass3DeviceClient)
-        Class<?> deviceClass = Class.forName(CLS_DEVICE);
-        Class<?> clientEnum = Class.forName(CLS_DEVICE + "$Glass3DeviceClient");
-        Object lcdEnum = null;
-        for (Object constant : clientEnum.getEnumConstants()) {
-            if ("LCD".equals(String.valueOf(constant))) { lcdEnum = constant; break; }
-        }
-        if (lcdEnum == null) return null;
-        Method getClient = sdkClass.getMethod("getGlass3Client", clientEnum);
-        return getClient.invoke(instance, lcdEnum);
+        Class<?> clientKeys = Class.forName(CLS_DEVICE_CLIENT);
+        int lcd = clientKeys.getField("LCD").getInt(null);
+        Method getClient = sdkClass.getMethod("getGlass3Client", int.class);
+        return getClient.invoke(instance, lcd);
+    }
+
+    /** 取 display（{@code ILCDClient.getGlassDisplay(device)}）。参数类型必须是 library.IGlassDevice。 */
+    private Object getGlassDisplay(Object lcdClient) throws Exception {
+        Class<?> deviceClass = Class.forName(CLS_LCD_DEVICE);
+        Method method = lcdClient.getClass().getMethod("getGlassDisplay", deviceClass);
+        return method.invoke(lcdClient, device);
     }
 
     // ── API 探测（反射调用没有编译期校验，用它确认方法名与签名）──────────────
@@ -545,15 +625,26 @@ public class GlassesSdk {
                 out.append("② ✗ getGlass3DeviceList：").append(shortMessage(error)).append("\n");
             }
         }
+        // ③ Glass3DeviceClient 的常量。
+        //    ⚠️ 它是 @IntDef 注解接口而不是枚举 —— 第一版用 getEnumConstants() 拿到 null，
+        //    报的是 NullPointerException，看不出"其实这不是枚举"。所以这里按**字段**读，
+        //    并且把"它到底是什么类型"也打出来。
         try {
-            Class<?> clientEnum = Class.forName(CLS_DEVICE + "$Glass3DeviceClient");
-            StringBuilder names = new StringBuilder();
-            for (Object constant : clientEnum.getEnumConstants()) {
-                names.append(constant).append(" ");
+            Class<?> clientKeys = Class.forName(CLS_DEVICE_CLIENT);
+            out.append("③ ✓ ").append(CLS_DEVICE_CLIENT)
+               .append(clientKeys.isAnnotation() ? "（注解接口，不是枚举）" : "")
+               .append("\n");
+            StringBuilder keys = new StringBuilder();
+            for (java.lang.reflect.Field field : clientKeys.getFields()) {
+                keys.append(field.getName()).append("=").append(field.getInt(null)).append(" ");
             }
-            out.append("③ ✓ Glass3DeviceClient 常量：").append(names).append("\n");
+            out.append("   常量：").append(keys).append("\n");
+            if (sdkClass != null) {
+                out.append("   getGlass3Client 重载：\n")
+                   .append(signaturesOf(sdkClass, "getGlass3Client"));
+            }
         } catch (Throwable error) {
-            out.append("③ ✗ 读 Glass3DeviceClient 枚举：").append(shortMessage(error)).append("\n");
+            out.append("③ ✗ 读 Glass3DeviceClient 常量：").append(shortMessage(error)).append("\n");
         }
 
         // ④ LCD 客户端：真取一次，打印真实类名 + getGlassDisplay 的所有重载签名
@@ -564,7 +655,7 @@ public class GlassesSdk {
             out.append("④ ✗ getGlass3Client(LCD)：").append(shortMessage(error)).append("\n");
         }
         if (lcd == null) {
-            out.append("④ ✗ getGlass3Client(LCD) 返回 null（枚举常量名不对，或设备没就绪）\n");
+            out.append("④ ✗ getGlass3Client(LCD) 返回 null（设备没就绪？）\n");
         } else {
             out.append("④ ✓ LCD 客户端 ").append(lcd.getClass().getName()).append("\n");
             out.append("   getGlassDisplay 重载：\n")
@@ -575,17 +666,18 @@ public class GlassesSdk {
         Object target = null;
         if (lcd != null && device != null) {
             try {
-                Class<?> deviceClass = Class.forName(CLS_DEVICE);
-                Method getDisplay = lcd.getClass().getMethod("getGlassDisplay", deviceClass);
-                target = getDisplay.invoke(lcd, device);
-                out.append("⑤ ✓ getGlassDisplay(IGlass3Device) → ")
+                target = getGlassDisplay(lcd);
+                out.append("⑤ ✓ getGlassDisplay(IGlassDevice) → ")
                    .append(target == null ? "null" : target.getClass().getName()).append("\n");
             } catch (Throwable error) {
-                out.append("⑤ ✗ getGlassDisplay(IGlass3Device)：").append(shortMessage(error)).append("\n");
+                out.append("⑤ ✗ getGlassDisplay(IGlassDevice)：").append(shortMessage(error)).append("\n");
             }
         } else {
-            out.append("⑤ ⏭ 跳过（device=").append(device == null ? "null" : "有")
-               .append("）—— device 为 null 时投屏必然失败\n");
+            // 分开报原因，别只说"跳过" —— 之前这里写死了"device 为 null"，
+            // 而实际上卡在 lcd 上，日志自相矛盾（显示 device=有 却说 device 是 null）
+            out.append("⑤ ⏭ 跳过（")
+               .append(lcd == null ? "LCD 客户端没取到" : "device 是 null")
+               .append("）\n");
         }
 
         // ⑥ 投屏方法签名 —— 只查找不调用
@@ -594,13 +686,13 @@ public class GlassesSdk {
                .append(signaturesOf(target.getClass(), "createCaptureScreen"));
             boolean hasBoth = false;
             try {
-                target.getClass().getMethod("createCaptureScreen", Activity.class, View.class);
+                target.getClass().getMethod("createCaptureScreen", Context.class, View.class);
                 hasBoth = true;
             } catch (Throwable ignored) {
                 // 没有就是没有，下面统一报
             }
             out.append("⑥ ").append(hasBoth ? "✓" : "✗")
-               .append(" createCaptureScreen(Activity, View)")
+               .append(" createCaptureScreen(Context, View)")
                .append(hasBoth ? " 存在" : " 不存在 —— 用上面的重载对照，改 cast() 里的签名")
                .append("\n");
             out.append("   其他显示方法：\n")
@@ -610,11 +702,25 @@ public class GlassesSdk {
         // ⑦ 双眼常量（取不到不影响投屏，默认通常就是双眼）
         try {
             Class<?> displayClass = Class.forName("com.llvision.glass3.core.lcd.client.IGlassDisplay");
-            out.append("⑦ ✓ DOUBLE_EYE_PORT = ").append(displayClass.getField("DOUBLE_EYE_PORT").getInt(null))
-               .append("\n");
+            int port = displayClass.getField("DOUBLE_EYE_PORT").getInt(null);
+            boolean hasPort = false;
+            try {
+                displayClass.getMethod("setDisplayPortNumber", int.class, int.class);
+                hasPort = true;
+            } catch (Throwable ignored) {
+                // 下面统一报
+            }
+            out.append("⑦ ✓ DOUBLE_EYE_PORT = ").append(port)
+               .append(" · setDisplayPortNumber(int,int) ").append(hasPort ? "存在" : "不存在").append("\n");
         } catch (Throwable error) {
             out.append("⑦ ✗ 读 DOUBLE_EYE_PORT：").append(shortMessage(error)).append("\n");
         }
+
+        // ⑧ 分辨率（DeviceInfo 里是 String，不是 int —— 按 int 读会静默拿到 0）
+        int[] size = queryDisplaySize();
+        out.append("⑧ ").append(size[0] > 0 ? "✓" : "✗").append(" 分辨率 ")
+           .append(size[0]).append("×").append(size[1])
+           .append(size[0] > 0 ? "" : "（读不到，投屏画布用缺省 3:4）").append("\n");
 
         out.append("device：").append(device == null ? "null" : device.getClass().getName()).append("\n");
         out.append("LCD 服务就绪：").append(servicesReady ? "是" : "否（投屏会排队等服务就绪）").append("\n");
