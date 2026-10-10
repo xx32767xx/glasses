@@ -65,6 +65,23 @@ if (!existsSync(ANDROID_DIR)) {
   process.exit(1)
 }
 
+// ⚠️ 眼镜 SDK 的 AAR 是**编译必需品**，但它来自厂商交付包（LeionProDemo_SDK/），
+//    那个整包不进版本控制（里面有一份 124 MB 的 Demo APK）。所以刚 clone 下来的人
+//    必须先把它拷进 libs/ —— 这里提前拦住，并给出**可直接粘贴的命令**，
+//    而不是让 gradle 抛一个看不懂的"找不到符号"。
+const GLASS_AAR = join(ANDROID_DIR, 'app', 'libs', 'platform-4.8.0.4-release.aar')
+if (!existsSync(GLASS_AAR)) {
+  console.error('[apk] 缺少眼镜 SDK 的 AAR：' + GLASS_AAR)
+  console.error('')
+  console.error('      它来自厂商交付包 LeionProDemo_SDK/（整包不进版本控制）。')
+  console.error('      如果你手上有那个交付包，拷这一个文件就够：')
+  console.error('')
+  console.error('          copy LeionProDemo_SDK\\sdk\\platform-4.8.0.4-release.aar android\\app\\libs\\')
+  console.error('')
+  console.error('      只需要 platform 那一个；core_ai（人脸识别）我们不用，见 docs/09。')
+  process.exit(1)
+}
+
 const gradle = resolveGradle()
 if (gradle === null) {
   console.error('[apk] 没找到 gradle。三个办法：')

@@ -39,3 +39,12 @@ __pycache__/
 # 正文在 .md 里，PDF 是给它人看的产物：体积大、改动时 diff 不可读、
 # 而且导出一次就过时。要交付时现导即可。
 docs/**/*.pdf
+
+# 厂商给的 SDK 交付包（LeionProDemo_SDK/）。**不纳入版本控制**，两条理由：
+#   ① 体积：里面有一份编好的 Demo APK 就 124 MB，整包 ~250 MB；
+#   ② 性质：那是**厂商的交付物**，不是我们的产物（和老师那份方案文档一样）。
+# 但**编译需要其中一个文件** —— 建仓库之后要这样做一次：
+#     copy LeionProDemo_SDK\sdk\platform-4.8.0.4-release.aar android\app\libs\
+# `android/app/libs/*.aar` 是**要提交的**（22 MB，编译必需品），
+# 脚本 scripts/build-apk.mjs 会在它缺失时明确报错并给出上面这行命令。
+LeionProDemo_SDK/

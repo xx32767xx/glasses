@@ -149,6 +149,12 @@
     <string name="glasses_preview_title">眼镜显示预览</string>
     <string name="glasses_preview_empty">（还没有收到字幕）</string>
 
+    <!-- 真眼镜（USB 接的那副）投屏。见 docs/09-眼镜SDK接入.md -->
+    <string name="glasses_real_idle">眼镜未连接（用 USB 接上眼镜）</string>
+    <string name="glasses_real_cast">开始投屏</string>
+    <string name="glasses_real_stop">停止投屏</string>
+    <string name="glasses_real_caption">下面那块是模拟预览；真眼镜上的字幕走「投屏」—— SDK 没有推文字的接口，只能把一块画面投上去（见 docs/09）。</string>
+
     <!-- 异常与等待 -->
     <string name="err_mic_permission">需要麦克风权限才能采集声音</string>
     <string name="err_mic_permission_settings">已永久拒绝，请到系统设置里开启</string>

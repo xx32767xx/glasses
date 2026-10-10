@@ -1,21 +1,73 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- 和电脑上的局域网转发进程通信 -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- 录音上传：把麦克风音频传给电脑识别 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!--
+      ══════════════════════════════════════════════════════════════════════════
+      眼镜 SDK（platform-4.8.0.4-release.aar）会把自己的清单合并进来，
+      带了一大堆**我们用不到**的权限。下面用 tools:node="remove" 逐条删掉。
+      规范（见 docs/09）：**每删一条都写清理由** —— 这份清单要交给老师/审核，
+      没有解释的权限删除记录等于没写。
+      ══════════════════════════════════════════════════════════════════════════
+    -->
+
+    <!-- 不做视觉：SDK 自带的人脸/相机功能我们一个都不用（也没引入 core_ai AAR） -->
+    <uses-permission android:name="android.permission.CAMERA" tools:node="remove" />
+
+    <!-- 存储：我们只往自己的应用目录写记录文件，不需要读外部存储 -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" tools:node="remove" />
+    <!-- ⚠️ 这条最关键：MANAGE_EXTERNAL_STORAGE（全盘访问）**上架必被拒**，绝不能留 -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" tools:node="remove" />
+
+    <!-- 悬浮窗：SDK 用它做某种叠层显示；我们的字幕走投屏（createCaptureScreen），不用悬浮窗 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" tools:node="remove" />
+
+    <!-- 设备电源 / 电话号码：与业务无关，SDK 带进来的 -->
+    <uses-permission android:name="android.permission.DEVICE_POWER" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" tools:node="remove" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" tools:node="remove" />
+
+    <!--
+      前台服务：SDK 带进来 4 条（相机/录音/投屏/通用）。我们**只投屏**，
+      不跑 SDK 的前台服务（不做相机、不录音到对方、不录屏存文件），所以不需要。
+      ⚠️ 如果将来要用「眼镜端音频播报」（GlassNativeAudioEngine），
+         这条 MICROPHONE 可能要加回来 —— 到时候再说，别现在留着。
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" tools:node="remove" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" tools:node="remove" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" tools:node="remove" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" tools:node="remove" />
+
     <application
         android:label="@string/app_name"
         android:theme="@style/AppTheme"
         android:icon="@android:drawable/ic_btn_speak_now"
-        android:supportsRtl="false"
-        android:usesCleartextTraffic="true">
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
+        tools:replace="android:supportsRtl">
         <!--
           usesCleartextTraffic：局域网里走的是明文 http://192.168.x.x:8788。
           Android 9 起默认禁止明文流量，所以必须显式打开。
           这只是验证用；真要上线应当换成 https 或改用不依赖明文的方案。
+
+          supportsRtl="true" + tools:replace：眼镜 SDK 的清单声明了 true，
+          与我们原来的 false 冲突（manifest merger 直接报错）。选 true 是**故意的**：
+          葡语/中文都不涉及 RTL，对界面没有影响；而 SDK 自己需要它。
+          用 tools:replace 明确表态，而不是靠改我们的值去"碰巧不冲突"。
         -->
 
         <activity

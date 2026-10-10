@@ -120,8 +120,16 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private String lastFrameText = "";
     private String lastFrameSource = "";
     private String lastFrameSpeaker = "them";
+    /** 最近一帧是不是"还在生成中"的流式增量（用来决定要不要在末尾加省略号）。 */
+    private boolean lastFramePartial = false;
     private int panelCols = 40;
     private int panelLines = 3;
+
+    /** 眼镜投屏（真眼镜，不是界面里那个"眼镜预览"面板）。见 GlassesSdk 与 docs/09。 */
+    private GlassesSdk glasses = null;
+    private GlassesSubtitleView glassesView = null;
+    private String glassesStatus = "眼镜未初始化";
+    private boolean glassesConnected = false;
 
     private long lastSpeechAt = 0;
 
@@ -241,10 +249,46 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         applyLanguageLabels();
         renderConnectionCard();
         refreshDiagnostics();
+        setupGlasses();
+    }
+
+    /**
+     * 眼镜：初始化 SDK、建投屏用的字幕 View。
+     *
+     * <p>这一步在 onCreate 里做，因为 SDK 要一个 Activity 做屏幕采集
+     * （{@code createCaptureScreen(activity, view)}）。
+     *
+     * <p>初始化失败**不影响手机端功能** —— 手机自己那一套字幕照常工作，
+     * 只是眼镜上不显示。所以这里不弹窗、不阻断，只在眼镜状态行里说明。
+     */
+    private void setupGlasses() {
+        glassesView = new GlassesSubtitleView(this);
+        glasses = new GlassesSdk(this, (status, connected) -> {
+            glassesStatus = status;
+            glassesConnected = connected;
+            if (glassesView != null) {
+                glassesView.setStatus(
+                        connected ? "● " + status : "○ " + status,
+                        glasses != null && glasses.isCasting() ? "投屏中" : "");
+            }
+            // 眼镜一连连上就试着投屏；投屏失败会在状态行里说明原因
+            if (connected && glasses != null && glasses.isConnected() && !glasses.isCasting()) {
+                glasses.cast(glassesView.getView());
+            }
+            renderGlassesRealStatus();
+        });
+        glasses.init();
+        glassesView.setStatus("○ 眼镜未连接", "");
     }
 
     @Override
     protected void onDestroy() {
+        // ⚠️ 眼镜 SDK 必须在进程退出前销毁，否则可能残留脏 fd 导致**眼镜整机重启**。
+        //    顺序也是硬性的：destroy() 内部先 stopAllServices 再 destroy。
+        if (glasses != null) {
+            glasses.destroy();
+            glasses = null;
+        }
         super.onDestroy();
         // 录音线程先停：它持有麦克风与 AudioRecord，退出前不释放会留个坏状态
         if (uploader != null) {
@@ -531,7 +575,15 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             lastFrameText = text;
             lastFrameSource = source;
             lastFrameSpeaker = speaker;
+            lastFramePartial = partial;
             if (glassesPanel != null) renderGlassesPanel();
+            // ★ 真眼镜：把这一帧投上去。
+            //
+            //   注意这里投的是**手机该显示的那一侧**（和 renderGlassesPanel 用的同一份），
+            //   不是原始译文：如果佩戴者在看对方的字幕，那一侧就是译文；
+            //   如果这一帧是"佩戴者自己说的话"（出站给对方），投上去的是它对应的显示侧。
+            //   这样眼镜上的内容和手机面板永远一致，不会出现"眼镜和手机显示不同语言"。
+            pushToGlasses(text, source);
             if (session != null && session.active) {
                 String time = elapsedLabel();
                 SubtitleList.Segment segment = subtitles.submit(time, source, text, partial);
@@ -1345,12 +1397,75 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     // ── 眼镜预览（开发者用途）────────────────────────────────────────────────
 
     private TextView glassesPanel = null;
+    /** 真眼镜的状态行与投屏开关（只有打开这个预览页时才有）。 */
+    private TextView glassesRealStatus = null;
+    private TextView glassesRealToggle = null;
 
     private void openGlassesPreview() {
         View view = pushOverlay(R.layout.overlay_glasses);
         glassesPanel = view.findViewById(R.id.glassesPanel);
+        glassesRealStatus = view.findViewById(R.id.glassesRealStatus);
+        glassesRealToggle = view.findViewById(R.id.glassesRealToggle);
         view.findViewById(R.id.glassesBack).setOnClickListener(v -> closeOverlay());
+        glassesRealToggle.setOnClickListener(v -> toggleGlassesCast());
+        TextView caption = view.findViewById(R.id.glassesCaption);
+        if (caption != null) caption.setText(R.string.glasses_real_caption);
         renderGlassesPanel();
+        renderGlassesRealStatus();
+    }
+
+    /** 手动开始/停止投屏。连接是自动的（插上就有回调），但投屏允许手动重试。 */
+    private void toggleGlassesCast() {
+        if (glasses == null) return;
+        if (glasses.isCasting()) {
+            glasses.stopCast();
+        } else if (glasses.isConnected()) {
+            if (glassesView != null) glasses.cast(glassesView.getView());
+        } else {
+            glassesStatus = getString(R.string.glasses_real_idle);
+        }
+        renderGlassesRealStatus();
+    }
+
+    /** 把真眼镜的状态画到状态行上。没有这一行，出问题只能靠猜。 */
+    private void renderGlassesRealStatus() {
+        if (glassesRealStatus == null) return;
+        boolean casting = glasses != null && glasses.isCasting();
+        String dot = glassesConnected ? "● " : "○ ";
+        String extra = casting ? "（投屏中）" : "";
+        glassesRealStatus.setText(dot + glassesStatus + extra);
+        glassesRealStatus.setTextColor(getColor(
+                glassesConnected ? (casting ? R.color.ok : R.color.brand) : R.color.ink_soft));
+        if (glassesRealToggle != null) {
+            glassesRealToggle.setText(casting ? R.string.glasses_real_stop : R.string.glasses_real_cast);
+            // 没连眼镜时按钮暗着，但**不禁用**：点了会明确说"眼镜未连接"，
+            // 而不是让人对着一个点不动的按钮猜
+            glassesRealToggle.setTextColor(getColor(
+                    glassesConnected ? R.color.brand : R.color.ink_faint));
+        }
+    }
+
+    /**
+     * 把当前这一帧推到**真眼镜**上（手机界面里那个"眼镜预览"面板是另一回事，见本文件里的
+     * {@code glassesPanel} —— 那个只是给用户看"眼镜上大概长什么样"的模拟）。
+     *
+     * <p>SDK 的投屏是**持续采集你给的那个 View**，所以这里只要改 View 的文字，
+     * 眼镜上的画面就会跟着变 —— 不需要每次重新 createCaptureScreen。
+     *
+     * <p>两个细节：
+     * <ul>
+     *   <li><b>没在投屏就什么都不做</b>：没连眼镜时这条路径完全是空转，不能影响手机端</li>
+     *   <li><b>还在生成的增量帧加省略号</b>：和手机面板一样给佩戴者一个"还没说完"的提示</li>
+     * </ul>
+     */
+    private void pushToGlasses(String text, String source) {
+        if (glasses == null || glassesView == null) return;
+        if (!glasses.isCasting()) return;
+
+        String show = text == null || text.isEmpty() ? source : text;
+        if (show == null) show = "";
+        if (lastFramePartial) show = show + "…";
+        glassesView.setSubtitle(show);
     }
 
     /**
