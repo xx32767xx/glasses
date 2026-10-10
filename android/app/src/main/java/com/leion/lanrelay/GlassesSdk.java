@@ -77,6 +77,24 @@ public class GlassesSdk {
         return initialized;
     }
 
+    /**
+     * 当前 SDK 认出几个眼镜设备。
+     *
+     * <p>诊断用：<b>0 就是"没认出设备"</b>，那 USB 授权、投屏全都无从谈起 ——
+     * 真机上 adb 不一定能用，所以要让 App 自己把这个数字显示出来。
+     */
+    public int getDeviceCount() {
+        try {
+            Class<?> sdkClass = Class.forName(CLS_SDK);
+            Object instance = sdkClass.getMethod("getInstance").invoke(null);
+            Object list = sdkClass.getMethod("getGlass3DeviceList").invoke(instance);
+            if (list instanceof java.util.List) return ((java.util.List<?>) list).size();
+        } catch (Throwable error) {
+            Log.i(TAG, "getDeviceCount skipped: " + shortMessage(error));
+        }
+        return -1;
+    }
+
     public boolean isCasting() {
         return casting;
     }

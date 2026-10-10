@@ -31,6 +31,7 @@
             android:src="@drawable/ic_back" />
 
         <TextView
+            android:id="@+id/glassesTitle"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
@@ -81,6 +82,22 @@
             android:textColor="@color/brand"
             android:textSize="13sp" />
     </LinearLayout>
+
+    <!--
+      诊断行：每一步单独可见 —— 哪一步是 0 / false 就是卡在哪。
+      为什么要它：真机上 adb 不一定能用（沙箱里 adb 服务端起不来），
+      所以**必须让 App 自己把"卡在哪一步"说出来**，不然只能靠猜。
+    -->
+    <TextView
+        android:id="@+id/glassesRealDiag"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="10dp"
+        android:fontFamily="monospace"
+        android:textColor="@color/ink_soft"
+        android:textSize="11sp" />
 
     <LinearLayout
         android:layout_width="match_parent"

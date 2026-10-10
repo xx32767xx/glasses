@@ -32,6 +32,8 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.core.content.ContextCompat;
+
 import org.json.JSONObject;
 
 import java.text.SimpleDateFormat;
@@ -328,12 +330,19 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private void requestGlassesPermissions() {
         List<String> missing = new ArrayList<>();
         for (String permission : glassesPermissions()) {
-            if (checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
+            // ⚠️ 用 ContextCompat 而不是 Context.checkSelfPermission：
+            //    后者是 API 23+ 才有的方法。虽然 minSdk 是 24（够），
+            //    但真机上曾出现"看起来该给都给了却什么都没发生"的情况，
+            //    而权限检查是整条链的第一步 —— 这一步判错，后面全静默。
+            //    ContextCompat 是 AndroidX 的兼容封装，行为确定，不会再踩这个。
+            if (ContextCompat.checkSelfPermission(this, permission)
+                    != PackageManager.PERMISSION_GRANTED) {
                 missing.add(permission);
             }
         }
+        glassesPermMissing = missing.size();
         if (!missing.isEmpty()) {
-            glassesStatus = "等待眼镜权限（相机/媒体）";
+            glassesStatus = "等待眼镜权限（还差 " + missing.size() + " 项）";
             renderGlassesRealStatus();
             requestPermissions(missing.toArray(new String[0]), REQUEST_GLASSES_PERMISSIONS);
             return;
@@ -1521,14 +1530,31 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     /** 真眼镜的状态行与投屏开关（只有打开这个预览页时才有）。 */
     private TextView glassesRealStatus = null;
     private TextView glassesRealToggle = null;
+    /** 诊断行：权限差几项 / 悬浮窗 / SDK / 设备数 / 投屏 —— 哪一步是 0 就是卡在哪。 */
+    private TextView glassesRealDiag = null;
+    /** 上一次检查时缺了几项眼镜权限（诊断用）。 */
+    private int glassesPermMissing = 0;
 
     private void openGlassesPreview() {
         View view = pushOverlay(R.layout.overlay_glasses);
         glassesPanel = view.findViewById(R.id.glassesPanel);
         glassesRealStatus = view.findViewById(R.id.glassesRealStatus);
         glassesRealToggle = view.findViewById(R.id.glassesRealToggle);
+        glassesRealDiag = view.findViewById(R.id.glassesRealDiag);
+        // 每次打开都重新问一遍权限状态 —— 用户可能刚去设置里开过
+        glassesPermMissing = 0;
+        for (String permission : glassesPermissions()) {
+            if (ContextCompat.checkSelfPermission(this, permission)
+                    != PackageManager.PERMISSION_GRANTED) {
+                glassesPermMissing += 1;
+            }
+        }
         view.findViewById(R.id.glassesBack).setOnClickListener(v -> closeOverlay());
         glassesRealToggle.setOnClickListener(v -> toggleGlassesCast());
+        // 标题上带**版本号**：真机验证时第一件要确认的事是"装的到底是不是新版"。
+        //  没有这个，很容易出现"改了但装的是旧包，然后一起怀疑代码"。
+        TextView title = view.findViewById(R.id.glassesTitle);
+        if (title != null) title.setText(getString(R.string.glasses_preview_title) + " · v" + appVersion());
         TextView caption = view.findViewById(R.id.glassesCaption);
         if (caption != null) caption.setText(R.string.glasses_real_caption);
         renderGlassesPanel();
@@ -1569,13 +1595,32 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         renderGlassesRealStatus();
     }
 
-    /** 把真眼镜的状态画到状态行上。没有这一行，出问题只能靠猜。 */
+    /**
+     * 把真眼镜的状态画到状态行上。没有这一行，出问题只能靠猜。
+     *
+     * <p>现在这里会带**诊断信息**（权限差几项、悬浮窗有没有、SDK 有没有初始化、
+     * 认出几个设备、投屏状态）。加这些是因为真机上 adb 不一定能用
+     * （沙箱里 adb 服务端起不来），所以**得让 App 自己把卡在哪一步说出来**。
+     */
     private void renderGlassesRealStatus() {
         if (glassesRealStatus == null) return;
         boolean casting = glasses != null && glasses.isCasting();
+        boolean inited = glasses != null && glasses.isInitialized();
         String dot = glassesConnected ? "● " : "○ ";
-        String extra = casting ? "（投屏中）" : "";
-        glassesRealStatus.setText(dot + glassesStatus + extra);
+        glassesRealStatus.setText(dot + glassesStatus);
+
+        // 诊断行：每一步单独可见，哪一步是 0 / false 就是卡在哪
+        StringBuilder diag = new StringBuilder();
+        diag.append("权限差 ").append(glassesPermMissing).append(" 项")
+            .append(" · 悬浮窗 ").append(canDrawOverlaysNow() ? "有" : "无")
+            .append(" · SDK ").append(inited ? "已初始化" : "未初始化")
+            .append(" · 设备 ").append(glasses == null ? "?" : glasses.getDeviceCount()).append(" 个")
+            .append(" · ").append(casting ? "投屏中" : "未投屏");
+        if (glasses != null && glasses.getLastError().length() > 0) {
+            diag.append("\n最近错误：").append(glasses.getLastError());
+        }
+        glassesRealDiag.setText(diag.toString());
+
         glassesRealStatus.setTextColor(getColor(
                 glassesConnected ? (casting ? R.color.ok : R.color.brand) : R.color.ink_soft));
         if (glassesRealToggle != null) {
@@ -1584,6 +1629,19 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             // 而不是让人对着一个点不动的按钮猜
             glassesRealToggle.setTextColor(getColor(
                     glassesConnected ? R.color.brand : R.color.ink_faint));
+        }
+    }
+
+    private boolean canDrawOverlaysNow() {
+        return Build.VERSION.SDK_INT < 23 || Settings.canDrawOverlays(this);
+    }
+
+    /** 当前安装的版本名 —— 印在眼镜预览页标题上，用来确认"装的是不是新版"。 */
+    private String appVersion() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception error) {
+            return "?";
         }
     }
 
@@ -1618,7 +1676,13 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         if (glassesPanel == null) return;
         String[] lines = new String[panelLines];
         if (lastFrameText.isEmpty() && lastFrameSource.isEmpty()) {
-            glassesPanel.setText(R.string.glasses_preview_empty);
+            // ⚠️ 这里原来写死显示「（还没有收到字幕）」，于是**看不到投屏的真实内容** ——
+            //    用户没法用它在手机上判断"眼镜上现在到底是什么"。
+            //    现在改成显示**真正会投到眼镜上的那块待机画面**：
+            //    眼镜连着就显示"等待输入"（与 GlassesSubtitleView 的待机文案一致），
+            //    没连就说明没连。这样手机上的预览和眼镜上的画面是同一回事。
+            String idleTitle = session != null && session.active ? "等待输入" : "等待开始同传";
+            glassesPanel.setText(glassesConnected ? idleTitle : "（眼镜未连接）");
         } else {
             String text = lastFrameText == null || lastFrameText.isEmpty()
                     ? lastFrameSource : lastFrameText;
