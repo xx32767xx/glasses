@@ -57,6 +57,13 @@ public class GlassesSdk {
     /** init() 是否已经调用过（界面用它避免重复初始化，以及判断"从设置页回来要不要补跑"）。 */
     private boolean initialized;
     private String lastError = "";
+    /**
+     * 上一次投屏走到第几步（① 取客户端 / ② 取 display / ③ createCaptureScreen / ④ 双眼）。
+     *
+     * <p>投屏的四步都可能失败，而"点了没反应"在真机上无法区分是哪一步 ——
+     * 界面需要把这个值显示出来，否则只能靠 adb（真机不一定能用）。
+     */
+    private String step = "";
 
     public interface Listener {
         /** 状态变化（连接、投屏、错误）。每条都会带上"发生了什么"，界面直接显示。 */
@@ -101,6 +108,11 @@ public class GlassesSdk {
 
     public String getLastError() {
         return lastError;
+    }
+
+    /** 上一次投屏走到哪一步（界面诊断行显示它，用来定位"点了没反应"）。 */
+    public String getStep() {
+        return step;
     }
 
     // ── 初始化 ─────────────────────────────────────────────────────────────
@@ -243,7 +255,16 @@ public class GlassesSdk {
     }
 
     private void onDeviceConnected(Object connectedDevice) {
-        device = connectedDevice;
+        // ⚠️ 不要无条件覆盖 device。
+        //    启动时"眼镜先插着"那条路（init 里的 queryHasConnectedDevice）已经
+        //    从 getGlass3DeviceList() 取到设备并存进 device，随后补调的
+        //    onDeviceConnected(null) 会把**已经拿到的设备又清成 null** ——
+        //    于是 isConnected() 变 false、startServices() 提前 return、
+        //    界面上"设备 1 个"但点开始投屏什么都不发生。
+        //    真机上遇到的就是这个：设备数与连接状态自相矛盾。
+        if (connectedDevice != null) {
+            device = connectedDevice;
+        }
         report("眼镜已连接", true);
         // 连接后延迟拉服务 —— 立刻拉会失败（样例实测 3 秒）
         main.postDelayed(this::startServices, SERVICE_INIT_DELAY_MS);
@@ -276,6 +297,11 @@ public class GlassesSdk {
     /**
      * 把某个 View 投到眼镜上。这是"往眼镜显示字幕"的全部实现 ——
      * SDK 没有推文字的接口，只有投屏（见 docs/09 第 1 节）。
+     *
+     * <p>⚠️ 四步**逐步报告**，不共用一个 try/catch。理由：真机上曾出现
+     * "点了开始投屏没反应"，而笼统的"投屏失败"完全无法定位 ——
+     * 这四步里任何一步的方法名/签名写错（反射没有编译期校验）都会失败，
+     * 而它们失败的原因与修法**完全不同**。所以每一步都单独报。
      */
     public void cast(View view) {
         main.post(() -> {
@@ -284,32 +310,69 @@ public class GlassesSdk {
                 report("眼镜未连接，投屏失败", false);
                 return;
             }
-            try {
-                Object lcdClient = getLcdClient();
-                if (lcdClient == null) {
-                    report("拿不到 LCD 客户端，投屏失败", true);
-                    return;
-                }
-                // ILCDClient.getGlassDisplay(IGlass3Device) → IGlassDisplay
-                Class<?> deviceClass = Class.forName(CLS_DEVICE);
-                Method getDisplay = lcdClient.getClass().getMethod("getGlassDisplay", deviceClass);
-                display = getDisplay.invoke(lcdClient, device);
+            casting = false;
+            step = "";
 
-                // IGlassDisplay.createCaptureScreen(Activity, View)
+            // ① 拿 LCD 客户端
+            step = "① 取 LCD 客户端";
+            Object lcdClient;
+            try {
+                lcdClient = getLcdClient();
+            } catch (Throwable error) {
+                reportWithStep("① 取 LCD 客户端失败", error);
+                return;
+            }
+            if (lcdClient == null) {
+                report("① 取不到 LCD 客户端（getGlass3Client(LCD) 返回 null）", true);
+                return;
+            }
+
+            // ② getGlassDisplay(device)
+            step = "② getGlassDisplay";
+            try {
+                Class<?> deviceClass = Class.forName(CLS_DEVICE);
+                Method method = lcdClient.getClass().getMethod("getGlassDisplay", deviceClass);
+                display = method.invoke(lcdClient, device);
+            } catch (Throwable error) {
+                reportWithStep("② getGlassDisplay 失败", error);
+                return;
+            }
+            if (display == null) {
+                report("② getGlassDisplay 返回 null（设备可能还没就绪，退后几秒重试）", true);
+                return;
+            }
+
+            // ③ createCaptureScreen(activity, view)
+            step = "③ createCaptureScreen";
+            try {
                 Method create = display.getClass()
                         .getMethod("createCaptureScreen", Activity.class, View.class);
                 create.invoke(display, activity, view);
-                casting = true;
-                report("眼镜投屏中", true);
-
-                // 双眼都打开（失败不影响投屏，所以单独 try）
-                tryOpenBothEyes();
+            } catch (NoSuchMethodException error) {
+                // 单独给这条：说明方法签名与样例不一致，得看 API 探测结果
+                report("③ 没有 createCaptureScreen(Activity, View) 这个方法 —— 看 API 探测", true);
+                Log.w(TAG, "createCaptureScreen(Activity,View) not found", error);
+                return;
             } catch (Throwable error) {
-                casting = false;
-                report("投屏失败：" + shortMessage(error), true);
-                Log.w(TAG, "cast failed", error);
+                reportWithStep("③ createCaptureScreen 抛异常", error);
+                return;
             }
+
+            casting = true;
+            step = "④ 已投屏";
+            report("眼镜投屏中", true);
+
+            // ④ 打开双眼（失败不影响投屏本身）
+            tryOpenBothEyes();
         });
+    }
+
+    /** 报告时带上"卡在第几步"+ 最内层异常类型与消息。 */
+    private void reportWithStep(String where, Throwable error) {
+        String detail = shortMessage(error);
+        lastError = where + "：" + detail;
+        Log.w(TAG, where, error);
+        if (listener != null) listener.onGlassesStatus(where + "：" + detail, device != null);
     }
 
     public void stopCast() {
@@ -364,6 +427,158 @@ public class GlassesSdk {
         if (lcdEnum == null) return null;
         Method getClient = sdkClass.getMethod("getGlass3Client", clientEnum);
         return getClient.invoke(instance, lcdEnum);
+    }
+
+    // ── API 探测（反射调用没有编译期校验，用它确认方法名与签名）──────────────
+
+    /**
+     * 把 SDK 的真实结构打出来：每一步反射调用**当场试一遍**，成功打 ✓，失败打 ✗ 并给出原因。
+     *
+     * <p><b>为什么必须有这个</b>：我对 SDK 的每一处调用都是**反射**
+     * （{@code platform-4.8.0.4-release.aar} 我只是把类名读出来，没有编译期校验），
+     * 所以方法名与参数类型**从来没被编译器检查过**。一旦写错，真机上的表现
+     * 就是"点了没反应"，而 adb 在真机上不一定能用 —— 只能让 App 自己说。
+     *
+     * <p>设计上刻意**不猜类名**：先把对象真的取出来，再打印它运行时的类名与方法签名。
+     * 第一版我硬编码了 {@code ILCDClient} / {@code IGlassDisplay} 去猜，
+     * 但反射要的是**精确签名**，猜类名毫无意义 —— 打印实际拿到的东西才可靠。
+     *
+     * <p>唯一的副作用：本方法只做 {@code getMethod} 查找，**不 invoke**
+     * {@code createCaptureScreen}（那会真的开始投屏，探测不该改变状态）。
+     *
+     * @return 多行文本，按 ①②③… 编号，第一个 ✗ 就是卡住的位置
+     */
+    public String probeApi() {
+        StringBuilder out = new StringBuilder();
+
+        // ① SDK 单例
+        Class<?> sdkClass = null;
+        Object sdkInstance = null;
+        try {
+            sdkClass = Class.forName(CLS_SDK);
+            sdkInstance = sdkClass.getMethod("getInstance").invoke(null);
+            out.append("① ✓ SDK 单例 ").append(sdkInstance.getClass().getName()).append("\n");
+        } catch (Throwable error) {
+            out.append("① ✗ 取 SDK 单例失败：").append(shortMessage(error)).append("\n");
+        }
+
+        // ② 设备列表 + Glass3DeviceClient 枚举常量（LCD 这个常量名错了就取不到客户端）
+        if (sdkClass != null) {
+            try {
+                Object list = sdkClass.getMethod("getGlass3DeviceList").invoke(sdkInstance);
+                out.append("② ✓ getGlass3DeviceList() → ").append(describe(list)).append("\n");
+            } catch (Throwable error) {
+                out.append("② ✗ getGlass3DeviceList：").append(shortMessage(error)).append("\n");
+            }
+        }
+        try {
+            Class<?> clientEnum = Class.forName(CLS_DEVICE + "$Glass3DeviceClient");
+            StringBuilder names = new StringBuilder();
+            for (Object constant : clientEnum.getEnumConstants()) {
+                names.append(constant).append(" ");
+            }
+            out.append("③ ✓ Glass3DeviceClient 常量：").append(names).append("\n");
+        } catch (Throwable error) {
+            out.append("③ ✗ 读 Glass3DeviceClient 枚举：").append(shortMessage(error)).append("\n");
+        }
+
+        // ④ LCD 客户端：真取一次，打印真实类名 + getGlassDisplay 的所有重载签名
+        Object lcd = null;
+        try {
+            lcd = getLcdClient();
+        } catch (Throwable error) {
+            out.append("④ ✗ getGlass3Client(LCD)：").append(shortMessage(error)).append("\n");
+        }
+        if (lcd == null) {
+            out.append("④ ✗ getGlass3Client(LCD) 返回 null（枚举常量名不对，或设备没就绪）\n");
+        } else {
+            out.append("④ ✓ LCD 客户端 ").append(lcd.getClass().getName()).append("\n");
+            out.append("   getGlassDisplay 重载：\n")
+               .append(signaturesOf(lcd.getClass(), "getGlassDisplay"));
+        }
+
+        // ⑤ display 对象
+        Object target = null;
+        if (lcd != null && device != null) {
+            try {
+                Class<?> deviceClass = Class.forName(CLS_DEVICE);
+                Method getDisplay = lcd.getClass().getMethod("getGlassDisplay", deviceClass);
+                target = getDisplay.invoke(lcd, device);
+                out.append("⑤ ✓ getGlassDisplay(IGlass3Device) → ")
+                   .append(target == null ? "null" : target.getClass().getName()).append("\n");
+            } catch (Throwable error) {
+                out.append("⑤ ✗ getGlassDisplay(IGlass3Device)：").append(shortMessage(error)).append("\n");
+            }
+        } else {
+            out.append("⑤ ⏭ 跳过（device=").append(device == null ? "null" : "有")
+               .append("）—— device 为 null 时投屏必然失败\n");
+        }
+
+        // ⑥ 投屏方法签名 —— 只查找不调用
+        if (target != null) {
+            out.append("   createCaptureScreen 重载：\n")
+               .append(signaturesOf(target.getClass(), "createCaptureScreen"));
+            boolean hasBoth = false;
+            try {
+                target.getClass().getMethod("createCaptureScreen", Activity.class, View.class);
+                hasBoth = true;
+            } catch (Throwable ignored) {
+                // 没有就是没有，下面统一报
+            }
+            out.append("⑥ ").append(hasBoth ? "✓" : "✗")
+               .append(" createCaptureScreen(Activity, View)")
+               .append(hasBoth ? " 存在" : " 不存在 —— 用上面的重载对照，改 cast() 里的签名")
+               .append("\n");
+            out.append("   其他显示方法：\n")
+               .append(signaturesOf(target.getClass(), "Capture", "Port", "Luminance", "BackLight"));
+        }
+
+        // ⑦ 双眼常量（取不到不影响投屏，默认通常就是双眼）
+        try {
+            Class<?> displayClass = Class.forName("com.llvision.glass3.core.lcd.client.IGlassDisplay");
+            out.append("⑦ ✓ DOUBLE_EYE_PORT = ").append(displayClass.getField("DOUBLE_EYE_PORT").getInt(null))
+               .append("\n");
+        } catch (Throwable error) {
+            out.append("⑦ ✗ 读 DOUBLE_EYE_PORT：").append(shortMessage(error)).append("\n");
+        }
+
+        out.append("device：").append(device == null ? "null" : device.getClass().getName()).append("\n");
+        out.append("投屏步：").append(step.length() == 0 ? "（还没点过开始投屏）" : step).append("\n");
+        return out.toString();
+    }
+
+    /** 打印某个类上所有方法名包含关键字的签名（反射只认精确签名，所以参数类型要全名）。 */
+    private static String signaturesOf(Class<?> clazz, String... keywords) {
+        StringBuilder out = new StringBuilder();
+        int shown = 0;
+        for (Method method : clazz.getMethods()) {
+            String name = method.getName();
+            boolean hit = false;
+            for (String keyword : keywords) {
+                if (name.contains(keyword)) {
+                    hit = true;
+                    break;
+                }
+            }
+            if (!hit) continue;
+            out.append("    ").append(name).append("(");
+            Class<?>[] types = method.getParameterTypes();
+            for (int index = 0; index < types.length; index += 1) {
+                out.append(index == 0 ? "" : ", ").append(types[index].getName());
+            }
+            out.append(")\n");
+            shown += 1;
+        }
+        if (shown == 0) out.append("    （没有匹配的方法 —— 类名/方法名可能不对）\n");
+        return out.toString();
+    }
+
+    private static String describe(Object value) {
+        if (value == null) return "null";
+        if (value instanceof java.util.List) {
+            return "List(size=" + ((java.util.List<?>) value).size() + ")";
+        }
+        return value.getClass().getName() + " = " + value;
     }
 
     // ── 清理（硬要求，见类注释）────────────────────────────────────────────

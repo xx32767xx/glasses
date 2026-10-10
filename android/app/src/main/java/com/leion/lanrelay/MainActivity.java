@@ -10,6 +10,7 @@ import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Paint;
+import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -280,6 +281,9 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private void setupGlasses() {
         glassesView = new GlassesSubtitleView(this);
         glasses = new GlassesSdk(this, (status, connected) -> {
+            // ⚠️ 顺序：先判断"这次回调是不是一次真正的**新**连接"，再更新字段。
+            //    只有 connected 从 false 变 true 那一次才算新连接。
+            boolean justConnected = connected && !glassesConnected;
             glassesStatus = status;
             glassesConnected = connected;
             if (glassesView != null) {
@@ -287,8 +291,13 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                         connected ? "● " + status : "○ " + status,
                         glasses != null && glasses.isCasting() ? "投屏中" : "");
             }
-            // 眼镜一连连上就试着投屏；投屏失败会在状态行里说明原因
-            if (connected && glasses != null && glasses.isConnected() && !glasses.isCasting()) {
+            // 眼镜一连上就自动试投屏 —— 但**只在刚连上那一次**。
+            //
+            // 这里原来写的是 `if (connected && isConnected() && !isCasting())`，是个死循环：
+            // 投屏失败时 reportWithStep 也带着 connected=true 回调 listener，
+            // listener 又看到"没在投屏"就再投一次 —— 失败 → 回调 → 再投，无限循环，
+            // 主线程被自己的 post 塞满。真机上"点了开始投屏没反应"就是它。
+            if (justConnected && glasses != null && glasses.isConnected() && !glasses.isCasting()) {
                 glasses.cast(glassesView.getView());
             }
             // 投屏一旦成功，先给一个**待机画面**。
@@ -1551,6 +1560,13 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         }
         view.findViewById(R.id.glassesBack).setOnClickListener(v -> closeOverlay());
         glassesRealToggle.setOnClickListener(v -> toggleGlassesCast());
+        // 长按诊断行 → API 探测（真机上 adb 不一定能用，只能靠 App 自己说）
+        if (glassesRealDiag != null) {
+            glassesRealDiag.setOnLongClickListener(v -> {
+                showGlassesApiProbe();
+                return true;
+            });
+        }
         // 标题上带**版本号**：真机验证时第一件要确认的事是"装的到底是不是新版"。
         //  没有这个，很容易出现"改了但装的是旧包，然后一起怀疑代码"。
         TextView title = view.findViewById(R.id.glassesTitle);
@@ -1584,13 +1600,18 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
     /** 手动开始/停止投屏。连接是自动的（插上就有回调），但投屏允许手动重试。 */
     private void toggleGlassesCast() {
-        if (glasses == null) return;
-        if (glasses.isCasting()) {
+        // 三条分支都必须**留下可见反馈**。原来 glassesView == null 时是静默 return ——
+        // 那正是"点了没反应"最典型的成因：代码什么都没做，界面也什么都不说。
+        if (glasses == null || glassesView == null) {
+            glassesStatus = "眼镜模块还没就绪（等待权限/悬浮窗）";
+        } else if (glasses.isCasting()) {
             glasses.stopCast();
         } else if (glasses.isConnected()) {
-            if (glassesView != null) glasses.cast(glassesView.getView());
+            glassesStatus = "正在投屏…";
+            glasses.cast(glassesView.getView());
         } else {
-            glassesStatus = getString(R.string.glasses_real_idle);
+            // 设备列表和连接状态分开报：这两个数字对不上才是真正要查的问题
+            glassesStatus = "眼镜未连接（设备列表 " + glasses.getDeviceCount() + " 个）——重插一下眼镜";
         }
         renderGlassesRealStatus();
     }
@@ -1616,9 +1637,13 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             .append(" · SDK ").append(inited ? "已初始化" : "未初始化")
             .append(" · 设备 ").append(glasses == null ? "?" : glasses.getDeviceCount()).append(" 个")
             .append(" · ").append(casting ? "投屏中" : "未投屏");
+        if (glasses != null && glasses.getStep().length() > 0) {
+            diag.append("\n投屏步：").append(glasses.getStep());
+        }
         if (glasses != null && glasses.getLastError().length() > 0) {
             diag.append("\n最近错误：").append(glasses.getLastError());
         }
+        diag.append("\n（长按本行看 API 探测）");
         glassesRealDiag.setText(diag.toString());
 
         glassesRealStatus.setTextColor(getColor(
@@ -1634,6 +1659,35 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
     private boolean canDrawOverlaysNow() {
         return Build.VERSION.SDK_INT < 23 || Settings.canDrawOverlays(this);
+    }
+
+    /**
+     * 长按诊断行 → 弹出 SDK 的 API 探测结果。
+     *
+     * <p>为什么要一个弹窗而不是写在诊断行里：探测结果是几十行方法签名，
+     * 挤在那一行里没法看。用等宽字体 + 可滚动，是为了让签名里的逗号、
+     * 包名能一眼对齐 —— 反射只认**精确签名**，差一个参数类型就找不到方法。
+     */
+    private void showGlassesApiProbe() {
+        if (glasses == null) return;
+        String text = GlassesSdk.probeAvailability() + "\n\n" + glasses.probeApi();
+
+        TextView box = new TextView(this);
+        box.setText(text);
+        box.setTextSize(11f);
+        // 等宽：签名对齐才好比对参数类型
+        box.setTypeface(Typeface.MONOSPACE);
+        box.setTextIsSelectable(true);   // 允许长按复制，方便把结果发回来
+        box.setPadding(dp(16), dp(12), dp(16), dp(12));
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(box);
+
+        new AlertDialog.Builder(this)
+                .setTitle("眼镜 SDK API 探测")
+                .setView(scroll)
+                .setPositiveButton("关闭", null)
+                .show();
     }
 
     /** 当前安装的版本名 —— 印在眼镜预览页标题上，用来确认"装的是不是新版"。 */

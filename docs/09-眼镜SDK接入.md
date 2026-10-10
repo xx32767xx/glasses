@@ -260,22 +260,87 @@ AAR 清单会带进一堆我们**不需要**的权限。用 manifest 合并规�
 | 用法搞清了吗 | ✅ 机制、API、依赖、坑都从代码里核对过 |
 | 代码写了吗 | ✅ 写了：`android/` 里 `GlassesSdk.java`（反射桥接）+ `GlassesSubtitleView.java`（眼镜字幕 View）+ MainActivity 接线 |
 | **编译过吗** | ✅ **过了**。`assembleDebug` 成功，APK 35.9 MB，含 23 个 arm64 原生库 |
-| **实机跑过吗** | ❌ **没有** —— 没有眼镜硬件 |
+| **插上真机了吗** | ✅ 插上了 —— USB 认到设备、SDK 初始化成功、设备数 1 |
+| **投屏成功了吗** | ❌ **还没**。见下面「实机两次失败」—— 两个原因都已定位并修掉，等下一次装机复验 |
 
 ### 已验证到的程度（有据可查）
 
 ```
 APK 35.9 MB · 23 个 .so（含 liblcd.so / libllvision_usb100.so）
 armeabi-v7a / x86 / x86_64 的库：0 个          ← abiFilters 生效
-合并后的权限：只剩 INTERNET + RECORD_AUDIO     ← 其余都被 tools:node="remove" 删掉
+合并后的权限：INTERNET · RECORD_AUDIO · CAMERA · READ_MEDIA_*（4 条）
+              · WRITE/READ_EXTERNAL_STORAGE · SYSTEM_ALERT_WINDOW
+              · WAKE_LOCK · FOREGROUND_SERVICE(+CAMERA)
 ```
+
+> ⚠️ 这里**曾经写错并且真的踩了坑**：我一开始按"最小权限"的原则把 CAMERA 与
+> 媒体读写权限从清单里 `tools:node="remove"` 掉了，理由是"眼镜是同传用的，不需要相机"。
+> 实机结果是**官方 App 会弹的"允许访问眼镜吗"我们一次都不弹**，眼镜连不上。
+> 官方 `glassRuntimePermissions()` 要的就是这些，而且**必须在 SDK init 之前拿到**。
+> 教训：SDK 声明的权限是它的**前置条件**，不是我们能替它省的东西。
+
+### 实机两次失败（都已定位，写在这里免得再犯）
+
+**第一次：不弹 USB 授权框** → 上面那条权限删除造成的，已恢复。
+
+**第二次：诊断行全绿，点「开始投屏」毫无反应** → 两个原因叠加：
+
+1. **`onDeviceConnected(null)` 把已取到的设备清成了 `null`。**
+   "眼镜先插着、再开 App"这条路上，`init()` 已经用 `getGlass3DeviceList()`
+   取到设备并存进 `device`，紧接着补调的 `onDeviceConnected(null)` 又把它覆盖成 `null`。
+   于是 `isConnected()` 变 false（但设备数仍显示 1，两个数字自相矛盾），
+   点按钮直接落到"未连接"分支，**看起来就是没反应**。
+   → 修法：`connectedDevice != null` 才覆盖。
+
+2. **状态回调里自动重投屏 → 死循环。**
+   `MainActivity` 的监听器原来写的是
+   `if (connected && isConnected() && !isCasting()) cast(...)`。
+   而投屏失败时 `reportWithStep` **也带着 `connected=true` 回调**，
+   监听器又看到"没在投屏"就再投一次 —— 失败 → 回调 → 再投，无限循环，
+   主线程被自己的 `post` 塞满。
+   → 修法：只有 `connected` 从 false 变 true 那一次（`justConnected`）才自动投屏。
+
+> 这两条都属于**反射桥接特有的坑**：没有编译期校验，错误不会崩，
+> 只会静默地什么都不做。所以下面这个探测工具是必需品，不是可选项。
+
+### `probeApi()`：长按诊断行就能看见 SDK 的真实结构
+
+反射调用唯一可靠的排查手段是**把真实结构打出来**。所以眼镜预览页的诊断行
+**长按**会弹出一个探测结果，按 ①②③… 编号，**第一个 ✗ 就是卡住的位置**：
+
+```
+① ✓ SDK 单例 com.llvision.glass3.platform.LLVisionGlass3SDK@...
+② ✓ getGlass3DeviceList() → List(size=1)
+③ ✓ Glass3DeviceClient 常量：LCD CAMERA ...
+④ ✓ LCD 客户端 com.llvision...XxxImpl
+   getGlassDisplay 重载：
+    getGlassDisplay(com.llvision.glass3.platform.IGlass3Device)
+⑤ ✓ getGlassDisplay(IGlass3Device) → com.llvision...YyyImpl
+   createCaptureScreen 重载：
+    createCaptureScreen(android.app.Activity, android.view.View)
+⑥ ✓ createCaptureScreen(Activity, View) 存在
+⑦ ✓ DOUBLE_EYE_PORT = 0
+device：com.llvision...ZzzImpl
+投屏步：③ createCaptureScreen
+```
+
+设计上的两个刻意选择：
+
+- **不猜类名。** 第一版我硬编码 `ILCDClient` / `IGlassDisplay` 去 `Class.forName`，
+  但反射要的是**精确签名**，猜类名毫无意义。现在改成先把对象真取出来，
+  再打印它**运行时**的类名与方法签名。
+- **只 `getMethod` 查找，不 `invoke`。** 探测不该改变状态 ——
+  真的调用 `createCaptureScreen` 会**开始投屏**，那探测本身就变成了一次副作用。
+
+`GlassesSdk` 里还留了一个 `step` 字段（`①取客户端 / ②getGlassDisplay / ③createCaptureScreen / ④已投屏`），
+诊断行第二行会显示它，用来区分"根本没点到"和"点到了但卡在第几步"。
 
 ### 还没验证的（**第一次接真机必然要动这些**）
 
 1. 投屏时**要不要用户授权**、会不会每次都问
 2. 眼镜的**实际分辨率与长宽比** → 决定 `GlassesSubtitleView` 的字号（现在是按 20 列估的）
 3. 投屏的**帧率与延迟**够不够看字幕
-4. 反射调用的**签名对不对** —— 我按样例代码写的，但无法编译期校验
+4. 反射调用的**签名对不对** —— 现在有 `probeApi()` 可以直接看，不用再猜
 
 ---
 
