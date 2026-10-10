@@ -1663,6 +1663,15 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             .append(" · 服务 ").append(glasses == null ? "?" : (glasses.isServicesReady() ? "就绪" : "启动中"))
             .append(" · ").append(casting ? "投屏中" : "未投屏");
         diag.append("\n").append(glassesCanvasNote);
+        if (glasses != null && casting) {
+            // 投屏中：帧数与 LCD 状态是"为什么看不见"的两个关键数字
+            diag.append(" · ").append(glasses.getFrameInfo());
+            String lcdInfo = glasses.queryLcdInfo();
+            if (lcdInfo.length() > 0) diag.append("\n").append(lcdInfo);
+        }
+        if (glasses != null && glasses.getPrepareNote().length() > 0) {
+            diag.append("\n投屏前准备：").append(glasses.getPrepareNote());
+        }
         if (glasses != null && glasses.getStep().length() > 0) {
             diag.append("\n投屏步：").append(glasses.getStep());
         }

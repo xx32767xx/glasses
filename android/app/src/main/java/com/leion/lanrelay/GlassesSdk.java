@@ -112,6 +112,18 @@ public class GlassesSdk {
         }
     };
 
+    // ── 帧回调探针：唯一能证明"SDK 到底有没有在出画面"的东西 ────────────────
+    /** 采集帧计数（回调在传输线程上触发，所以用原子量）。 */
+    private final java.util.concurrent.atomic.AtomicInteger frameCount =
+            new java.util.concurrent.atomic.AtomicInteger();
+    private volatile int frameWidth;
+    private volatile int frameHeight;
+    /** 第一帧的非黑字节千分比；-1 = 还没拿到帧。 */
+    private volatile int frameNonBlack = -1;
+    private Object frameCallback;
+    /** 投屏前那几步（LCD 开关 / 双眼端口）的结果，显示在诊断行上。 */
+    private String prepareNote = "";
+
     public interface Listener {
         /** 状态变化（连接、投屏、错误）。每条都会带上"发生了什么"，界面直接显示。 */
         void onGlassesStatus(String status, boolean connected);
@@ -300,6 +312,39 @@ public class GlassesSdk {
         }
     }
 
+    /**
+     * 读 LCD 的状态：{@code LCDInfo{open, backLightAuto, level, displayMode}}。
+     *
+     * <p>为什么需要它：真机上出现"SDK 说投屏成功、眼镜上却什么都没有"时，
+     * 关键问题是 <b>LCD 到底开没开</b>（{@code open}）以及
+     * <b>当前显示模式是什么</b>（{@code displayMode}）。
+     * 样例里 {@code displayMode} 的取值是有含义的：
+     * <pre>
+     *   0  = 同步投屏（createCaptureScreen(Context)）
+     *   1  = 叠加投屏（createCaptureScreen(Context, View)）← 我们用的
+     *  -1  = 已停止
+     * </pre>
+     * 所以投屏之后再读一次，就能验证"模式真的切过去了没有"。
+     *
+     * @return 一行说明；读不到返回空串
+     */
+    public String queryLcdInfo() {
+        try {
+            Object target = getGlassDisplay(getLcdClient());
+            if (target == null) return "";
+            Object info = target.getClass().getMethod("getLCDInfo").invoke(target);
+            if (info == null) return "LCD 信息 null";
+            Class<?> infoClass = info.getClass();
+            boolean open = (Boolean) infoClass.getField("open").get(info);
+            int level = infoClass.getField("level").getInt(info);
+            int mode = infoClass.getField("displayMode").getInt(info);
+            return "LCD " + (open ? "开" : "关") + " 亮度" + level + " 模式" + mode;
+        } catch (Throwable error) {
+            Log.i(TAG, "queryLcdInfo skipped: " + shortMessage(error));
+            return "";
+        }
+    }
+
     private void onDeviceConnected(Object connectedDevice) {
         // ⚠️ 不要无条件覆盖 device。
         //    启动时"眼镜先插着"那条路（init 里的 queryHasConnectedDevice）已经
@@ -436,19 +481,37 @@ public class GlassesSdk {
                 return;
             }
 
-            // ③ createCaptureScreen(Context, View)
+            // ③ 把 LCD 打开、把双眼端口打开
+            //
+            // 🔴 这一步是"投屏成功但眼镜上看不到任何东西"的关键。
+            //    真机现象：SDK 返回成功、界面显示"眼镜投屏中"，
+            //    但眼镜仍然停在**固件自己的**"请在手机上进行操作"那一屏 ——
+            //    说明 LCD 根本没切到我们这条采集流上。
+            //
+            //    官方样例在这件事上是**间接**暴露的：它的 setPort() 里有一句
+            //      if (!lcdOn) { g.setSwitch(true) }        ← 先开 LCD
+            //      g.setDisplayPortNumber(port, v)          ← 再开眼位
+            //    也就是说眼位是**要显式打开**的，而且 LCD 可能处于关闭态。
+            //    我上一轮为了缩小闪退排查面把它去掉了，现在它成了最可能的原因，加回来。
+            //
+            //    这两步都**不中止流程**：它们失败时投屏可能只是部分可见，
+            //    记录结果继续走，总比直接不投更有信息量。
+            step = "③ 打开 LCD / 双眼端口";
+            prepareNote = prepareDisplay(display);
+
+            // ④ createCaptureScreen(Context, View)
             //
             // ⚠️ 是 **Context**，不是 Activity。样例里传的是 ComponentActivity，
             //    因为 Activity 是 Context 的子类所以看起来像传 Activity，
             //    但接口声明的是 Context —— 用 Activity.class 去 getMethod 会找不到方法。
             //    （这里之前就是这么错的，表现为③ NoSuchMethodException。）
-            step = "③ createCaptureScreen";
+            step = "④ createCaptureScreen";
             try {
                 Method create = display.getClass()
                         .getMethod("createCaptureScreen", Context.class, View.class);
                 create.invoke(display, activity, view);
             } catch (NoSuchMethodException error) {
-                report("③ 没有 createCaptureScreen(Context, View) 这个方法 —— 看 API 探测", true);
+                report("④ 没有 createCaptureScreen(Context, View) 这个方法 —— 看 API 探测", true);
                 Log.w(TAG, "createCaptureScreen(Context,View) not found", error);
                 return;
             } catch (IllegalArgumentException error) {
@@ -456,30 +519,130 @@ public class GlassesSdk {
                 // 它按设备分辨率分配缓冲，却从一块尺寸对不上的 View 里取像素）。
                 // 兜底：改用带显式宽高的重载，把从 DeviceInfo 读到的真实分辨率报给它。
                 if (!castWithExplicitSize(display, view)) {
-                    reportWithStep("③ createCaptureScreen 抛异常（且显式尺寸兜底也失败）", error);
+                    reportWithStep("④ createCaptureScreen 抛异常（且显式尺寸兜底也失败）", error);
                     return;
                 }
             } catch (Throwable error) {
-                reportWithStep("③ createCaptureScreen 抛异常", error);
+                reportWithStep("④ createCaptureScreen 抛异常", error);
                 return;
             }
 
             casting = true;
-            step = "④ 已投屏";
-            report("眼镜投屏中", true);
+            step = "⑤ 已投屏";
 
-            // ⚠️ 这里**刻意不再调 setDisplayPortNumber**。
-            //
-            //    官方样例的 overlay 路径（startOverlayTransfer）只调 createCaptureScreen，
-            //    没有碰眼位；setDisplayPortNumber 只出现在它的"眼位测试"小工具里。
-            //    也就是说"开双眼"这件事**默认就应该是对的**，我们主动去设属于多此一举。
-            //
-            //    而它是在投屏刚建立的那一刻做的又一个 SDK 状态变更 ——
-            //    正在查闪退的时候，一次只引入一个未经证实的调用。
-            //
-            //    如果真机上发现只有一只眼睛有画面，再打开下面这行（方法还在）。
-            // tryOpenBothEyes();
+            // ⑤ 挂帧回调：这是**唯一能证明"SDK 到底有没有在出画面"**的东西。
+            //    onFrameAvailable(byte[], width, height) 直接给出采集尺寸和像素。
+            //    没有它，"投屏中但看不见"就无法区分是
+            //    "根本没出帧"还是"出了帧但眼镜没显示"。
+            registerFrameProbe(display);
+
+            report("眼镜投屏中" + (prepareNote.isEmpty() ? "" : "（" + prepareNote + "）"), true);
         });
+    }
+
+    /**
+     * 开 LCD、开双眼端口。返回一行给界面看的说明。
+     *
+     * <p>依据是官方样例 {@code DisplayTestViewModel.setPort()} —— 它在开眼位之前
+     * 会先 {@code setSwitch(true)} 把 LCD 打开，并且它的界面文案里有一句
+     * "还没开始投屏"的提示，说明眼位和投屏是两件要分别做的事。
+     */
+    private String prepareDisplay(Object display) {
+        StringBuilder note = new StringBuilder();
+        try {
+            // setSwitch(true)：打开 LCD
+            Method setSwitch = display.getClass().getMethod("setSwitch", boolean.class);
+            Object switched = setSwitch.invoke(display, true);
+            note.append("LCD开关=").append(switched);
+        } catch (Throwable error) {
+            note.append("setSwitch失败(").append(shortMessage(error)).append(")");
+        }
+        try {
+            Class<?> displayClass = Class.forName("com.llvision.glass3.core.lcd.client.IGlassDisplay");
+            int port = displayClass.getField("DOUBLE_EYE_PORT").getInt(null);
+            Method setPort = displayClass.getMethod("setDisplayPortNumber", int.class, int.class);
+            Object result = setPort.invoke(display, port, 1);
+            // ResultCode.SUCCESS == 0
+            note.append(" 双眼=").append(result);
+        } catch (Throwable error) {
+            note.append(" 眼位失败(").append(shortMessage(error)).append(")");
+        }
+        Log.i(TAG, "prepareDisplay: " + note);
+        return note.toString();
+    }
+
+    /** 供诊断行显示：投屏前那几步（LCD/眼位）的结果。 */
+    public String getPrepareNote() {
+        return prepareNote;
+    }
+
+    /**
+     * 挂上"采集帧"回调，用来确认 SDK 真的在出画面。
+     *
+     * <p>{@code com.llvision.glass3.core.lcd.client.ICaptureDisplayFrameCallback}：
+     * <pre>void onFrameAvailable(byte[] data, int width, int height)</pre>
+     *
+     * <p>做两件事：
+     * <ol>
+     *   <li>数帧数 —— 0 帧就说明采集压根没跑起来，问题在手机侧；</li>
+     *   <li>看**第一帧的非黑比例** —— 有帧但全黑，说明 View 没画出东西
+     *       （比如尺寸是 0×0 或者内容没渲染），问题在 View 侧。</li>
+     * </ol>
+     * 这两个结论指向完全不同的修法，而在此之前只能靠猜。
+     *
+     * <p>只算第一帧：这个回调在传输线程上按帧率触发，逐帧扫描像素会拖慢投屏本身。
+     */
+    private void registerFrameProbe(Object display) {
+        frameCount.set(0);
+        frameWidth = 0;
+        frameHeight = 0;
+        frameNonBlack = -1;
+        try {
+            Class<?> callbackClass = Class.forName(
+                    "com.llvision.glass3.core.lcd.client.ICaptureDisplayFrameCallback");
+            frameCallback = java.lang.reflect.Proxy.newProxyInstance(
+                    callbackClass.getClassLoader(),
+                    new Class<?>[] { callbackClass },
+                    (proxy, method, args) -> {
+                        if ("onFrameAvailable".equals(method.getName())
+                                && args != null && args.length >= 3) {
+                            frameCount.incrementAndGet();
+                            if (args[1] instanceof Integer) frameWidth = (Integer) args[1];
+                            if (args[2] instanceof Integer) frameHeight = (Integer) args[2];
+                            // 只测第一帧
+                            if (frameNonBlack < 0 && args[0] instanceof byte[]) {
+                                frameNonBlack = nonBlackPermille((byte[]) args[0]);
+                            }
+                        }
+                        return null;
+                    });
+            Method register = display.getClass().getMethod(
+                    "registerCaptureDisplayFrameCallback", callbackClass);
+            register.invoke(display, frameCallback);
+            Log.i(TAG, "帧回调已挂");
+        } catch (Throwable error) {
+            Log.w(TAG, "registerCaptureDisplayFrameCallback failed: " + shortMessage(error), error);
+        }
+    }
+
+    /** 采样统计非零字节的千分比（不关心像素格式，只区分"全黑"和"有内容"）。 */
+    private static int nonBlackPermille(byte[] data) {
+        if (data == null || data.length == 0) return 0;
+        int step = Math.max(1, data.length / 4096);
+        int sampled = 0;
+        int nonZero = 0;
+        for (int index = 0; index < data.length; index += step) {
+            sampled += 1;
+            if (data[index] != 0) nonZero += 1;
+        }
+        return sampled == 0 ? 0 : nonZero * 1000 / sampled;
+    }
+
+    /** 诊断用：帧数 / 采集尺寸 / 首帧非黑比例。 */
+    public String getFrameInfo() {
+        if (frameCount.get() == 0) return "帧 0（采集没出画面）";
+        return "帧 " + frameCount.get() + " · " + frameWidth + "×" + frameHeight
+                + " · 非黑 " + (frameNonBlack < 0 ? "?" : frameNonBlack / 10 + "%");
     }
 
     /**
@@ -576,6 +739,16 @@ public class GlassesSdk {
     public void stopCast() {
         main.post(() -> {
             if (display == null || !casting) return;
+            // 先摘帧回调再停采集：顺序反了会在停止过程中还往回调里打
+            try {
+                if (frameCallback != null) {
+                    display.getClass().getMethod("unRegisterCaptureDisplayFrameCallback")
+                            .invoke(display);
+                }
+            } catch (Throwable error) {
+                Log.i(TAG, "unRegisterCaptureDisplayFrameCallback skipped: " + shortMessage(error));
+            }
+            frameCallback = null;
             try {
                 Method stop = display.getClass().getMethod("stopCaptureScreen");
                 stop.invoke(display);
@@ -588,7 +761,7 @@ public class GlassesSdk {
     }
 
     /**
-     * 打开双眼显示。
+     * 打开双眼显示（备用，当前投屏路径走 {@link #prepareDisplay(Object)}）。
      *
      * <p>正确 API 是 {@code setDisplayPortNumber(int port, int on)}，
      * 对应样例 {@code g.setDisplayPortNumber(port, if (on) 1 else 0)}，
@@ -597,8 +770,6 @@ public class GlassesSdk {
      * <p>⚠️ 我第一版写的是 {@code setPort(int, boolean)} —— 那个方法**根本不存在**
      * （{@code IGlassDisplay} 上只有 {@code setDisplayPortNumber}）。
      * 因为调用是包在 try/catch 里的，它一直静默失败，只在日志里留一行。
-     *
-     * <p>常量从 {@code IGlassDisplay.DOUBLE_EYE_PORT} 反射读，不写死具体数值。
      */
     private void tryOpenBothEyes() {
         try {
@@ -776,7 +947,17 @@ public class GlassesSdk {
         int[] size = queryDisplaySize();
         out.append("⑧ ").append(size[0] > 0 ? "✓" : "✗").append(" 分辨率 ")
            .append(size[0]).append("×").append(size[1])
-           .append(size[0] > 0 ? "" : "（读不到，投屏画布用缺省 3:4）").append("\n");
+           .append(size[0] > 0 ? "" : "（读不到，投屏画布交给 SDK 测量）").append("\n");
+
+        // ⑨ LCD 状态：open 决定"能不能显示"，displayMode 决定"显示的是哪一路"
+        String lcdInfo = queryLcdInfo();
+        out.append("⑨ ").append(lcdInfo.isEmpty() ? "✗ 读不到 LCD 信息" : "✓ " + lcdInfo).append("\n");
+
+        // ⑩ 采集帧：判断"SDK 有没有真的在出画面"的唯一硬证据
+        out.append("⑩ ").append(getFrameInfo()).append("\n");
+        if (prepareNote.length() > 0) {
+            out.append("   投屏前准备：").append(prepareNote).append("\n");
+        }
 
         out.append("device：").append(device == null ? "null" : device.getClass().getName()).append("\n");
         out.append("LCD 服务就绪：").append(servicesReady ? "是" : "否（投屏会排队等服务就绪）").append("\n");
