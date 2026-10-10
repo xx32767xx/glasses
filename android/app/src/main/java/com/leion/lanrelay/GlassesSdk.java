@@ -175,6 +175,55 @@ public class GlassesSdk {
         return false;
     }
 
+    /**
+     * 读眼镜的真实分辨率（{@code deviceInfo.resolutionWidth / resolutionHeight}）。
+     *
+     * <p>为什么要读而不是写死：投屏画面**必须按眼镜的宽高比**来，否则真机上报
+     * 「数据越界」（SDK 按设备分辨率分配缓冲，却从一块尺寸对不上的 View 取像素）。
+     * 我第一版写死了 3:4（0.75），那是**猜的** —— 这里改成从设备信息读真实值。
+     *
+     * <p>{@code DeviceInfo} 是 Kotlin data class，getter 名字可能是
+     * {@code getResolutionWidth()} 也可能是字段 {@code resolutionWidth}，
+     * 所以两种都试一遍（读不到就返回 0，由调用方退回保守缺省）。
+     *
+     * @return {width, height}；读不到返回 {0, 0}
+     */
+    public int[] queryDisplaySize() {
+        if (device == null) return new int[] { 0, 0 };
+        try {
+            Object info = device.getClass().getMethod("getDeviceInfo").invoke(device);
+            if (info == null) return new int[] { 0, 0 };
+            int width = readInt(info, "resolutionWidth");
+            int height = readInt(info, "resolutionHeight");
+            if (width > 0 && height > 0) {
+                Log.i(TAG, "眼镜分辨率 " + width + "×" + height);
+                return new int[] { width, height };
+            }
+        } catch (Throwable error) {
+            Log.i(TAG, "queryDisplaySize skipped: " + shortMessage(error));
+        }
+        return new int[] { 0, 0 };
+    }
+
+    /** 先试 getter，再试同名字段（Kotlin data class 两种写法都可能）。 */
+    private static int readInt(Object target, String name) {
+        String getter = "get" + Character.toUpperCase(name.charAt(0)) + name.substring(1);
+        try {
+            Object value = target.getClass().getMethod(getter).invoke(target);
+            if (value instanceof Integer) return (Integer) value;
+        } catch (Throwable ignored) {
+            // 落到字段那条路
+        }
+        try {
+            java.lang.reflect.Field field = target.getClass().getField(name);
+            Object value = field.get(target);
+            if (value instanceof Integer) return (Integer) value;
+        } catch (Throwable ignored) {
+            // 读不到就算了
+        }
+        return 0;
+    }
+
     private void onDeviceConnected(Object connectedDevice) {
         device = connectedDevice;
         report("眼镜已连接", true);

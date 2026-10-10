@@ -289,6 +289,18 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             if (connected && glasses != null && glasses.isConnected() && !glasses.isCasting()) {
                 glasses.cast(glassesView.getView());
             }
+            // 投屏一旦成功，先给一个**待机画面**。
+            // 为什么要这个：不开同传时眼镜上也得有东西，否则没法判断
+            // "投屏到底成没成" —— 黑屏和投屏失败在眼镜上看起来一模一样。
+            if (glasses != null && glasses.isCasting()) {
+                // 按**眼镜的真实分辨率**定画布宽高比 —— 写死会「数据越界」
+                int[] size = glasses.queryDisplaySize();
+                if (size[0] > 0 && size[1] > 0) {
+                    glassesView.setAspectRatio((float) size[0] / size[1]);
+                }
+                glassesView.showIdle(true);
+                glassesView.setIdleText("等待输入", idleNoteText());
+            }
             renderGlassesRealStatus();
         });
 
@@ -660,6 +672,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             panelCols = serverCols > 0 ? serverCols : 40;
             panelLines = serverLineBudget > 0 ? serverLineBudget : 3;
             renderConnectionCard();
+            // 连上电脑了 → 眼镜上的待机提示也要跟着变（"已连接电脑 · 点开始同传"）
+            refreshGlassesIdle();
             // 服务是否真的在工作，进一步去问 /status（握手成功只说明继电器在）
             probeService(null);
             rememberRecent(host());
@@ -811,6 +825,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         session.active = true;
         session.direction = directionLabel();
         subtitles.clear();
+        // 眼镜上从"等待开始同传"变成"等待输入"
+        refreshGlassesIdle();
         subtitles.setBilingual(bilingual);
         subtitles.setScale(fontScale);
         idleBlock.setVisibility(View.GONE);
@@ -874,6 +890,10 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         session.active = false;
         session.paused = true;
         renderSessionState();
+        // 同传结束 → 眼镜上回到待机提示（而不是继续挂着最后一句字幕）。
+        //  ⚠️ 这里刻意**清掉字幕**：会话结束了还挂着最后一句，会让人以为还在同传。
+        if (glassesView != null) glassesView.setSubtitle("");
+        refreshGlassesIdle();
 
         // 还有流式片段没收尾时，等一会儿再进总结页 —— 让人看到"正在完成最后一段翻译…"
         boolean waiting = subtitles.size() > 0 && isLastSegmentPartial();
@@ -1513,6 +1533,27 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         if (caption != null) caption.setText(R.string.glasses_real_caption);
         renderGlassesPanel();
         renderGlassesRealStatus();
+    }
+
+    /** 待机提示下面那行小字：说清"为什么现在没字幕"，比只显示"等待输入"有用。 */
+    private String idleNoteText() {
+        if (client == null || !connectedForReal()) return "未连接电脑 · 请先连接电脑";
+        if (session != null && session.active) return "同传中 · 等对方说话";
+        return "已连接电脑 · 点开始同传后这里显示字幕";
+    }
+
+    /** 是否真的连上了电脑（deviceName 是握手成功后才有的）。 */
+    private boolean connectedForReal() {
+        return deviceName != null;
+    }
+
+    /** 眼镜上那屏待机提示要不要跟着状态变（连电脑前后、开始同传前后）。 */
+    private void refreshGlassesIdle() {
+        if (glasses == null || glassesView == null || !glasses.isCasting()) return;
+        if (glassesView.hasSubtitle()) return;   // 正在显示字幕，别拿待机提示盖掉它
+        glassesView.setIdleText(
+                session != null && session.active ? "等待输入" : "等待开始同传",
+                idleNoteText());
     }
 
     /** 手动开始/停止投屏。连接是自动的（插上就有回调），但投屏允许手动重试。 */

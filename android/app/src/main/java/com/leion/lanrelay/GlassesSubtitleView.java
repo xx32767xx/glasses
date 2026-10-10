@@ -6,6 +6,7 @@ import android.graphics.Typeface;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -33,10 +34,31 @@ public class GlassesSubtitleView {
     /** 译文最多显示几行。超出就缩小字号（见 {@link #setSubtitle}），不截断。 */
     private static final int MAX_LINES = 4;
 
+    /**
+     * 投屏画面的宽高比（宽 : 高）。
+     *
+     * ⚠️ 这个值**必须**设，不能让它按手机屏幕的尺寸去采集。
+     *    官方样例给投屏 View 明确设过宽高比：
+     *      {@code setAspectRatio(8.0 / 5.0)} —— 说明 SDK 对采集尺寸有预期，
+     *    尺寸不匹配时真机上报的是「数据越界」（SDK 按设备分辨率分配缓冲，
+     *    却从一块尺寸对不上的 View 里取像素）。
+     *
+     * 0.75 = 3:4 竖屏，是光波导单片显示器的常见比例（480×640）。
+     * ⚠️ **待真机确认**：拿到眼镜后从 {@code device.deviceInfo.resolutionWidth/Height}
+     *    读出真实值再改这里（见 {@code docs/09} 第 10 节的待验证项）。
+     */
+    private static final float ASPECT_RATIO = 0.75f;
+
     private final FrameLayout root;
     private final TextView subtitle;
     private final TextView status;
     private final TextView hint;
+    /** 待机提示（未开始同传时显示）。与字幕分开，这样"等待输入"不会被当成字幕更新掉。 */
+    private final LinearLayout idleGroup;
+    private final TextView idleTitle;
+    private final TextView idleNote;
+    /** 当前宽高比（见 ASPECT_RATIO） */
+    private float aspectRatio = ASPECT_RATIO;
 
     public GlassesSubtitleView(Context context) {
         root = new FrameLayout(context);
@@ -87,8 +109,81 @@ public class GlassesSubtitleView {
         params.topMargin = dp(context, 12);
         column.addView(subtitle, params);
 
-        setSubtitle("");
+        // ── 待机提示：连接上眼镜但还没开始同传时显示 ─────────────────────────────
+        //  为什么单独做一块：用户要的是"投屏效果怎么验证" ——
+        //  开同传之前就能看到东西，才能证明"投屏这条路是通的"。
+        //  它和字幕是**两个状态**，用同一块 TextView 会互相覆盖。
+        idleGroup = new LinearLayout(context);
+        idleGroup.setOrientation(LinearLayout.VERTICAL);
+        idleGroup.setGravity(Gravity.CENTER_HORIZONTAL);
+
+        idleTitle = new TextView(context);
+        idleTitle.setText("等待输入");
+        idleTitle.setTextColor(context.getColor(R.color.screen_ink));
+        idleTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        idleTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 34);
+        idleTitle.setGravity(Gravity.CENTER);
+        idleGroup.addView(idleTitle);
+
+        idleNote = new TextView(context);
+        idleNote.setText("眼镜已连接 · 开始同传后这里显示字幕");
+        idleNote.setTextColor(context.getColor(R.color.screen_ink_dim));
+        idleNote.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        idleNote.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams noteParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        noteParams.topMargin = dp(context, 10);
+        idleGroup.addView(idleNote, noteParams);
+
+        LinearLayout.LayoutParams idleParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f);
+        idleParams.topMargin = dp(context, 12);
+        column.addView(idleGroup, idleParams);
+
+        // 投屏 View **必须有一个确定的尺寸**：SDK 要按宽高比采集画面。
+        // 不设的话它按父容器（手机屏幕）的尺寸走，真机上会「数据越界」。
+        setAspectRatio(ASPECT_RATIO);
+
+        showIdle(true);
         setStatus("眼镜未连接", "");
+    }
+
+    /**
+     * 给投屏画面定一个固定的宽高比。
+     *
+     * <p>做法：把 root 的 LayoutParams 从"match_parent"改成"按比例算出的具体像素"，
+     * 并且**让 View 独立于手机屏幕布局**（不用 addView 到界面里，它只是被 SDK 采样的一块画布）。
+     * 尺寸按父窗口宽度推，再由宽高比算出高度。
+     */
+    public void setAspectRatio(float ratio) {
+        this.aspectRatio = ratio;
+        root.post(() -> {
+            int width = root.getWidth();
+            if (width <= 0) {
+                // 还没测量出来（没 attach 到窗口时 getWidth() 是 0）——
+                // 用一个保守的缺省宽度兜底，之后再被 post 的那次纠正过来
+                width = Math.round(360 * root.getResources().getDisplayMetrics().density);
+            }
+            int height = Math.round(width / ratio);
+            root.setLayoutParams(new ViewGroup.LayoutParams(width, height));
+            log("投屏画布尺寸 " + width + "×" + height + "（比例 " + ratio + "）");
+        });
+    }
+
+    /** 切换"待机提示 / 字幕"两种状态。有字幕了就把待机提示收起来。 */
+    public void showIdle(boolean show) {
+        idleGroup.setVisibility(show ? View.VISIBLE : View.GONE);
+        subtitle.setVisibility(show ? View.GONE : View.VISIBLE);
+    }
+
+    /** 待机提示的文案（比如"等待输入" / "已暂停" / "等待连接电脑"）。 */
+    public void setIdleText(String title, String note) {
+        idleTitle.setText(title == null ? "" : title);
+        idleNote.setText(note == null ? "" : note);
+    }
+
+    private void log(String message) {
+        android.util.Log.i("GlassesSdk", "[GlassesView] " + message);
     }
 
     /** 交给 SDK 投屏用：{@code display.createCaptureScreen(activity, getView())} */
@@ -106,6 +201,9 @@ public class GlassesSubtitleView {
     public void setSubtitle(String text) {
         String value = text == null ? "" : text.trim();
         subtitle.setText(value);
+        // 有内容就切到字幕态、收掉待机提示；空了就回到待机态。
+        // 这样"还没开始同传"和"正在同传"两个状态不会互相覆盖。
+        showIdle(value.isEmpty());
         if (value.isEmpty()) {
             subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 30);
             return;
@@ -151,6 +249,11 @@ public class GlassesSubtitleView {
     /** 是不是还没有任何字幕（用来决定要不要显示"等对方说话"这类占位） */
     public boolean isSubtitleEmpty() {
         return subtitle.getText().length() == 0;
+    }
+
+    /** 当前有没有字幕内容（有就别用待机提示去盖它）。 */
+    public boolean hasSubtitle() {
+        return subtitle.getText().length() > 0;
     }
 
     private static int dp(Context context, int value) {
