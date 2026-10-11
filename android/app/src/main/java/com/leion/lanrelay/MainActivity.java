@@ -1158,6 +1158,15 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             connect(address, secretField.getText().toString().trim());
         });
 
+        // 自检：只做只读探测，不改连接状态。
+        // 与"测试连接"分开，是为了能在"会话已经坏了"的时候单独跑诊断。
+        view.findViewById(R.id.connectSelfCheck).setOnClickListener(v -> {
+            final String address = hostField.getText().toString().trim();
+            final String key = secretField.getText().toString().trim();
+            showConnectProgress(getString(R.string.connect_selfcheck_running), R.color.warn);
+            runSelfCheck(address, key);
+        });
+
         View detail = view.findViewById(R.id.connectDetail);
         detail.setVisibility(online() ? View.VISIBLE : View.GONE);
         if (online()) {
@@ -1173,6 +1182,50 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         overlayConnectProgressText.setText(text);
         overlayConnectProgressDot.setBackgroundTintList(
                 ColorStateList.valueOf(getColor(colorRes)));
+    }
+
+    /**
+     * 跑连接自检并弹结果。
+     *
+     * <p>必须在**后台线程**跑：{@link SelfCheck#run} 会做 TCP 连接和 HTTP 请求，
+     * 主线程上会直接 NetworkOnMainThreadException。
+     */
+    private void runSelfCheck(String address, String key) {
+        final String shownAddress = address.isEmpty() ? host() : address;
+        final String shownKey = key.isEmpty() ? secret() : key;
+        new Thread(() -> {
+            String report;
+            try {
+                report = SelfCheck.run(shownAddress, shownKey);
+            } catch (Throwable error) {
+                report = "自检本身出错了：" + error.getClass().getSimpleName()
+                        + "：" + error.getMessage();
+            }
+            final String text = report;
+            runOnUiThread(() -> {
+                showConnectProgress(getString(R.string.connect_selfcheck_done), R.color.brand);
+                showTextDialog("连接自检", text);
+            });
+        }, "self-check").start();
+    }
+
+    /** 等宽、可滚动、可复制的长文本弹窗（自检报告 / SDK 探测都用它）。 */
+    private void showTextDialog(String title, String text) {
+        TextView box = new TextView(this);
+        box.setText(text);
+        box.setTextSize(11f);
+        box.setTypeface(Typeface.MONOSPACE);
+        box.setTextIsSelectable(true);
+        box.setPadding(dp(16), dp(12), dp(16), dp(12));
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(box);
+
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(scroll)
+                .setPositiveButton("关闭", null)
+                .show();
     }
 
     private void rememberRecent(String address) {
@@ -1732,22 +1785,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             .append(GlassesSdk.probeAvailability()).append("\n\n")
             .append(glasses.probeApi());
 
-        TextView box = new TextView(this);
-        box.setText(text.toString());
-        box.setTextSize(11f);
-        // 等宽：签名对齐才好比对参数类型
-        box.setTypeface(Typeface.MONOSPACE);
-        box.setTextIsSelectable(true);   // 允许长按复制，方便把结果发回来
-        box.setPadding(dp(16), dp(12), dp(16), dp(12));
-
-        ScrollView scroll = new ScrollView(this);
-        scroll.addView(box);
-
-        new AlertDialog.Builder(this)
-                .setTitle("眼镜 SDK API 探测")
-                .setView(scroll)
-                .setPositiveButton("关闭", null)
-                .show();
+        showTextDialog("眼镜 SDK API 探测", text.toString());
     }
 
     /** 当前安装的版本名 —— 印在眼镜预览页标题上，用来确认"装的是不是新版"。 */

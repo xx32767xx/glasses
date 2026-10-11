@@ -135,6 +135,30 @@
                         android:textSize="16sp" />
                 </LinearLayout>
 
+                <!--
+                  自检：连不上时先把"哪一层断了"说清楚。
+                  与"测试连接"分开是**故意的**：那个会真的建立会话，
+                  这个只做只读探测 —— 会话出问题时要能单独跑诊断，
+                  而不是"再连一次看看"。
+                -->
+                <LinearLayout
+                    android:id="@+id/connectSelfCheck"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="8dp"
+                    android:background="@drawable/bg_chip"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/connect_selfcheck"
+                        android:textColor="@color/ink_soft"
+                        android:textSize="14sp" />
+                </LinearLayout>
+
                 <!-- 连接过程的真实进度（哪一步就是哪一步，不假装） -->
                 <LinearLayout
                     android:id="@+id/connectProgress"

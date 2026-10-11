@@ -73,6 +73,9 @@
     <string name="connect_pairing">配对码</string>
     <string name="connect_pairing_hint">电脑上启动时打印的那串</string>
     <string name="connect_test">测试并连接</string>
+    <string name="connect_selfcheck">连接自检（查是哪一层断了）</string>
+    <string name="connect_selfcheck_running">正在自检…</string>
+    <string name="connect_selfcheck_done">自检完成</string>
     <string name="connect_recent">最近成功连接</string>
     <string name="connect_recent_empty">还没有连接过</string>
     <string name="connect_progress_connecting">正在连接电脑…</string>

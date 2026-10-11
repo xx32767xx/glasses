@@ -47,9 +47,35 @@ export function parseArgs(argv) {
 
 /** 这些网卡连不上手机（虚拟网卡 / 蓝牙 / 回环），要从候选里剔掉。 */
 const VIRTUAL_HINTS = ['vmware', 'virtualbox', 'hyper-v', 'vethernet', 'loopback',
-  'bluetooth', 'tap', 'tun', 'zerotier', 'tailscale', 'wsl', 'docker', 'npcap']
+  'bluetooth', 'tap', 'tun', 'zerotier', 'wsl', 'docker', 'npcap']
 
-export function isVirtual(name) {
+/**
+ * Tailscale 单独归一类。
+ *
+ * <p>它虽然也是虚拟网卡，但**恰恰是可以填的那个** —— 而且校园网这种
+ * "手机和电脑不在同一网段、设备之间还不许互访"的环境里，它常常是唯一稳的路。
+ * 早先它混在 VIRTUAL_HINTS 里被标成"别填这个"，等于把最该试的地址藏起来了。
+ */
+const TAILSCALE_HINT = 'tailscale'
+
+/** 100.64.0.0/10：Tailscale（以及运营商级 NAT）用的地址段。 */
+export function inTailscaleRange(address) {
+  const parts = String(address).split('.')
+  if (parts.length !== 4) return false
+  const first = Number(parts[0])
+  const second = Number(parts[1])
+  return first === 100 && second >= 64 && second <= 127
+}
+
+/** 是不是 Tailscale 的地址（按网卡名或按地址段判断，两者任一命中都算）。 */
+export function isTailscale(name, address = '') {
+  if (String(name).toLowerCase().includes(TAILSCALE_HINT)) return true
+  return inTailscaleRange(address)
+}
+
+export function isVirtual(name, address = '') {
+  // Tailscale 不算"别填"这一类 —— 它由 isTailscale 单独表示
+  if (isTailscale(name, address)) return false
   const lowered = String(name).toLowerCase()
   return VIRTUAL_HINTS.some(hint => lowered.includes(hint))
 }
@@ -70,13 +96,15 @@ export function collectAddresses(interfaces = networkInterfaces()) {
       if (entry.address.startsWith('169.254.')) continue      // APIPA：没拿到 DHCP，不能用
       const mask = entry.netmask
       const bits = mask.split('.').reduce((acc, part) => acc + (Number(part).toString(2).split('1').length - 1), 0)
+      const tailscale = isTailscale(name, entry.address)
       out.push({
         name,
         address: entry.address,
         netmask: mask,
         bits,
         network: network(entry.address, mask),
-        virtual: isVirtual(name),
+        virtual: isVirtual(name, entry.address),
+        tailscale,
       })
     }
   }
@@ -198,15 +226,29 @@ export async function foreignConnections(port) {
   }
 }
 
-/** 该往手机上填的地址：优先非虚拟网卡；虚拟网卡要明确点出来让人别填。 */
+/**
+ * 该往手机上填的地址。
+ *
+ * 优先级：局域网真实网卡 → （没有局域网时才）Tailscale。
+ * Tailscale 单独用 `tailscale` 标出来，因为它的**前置条件不一样**：
+ * 手机上也必须开着 Tailscale 并且登录同一账号，否则填了也是超时。
+ */
 export function pickPhoneAddress(addresses) {
-  const real = addresses.filter(item => !item.virtual)
-  if (real.length === 1) return { address: real[0], multiple: false }
+  const tailscale = addresses.filter(item => item.tailscale)
+  const real = addresses.filter(item => !item.virtual && !item.tailscale)
+  if (real.length === 1) {
+    return { address: real[0], multiple: false, tailscale: false, tailscaleCandidate: tailscale[0] ?? null }
+  }
   if (real.length > 1) {
     // 多个真实网卡（有线 + 无线同时连着）：不知道手机在哪一边，让用户自己挑
-    return { address: real[0], multiple: true, candidates: real }
+    return { address: real[0], multiple: true, candidates: real, tailscale: false,
+      tailscaleCandidate: tailscale[0] ?? null }
   }
-  return { address: null, multiple: false, candidates: [] }
+  // 一个可用的局域网地址都没有 —— 那就只能靠 Tailscale 了
+  if (tailscale.length > 0) {
+    return { address: tailscale[0], multiple: false, tailscale: true, tailscaleCandidate: tailscale[0] }
+  }
+  return { address: null, multiple: false, candidates: [], tailscale: false, tailscaleCandidate: null }
 }
 
 /**
@@ -305,8 +347,11 @@ async function main() {
     console.log('   ✗ 没有任何可用的 IPv4 地址 —— 网线/WiFi 没连上，或者没拿到 DHCP')
   }
   for (const item of addresses) {
-    const tag = item.virtual ? '  ← 虚拟网卡，**别填这个**' : ''
-    console.log(`   ${item.virtual ? '·' : '★'} ${item.name}`)
+    const tag = item.tailscale
+      ? '  ← Tailscale（手机也要开着 Tailscale）'
+      : item.virtual ? '  ← 虚拟网卡，**别填这个**' : ''
+    const star = (item.virtual || item.tailscale) ? '·' : '★'
+    console.log(`   ${star} ${item.name}`)
     console.log(`       ${item.address} / ${item.bits}    网段 ${item.network}/${item.bits}${tag}`)
   }
   if (picked.address !== null) {
@@ -315,16 +360,28 @@ async function main() {
     if (picked.multiple) {
       console.log('   ⚠️ 有多个真实网卡：手机连的是哪个 WiFi，就填那一行的地址')
     }
+    if (picked.tailscale) {
+      console.log('   ⚠️ 这是 Tailscale 地址：**手机上必须也开着 Tailscale 并登录同一账号**')
+    }
+    // 有局域网地址但也有 Tailscale 时，把备选一并给出 —— 校园网里局域网那条多半不通
+    if (!picked.tailscale && picked.tailscaleCandidate) {
+      console.log(`   若上面这个连不上（校园网常见），改用 Tailscale：`
+        + `http://${picked.tailscaleCandidate.address}:${port}`)
+    }
   }
 
   // ② 网段
   console.log('')
   console.log('② 手机和电脑必须在同一个网段')
-  if (picked.address !== null) {
-    console.log(`   电脑在：${picked.address.network}/${picked.address.bits}`)
+  if (picked.address !== null && picked.tailscale) {
+    console.log('   ✓ 走 Tailscale 时**不需要**同网段 —— 这正是它存在的意义')
+  } else {
+    if (picked.address !== null) {
+      console.log(`   电脑在：${picked.address.network}/${picked.address.bits}`)
+    }
+    console.log('   手机上看：设置 → WLAN → 当前网络 → IP 地址，然后和上面比')
+    console.log('   前几段不一样的，怎么改都连不上（校园网常把 WiFi 和有线分在不同 VLAN）')
   }
-  console.log('   手机上看：设置 → WLAN → 当前网络 → IP 地址，然后和上面比')
-  console.log('   前几段不一样的，怎么改都连不上（校园网常把 WiFi 和有线分在不同 VLAN）')
 
   // ③ 转发进程
   console.log('')
@@ -366,10 +423,19 @@ async function main() {
   console.log('')
   console.log('─'.repeat(70))
   console.log('  ①②③④ 都过了还是超时 → 大概率是**校园网禁止设备互访**（AP 隔离）')
-  console.log('  这不是电脑或代码的问题，换网络最省事，按可靠性排序：')
-  console.log('    1. 手机开热点，电脑连手机热点（最省事，通常允许互访）')
-  console.log('    2. 手机 USB 共享网络给电脑（不依赖 WiFi，也不受校园网影响）')
-  console.log('    3. 走公网中转（两边都能上外网时才对，需要额外搭一个服务）')
+  console.log('  这不是电脑或代码的问题，换一条路。按这个顺序试：')
+  console.log('    1. Tailscale（最省心，也不受拓扑影响）')
+  console.log('       两边各装一个、登录同一账号 → 电脑跑一次这个脚本，')
+  console.log('       把打印出来的 Tailscale 地址（100.x.y.z）填到手机上')
+  console.log('       注意：Windows 防火墙要放行 Tailscale 那块网卡，见上面第 ④ 项')
+  console.log('    2. 电脑开移动热点，手机连它（不用装东西）')
+  console.log('       电脑在热点里固定是 192.168.137.1，手机上就填这个')
+  console.log('       前提：网卡支持"同时连 WiFi + 开热点"')
+  console.log('    3. 手机开热点，电脑连手机热点')
+  console.log('       代价：电脑只有一块网卡时，连了热点就掉原来的网（翻译 API 要用网）')
+  console.log('    4. 走公网中转（两边都能上外网时才对，需要额外搭一个服务）')
+  console.log('  ⚠️ "手机 USB 共享网络给电脑"在本项目里**用不了**：')
+  console.log('     手机的 USB 口被眼镜占着（眼镜就是 USB 连手机的）。')
   console.log('─'.repeat(70))
   console.log('')
 }

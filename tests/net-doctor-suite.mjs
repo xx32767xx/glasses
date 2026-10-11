@@ -11,14 +11,53 @@ export async function runNetDoctorSuite({ it, check }) {
 
   // ── 虚拟网卡的识别 ──────────────────────────────────────────────────────
   // 这条直接决定"手机上该填哪个地址"：填到 VMware 网卡上永远连不上。
-  await it('虚拟网卡（VMware / 蓝牙 / 回环 / tailscale…）被排除在候选项之外', async () => {
+  await it('虚拟网卡（VMware / 蓝牙 / 回环…）被排除在候选项之外', async () => {
     for (const name of ['VMware Network Adapter VMnet1', 'VirtualBox Host-Only Network',
-      'Bluetooth 网络连接', 'Loopback Pseudo-Interface 1', 'Tailscale']) {
+      'Bluetooth 网络连接', 'Loopback Pseudo-Interface 1', 'ZeroTier One [xxx]']) {
       check(`「${name}」被判成虚拟`, doctor.isVirtual(name) === true)
     }
     for (const name of ['WLAN', '以太网', 'Wi-Fi', 'Ethernet']) {
       check(`「${name}」是真实网卡`, doctor.isVirtual(name) === false)
     }
+  })
+
+  // ── Tailscale 单独归一类（曾经被误判成"别填这个"）───────────────────────
+  // 它也是虚拟网卡，但**恰恰是要填的那个**：校园网里手机和电脑不同网段、
+  // 还不许互访时，这是唯一稳的路。之前它混在 VIRTUAL_HINTS 里被藏掉了。
+  await it('Tailscale 不算"别填的虚拟网卡"，而是单独一类', async () => {
+    check('按网卡名认出来', doctor.isTailscale('Tailscale') === true)
+    check('按地址段也能认出来（100.64/10）',
+      doctor.isTailscale('WLAN', '100.101.102.103') === true,
+      String(doctor.inTailscaleRange('100.101.102.103')))
+    check('它不是"虚拟网卡"', doctor.isVirtual('Tailscale', '100.101.102.103') === false)
+    // 边界：100.63 与 100.128 都在 CGNAT 段之外
+    check('100.63.x 不算', doctor.inTailscaleRange('100.63.0.1') === false)
+    check('100.128.x 不算', doctor.inTailscaleRange('100.128.0.1') === false)
+    check('普通内网地址不算', doctor.inTailscaleRange('10.136.1.1') === false)
+  })
+
+  await it('挑地址：有局域网就用局域网，没有才退到 Tailscale（并标明前置条件）', async () => {
+    const lanOnly = doctor.pickPhoneAddress([
+      { name: 'WLAN', address: '10.135.50.23', network: '10.135.0.0', bits: 16, virtual: false, tailscale: false },
+    ])
+    check('填局域网地址', lanOnly.address.address === '10.135.50.23')
+    check('不是 Tailscale', lanOnly.tailscale === false)
+
+    const both = doctor.pickPhoneAddress([
+      { name: 'WLAN', address: '10.135.50.23', network: '10.135.0.0', bits: 16, virtual: false, tailscale: false },
+      { name: 'Tailscale', address: '100.101.102.103', network: '100.64.0.0', bits: 10, virtual: false, tailscale: true },
+    ])
+    check('两个都有时先给局域网', both.address.address === '10.135.50.23')
+    check('但要把 Tailscale 作为备选带出来', both.tailscaleCandidate !== null
+      && both.tailscaleCandidate.address === '100.101.102.103', JSON.stringify(both.tailscaleCandidate))
+
+    const onlyTailscale = doctor.pickPhoneAddress([
+      { name: 'VMware Network Adapter VMnet8', address: '169.254.1.1', virtual: true, tailscale: false },
+      { name: 'Tailscale', address: '100.101.102.103', network: '100.64.0.0', bits: 10, virtual: false, tailscale: true },
+    ])
+    check('只剩 Tailscale 时就用它（别返回 null）', onlyTailscale.address !== null
+      && onlyTailscale.address.address === '100.101.102.103', JSON.stringify(onlyTailscale.address))
+    check('并标明 tailscale=true（界面要提示手机也得开）', onlyTailscale.tailscale === true)
   })
 
   // ── 网段计算 ────────────────────────────────────────────────────────────
