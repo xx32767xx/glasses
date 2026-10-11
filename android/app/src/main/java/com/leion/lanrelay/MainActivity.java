@@ -286,35 +286,52 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         // 先把上次调好的显示参数用上 —— 否则每次重启都回到缺省，
         // 用户会以为"又变小了"，然后重调一遍
         glassesView.setTuning(glassesFontScale(), glassesMarginRight(), glassesMarginLeft());
-        glasses = new GlassesSdk(this, (status, connected) -> {
-            // ⚠️ 顺序：先判断"这次回调是不是一次真正的**新**连接"，再更新字段。
-            //    只有 connected 从 false 变 true 那一次才算新连接。
-            boolean justConnected = connected && !glassesConnected;
-            glassesStatus = status;
-            glassesConnected = connected;
-            if (glassesView != null) {
-                glassesView.setStatus(
-                        connected ? "● " + status : "○ " + status,
-                        glasses != null && glasses.isCasting() ? "投屏中" : "");
+        glasses = new GlassesSdk(this, new GlassesSdk.Listener() {
+            @Override
+            public void onGlassesStatus(String status, boolean connected) {
+                // ⚠️ 顺序：先判断"这次回调是不是一次真正的**新**连接"，再更新字段。
+                //    只有 connected 从 false 变 true 那一次才算新连接。
+                boolean justConnected = connected && !glassesConnected;
+                glassesStatus = status;
+                glassesConnected = connected;
+                if (glassesView != null) {
+                    glassesView.setStatus(
+                            connected ? "● " + status : "○ " + status,
+                            glasses != null && glasses.isCasting() ? "投屏中" : "");
+                }
+                // 眼镜一连上就自动试投屏 —— 但**只在刚连上那一次**。
+                //
+                // 这里原来写的是 `if (connected && isConnected() && !isCasting())`，是个死循环：
+                // 投屏失败时 reportWithStep 也带着 connected=true 回调 listener，
+                // listener 又看到"没在投屏"就再投一次 —— 失败 → 回调 → 再投，无限循环，
+                // 主线程被自己的 post 塞满。真机上"点了开始投屏没反应"就是它。
+                if (justConnected && glasses != null && glasses.isConnected() && !glasses.isCasting()) {
+                    // 这里**不**设画布尺寸：此刻 DeviceInfo 还没读回来（会拿到 0×0）。
+                    // 尺寸由下面的 onGlassesBeforeCast 负责 —— 那才是正确的时机。
+                    glasses.requestCast(glassesView.getView());
+                }
+                // 投屏一旦成功，先给一个**待机画面**。
+                // 为什么要这个：不开同传时眼镜上也得有东西，否则没法判断
+                // "投屏到底成没成" —— 黑屏和投屏失败在眼镜上看起来一模一样。
+                if (glasses != null && glasses.isCasting()) {
+                    glassesView.showIdle(true);
+                    glassesView.setIdleText("等待输入", idleNoteText());
+                }
+                renderGlassesRealStatus();
             }
-            // 眼镜一连上就自动试投屏 —— 但**只在刚连上那一次**。
-            //
-            // 这里原来写的是 `if (connected && isConnected() && !isCasting())`，是个死循环：
-            // 投屏失败时 reportWithStep 也带着 connected=true 回调 listener，
-            // listener 又看到"没在投屏"就再投一次 —— 失败 → 回调 → 再投，无限循环，
-            // 主线程被自己的 post 塞满。真机上"点了开始投屏没反应"就是它。
-            if (justConnected && glasses != null && glasses.isConnected() && !glasses.isCasting()) {
-                applyGlassesCanvasSize();
-                glasses.requestCast(glassesView.getView());
+
+            /**
+             * 投屏即将开始（LCD 服务已就绪）—— **这里才是设画布尺寸的正确时机**。
+             *
+             * <p>原来是在"设备刚连上"时读分辨率，那时 {@code DeviceInfo} 还没从设备读回来，
+             * 拿到的是 0×0。而 0×0 的后果很隐蔽：画布尺寸未知 → 退回去按**手机 density**
+             * 算字号（46sp ≈ 126px）→ 一行只放得下 4 个字符 →
+             * 真机上表现为字幕被"截断"成 "Qual"。
+             */
+            @Override
+            public void onGlassesBeforeCast(int width, int height) {
+                applyGlassesCanvasSize(width, height);
             }
-            // 投屏一旦成功，先给一个**待机画面**。
-            // 为什么要这个：不开同传时眼镜上也得有东西，否则没法判断
-            // "投屏到底成没成" —— 黑屏和投屏失败在眼镜上看起来一模一样。
-            if (glasses != null && glasses.isCasting()) {
-                glassesView.showIdle(true);
-                glassesView.setIdleText("等待输入", idleNoteText());
-            }
-            renderGlassesRealStatus();
         });
 
         requestGlassesPermissions();
@@ -332,14 +349,30 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
      * **不猜尺寸**。
      */
     private void applyGlassesCanvasSize() {
-        if (glasses == null || glassesView == null) return;
+        if (glasses == null) return;
         int[] size = glasses.queryDisplaySize();
-        glassesView.setDisplaySize(size[0], size[1]);
-        if (size[0] > 0 && size[1] > 0) {
-            glassesCanvasNote = "画布 " + size[0] + "×" + size[1];
+        applyGlassesCanvasSize(size[0], size[1]);
+    }
+
+    /**
+     * 用给定尺寸定投屏画布。
+     *
+     * @param width  眼镜分辨率宽；&lt;= 0 表示没读到（此时**不猜**，
+     *               让 GlassesSubtitleView 用"SDK 已测量到的尺寸"自愈）
+     */
+    private void applyGlassesCanvasSize(int width, int height) {
+        if (glassesView == null) return;
+        glassesView.setDisplaySize(width, height);
+        if (width > 0 && height > 0) {
+            glassesCanvasNote = "画布 " + width + "×" + height;
         } else {
-            glassesCanvasNote = "画布尺寸未知（交给 SDK 测量）";
+            glassesCanvasNote = "画布尺寸未知（靠已测量尺寸自愈）";
+            if (glasses != null) {
+                String raw = glasses.getRawResolution();
+                if (raw.length() > 0) glassesCanvasNote += " 原始:" + raw;
+            }
         }
+        renderGlassesRealStatus();
     }
 
     /** 眼镜 SDK 需要的那几条运行时权限（照官方 glassRuntimePermissions() 的分档）。 */

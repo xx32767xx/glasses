@@ -127,6 +127,23 @@ public class GlassesSdk {
     public interface Listener {
         /** 状态变化（连接、投屏、错误）。每条都会带上"发生了什么"，界面直接显示。 */
         void onGlassesStatus(String status, boolean connected);
+
+        /**
+         * 投屏**即将**开始（LCD 服务已就绪）。
+         *
+         * <p>界面要在这个回调里把投屏画布的尺寸准备好 —— 这是**唯一**正确的时机。
+         *
+         * <p>为什么不在"设备刚连上"时就设：{@code DeviceInfo}（分辨率在里面）
+         * 是从设备读回来的，刚插上时**还没填好**，那时读只会拿到 0×0。
+         * 拿到 0×0 的后果很隐蔽：画布尺寸未知 → 退回按**手机 density** 算的 SP 字号
+         * （46sp ≈ 126px），而眼镜画布只有几百像素宽 —— 一行只放得下 4 个字符，
+         * 真机上的表现就是字幕被"截断"成 "Qual"。
+         *
+         * @param width  眼镜分辨率宽；&lt;= 0 表示仍没读到
+         * @param height 眼镜分辨率高
+         */
+        default void onGlassesBeforeCast(int width, int height) {
+        }
     }
 
     public GlassesSdk(Activity activity, Listener listener) {
@@ -282,32 +299,66 @@ public class GlassesSdk {
         if (device == null) return new int[] { 0, 0 };
         try {
             Object info = device.getClass().getMethod("getDeviceInfo").invoke(device);
-            if (info == null) return new int[] { 0, 0 };
+            if (info == null) {
+                rawResolution = "getDeviceInfo() 返回 null";
+                return new int[] { 0, 0 };
+            }
             // ⚠️ DeviceInfo.getResolutionWidth()/Height() 返回的是 **String**，不是 int
             //    （javap 实测）。按 int 读会静默拿到 0，于是"分辨率读到了"变成"没读到"。
-            int width = parseSize(info, "getResolutionWidth");
-            int height = parseSize(info, "getResolutionHeight");
+            String rawWidth = rawField(info, "getResolutionWidth");
+            String rawHeight = rawField(info, "getResolutionHeight");
+            rawResolution = "getResolutionWidth=" + rawWidth + " getResolutionHeight=" + rawHeight;
+            int width = parseSizeValue(rawWidth);
+            int height = parseSizeValue(rawHeight);
             if (width > 0 && height > 0) {
                 Log.i(TAG, "眼镜分辨率 " + width + "×" + height);
                 return new int[] { width, height };
             }
-            Log.i(TAG, "分辨率读到 " + width + "×" + height + "（不合法，退回缺省）");
+            Log.i(TAG, "分辨率读到 " + width + "×" + height
+                    + "（原始值 " + rawResolution + "）");
         } catch (Throwable error) {
+            rawResolution = shortMessage(error);
             Log.i(TAG, "queryDisplaySize skipped: " + shortMessage(error));
         }
         return new int[] { 0, 0 };
     }
 
-    /** 读一个"字符串形式的尺寸"字段并转 int（读不到或不是数字都返回 0）。 */
-    private static int parseSize(Object target, String getter) {
+    /** 最近一次读分辨率时拿到的**原始值**（诊断用：区分"没读到"和"读到了但不是数字"）。 */
+    private String rawResolution = "";
+
+    public String getRawResolution() {
+        return rawResolution;
+    }
+
+    /** 读一个 getter 的原始返回值并转成字符串（null 也如实记下来）。 */
+    private static String rawField(Object target, String getter) {
         try {
             Object value = target.getClass().getMethod(getter).invoke(target);
-            if (value == null) return 0;
-            // 可能是 String（实测），也可能是 Integer（换固件后），两种都认
-            if (value instanceof Integer) return (Integer) value;
-            String text = String.valueOf(value).trim();
-            return text.isEmpty() ? 0 : Integer.parseInt(text);
-        } catch (Throwable ignored) {
+            return value == null ? "null" : String.valueOf(value);
+        } catch (Throwable error) {
+            return "<" + error.getClass().getSimpleName() + ">";
+        }
+    }
+
+    /** 把"字符串形式的尺寸"转 int（非数字、null、负数都返回 0）。 */
+    private static int parseSizeValue(String text) {
+        if (text == null) return 0;
+        String trimmed = text.trim();
+        if (trimmed.isEmpty()) return 0;
+        try {
+            int value = Integer.parseInt(trimmed);
+            return value > 0 ? value : 0;
+        } catch (NumberFormatException error) {
+            // 有些固件回的是 "480*640" 或 "480x640" 这种合并串 —— 顺手剥一下
+            java.util.regex.Matcher matcher =
+                    java.util.regex.Pattern.compile("(\\d+)").matcher(trimmed);
+            if (matcher.find()) {
+                try {
+                    return Math.max(0, Integer.parseInt(matcher.group(1)));
+                } catch (NumberFormatException ignored) {
+                    return 0;
+                }
+            }
             return 0;
         }
     }
@@ -430,6 +481,12 @@ public class GlassesSdk {
         View view = pendingCast;
         pendingCast = null;
         main.removeCallbacks(pendingCastFallback);
+        // 走到这里 = LCD 服务已就绪 = DeviceInfo 应该填好了。
+        // 让界面趁现在把画布尺寸定下来（**这是唯一正确的时机**，见 Listener 的说明）。
+        if (listener != null) {
+            int[] size = queryDisplaySize();
+            listener.onGlassesBeforeCast(size[0], size[1]);
+        }
         cast(view);
     }
 
@@ -977,7 +1034,11 @@ public class GlassesSdk {
         int[] size = queryDisplaySize();
         out.append("⑧ ").append(size[0] > 0 ? "✓" : "✗").append(" 分辨率 ")
            .append(size[0]).append("×").append(size[1])
-           .append(size[0] > 0 ? "" : "（读不到，投屏画布交给 SDK 测量）").append("\n");
+           .append(size[0] > 0 ? "" : "（没读到）").append("\n");
+        // 原始值一定要打出来：区分"根本没读到"和"读到了但不是数字"是两件完全不同的事
+        if (rawResolution.length() > 0) {
+            out.append("   原始：").append(rawResolution).append("\n");
+        }
 
         // ⑨ LCD 状态：open 决定"能不能显示"，displayMode 决定"显示的是哪一路"
         String lcdInfo = queryLcdInfo();

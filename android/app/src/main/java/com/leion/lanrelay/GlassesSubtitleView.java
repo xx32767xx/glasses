@@ -315,6 +315,39 @@ public class GlassesSubtitleView {
     }
 
     /**
+     * 当前实际可用的画布尺寸。
+     *
+     * <p>比 {@code canvasWidth/canvasHeight} 多一层**自愈**：如果 SDK 还没告诉我们
+     * 分辨率（0×0），但 SDK 已经把这棵 View 测量过了（{@code getWidth() > 0}），
+     * 那就把测出来的尺寸当成画布尺寸 —— 那是**真实**的像素数，比按手机 density
+     * 猜 SP 准得多。
+     *
+     * <p>这条自愈很关键：尺寸未知时按 SP 算，46sp 在 density 2.75 的手机上
+     * ≈ 126px，而眼镜画布只有几百像素宽 —— 一行只放得下 4 个字符，
+     * 真机上表现为字幕被"截断"成 "Qual"（用户实际报的问题）。
+     */
+    private int effectiveWidth() {
+        if (canvasWidth > 0) return canvasWidth;
+        int measured = root.getWidth();
+        return measured > 0 ? measured : 0;
+    }
+
+    private int effectiveHeight() {
+        if (canvasHeight > 0) return canvasHeight;
+        int measured = root.getHeight();
+        return measured > 0 ? measured : 0;
+    }
+
+    /** 左右留白之后真正能放字的宽度。 */
+    private int usableWidthPx() {
+        int width = effectiveWidth();
+        if (width <= 0) return 0;
+        float leftPct = Math.max(0.04f, marginLeftPercent / 100f);
+        float rightPct = Math.max(0.04f, marginRightPercent / 100f);
+        return Math.max(1, Math.round(width * (1f - leftPct - rightPct)));
+    }
+
+    /**
      * 按当前已知尺寸重排：定 LayoutParams、定边距、定字号，必要时自己 measure。
      *
      * <p>两个分支都是刻意的：
@@ -396,8 +429,10 @@ public class GlassesSubtitleView {
 
     /** 按画布尺寸与当前微调把各处字号算一遍。 */
     private void applyTextSizes() {
-        // 顶部状态行不跟着放大：它只是线索，放大后会挤掉译文
-        float base = canvasHeight > 0 ? canvasHeight : 640;
+        // 顶部状态行不跟着放大：它只是线索，放大后会挤掉译文。
+        // 用 effectiveHeight() 而不是 canvasHeight —— 尺寸未知时靠"已测量到的尺寸"自愈。
+        int height = effectiveHeight();
+        float base = height > 0 ? height : 640f;
         setPx(status, base * 0.026f);
         setPx(hint, base * 0.026f);
         setPx(idleTitle, base * 0.10f * fontScale);
@@ -412,18 +447,74 @@ public class GlassesSubtitleView {
     /** 上一次的字幕行数（微调字号时要按同一个行数重算，不能跳回 1 行）。 */
     private int lastLines = 1;
 
-    /** 按行数选字号：字号 = 画布高度的比例 × 字号倍率。行数越多字号越小，不截断。 */
+    /** 按行数选字号（**兜底路径**：尺寸完全未知、连测量都没有时才会用到）。 */
     private void applySubtitleSize(int lines) {
         this.lastLines = Math.max(1, lines);
-        if (canvasHeight <= 0) {
-            // 尺寸未知：退回 SP（只能在手机 density 下近似，等知道分辨率再纠正）
-            float sp = (lines <= 2 ? 34f : lines == 3 ? 28f : lines == 4 ? 23f : 19f) * fontScale;
+        int height = effectiveHeight();
+        if (height <= 0) {
+            // 尺寸完全未知（连测量都没有）：退回 SP，
+            // 但**压低缺省** —— 原来那档（34sp × 倍率）在手机 density 2.75 下能到 126px，
+            // 在几百像素宽的眼镜画布上一行只放得下 4 个字符，反而是不可用的。
+            float sp = (lines <= 2 ? 16f : lines == 3 ? 13f : 11f) * fontScale;
             subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
             return;
         }
         float ratio = lines <= 1 ? 0.095f : lines == 2 ? 0.085f
                 : lines == 3 ? 0.068f : lines == 4 ? 0.056f : 0.046f;
-        setPx(subtitle, canvasHeight * ratio * fontScale);
+        setPx(subtitle, height * ratio * fontScale);
+    }
+
+    /**
+     * 按**整句**重新选字号：从"一行放少数字"往"一行放多数字"试，
+     * 取第一个能在 {@link #MAX_LINES} 行内放下、且纵向也放得下的字号。
+     *
+     * <p>为什么必须按整句来选：原来的顺序是"先估行数 → 再按行数选字号"，
+     * 而估行数用的是**上一次**的字号。两句长度差很多时就会估错：
+     * 短句之后来一个长句，字号还按短句的大档算 → 长句换行数超出可见高度 → 被截断。
+     * 现在反过来：拿真实文本去试，试到放得下为止。
+     *
+     * <p>列宽用**半角字符**为单位（和 {@code countLines} 一致，汉字算 2 列）。
+     * 字号与列宽的关系：{@code font = 2 * usableWidth / cols}
+     * （半角字符宽约 0.5em，cols 个正好铺满可用宽度）。
+     */
+    private void fitSubtitleToText(String text) {
+        int usableWidth = usableWidthPx();
+        int usableHeight = effectiveHeight();
+        if (usableWidth <= 0 || usableHeight <= 0 || text == null || text.isEmpty()) {
+            applySubtitleSize(lastLines);
+            return;
+        }
+        // 顶部状态行会占掉一点，留 15% 余量
+        int heightBudget = Math.round(usableHeight * 0.85f);
+
+        // ⚠️ 字号倍率**必须**参与"一行放多少个"的决定，不能在算完字号之后再乘。
+        //    原因：字号是从"可用宽度 ÷ 每行字符数"反推出来的，
+        //    算完再乘一个放大系数，一行就装不下了 —— 那正好会退回到"被截断"。
+        //    所以倍率的作用是：倍率越大 → 每行放得越少 → 字越大。
+        int startCols = (int) clamp(Math.round(14f / fontScale), 6, 44);
+
+        float chosen = 0f;
+        int chosenLines = lastLines;
+        for (int cols = startCols; cols <= 60; cols += 2) {
+            float font = 2f * usableWidth / cols;
+            int lines = countLines(text, cols);
+            if (lines > MAX_LINES) continue;
+            // 行高按 1.35 倍估算（含行距的观感）
+            if (lines * font * 1.35f > heightBudget) continue;
+            chosen = font;
+            chosenLines = lines;
+            break;
+        }
+        if (chosen <= 0f) {
+            // 连最窄的一档都放不下：用最小字号，让它自行换行。
+            // 这样可以保证**不会出现"一行只剩两三个字"**那种极端情况。
+            chosen = 2f * usableWidth / 60f;
+            chosenLines = countLines(text, 60);
+        }
+        // 上限：两行别把整屏占满
+        chosen = Math.min(chosen, usableHeight / 2.2f);
+        lastLines = Math.max(1, chosenLines);
+        setPx(subtitle, chosen);
     }
 
     /** 切换"待机提示 / 字幕"两种状态。有字幕了就把待机提示收起来。 */
@@ -464,24 +555,20 @@ public class GlassesSubtitleView {
             applySubtitleSize(1);
             return;
         }
-        int lines = Math.max(1, countLines(value, columnsPerLine()));
-        applySubtitleSize(lines);
+        // ★ 按**这一句的真实文本**选字号，而不是先估行数再按行数选 ——
+        //   后者会拿上一句的字号去估这一句，长句一来就放不下（真机上的"截断"）。
+        fitSubtitleToText(value);
     }
 
     /**
-     * 画布一行大约放得下几个汉字 —— 按**实际可用的那块宽度**和字号粗估。
-     *
-     * <p>必须扣掉左右留白：留白是用户调的，不扣的话估出来的行数偏少，
-     * 字号会被选得偏大，结果是字幕溢出到看不见的区域 —— 正好是要避免的那件事。
+     * 画布一行大约放得下几个半角字符 —— 只用来给 {@link #fitSubtitleToText} 兜底。
      */
     private int columnsPerLine() {
-        if (canvasWidth <= 0 || canvasHeight <= 0) return 20;
-        float leftPct = Math.max(0.04f, marginLeftPercent / 100f);
-        float rightPct = Math.max(0.04f, marginRightPercent / 100f);
-        int usable = Math.round(canvasWidth * (1f - leftPct - rightPct));
-        // 取中间档字号估（实际字号随后按行数再调一次）
-        float fontPx = Math.max(1f, canvasHeight * 0.085f * fontScale);
-        return Math.max(5, Math.round(usable / fontPx));
+        int usable = usableWidthPx();
+        if (usable <= 0) return 20;
+        int height = effectiveHeight();
+        float fontPx = height > 0 ? Math.max(1f, height * 0.085f * fontScale) : 32f;
+        return Math.max(5, Math.round((float) usable / (fontPx / 2f)));
     }
 
     /** 粗略估行数：按当前画布能放多少列来折行算。只用来选字号，不需要精确。 */
