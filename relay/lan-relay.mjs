@@ -89,6 +89,8 @@ const HELP = `lan-relay —— 手机 ↔ 电脑 的局域网转发进程
   --audio-lang <path>   语种旁文件（缺省 <data-dir>/audio-in.lang）
   --poll-hold-ms <n>    长轮询最长挂起时间（缺省 25000）
   --bus-poll-ms <n>     字幕总线轮询间隔（缺省 60）
+  --public              公网部署模式：强制强密钥 + 每 IP 限流 + 音频总量上限
+                        **绑到公网地址时必须加这个**（见 docs/10）
   --quiet               关掉调试输出（收到的音频/文字/字幕都不打印）
   --verbose             每一块音频都打印（缺省是每秒汇总一行）
   --help
@@ -104,8 +106,68 @@ const HELP = `lan-relay —— 手机 ↔ 电脑 的局域网转发进程
 所有请求都要带密钥：请求头 X-Leion-Secret: <密钥>（或 ?secret=<密钥>，便于浏览器里试）
 `
 
-export function parseArgs(argv) {
-  const options = { port: 8788, host: '0.0.0.0', pollHoldMs: 25000, busPollMs: 60, quiet: false }
+/**
+ * 公网部署的硬限制。
+ *
+ * <p>为什么需要单独一组：局域网里"谁能连上"本身就已经是一层门槛，
+ * 公网上没有这层门槛 —— **任何扫到端口的人都能发请求**。
+ * 没有这些限制时，最现实的破坏不是"破解密钥"（48 位随机数暴力不可行），
+ * 而是**往 /audio 灌垃圾**：转发进程会一直 append 到磁盘，
+ * 把服务器磁盘写满，然后整个服务（包括正在跑的识别）一起挂掉。
+ */
+export const PUBLIC_LIMITS = {
+  /** 公网模式下密钥至少这么长（缺省随机生成的是 12 个 hex = 太短）。 */
+  minSecretChars: 24,
+  /** 每个 IP 每分钟最多多少请求（正常手机侧：音频约每秒 1 次 + 字幕长轮询）。 */
+  maxRequestsPerMinutePerIp: 600,
+  /** 每个 IP 每分钟最多能灌多少音频字节。16k 单声道 = 32KB/s，给 4 倍余量。 */
+  maxAudioBytesPerMinutePerIp: 8 * 1024 * 1024,
+  /** 音频文件总量上限；到顶就拒收，避免把服务器磁盘写满。 */
+  maxAudioBytesTotal: 1024 * 1024 * 1024,
+  /** 限流窗口。 */
+  windowMs: 60 * 1000,
+}
+
+/**
+ * 每 IP 的滑动窗口计数。抽成独立函数是为了能直接测 —— 限流写错
+ * 会把**正常用户**挡在外面，比不设限流更糟。
+ */
+export function createRateLimiter({ windowMs, maxRequests }) {
+  const hits = new Map()
+  return {
+    /** @returns {boolean} true = 放行，false = 超限 */
+    allow(key, now = Date.now()) {
+      const entry = hits.get(key)
+      if (entry === undefined || now - entry.start >= windowMs) {
+        hits.set(key, { start: now, count: 1, bytes: 0 })
+        return true
+      }
+      entry.count += 1
+      return entry.count <= maxRequests
+    },
+    /** 音频字节数单独计，因为"一次请求"可能是 1KB 也可能是几 MB。 */
+    allowBytes(key, bytes, maxBytes, now = Date.now()) {
+      const entry = hits.get(key)
+      if (entry === undefined || now - entry.start >= windowMs) {
+        hits.set(key, { start: now, count: 1, bytes })
+        return bytes <= maxBytes
+      }
+      entry.bytes += bytes
+      return entry.bytes <= maxBytes
+    },
+    /** 清掉过期窗口，避免 Map 无限增长（长期运行的服务必须做）。 */
+    sweep(now = Date.now()) {
+      for (const [key, entry] of hits) {
+        if (now - entry.start >= windowMs) hits.delete(key)
+      }
+    },
+    size() {
+      return hits.size
+    },
+  }
+}
+
+export function parseArgs(argv) {  const options = { port: 8788, host: '0.0.0.0', pollHoldMs: 25000, busPollMs: 60, quiet: false }
   const takesValue = new Set(['port', 'host', 'secret', 'data-dir', 'inbox', 'bus', 'audio', 'audio-rate', 'audio-lang', 'poll-hold-ms', 'bus-poll-ms'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
@@ -113,6 +175,7 @@ export function parseArgs(argv) {
     const key = token.slice(2)
     if (key === 'quiet') { options.quiet = true; continue }
     if (key === 'verbose') { options.verbose = true; continue }
+    if (key === 'public') { options.public = true; continue }
     if (key === 'help') { options.help = true; continue }
     if (!takesValue.has(key)) throw new Error(`未知选项 --${key}（用 --help 看用法）`)
     const value = argv[index + 1]
@@ -209,6 +272,46 @@ function looksVirtual(name) {
  * （`${secret}` 而实际叫 `relay.secret`）能在测试全绿的情况下**让转发进程一启动就崩**。
  * 真的发生了，是靠手动跑一次才发现。现在它被测试逐行盯着。
  */
+/**
+ * 公网模式的启动清单。
+ *
+ * <p>为什么要把这些打出来：绑到公网和绑到局域网是**两件不同性质的事**。
+ * 局域网里"能不能连上"本身就是一层门槛；公网上没有这层门槛，
+ * 任何扫到端口的人都能发请求。这些提醒如果只写在文档里，部署的人不会看到。
+ */
+export function formatPublicChecklist(options, relay) {
+  const lines = []
+  lines.push('')
+  lines.push('─'.repeat(68))
+  lines.push('  ⚠️ 公网部署模式已开启（--public）')
+  lines.push('─'.repeat(68))
+  lines.push(`  已启用：密钥至少 ${PUBLIC_LIMITS.minSecretChars} 字符 · 每 IP 限流 `
+    + `${PUBLIC_LIMITS.maxRequestsPerMinutePerIp} 次/分 · 音频总量上限 `
+    + `${(PUBLIC_LIMITS.maxAudioBytesTotal / 1024 / 1024).toFixed(0)} MB`)
+  lines.push('')
+  lines.push('  还需要你自己确认的三件事：')
+  lines.push('')
+  lines.push('  ① 外面套一层 TLS —— 现在这个是**明文 HTTP**，')
+  lines.push('     密钥和音频在公网上是裸奔的。推荐 Caddy（自动证书）：')
+  lines.push('       your.domain.com {')
+  lines.push(`         reverse_proxy 127.0.0.1:${relay.port}`)
+  lines.push('       }')
+  lines.push(`     然后手机填 https://your.domain.com（让反代把 :443 转到这里）`)
+  lines.push('     · 在反向代理后面时，务必让反代**覆盖** X-Real-IP，')
+  lines.push('       否则限流会把所有请求算成同一个 IP。')
+  lines.push('')
+  lines.push('  ② 安全组 / 防火墙只放开你真正要用的端口')
+  lines.push(`     （绑到 0.0.0.0:${relay.port} 时，端口一旦放开就是全网可见）`)
+  lines.push('')
+  lines.push('  ③ 进程要常驻（systemd），别用 nohup 挂着 —— 服务器重启后要能自己起来')
+  lines.push('     见 docs/10-服务器部署.md')
+  lines.push('')
+  lines.push(`  密钥（手机上要填这个，**不要贴到任何公开的地方**）：`)
+  lines.push(`      ${relay.secret}`)
+  lines.push('─'.repeat(68))
+  return lines.join('\n')
+}
+
 export function formatBanner(options, relay, addresses = []) {
   const lines = []
   const real = addresses.filter(a => !looksVirtual(a.name))
@@ -251,13 +354,23 @@ export function formatBanner(options, relay, addresses = []) {
 
 /** 读出（或生成并保存）共享密钥。 */
 export async function resolveSecret(options) {
-  if (typeof options.secret === 'string' && options.secret !== '') return options.secret
+  const minChars = options.public === true ? PUBLIC_LIMITS.minSecretChars : 0
+  if (typeof options.secret === 'string' && options.secret !== '') {
+    if (options.secret.length < minChars) {
+      throw new Error(`--public 模式下密钥至少 ${minChars} 个字符，`
+        + `当前只有 ${options.secret.length} 个。换一个长一点的。`)
+    }
+    return options.secret
+  }
   const path = defaultSecret(options.dataDir)
   try {
     const existing = (await readFile(path, 'utf-8')).trim()
-    if (existing !== '') return existing
+    // 公网模式下，磁盘上那个短的旧密钥不能直接用：它当初是按局域网生成的
+    // （12 个 hex = 48 位），放在公网上太短。这里重新生成一个长的并覆盖。
+    if (existing !== '' && existing.length >= minChars) return existing
   } catch { /* 还没有，下面生成 */ }
-  const generated = randomBytes(6).toString('hex')
+  const bytes = options.public === true ? 24 : 6
+  const generated = randomBytes(bytes).toString('hex')
   await mkdir(dirname(path), { recursive: true })
   await writeFile(path, generated + '\n', 'utf-8')
   return generated
@@ -269,6 +382,26 @@ function secretMatches(expected, given) {
   const a = createHash('sha256').update(expected).digest()
   const b = createHash('sha256').update(given).digest()
   return a.equals(b)
+}
+
+/**
+ * 请求的来源 IP。
+ *
+ * <p>⚠️ 只看 `X-Forwarded-For` 的**最后一跳**是不对的，但整条链都不可信 ——
+ * 那是客户端可以随便伪造的头。放在反代（Caddy/nginx）后面时，
+ * 应当让反代**覆盖**这个头，并且只信任反代自己加的那一段。
+ * 这里取最常见也最安全的做法：有 `X-Real-IP` 就用它（Caddy/nginx 默认会设），
+ * 否则用 socket 的对端地址 —— **永远不用 X-Forwarded-For 的第一个值**，
+ * 因为那个值完全由客户端决定，用它做限流等于没限流（改个头就绕过）。
+ */
+export function clientIp(request) {
+  const real = request.headers['x-real-ip']
+  if (typeof real === 'string' && real.trim() !== '') return real.trim()
+  const socket = request.socket
+  if (socket === undefined || socket === null) return 'unknown'
+  // IPv4-mapped IPv6（::ffff:10.0.0.1）在双栈监听时很常见，显示成 IPv4 更易读
+  const address = socket.remoteAddress ?? 'unknown'
+  return address.startsWith('::ffff:') ? address.slice(7) : address
 }
 
 /**
@@ -287,6 +420,16 @@ export async function startRelay(rawOptions = {}) {
   options.audioLang = options.audioLang ?? defaultAudioLang(options.dataDir)
   const secret = await resolveSecret(options)
   await mkdir(options.dataDir, { recursive: true })
+
+  // 公网模式才启用限流；局域网模式下它只会带来误伤的风险
+  const limiter = createRateLimiter({
+    windowMs: PUBLIC_LIMITS.windowMs,
+    maxRequests: PUBLIC_LIMITS.maxRequestsPerMinutePerIp,
+  })
+  /** 定期清过期窗口 —— 长期运行的服务不能让 Map 无限长。 */
+  const sweepTimer = options.public === true
+    ? setInterval(() => limiter.sweep(), PUBLIC_LIMITS.windowMs).unref()
+    : null
 
   /**
    * 调试输出：默认**开着**（除了 --quiet）。
@@ -317,6 +460,10 @@ export async function startRelay(rawOptions = {}) {
     sayCount: 0,
     frameCount: 0,
     rejected: 0,
+    /** 被限流拒掉的请求数（公网模式下才有意义）。 */
+    rateLimited: 0,
+    /** 密钥不对的来源 IP（只记一份，免得扫端口的把日志刷爆）。 */
+    rejectedIps: new Set(),
     sockets: 0,
     /** 累计接受过多少个 TCP 连接（诊断"手机到底有没有连过来"，见 /status）。 */
     connections: 0,
@@ -384,6 +531,24 @@ export async function startRelay(rawOptions = {}) {
     response.end(body)
   }
 
+  /**
+   * 拒收一个**我们没读完**的请求体，然后把这个连接关掉。
+   *
+   * <p>为什么不能只 send() 了事：客户端还在往外发，而我们已经不再读了 ——
+   * 那段没被读走的数据留在 socket 里，Node 只能把连接重置（RST）。
+   * 后果是**下一个请求莫名其妙地 ECONNRESET**（keep-alive 复用了这条脏连接），
+   * 排查时会以为"服务挂了"，其实只是上一个请求没被读完。
+   * 这个坑是公网限流那次冒烟测试里撞出来的。
+   *
+   * <p>加 `Connection: close` 是让客户端**明确知道**这条连接不再复用，
+   * 而不是靠它去猜；然后在响应写完之后再销毁 socket。
+   */
+  function sendAndClose(request, response, status, payload) {
+    response.setHeader('Connection', 'close')
+    response.once('finish', () => request.socket?.destroy())
+    send(response, status, payload)
+  }
+
   async function readBody(request) {
     const chunks = []
     let size = 0
@@ -436,8 +601,32 @@ export async function startRelay(rawOptions = {}) {
       const given = request.headers['x-leion-secret'] ?? url.searchParams.get('secret')
       if (!secretMatches(secret, given)) {
         state.rejected += 1
+        // 记下**是谁**被拒了。公网上被扫端口是常事，日志里没有来源 IP 时
+        // 完全分不清"是手机密钥填错了"还是"有人在扫"。
+        const who = clientIp(request)
+        if (!state.rejectedIps.has(who)) {
+          state.rejectedIps.add(who)
+          // 用 startRelay 内部的 debug（main 里的 log 在这一层拿不到）
+          debug(`  ✗ 密钥不对，来自 ${who}（累计被拒 ${state.rejected} 次）`)
+        }
         send(response, 401, { ok: false, error: 'unauthorized', hint: '请求头要带 X-Leion-Secret' })
         return
+      }
+
+      // ── 公网模式：每 IP 限流 ─────────────────────────────────────────────
+      // 放在密钥校验**之后**：没密钥的请求连桶都不用占，免得别人用一个错的密钥
+      // 就能把某个 IP 的额度耗掉（那是我们自己人）。
+      if (options.public === true) {
+        const who = clientIp(request)
+        if (!limiter.allow(who)) {
+          state.rateLimited += 1
+          send(response, 429, {
+            ok: false,
+            error: 'too-many-requests',
+            hint: `每个 IP 每分钟最多 ${PUBLIC_LIMITS.maxRequestsPerMinutePerIp} 次`,
+          })
+          return
+        }
       }
 
       // ── GET /hello ────────────────────────────────────────────────────────
@@ -452,7 +641,10 @@ export async function startRelay(rawOptions = {}) {
         try {
           body = await readBody(request)
         } catch (error) {
-          send(response, error.statusCode ?? 400, { ok: false, error: String(error.message) })
+          // readBody 只在"读到一半就发现太大/解析失败"时抛 —— 剩下的数据还在路上，
+          // 不关连接就会留下一条脏 keep-alive 连接（见 sendAndClose 的说明）
+          sendAndClose(request, response, error.statusCode ?? 400,
+            { ok: false, error: String(error.message) })
           return
         }
         const text = body.text
@@ -522,8 +714,39 @@ export async function startRelay(rawOptions = {}) {
             chunks.push(chunk)
           }
         } catch (error) {
-          send(response, error.statusCode ?? 400, { ok: false, error: String(error.message) })
+          // 这里是**读到一半**就拒的：剩下的数据还在路上，必须关连接
+          sendAndClose(request, response, error.statusCode ?? 400,
+            { ok: false, error: String(error.message) })
           return
+        }
+
+        // ── 公网模式：音频字节限流 + 总量上限 ───────────────────────────────
+        //
+        // 这两条防的不是"破解密钥"，而是**把磁盘写满**：
+        // 转发进程对 /audio 是**只追加、从不清空**的（见下面那段注释，
+        // 那是为了不丢音频而刻意做的）。所以公网上只要有人不停灌，
+        // 服务器磁盘就会满，然后识别进程、Node、甚至系统一起出问题。
+        if (options.public === true) {
+          const who = clientIp(request)
+          if (!limiter.allowBytes(who, size,
+            PUBLIC_LIMITS.maxAudioBytesPerMinutePerIp)) {
+            state.rateLimited += 1
+            send(response, 429, {
+              ok: false,
+              error: 'too-much-audio',
+              hint: `每个 IP 每分钟最多 ${PUBLIC_LIMITS.maxAudioBytesPerMinutePerIp} 字节音频`,
+            })
+            return
+          }
+          if (state.audioBytes + size > PUBLIC_LIMITS.maxAudioBytesTotal) {
+            send(response, 507, {
+              ok: false,
+              error: 'audio-storage-full',
+              hint: `音频文件已达上限 ${PUBLIC_LIMITS.maxAudioBytesTotal} 字节，`
+                + '重启转发进程会清空（见 start-all）',
+            })
+            return
+          }
         }
         const body = Buffer.concat(chunks)
         // 采样率是 2 字节一帧，奇数长度说明发端截断在半帧上 —— 收下会污染后面所有数据
@@ -665,6 +888,7 @@ export async function startRelay(rawOptions = {}) {
           says: state.sayCount,
           inboxLines: state.writer.stats.lines,
           rejected: state.rejected,
+          rateLimited: state.rateLimited,
           waiting: state.waiters.size,
           busSeen: state.lastFrame !== null,
           // 「手机有没有连到这里」的证据。手机连不上时它自己没法说话，
@@ -672,6 +896,7 @@ export async function startRelay(rawOptions = {}) {
           sockets: state.sockets,
           connections: state.connections,
           lastConnectionAt: state.lastConnectionAt,
+          publicMode: options.public === true,
           inbox: options.inbox,
           bus: options.bus,
           audio: options.audio,
@@ -720,6 +945,7 @@ export async function startRelay(rawOptions = {}) {
       state.closed = true
       state.waiters.clear()
       clearInterval(busTimer)
+      if (sweepTimer !== null) clearInterval(sweepTimer)
       await state.writeChain.catch(() => {})
       await state.writer.close().catch(() => {})
       await new Promise(resolve => server.close(resolve))
@@ -751,6 +977,7 @@ async function main() {
   const log = options.quiet ? () => {} : (...args) => console.log(...args)
 
   process.stdout.write(formatBanner(options, relay, lanAddresses()) + '\n')
+  if (options.public === true) process.stdout.write(formatPublicChecklist(options, relay) + '\n')
   log('[relay] 等待手机连接…（Ctrl-C 结束）')
 
   const shutdown = async () => {

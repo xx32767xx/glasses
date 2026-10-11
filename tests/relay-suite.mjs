@@ -12,7 +12,9 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { startRelay, formatBanner, pcmLevel, describeLevel } from '../relay/lan-relay.mjs'
+import { startRelay, formatBanner, pcmLevel, describeLevel,
+  createRateLimiter, clientIp, resolveSecret, formatPublicChecklist,
+  PUBLIC_LIMITS } from '../relay/lan-relay.mjs'
 import { VAR_DIR } from '../lib/paths.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -498,6 +500,100 @@ export async function runRelaySuite({ it, check, assert }) {
     check('正常说话不告警', !speech.includes('警告') && !speech.includes('几乎没有声音'), speech)
     check('仍然报出峰值与 RMS', speech.includes('0.450') && speech.includes('0.0800'), speech)
     check('有可视化的条（不看数字也能一眼判断）', speech.includes('█'), speech)
+  })
+
+  // ── 9. 公网部署的加固（--public）─────────────────────────────────────────
+  //
+  // 这一节来自"电脑端要搬到公网服务器"这件事。绑到公网和绑到局域网是**两件不同
+  // 性质的事**：局域网里"谁能连上"本身就是一层门槛，公网上没有这层门槛，
+  // 任何扫到端口的人都能发请求。而最现实的破坏不是破解密钥（随机数暴力不可行），
+  // 是往 /audio 灌垃圾 —— 转发进程对音频是**只追加、从不清空**的，
+  // 磁盘满了之后识别进程和系统一起出问题。
+  //
+  // 限流写错比不设更糟（会把正常用户挡在外面），所以这里逐条钉住。
+
+  await it('限流器：窗口内放行到上限，超出才拒；窗口过了自动恢复', async () => {
+    const limiter = createRateLimiter({ windowMs: 1000, maxRequests: 3 })
+    const t0 = 1_000_000
+    check('第 1 次放行', limiter.allow('a', t0) === true)
+    check('第 2 次放行', limiter.allow('a', t0 + 1) === true)
+    check('第 3 次放行（正好到上限）', limiter.allow('a', t0 + 2) === true)
+    check('第 4 次被拒', limiter.allow('a', t0 + 3) === false)
+    check('别的 IP 不受影响（不能一人超限全体遭殃）', limiter.allow('b', t0 + 3) === true)
+    check('窗口过后恢复', limiter.allow('a', t0 + 1001) === true)
+    check('sweep 会清掉过期条目（长期跑不能无限长）', limiter.size() >= 1)
+    limiter.sweep(t0 + 100000)
+    check('清完就空了', limiter.size() === 0, String(limiter.size()))
+  })
+
+  await it('限流器：音频按**字节**算，不是按请求次数', async () => {
+    // 一次请求可能是 1KB，也可能是几 MB —— 只数次数等于没防住
+    const limiter = createRateLimiter({ windowMs: 60000, maxRequests: 9999 })
+    const t0 = 2_000_000
+    check('第一次 1MB 放行（未超 1.5MB 上限）', limiter.allowBytes('a', 1024 * 1024, 1.5 * 1024 * 1024, t0) === true)
+    check('再加 1MB 就超了，拒', limiter.allowBytes('a', 1024 * 1024, 1.5 * 1024 * 1024, t0 + 1) === false)
+    check('第一个请求本身就超上限时直接拒', limiter.allowBytes('c', 9 * 1024 * 1024, 1024 * 1024, t0) === false)
+  })
+
+  await it('clientIp：**不采信** X-Forwarded-For 的第一个值（那是客户端能伪造的）', async () => {
+    // 用 X-Forwarded-For 做限流等于没限流：改个头就绕过了
+    const spoofed = {
+      headers: { 'x-forwarded-for': '1.2.3.4, 5.6.7.8' },
+      socket: { remoteAddress: '::ffff:10.0.0.9' },
+    }
+    check('无视 X-Forwarded-For，用真实对端地址', clientIp(spoofed) === '10.0.0.9', clientIp(spoofed))
+    check('IPv4-mapped IPv6 显示成 IPv4', !clientIp(spoofed).includes('::ffff:'))
+
+    // 反代（Caddy/nginx）会**覆盖** X-Real-IP，那个可以信
+    const behindProxy = {
+      headers: { 'x-real-ip': '100.64.1.2' },
+      socket: { remoteAddress: '127.0.0.1' },
+    }
+    check('有 X-Real-IP 时用它', clientIp(behindProxy) === '100.64.1.2', clientIp(behindProxy))
+
+    check('没有 socket 也不崩', clientIp({ headers: {} }) === 'unknown')
+  })
+
+  await it('resolveSecret：公网模式下拒绝短密钥（缺省那 12 个 hex 太短）', async () => {
+    const dir = join(TMP, 'secret-public')
+    let threw = false
+    try {
+      await resolveSecret({ secret: 'abc123', dataDir: dir, public: true })
+    } catch (error) {
+      threw = true
+      check('报错里说清要多长', String(error.message).includes(String(PUBLIC_LIMITS.minSecretChars)),
+        String(error.message))
+    }
+    check('短密钥在 --public 下被拒（不是悄悄放过）', threw === true)
+
+    const ok = await resolveSecret({
+      secret: 'x'.repeat(PUBLIC_LIMITS.minSecretChars), dataDir: dir, public: true,
+    })
+    check('够长就通过', ok.length === PUBLIC_LIMITS.minSecretChars)
+
+    // 公网模式下自动生成的也必须是长的
+    const generated = await resolveSecret({ dataDir: join(TMP, 'secret-generated'), public: true })
+    check('自动生成的长度达标', generated.length >= PUBLIC_LIMITS.minSecretChars,
+      String(generated.length))
+    const lan = await resolveSecret({ dataDir: join(TMP, 'secret-lan') })
+    check('局域网模式仍然保持原来的短密钥（不改变既有行为）',
+      lan.length === 12, String(lan.length))
+  })
+
+  await it('公网清单：把三件必做的事说清楚，且**带真密钥**', async () => {
+    const text = formatPublicChecklist(
+      { port: 8788 },
+      { secret: 'deadbeef'.repeat(3), port: 8788 },
+    )
+    check('真的出了内容', text.length > 300, String(text.length))
+    check('提到套 TLS', text.includes('TLS') && text.includes('Caddy'), text.slice(0, 120))
+    check('给了反代配置片段', text.includes('reverse_proxy 127.0.0.1:8788'), '缺反代片段')
+    check('提醒反代要覆盖 X-Real-IP（否则限流算成同一个 IP）',
+      text.includes('X-Real-IP'), '缺 X-Real-IP 提醒')
+    check('提醒安全组/防火墙', text.includes('安全组') || text.includes('防火墙'), '缺防火墙提醒')
+    check('提醒用 systemd 常驻', text.includes('systemd'), '缺 systemd 提醒')
+    check('带了真密钥，且不是 undefined',
+      text.includes('deadbeef'.repeat(3)) && !text.includes('undefined'), '密钥没渲染对')
   })
 
   await relay.close()

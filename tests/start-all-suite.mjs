@@ -39,6 +39,20 @@ export async function runStartAllSuite({ it, check, assert }) {
       dataDir.replace(/\\/g, '/').endsWith('var/x'), dataDir)
   })
 
+  await it('--public：加固参数**必须真的传到**转发进程（否则是最坏的一种"以为配好了"）', async () => {
+    // 服务器部署时，文档让用户跑 start-all；如果这里漏传 --public，
+    // 强密钥/限流/音频上限一个都不生效，而启动画面照样正常 —— 查不出来。
+    const plain = buildSteps(parseArgs([])).find(s => s.key === 'relay')
+    check('平时不带 --public', !argsOf(plain).includes('--public'), argsOf(plain))
+
+    const pub = buildSteps(parseArgs(['--public'])).find(s => s.key === 'relay')
+    check('带了 --public', argsOf(pub).includes('--public'), argsOf(pub))
+    check('同时显式绑 0.0.0.0（公网要能被外面连）',
+      argsOf(pub).includes('--host 0.0.0.0'), argsOf(pub))
+    check('原有参数没被挤掉',
+      argsOf(pub).includes('--port') && argsOf(pub).includes('--data-dir'), argsOf(pub))
+  })
+
   await it('识别进程：**不写 python | node 管道**，而用 --whisper-follow 让桥自己起子进程', async () => {
     const asr = buildSteps(parseArgs([])).find(s => s.key === 'asr')
     check('脚本指向 bridge/asr-bridge.mjs', asr.script.endsWith('asr-bridge.mjs'), asr.script)

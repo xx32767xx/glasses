@@ -50,6 +50,8 @@ const HELP = `start-all —— 一条命令起齐整条链路
   --offline             大脑用离线例句表（不联网、零成本，只认得剧本那 14 句）
   --proofread           打开大模型校对（第二遍）：初译先上屏，空闲时回头改这一句。
                         代价是每句多一次模型调用，但**不占**下一句的初译时间（见 docs/07）
+  --public              公网部署（服务器上）：转发进程开强密钥 + 限流 + 音频上限，
+                        并绑到 0.0.0.0。**绑公网地址时必须加**，见 docs/10
   --no-transcriber      只起转发 + 大脑（手输文字那条路不需要识别）
   --data-dir <path>     数据目录（缺省 var/live）
   --inbox <path>        收件箱（缺省 <data-dir>/asr-inbox.jsonl）
@@ -87,6 +89,7 @@ export function parseArgs(argv) {
     computeType: 'float16',
     openWindow: false,
     writeLogs: true,
+    public: false,
   }
   const takesValue = new Set(['data-dir', 'inbox', 'bus', 'audio', 'port', 'cols', 'lines', 'whisper-model'])
   for (let index = 0; index < argv.length; index += 1) {
@@ -98,6 +101,7 @@ export function parseArgs(argv) {
     if (key === 'offline') { options.offline = true; continue }
     if (key === 'proofread') { options.proofread = true; continue }
     if (key === 'no-transcriber') { options.transcriber = false; continue }
+    if (key === 'public') { options.public = true; continue }
     if (key === 'open-window') { options.openWindow = true; continue }
     if (key === 'quiet-logs') { options.writeLogs = false; continue }
     if (key === 'dry-run') { options.dryRun = true; continue }
@@ -144,11 +148,18 @@ export function parseArgs(argv) {
 export function buildSteps(options) {
   const steps = []
 
+  const relayArgs = ['--data-dir', options.dataDir, '--port', String(options.port)]
+  // 公网部署（服务器上）必须把加固一起带上 —— 否则文档说"服务器上跑 start-all"，
+  // 而真正生效的强密钥/限流/音频上限**一个都没开**，是最坏的一种"以为配好了"。
+  if (options.public === true) {
+    relayArgs.push('--public')
+    relayArgs.push('--host', options.host ?? '0.0.0.0')
+  }
   steps.push({
     key: 'relay',
     ...STEPS.relay,
     script: join(ROOT, 'relay', 'lan-relay.mjs'),
-    args: ['--data-dir', options.dataDir, '--port', String(options.port)],
+    args: relayArgs,
   })
 
   if (options.transcriber) {
