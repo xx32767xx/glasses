@@ -53,11 +53,6 @@
     -->
     <!-- ⚠️ 全盘访问（MANAGE_EXTERNAL_STORAGE）**上架必被拒**，且我们只写自己的应用目录 -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:node="remove" />
-    <!-- 投屏（MEDIA_PROJECTION）与麦克风前台服务：我们投的是**自己构造的 View**，
-         不是录屏；RECORD_AUDIO 我们已经有自己的用途（手机当麦克风），
-         不需要额外的前台服务声明。真机若报缺这条再加回来。 -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" tools:node="remove" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" tools:node="remove" />
     <!-- 设备电源 / 电话：与业务无关 -->
     <uses-permission android:name="android.permission.DEVICE_POWER" tools:node="remove" />
     <uses-permission android:name="android.permission.READ_PHONE_STATE" tools:node="remove" />
@@ -67,6 +62,33 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" tools:node="remove" />
     <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" tools:node="remove" />
+
+    <!--
+      ══════════════════════════════════════════════════════════════════════════
+      ⚠️⚠️ 不要再删 FOREGROUND_SERVICE_* 了 —— 删了必崩。
+
+      真机崩溃（Android 14 / targetSdk 34）：
+
+        RuntimeException: Unable to start service
+          com.llvision.glxss.common.service.audio.GlassAudioService
+        Caused by: SecurityException: Starting FGS with type microphone ...
+          requires permissions: allOf=true
+          [android.permission.FOREGROUND_SERVICE_MICROPHONE]
+
+      原因：**SDK 自己的服务在 AAR 里声明了 foregroundServiceType**
+      （合并后的清单里能看到三条：microphone / camera / mediaProjection），
+      而它们各自要求**同名的** FOREGROUND_SERVICE_* 权限。
+      我一厢情愿地认为"我们投的是自己构造的 View、不是录屏，所以不需要"
+      就把这两条删了 —— 结果是 SDK 的服务一启动就 SecurityException，整个 App 崩。
+
+      规则：**AAR 声明了 foregroundServiceType，就必须有配套的权限。**
+      这类"声明/权限成对出现"的东西不能单方面删一半 —— 删之前先看
+      合并后的清单里有没有对应的 service 声明。
+      （同类错误第二次了：第一次是删 CAMERA 导致 USB 授权框不弹。）
+      ══════════════════════════════════════════════════════════════════════════
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
     <application
         android:label="@string/app_name"

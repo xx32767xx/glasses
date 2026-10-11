@@ -295,6 +295,42 @@ AAR 清单会带进一堆我们**不需要**的权限，用 manifest 合并规�
 > **教训**：SDK 声明的权限是它的**运行前提**，不是我们能替它省的东西。
 > "最小权限"这条原则在这里会让功能直接不可用。
 
+> ### ⚠️⚠️ 更不要删 `FOREGROUND_SERVICE_*` —— 删了**必崩**
+>
+> 同上一条的同类错误，**第二次犯**。真机崩溃（Android 14 / targetSdk 34）：
+>
+> ```
+> RuntimeException: Unable to start service
+>   com.llvision.glxss.common.service.audio.GlassAudioService
+> Caused by: SecurityException: Starting FGS with type microphone ...
+>   requires permissions: allOf=true
+>   [android.permission.FOREGROUND_SERVICE_MICROPHONE]
+> ```
+>
+> 原因：**SDK 自己的服务在 AAR 里声明了 `foregroundServiceType`**。
+> 合并后的清单里能看到三条，每条都要求**同名**的 `FOREGROUND_SERVICE_*` 权限：
+>
+> | foregroundServiceType | 服务类 | 需要的权限 |
+> |---|---|---|
+> | `microphone` | `com.llvision.glxss.common.service.audio.GlassAudioService` | `FOREGROUND_SERVICE_MICROPHONE` |
+> | `camera` | `com.llvision.glxss.common.service.camera.GlassCameraService` | `FOREGROUND_SERVICE_CAMERA` |
+> | `mediaProjection` | `com.llvision.glass3.core.lcd.ScreenRecorder` | `FOREGROUND_SERVICE_MEDIA_PROJECTION` |
+>
+> 我当时想的是"我们投的是自己构造的 View、不是录屏，所以不需要这两条"——
+> 但这跟**我们**调不调用无关：SDK 的服务在它自己的生命周期里会起这些前台服务，
+> 权限缺一个就是 `SecurityException` → 整个 App 崩。
+>
+> **规则：AAR 声明了 `foregroundServiceType`，就必须有配套的权限。**
+> 这类"声明与权限成对出现"的东西不能单方面删一半 ——
+> 删之前先去合并后的清单里看有没有对应的 `<service>` 声明：
+>
+> ```powershell
+> Select-String -Path "android\app\build\intermediates\merged_manifest\debug\processDebugMainManifest\AndroidManifest.xml" `
+>   -Pattern "foregroundServiceType"
+> ```
+>
+> （`FOREGROUND_SERVICE_*` 都是普通权限，不会弹窗、不影响上架。）
+
 > 规范：**每删一条权限都要在注释里写"为什么不需要"**。这份清单以后要交给老师/审核，
 > 空着解释的权限删除记录等于没写。
 
