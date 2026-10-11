@@ -333,20 +333,50 @@ public class GlassesSubtitleView {
     private void applyCanvasSize() {
         boolean known = canvasWidth > 0 && canvasHeight > 0;
         if (!known) {
-            root.setLayoutParams(new ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT));
+            // ⚠️ 必须用 **FrameLayout.LayoutParams**，不能用裸的 ViewGroup.LayoutParams。
+            //    见下面那段注释 —— 这是真机闪退的根因。
+            root.setLayoutParams(new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT));
             // 尺寸未知时也要能调字号 —— 否则真机上发现字小就完全没得救
             applyTextSizes();
             log("画布尺寸未知 → 交给 SDK 测量（官方样例写法）");
             return;
         }
 
-        root.setLayoutParams(new ViewGroup.LayoutParams(canvasWidth, canvasHeight));
-        root.measure(
-                View.MeasureSpec.makeMeasureSpec(canvasWidth, View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.makeMeasureSpec(canvasHeight, View.MeasureSpec.EXACTLY));
-        root.layout(0, 0, canvasWidth, canvasHeight);
+        // 🔴 这里曾经写的是 `new ViewGroup.LayoutParams(w, h)`，**真机上闪退**：
+        //
+        //   ClassCastException: ViewGroup$LayoutParams cannot be cast to
+        //                       ViewGroup$MarginLayoutParams
+        //     at ViewGroup.measureChildWithMargins(ViewGroup.java:7074)
+        //     at FrameLayout.onMeasure(FrameLayout.java:194)
+        //     ... ViewRootImpl.performTraversals
+        //
+        //   原因：FrameLayout 在测量子 View 时走 measureChildWithMargins，
+        //   那里会把子 View 的 LayoutParams **强转成 MarginLayoutParams**。
+        //   而裸 ViewGroup.LayoutParams 不是 MarginLayoutParams 的子类 → 崩。
+        //
+        //   为什么"直到调字号才崩"：设置画布尺寸只在**投屏前**跑过一次，
+        //   那时这块 View 还没被 SDK 收进它的容器、不在任何遍历里，所以没事。
+        //   而调字号会再跑一次 applyCanvasSize —— 这时 View 已经在 SDK 的容器里，
+        //   下一次窗口遍历就会去 measure 它 → 当场崩。
+        //
+        //   教训：**给自己造的 View 设 LayoutParams 时，类型必须和父容器匹配。**
+        //   父容器是 FrameLayout 就用 FrameLayout.LayoutParams（它是
+        //   MarginLayoutParams 的子类），别图省事用基类。
+        root.setLayoutParams(new FrameLayout.LayoutParams(canvasWidth, canvasHeight));
+
+        // 只有**还没被谁收养**时才自己去 measure/layout。
+        //
+        // 为什么加这个判断：投屏开始后这块 View 会被 SDK 收进它的容器，
+        // 那时我们再手动 measure/layout 就是和父容器的遍历打架。
+        // 父容器在的时候不需要我们操心 —— LayoutParams 对了它自己会摆好。
+        if (root.getParent() == null) {
+            root.measure(
+                    View.MeasureSpec.makeMeasureSpec(canvasWidth, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(canvasHeight, View.MeasureSpec.EXACTLY));
+            root.layout(0, 0, canvasWidth, canvasHeight);
+        }
 
         // 左右分开留白：单目显示时可见区**不一定居中**，所以两边分开调
         int padLeft = Math.round(canvasWidth * Math.max(0.04f, marginLeftPercent / 100f));

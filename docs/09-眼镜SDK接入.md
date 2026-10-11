@@ -527,6 +527,56 @@ int height = Math.round(width / ratio);    //    1440
 继续用 SP 的话，34sp 在 density 2.75 的手机上 ≈ 93px，
 而 480 宽的眼镜画布一行只放得下 5 个字。
 
+### LayoutParams 的类型必须和父容器匹配（真机闪退）
+
+**现象**：调节字号时 App 闪退，堆栈是
+
+```
+java.lang.ClassCastException: android.view.ViewGroup$LayoutParams
+        cannot be cast to android.view.ViewGroup$MarginLayoutParams
+    at android.view.ViewGroup.measureChildWithMargins(ViewGroup.java:7074)
+    at android.widget.FrameLayout.onMeasure(FrameLayout.java:194)
+    ...
+    at android.view.ViewRootImpl.performTraversals
+```
+
+**原因**：`FrameLayout` 测量子 View 时走 `measureChildWithMargins`，
+那里会把子 View 的 LayoutParams **强转成 `MarginLayoutParams`**。
+而裸的 `ViewGroup.LayoutParams` **不是** `MarginLayoutParams` 的子类 —— 直接崩。
+
+我写的是：
+
+```java
+root.setLayoutParams(new ViewGroup.LayoutParams(w, h));   // ❌ root 是 FrameLayout
+root.setLayoutParams(new FrameLayout.LayoutParams(w, h)); // ✅ 它才是 MarginLayoutParams 的子类
+```
+
+**为什么"只在调字号时才崩"**：设置画布尺寸本来只在**投屏前**跑过一次，
+那时这块 View 还没被 SDK 收进它的容器、不在任何布局遍历里，所以没事。
+而调字号会**再跑一次** —— 这时 View 已经在 SDK 的容器里，
+下一次窗口遍历就会去 measure 它 → 当场崩。
+
+> **规则**：给自己造的 View 设 `LayoutParams` 时，**类型必须和父容器匹配**。
+> 父容器是 `FrameLayout` 就用 `FrameLayout.LayoutParams`，
+> `LinearLayout` 就用 `LinearLayout.LayoutParams`，别图省事用基类
+> （基类在需要 margins 的父容器里一定崩）。
+
+### 附带的一条教训：「抓不到堆栈」推不出「原生崩溃」
+
+我一开始按"抓不到 Java 堆栈 = 原生崩溃"推断成**改被采样的 View 有数据竞争**，
+于是加了"停投屏 → 等 400ms → 改 → 重投"（还配了 700ms 防抖），
+让校准变得很难用（每按一下黑一秒），而**根本没修到点上**。
+
+真相是上面那个 `ClassCastException` —— 它是普通 Java 异常，
+`CrashLog` 本来就能抓到，只是我**没让用户先去拿那份堆栈**就动手改设计了。
+
+> **"没有堆栈"只能推出"不是 Java 崩溃"，推不出"是什么"**。
+> 先拿到证据，再改设计。
+
+（这次之所以最终拿到了堆栈，是因为加了"面包屑"：动作开始前写文件、
+回到后台时删掉 —— 下次启动发现文件还在就报"上次没走完：<动作>"。
+即使没有堆栈，也至少知道死在哪个动作里。这个机制留下了。）
+
 ### 「投屏成功但眼镜上看不到东西」：LCD 开关与眼位
 
 真机第五轮的现象：`createCaptureScreen` 返回成功、界面显示"眼镜投屏中"，

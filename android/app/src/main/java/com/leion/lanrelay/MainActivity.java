@@ -1657,103 +1657,39 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         return prefs.getInt(KEY_GLASSES_MARGIN_L, DEFAULT_GLASSES_MARGIN_L);
     }
 
-    /** 把当前微调应用到眼镜那块 View，并刷新数值显示。 */
+    /**
+     * 把当前微调应用到眼镜那块 View，并刷新数值显示。
+     *
+     * <p>**实时生效**，不需要停投屏、不需要重投 —— 投屏本来就是持续采样这块 View，
+     * 改字号/留白/可见性都会在下一帧反映到眼镜上。用户在眼镜上一边看一边按即可。
+     *
+     * <p>⚠️ 这里曾经绕了一大圈：真机上"调字号闪退"，我按"抓不到 Java 堆栈 =
+     * 原生崩溃"推断是**改被采样的 View 有数据竞争**，于是加了
+     * "停投屏 → 等 400ms → 改 → 重投"（还配了 700ms 防抖）。
+     * 后来拿到真正的堆栈才发现**推断错了**，真实原因是
+     * {@code root} 的 LayoutParams 用了裸的 {@code ViewGroup.LayoutParams}，
+     * 而父容器是 FrameLayout —— 见 {@link GlassesSubtitleView} 里那段长注释。
+     *
+     * <p>既然是那个原因，停投屏/重投就是多余的，而且让校准变得很难用
+     * （每按一下黑一秒，而校准恰恰需要连续微调）。所以撤掉了。
+     * 教训：**先拿到证据再改设计**；"没有堆栈"只能推出"不是 Java 崩溃"，
+     * 推不出"是数据竞争"。
+     */
     private void applyGlassesTuning() {
         if (glassesView != null) {
             glassesView.setTuning(glassesFontScale(), glassesMarginRight(), glassesMarginLeft());
         }
-        TextView font = overlayRoot == null ? null : overlayRoot.findViewById(R.id.glassesFontValue);
-        TextView right = overlayRoot == null ? null : overlayRoot.findViewById(R.id.glassesRightValue);
-        TextView left = overlayRoot == null ? null : overlayRoot.findViewById(R.id.glassesLeftValue);
-        if (font != null) font.setText(String.format(Locale.US, "×%.2f", glassesFontScale()));
-        if (right != null) right.setText(glassesMarginRight() + "%");
-        if (left != null) left.setText(glassesMarginLeft() + "%");
+        renderTuningValues();
     }
 
     /**
-     * 微调的延迟应用任务。
+     * 调一个微调值，立刻生效。
      *
-     * <p>为什么用"防抖"而不是按一下就重投：连点五下就是五次"停投屏→改→重投"，
-     * 眼镜上会闪五次黑板，而且每次重启渲染都是一次新的竞态机会。
-     * 攒一下（700ms）再一次性应用：用户按多久都只重投一次。
-     */
-    private final Handler tuningHandler = new Handler(Looper.getMainLooper());
-    /** 待应用的标尺可见性（用户可能连点几次，只应用最后一次）。 */
-    private boolean hasPendingRuler = false;
-    private boolean pendingRulerVisible = false;
-    // 注意：这里**不能**引用 applyTuningTask 自己（Java 不允许字段初始化器自引用）。
-    // 取消挂起任务由 scheduleTuningApply / applyGlassesTuningNow 负责。
-    private final Runnable applyTuningTask = () -> applyGlassesTuningNow();
-
-    /** 应用待处理的标尺可见性。**只能在没在投屏时调用**（它也是改这棵 View 树）。 */
-    private void applyPendingRuler() {
-        if (!hasPendingRuler) return;
-        hasPendingRuler = false;
-        if (glassesView != null) glassesView.setRulerVisible(pendingRulerVisible);
-    }
-
-    private void scheduleTuningApply() {
-        tuningHandler.removeCallbacks(applyTuningTask);
-        // 没在投屏就不用等：直接改（没有渲染线程在读这棵 View 树）
-        if (glasses == null || !glasses.isCasting()) {
-            applyTuningTask.run();
-            return;
-        }
-        tuningHandler.postDelayed(applyTuningTask, 700);
-    }
-
-    /**
-     * 把微调真正应用到那块 View 上，**并且先停投屏**。
-     *
-     * <p>🔴 为什么必须停：投屏是 SDK 在**它自己的线程**上反复把这块 View 采成画面。
-     * 而我们改字号/留白会走到 {@code root.measure()} + {@code root.layout()} ——
-     * 也就是在渲染线程正在读这棵 View 树的时候改它。
-     * 这是数据竞争，**真机上的表现就是直接闪退、而且抓不到任何 Java 堆栈**
-     * （原生崩溃，进程直接没了，异常处理器没机会跑）。这一条是真机踩出来的。
-     *
-     * <p>顺序固定为：停投屏 → 等 SDK 真的停下来 → 改 → 重投。
-     * 中间黑约 0.4 秒，比闪退划算得多。
-     *
-     * <p>⚠️ 必须真的先停：{@code GlassesSdk.requestCast} 在**已经在投屏**时是直接
-     * 返回的（不会重投），所以"改完直接 requestCast"等于什么都没发生。
-     */
-    private void applyGlassesTuningNow() {
-        CrashLog.beginAction(this, "调整眼镜显示参数（停投屏→改尺寸→重投）");
-        boolean casting = glasses != null && glasses.isCasting();
-        if (!casting) {
-            // 没在投屏：直接改，没有渲染线程在读这棵 View 树
-            applyGlassesTuning();
-            applyPendingRuler();
-            CrashLog.endAction(this);
-            return;
-        }
-        glasses.stopCast();
-        // 提示写在**眼镜预览页自己的**状态行上。
-        // 不用 showConnectProgress：那个函数操作的是「连接电脑」那一页的控件，
-        // 而用户现在在眼镜预览页 —— 跨页去改另一个 overlay 的 view 是没必要的风险。
-        glassesStatus = getString(R.string.glasses_tune_applying);
-        renderGlassesRealStatus();
-        // 用主线程 Handler 而不是 View.post：那块 View **从不 attach 到窗口**，
-        // detached View 的 post() 要等 attach 才执行 —— 也就是永远不执行（踩过）。
-        new Handler(Looper.getMainLooper()).postDelayed(() -> {
-            applyGlassesTuning();
-            applyPendingRuler();
-            if (glasses != null && glasses.isConnected()) {
-                applyGlassesCanvasSize();
-                glasses.requestCast(glassesView == null ? null : glassesView.getView());
-            }
-            renderGlassesRealStatus();
-            CrashLog.endAction(this);
-        }, 400);
-    }
-
-    /**
-     * 调一个微调值。
-     *
-     * <p>先更新 prefs 和右上角的数值（那两个不在被投屏的 View 上，改它们安全），
-     * 真正的应用交给防抖任务 —— 它会先停投屏再改。
+     * @param key   {@link #KEY_GLASSES_FONT} / {@link #KEY_GLASSES_MARGIN_R} / {@link #KEY_GLASSES_MARGIN_L}
+     * @param delta 增量（字号是倍率步进，留白是百分点）
      */
     private void nudgeGlassesTuning(String key, float delta) {
+        CrashLog.beginAction(this, "调整眼镜显示参数");
         if (KEY_GLASSES_FONT.equals(key)) {
             float next = Math.max(0.6f, Math.min(3.0f,
                     Math.round((glassesFontScale() + delta) * 100f) / 100f));
@@ -1763,11 +1699,11 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             int next = Math.max(0, Math.min(60, current + Math.round(delta)));
             prefs.edit().putInt(key, next).apply();
         }
-        renderTuningValues();
-        scheduleTuningApply();
+        applyGlassesTuning();
+        CrashLog.endAction(this);
     }
 
-    /** 只刷新"当前值"那几个数字（不动被投屏的 View）。 */
+    /** 只刷新"当前值"那几个数字。 */
     private void renderTuningValues() {
         if (overlayRoot == null) return;
         TextView font = overlayRoot.findViewById(R.id.glassesFontValue);
@@ -1822,18 +1758,17 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         view.findViewById(R.id.glassesLeftPlus).setOnClickListener(v ->
                 nudgeGlassesTuning(KEY_GLASSES_MARGIN_L, 2));
         // 边界标尺：戴上眼镜看一眼就知道哪一部分看不见。
-        // 走同一条"停投屏→改→重投"的路 —— 改可见性同样是改这棵 View 树。
+        // 立刻生效 —— 和微调一样，投屏是持续采样的。
         view.findViewById(R.id.glassesRulerToggle).setOnClickListener(v -> {
             if (glassesView == null) return;
+            CrashLog.beginAction(this, "开关边界标尺");
             boolean next = !glassesView.isRulerVisible();
+            glassesView.setRulerVisible(next);
             TextView label = overlayRoot.findViewById(R.id.glassesRulerLabel);
             if (label != null) {
                 label.setText(next ? R.string.glasses_tune_ruler_on : R.string.glasses_tune_ruler);
             }
-            // 复用防抖任务：连续点也只重投一次
-            pendingRulerVisible = next;
-            hasPendingRuler = true;
-            scheduleTuningApply();
+            CrashLog.endAction(this);
         });
         applyGlassesTuning();
 
