@@ -437,6 +437,14 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     }
 
     @Override
+    protected void onStop() {
+        // 能走到这里 = 刚才那些"危险动作"（改被投屏的 View 尺寸等）没有把进程搞死。
+        // 所以把面包屑清掉，免得下次启动误报"上次崩在调字号"。
+        CrashLog.endAction(this);
+        super.onStop();
+    }
+
+    @Override
     protected void onDestroy() {
         // ⚠️ 眼镜 SDK 必须在进程退出前销毁，否则可能残留脏 fd 导致**眼镜整机重启**。
         //    顺序也是硬性的：destroy() 内部先 stopAllServices 再 destroy。
@@ -1663,10 +1671,87 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     }
 
     /**
-     * 调一个微调值并立刻生效。
+     * 微调的延迟应用任务。
      *
-     * <p>投屏是实时采样，所以**不需要重新投屏** —— 眼镜上直接变。
-     * 这也意味着用户在眼镜上一边看一边按，能很快找到合适的值。
+     * <p>为什么用"防抖"而不是按一下就重投：连点五下就是五次"停投屏→改→重投"，
+     * 眼镜上会闪五次黑板，而且每次重启渲染都是一次新的竞态机会。
+     * 攒一下（700ms）再一次性应用：用户按多久都只重投一次。
+     */
+    private final Handler tuningHandler = new Handler(Looper.getMainLooper());
+    /** 待应用的标尺可见性（用户可能连点几次，只应用最后一次）。 */
+    private boolean hasPendingRuler = false;
+    private boolean pendingRulerVisible = false;
+    // 注意：这里**不能**引用 applyTuningTask 自己（Java 不允许字段初始化器自引用）。
+    // 取消挂起任务由 scheduleTuningApply / applyGlassesTuningNow 负责。
+    private final Runnable applyTuningTask = () -> applyGlassesTuningNow();
+
+    /** 应用待处理的标尺可见性。**只能在没在投屏时调用**（它也是改这棵 View 树）。 */
+    private void applyPendingRuler() {
+        if (!hasPendingRuler) return;
+        hasPendingRuler = false;
+        if (glassesView != null) glassesView.setRulerVisible(pendingRulerVisible);
+    }
+
+    private void scheduleTuningApply() {
+        tuningHandler.removeCallbacks(applyTuningTask);
+        // 没在投屏就不用等：直接改（没有渲染线程在读这棵 View 树）
+        if (glasses == null || !glasses.isCasting()) {
+            applyTuningTask.run();
+            return;
+        }
+        tuningHandler.postDelayed(applyTuningTask, 700);
+    }
+
+    /**
+     * 把微调真正应用到那块 View 上，**并且先停投屏**。
+     *
+     * <p>🔴 为什么必须停：投屏是 SDK 在**它自己的线程**上反复把这块 View 采成画面。
+     * 而我们改字号/留白会走到 {@code root.measure()} + {@code root.layout()} ——
+     * 也就是在渲染线程正在读这棵 View 树的时候改它。
+     * 这是数据竞争，**真机上的表现就是直接闪退、而且抓不到任何 Java 堆栈**
+     * （原生崩溃，进程直接没了，异常处理器没机会跑）。这一条是真机踩出来的。
+     *
+     * <p>顺序固定为：停投屏 → 等 SDK 真的停下来 → 改 → 重投。
+     * 中间黑约 0.4 秒，比闪退划算得多。
+     *
+     * <p>⚠️ 必须真的先停：{@code GlassesSdk.requestCast} 在**已经在投屏**时是直接
+     * 返回的（不会重投），所以"改完直接 requestCast"等于什么都没发生。
+     */
+    private void applyGlassesTuningNow() {
+        CrashLog.beginAction(this, "调整眼镜显示参数（停投屏→改尺寸→重投）");
+        boolean casting = glasses != null && glasses.isCasting();
+        if (!casting) {
+            // 没在投屏：直接改，没有渲染线程在读这棵 View 树
+            applyGlassesTuning();
+            applyPendingRuler();
+            CrashLog.endAction(this);
+            return;
+        }
+        glasses.stopCast();
+        // 提示写在**眼镜预览页自己的**状态行上。
+        // 不用 showConnectProgress：那个函数操作的是「连接电脑」那一页的控件，
+        // 而用户现在在眼镜预览页 —— 跨页去改另一个 overlay 的 view 是没必要的风险。
+        glassesStatus = getString(R.string.glasses_tune_applying);
+        renderGlassesRealStatus();
+        // 用主线程 Handler 而不是 View.post：那块 View **从不 attach 到窗口**，
+        // detached View 的 post() 要等 attach 才执行 —— 也就是永远不执行（踩过）。
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            applyGlassesTuning();
+            applyPendingRuler();
+            if (glasses != null && glasses.isConnected()) {
+                applyGlassesCanvasSize();
+                glasses.requestCast(glassesView == null ? null : glassesView.getView());
+            }
+            renderGlassesRealStatus();
+            CrashLog.endAction(this);
+        }, 400);
+    }
+
+    /**
+     * 调一个微调值。
+     *
+     * <p>先更新 prefs 和右上角的数值（那两个不在被投屏的 View 上，改它们安全），
+     * 真正的应用交给防抖任务 —— 它会先停投屏再改。
      */
     private void nudgeGlassesTuning(String key, float delta) {
         if (KEY_GLASSES_FONT.equals(key)) {
@@ -1678,7 +1763,19 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             int next = Math.max(0, Math.min(60, current + Math.round(delta)));
             prefs.edit().putInt(key, next).apply();
         }
-        applyGlassesTuning();
+        renderTuningValues();
+        scheduleTuningApply();
+    }
+
+    /** 只刷新"当前值"那几个数字（不动被投屏的 View）。 */
+    private void renderTuningValues() {
+        if (overlayRoot == null) return;
+        TextView font = overlayRoot.findViewById(R.id.glassesFontValue);
+        TextView right = overlayRoot.findViewById(R.id.glassesRightValue);
+        TextView left = overlayRoot.findViewById(R.id.glassesLeftValue);
+        if (font != null) font.setText(String.format(Locale.US, "×%.2f", glassesFontScale()));
+        if (right != null) right.setText(glassesMarginRight() + "%");
+        if (left != null) left.setText(glassesMarginLeft() + "%");
     }
 
     private void openGlassesPreview() {
@@ -1724,15 +1821,19 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                 nudgeGlassesTuning(KEY_GLASSES_MARGIN_L, -2));
         view.findViewById(R.id.glassesLeftPlus).setOnClickListener(v ->
                 nudgeGlassesTuning(KEY_GLASSES_MARGIN_L, 2));
-        // 边界标尺：戴上眼镜看一眼就知道哪一部分看不见
+        // 边界标尺：戴上眼镜看一眼就知道哪一部分看不见。
+        // 走同一条"停投屏→改→重投"的路 —— 改可见性同样是改这棵 View 树。
         view.findViewById(R.id.glassesRulerToggle).setOnClickListener(v -> {
             if (glassesView == null) return;
             boolean next = !glassesView.isRulerVisible();
-            glassesView.setRulerVisible(next);
             TextView label = overlayRoot.findViewById(R.id.glassesRulerLabel);
             if (label != null) {
                 label.setText(next ? R.string.glasses_tune_ruler_on : R.string.glasses_tune_ruler);
             }
+            // 复用防抖任务：连续点也只重投一次
+            pendingRulerVisible = next;
+            hasPendingRuler = true;
+            scheduleTuningApply();
         });
         applyGlassesTuning();
 
@@ -1822,6 +1923,14 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         String crash = CrashLog.last(this);
         if (crash.length() > 0) {
             diag.append("\n⚠ 上次闪退：").append(firstLines(crash, 3));
+        } else {
+            // 没有 Java 堆栈不代表没崩过 —— 原生崩溃抓不到堆栈。
+            // 这时面包屑就是唯一的线索：它说"上次死在哪个动作里"。
+            String action = CrashLog.lastAction(this);
+            if (action.length() > 0) {
+                diag.append("\n⚠ 上次没走完：").append(action)
+                    .append("（无 Java 堆栈 → 多半是原生崩溃）");
+            }
         }
         diag.append("\n（长按本行看 API 探测）");
         glassesRealDiag.setText(diag.toString());

@@ -30,8 +30,52 @@ public final class CrashLog {
 
     private static final String TAG = "CrashLog";
     private static final String FILE_NAME = "last-crash.txt";
+    private static final String ACTION_FILE = "last-action.txt";
 
     private CrashLog() {
+    }
+
+    /**
+     * 记下"现在正在做什么"。
+     *
+     * <p><b>为什么需要这个</b>：{@link Thread#setDefaultUncaughtExceptionHandler}
+     * 只能抓 **Java 异常**。而"调字号时闪退、且抓不到任何堆栈"这种情况，
+     * 多半是**原生崩溃**（投屏的渲染在 SDK 自己的线程上，和主线程改 View
+     * 撞在一起就是段错误）—— 那种崩溃进程直接没了，Java 处理器根本没机会跑，
+     * 于是用户看到的永远是"无法捕捉有效错误信息"。
+     *
+     * <p>做法：动作开始前写一个面包屑文件，界面回到后台（说明刚才那段活着走完了）
+     * 时删掉。下次启动如果发现面包屑还在，就说明**上一轮死在了这个动作里** ——
+     * 即使拿不到堆栈，也知道是"在哪一步死的"。
+     *
+     * <p>这是"抓不到堆栈"和"完全不知道发生了什么"之间的一个折中：
+     * 拿不到原因，至少拿得到位置。
+     */
+    public static void beginAction(Context context, String what) {
+        try (java.io.FileOutputStream out =
+                     context.openFileOutput(ACTION_FILE, Context.MODE_PRIVATE)) {
+            out.write(what.getBytes("UTF-8"));
+        } catch (Throwable error) {
+            Log.w(TAG, "写面包屑失败", error);
+        }
+    }
+
+    /** 界面回到后台 = 刚才那段没崩，面包屑可以清了。 */
+    public static void endAction(Context context) {
+        new File(context.getFilesDir(), ACTION_FILE).delete();
+    }
+
+    /** 上一次没走完的动作；空串 = 上一轮干净退出。 */
+    public static String lastAction(Context context) {
+        File file = new File(context.getFilesDir(), ACTION_FILE);
+        if (!file.exists()) return "";
+        try (java.io.FileInputStream in = context.openFileInput(ACTION_FILE)) {
+            byte[] bytes = new byte[(int) file.length()];
+            int read = in.read(bytes);
+            return read <= 0 ? "" : new String(bytes, 0, read, "UTF-8");
+        } catch (Throwable error) {
+            return "";
+        }
     }
 
     /** 装一次即可（重复调用是安全的）。放在 Application/Activity.onCreate 最前面。 */
