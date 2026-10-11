@@ -1,7 +1,9 @@
 package com.leion.lanrelay;
 
 import android.content.Context;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -49,6 +51,135 @@ public class GlassesSubtitleView {
      */
     private int canvasWidth = 0;
     private int canvasHeight = 0;
+
+    /**
+     * 字号倍率。真机反馈"字太小"之后加的，缺省比原来的比例大一档。
+     *
+     * <p>为什么做成**可调**而不是直接改死一个数：眼镜上的实际观感取决于
+     * 光波导的放大率、佩戴位置、环境亮度 —— 这些我在电脑上推不出来。
+     * 而投屏是**实时采样这块 View** 的，所以调完立刻能在眼镜上看到效果，
+     * 不需要重新投屏、也不需要重新打包。
+     */
+    private float fontScale = 1.35f;
+
+    /**
+     * 右侧留白（占画布宽度的百分比）。
+     *
+     * <p>真机反馈"投射在右眼上，过于靠右的内容看不清" —— 单目右眼显示时，
+     * 画面右缘可能落在**眼盒（eyebox）之外**，或者被镜框挡住。
+     * 所以字幕块不应该铺满整个画布宽度，右边要留出安全区。
+     *
+     * <p>为什么是"可调"：到底留多少只有戴上才知道。缺省先给一个偏保守的值，
+     * 用户在眼镜上往回调到舒服为止。
+     */
+    private int marginRightPercent = 22;
+
+    /** 左侧留白（百分比）—— 和右侧分开，因为可见区不一定居中。 */
+    private int marginLeftPercent = 4;
+
+    /** 边界标尺（真机校准用）。 */
+    private RulerView ruler;
+
+    /**
+     * 显示/隐藏**边界标尺**（真机校准用）。
+     *
+     * <p>为什么需要它：用户反馈"过于靠右的内容看不清"，而"看不清"有几种完全不同的
+     * 成因 —— 右缘落在眼盒之外、被镜框挡住、或者画布本身比可见区宽。
+     * 这三种修法不一样，而**只有戴着眼镜的人能分辨**，靠来回描述要猜好几轮。
+     *
+     * <p>标尺屏画三样东西：外框（画布真实边界）、内框（当前留白构成的"安全区"）、
+     * 顶部百分比刻度。用户在眼镜上看一眼就能说出"右边到 80% 还能看清"，
+     * 一句话就把问题定死了。
+     */
+    public void setRulerVisible(boolean show) {
+        if (ruler == null) {
+            ruler = new RulerView(root.getContext());
+            ruler.setVisibility(View.GONE);
+            root.addView(ruler, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT));
+        }
+        if (show) {
+            ruler.setMargins(marginLeftPercent, marginRightPercent);
+            ruler.invalidate();
+        }
+        ruler.setVisibility(show ? View.VISIBLE : View.GONE);
+    }
+
+    public boolean isRulerVisible() {
+        return ruler != null && ruler.getVisibility() == View.VISIBLE;
+    }
+
+    /**
+     * 标尺：外框 = 画布边界，内框 = 安全区，顶上一排百分比刻度。
+     *
+     * <p>用自绘而不是拼一堆 TextView：刻度要精确对齐百分比位置，
+     * 用布局拼会因为字号与内边距产生偏差，而"偏差几像素"正好是这里最不能有的东西。
+     */
+    private static final class RulerView extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private int marginLeftPercent = 4;
+        private int marginRightPercent = 22;
+
+        RulerView(Context context) {
+            super(context);
+            setBackgroundColor(Color.BLACK);
+            paint.setTypeface(Typeface.MONOSPACE);
+        }
+
+        void setMargins(int leftPercent, int rightPercent) {
+            this.marginLeftPercent = leftPercent;
+            this.marginRightPercent = rightPercent;
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            int width = getWidth();
+            int height = getHeight();
+            if (width <= 0 || height <= 0) return;
+
+            // 外框：画布**真实边界**。看到它就知道画布有没有超出可见区。
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(Math.max(2f, height * 0.006f));
+            paint.setColor(Color.WHITE);
+            canvas.drawRect(1, 1, width - 1, height - 1, paint);
+
+            // 内框：当前留白构成的"安全区"——字幕实际只会落在这里面
+            float left = width * (marginLeftPercent / 100f);
+            float right = width * (1f - marginRightPercent / 100f);
+            paint.setColor(Color.parseColor("#FFD24A"));
+            canvas.drawRect(left, 1, right, height - 1, paint);
+
+            // 顶部百分比刻度：每 10% 一根，50% 那根更长
+            float textSize = Math.max(10f, height * 0.045f);
+            paint.setTextSize(textSize);
+            paint.setStyle(Paint.Style.FILL);
+            for (int percent = 0; percent <= 100; percent += 10) {
+                float x = width * (percent / 100f);
+                boolean major = percent % 50 == 0;
+                paint.setColor(major ? Color.WHITE : Color.parseColor("#8A8A8A"));
+                float tick = major ? height * 0.06f : height * 0.03f;
+                canvas.drawRect(Math.min(x, width - 3f), 1f,
+                        Math.min(x, width - 3f) + Math.max(2f, width * 0.004f), 1f + tick, paint);
+                if (major) {
+                    canvas.drawText(percent + "%", Math.min(x + width * 0.012f, width - textSize * 2.6f),
+                            1f + tick + textSize, paint);
+                }
+            }
+
+            // 四角标记：哪个不见了，就说明那个方向超出可见区
+            paint.setColor(Color.WHITE);
+            float pad = height * 0.02f;
+            canvas.drawText("T", width / 2f - textSize * 0.3f, 1f + height * 0.12f + textSize, paint);
+            canvas.drawText("B", width / 2f - textSize * 0.3f, height - pad - textSize * 0.2f, paint);
+            canvas.drawText("L", pad, height / 2f, paint);
+            canvas.drawText("R", width - pad - textSize, height / 2f, paint);
+
+            // 一行示例字：直接判断"这个字号够不够大"
+            paint.setTextSize(Math.max(12f, height * 0.10f * 1.35f));
+            canvas.drawText("字号示例 Ag", pad, height / 2f - textSize, paint);
+        }
+    }
 
     private final FrameLayout root;
     private final TextView subtitle;
@@ -151,7 +282,40 @@ public class GlassesSubtitleView {
     }
 
     /**
-     * 按当前已知尺寸重排：定 LayoutParams、定字号、必要时自己 measure。
+     * 设置显示微调（真机上才调得出来）。
+     *
+     * <p>投屏是对这块 View 的实时采样，所以调完**立刻**在眼镜上生效，
+     * 不用重新投屏。界面把值存进 prefs，下次启动沿用。
+     *
+     * @param fontScale          字号倍率（0.6–3.0）
+     * @param marginRightPercent 右侧留白百分比（0–60）
+     * @param marginLeftPercent  左侧留白百分比（0–60）
+     */
+    public void setTuning(float fontScale, int marginRightPercent, int marginLeftPercent) {
+        this.fontScale = clamp(fontScale, 0.6f, 3.0f);
+        this.marginRightPercent = (int) clamp(marginRightPercent, 0, 60);
+        this.marginLeftPercent = (int) clamp(marginLeftPercent, 0, 60);
+        applyCanvasSize();
+    }
+
+    private static float clamp(float value, float low, float high) {
+        return Math.max(low, Math.min(high, value));
+    }
+
+    public float getFontScale() {
+        return fontScale;
+    }
+
+    public int getMarginRightPercent() {
+        return marginRightPercent;
+    }
+
+    public int getMarginLeftPercent() {
+        return marginLeftPercent;
+    }
+
+    /**
+     * 按当前已知尺寸重排：定 LayoutParams、定边距、定字号，必要时自己 measure。
      *
      * <p>两个分支都是刻意的：
      * <ul>
@@ -172,6 +336,8 @@ public class GlassesSubtitleView {
             root.setLayoutParams(new ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT));
+            // 尺寸未知时也要能调字号 —— 否则真机上发现字小就完全没得救
+            applyTextSizes();
             log("画布尺寸未知 → 交给 SDK 测量（官方样例写法）");
             return;
         }
@@ -182,32 +348,52 @@ public class GlassesSubtitleView {
                 View.MeasureSpec.makeMeasureSpec(canvasHeight, View.MeasureSpec.EXACTLY));
         root.layout(0, 0, canvasWidth, canvasHeight);
 
-        int pad = Math.round(canvasWidth * 0.05f);
-        column.setPadding(pad, pad, pad, pad);
-        // 顶部状态行做得很淡、很小 —— 它只是线索，不该抢译文
-        setPx(status, canvasHeight * 0.028f);
-        setPx(hint, canvasHeight * 0.028f);
-        setPx(idleTitle, canvasHeight * 0.10f);
-        setPx(idleNote, canvasHeight * 0.038f);
-        applySubtitleSize(1);
-        log("投屏画布尺寸 " + canvasWidth + "×" + canvasHeight + "（按眼镜真实分辨率）");
+        // 左右分开留白：单目显示时可见区**不一定居中**，所以两边分开调
+        int padLeft = Math.round(canvasWidth * Math.max(0.04f, marginLeftPercent / 100f));
+        int padRight = Math.round(canvasWidth * Math.max(0.04f, marginRightPercent / 100f));
+        int padY = Math.round(canvasHeight * 0.05f);
+        column.setPadding(padLeft, padY, padRight, padY);
+        // 标尺的内框要跟着留白一起动 —— 否则用户拖着滑块、黄框却不动，
+        // 就分不清"我调了没有"和"调了没用"
+        if (ruler != null) {
+            ruler.setMargins(marginLeftPercent, marginRightPercent);
+            ruler.invalidate();
+        }
+        applyTextSizes();
+        log("投屏画布 " + canvasWidth + "×" + canvasHeight
+            + " · 字号×" + fontScale + " · 留白 左" + marginLeftPercent + "%/右" + marginRightPercent + "%");
+    }
+
+    /** 按画布尺寸与当前微调把各处字号算一遍。 */
+    private void applyTextSizes() {
+        // 顶部状态行不跟着放大：它只是线索，放大后会挤掉译文
+        float base = canvasHeight > 0 ? canvasHeight : 640;
+        setPx(status, base * 0.026f);
+        setPx(hint, base * 0.026f);
+        setPx(idleTitle, base * 0.10f * fontScale);
+        setPx(idleNote, base * 0.036f * fontScale);
+        applySubtitleSize(lastLines);
     }
 
     private static void setPx(TextView view, float px) {
         view.setTextSize(TypedValue.COMPLEX_UNIT_PX, Math.max(1f, px));
     }
 
-    /** 按行数选字号：字号 = 画布高度的比例。行数越多字号越小，不截断。 */
+    /** 上一次的字幕行数（微调字号时要按同一个行数重算，不能跳回 1 行）。 */
+    private int lastLines = 1;
+
+    /** 按行数选字号：字号 = 画布高度的比例 × 字号倍率。行数越多字号越小，不截断。 */
     private void applySubtitleSize(int lines) {
+        this.lastLines = Math.max(1, lines);
         if (canvasHeight <= 0) {
             // 尺寸未知：退回 SP（只能在手机 density 下近似，等知道分辨率再纠正）
-            float sp = lines <= 2 ? 34f : lines == 3 ? 28f : lines == 4 ? 23f : 19f;
+            float sp = (lines <= 2 ? 34f : lines == 3 ? 28f : lines == 4 ? 23f : 19f) * fontScale;
             subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
             return;
         }
         float ratio = lines <= 1 ? 0.095f : lines == 2 ? 0.085f
                 : lines == 3 ? 0.068f : lines == 4 ? 0.056f : 0.046f;
-        setPx(subtitle, canvasHeight * ratio);
+        setPx(subtitle, canvasHeight * ratio * fontScale);
     }
 
     /** 切换"待机提示 / 字幕"两种状态。有字幕了就把待机提示收起来。 */
@@ -252,12 +438,20 @@ public class GlassesSubtitleView {
         applySubtitleSize(lines);
     }
 
-    /** 画布一行大约放得下几个汉字 —— 按画布宽度和字号粗估，只用来选字号。 */
+    /**
+     * 画布一行大约放得下几个汉字 —— 按**实际可用的那块宽度**和字号粗估。
+     *
+     * <p>必须扣掉左右留白：留白是用户调的，不扣的话估出来的行数偏少，
+     * 字号会被选得偏大，结果是字幕溢出到看不见的区域 —— 正好是要避免的那件事。
+     */
     private int columnsPerLine() {
         if (canvasWidth <= 0 || canvasHeight <= 0) return 20;
-        float fontPx = canvasHeight * 0.085f;           // 取中间档字号估
-        int usable = Math.round(canvasWidth * 0.9f);    // 扣掉左右留白
-        return Math.max(6, Math.round(usable / Math.max(1f, fontPx)));
+        float leftPct = Math.max(0.04f, marginLeftPercent / 100f);
+        float rightPct = Math.max(0.04f, marginRightPercent / 100f);
+        int usable = Math.round(canvasWidth * (1f - leftPct - rightPct));
+        // 取中间档字号估（实际字号随后按行数再调一次）
+        float fontPx = Math.max(1f, canvasHeight * 0.085f * fontScale);
+        return Math.max(5, Math.round(usable / fontPx));
     }
 
     /** 粗略估行数：按当前画布能放多少列来折行算。只用来选字号，不需要精确。 */

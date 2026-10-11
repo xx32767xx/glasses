@@ -283,6 +283,9 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
      */
     private void setupGlasses() {
         glassesView = new GlassesSubtitleView(this);
+        // 先把上次调好的显示参数用上 —— 否则每次重启都回到缺省，
+        // 用户会以为"又变小了"，然后重调一遍
+        glassesView.setTuning(glassesFontScale(), glassesMarginRight(), glassesMarginLeft());
         glasses = new GlassesSdk(this, (status, connected) -> {
             // ⚠️ 顺序：先判断"这次回调是不是一次真正的**新**连接"，再更新字段。
             //    只有 connected 从 false 变 true 那一次才算新连接。
@@ -1620,6 +1623,64 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     /** 当前投屏画布用了什么尺寸（诊断用）：读到真实分辨率、还是交给 SDK 测量。 */
     private String glassesCanvasNote = "画布未定";
 
+    // ── 眼镜显示微调（真机上才调得出来）─────────────────────────────────────
+    //
+    // 这两组值来自真机反馈："字太小"、"投射在右眼上，过于靠右的内容看不清"。
+    // 眼镜上的实际观感取决于光波导放大率、佩戴位置、环境亮度 —— 在电脑上推不出来。
+    // 而投屏是**实时采样那块 View**，所以调完立刻在眼镜上生效：
+    // 用户戴着眼镜按加减，当场就能调到顺眼，不用重新打包。
+    private static final String KEY_GLASSES_FONT = "glassesFontScale";
+    private static final String KEY_GLASSES_MARGIN_R = "glassesMarginRight";
+    private static final String KEY_GLASSES_MARGIN_L = "glassesMarginLeft";
+    /** 缺省值：字号放大一档、右侧留 22%（单目右眼时右缘常在可见区外）。 */
+    private static final float DEFAULT_GLASSES_FONT = 1.35f;
+    private static final int DEFAULT_GLASSES_MARGIN_R = 22;
+    private static final int DEFAULT_GLASSES_MARGIN_L = 4;
+
+    private float glassesFontScale() {
+        return prefs.getFloat(KEY_GLASSES_FONT, DEFAULT_GLASSES_FONT);
+    }
+
+    private int glassesMarginRight() {
+        return prefs.getInt(KEY_GLASSES_MARGIN_R, DEFAULT_GLASSES_MARGIN_R);
+    }
+
+    private int glassesMarginLeft() {
+        return prefs.getInt(KEY_GLASSES_MARGIN_L, DEFAULT_GLASSES_MARGIN_L);
+    }
+
+    /** 把当前微调应用到眼镜那块 View，并刷新数值显示。 */
+    private void applyGlassesTuning() {
+        if (glassesView != null) {
+            glassesView.setTuning(glassesFontScale(), glassesMarginRight(), glassesMarginLeft());
+        }
+        TextView font = overlayRoot == null ? null : overlayRoot.findViewById(R.id.glassesFontValue);
+        TextView right = overlayRoot == null ? null : overlayRoot.findViewById(R.id.glassesRightValue);
+        TextView left = overlayRoot == null ? null : overlayRoot.findViewById(R.id.glassesLeftValue);
+        if (font != null) font.setText(String.format(Locale.US, "×%.2f", glassesFontScale()));
+        if (right != null) right.setText(glassesMarginRight() + "%");
+        if (left != null) left.setText(glassesMarginLeft() + "%");
+    }
+
+    /**
+     * 调一个微调值并立刻生效。
+     *
+     * <p>投屏是实时采样，所以**不需要重新投屏** —— 眼镜上直接变。
+     * 这也意味着用户在眼镜上一边看一边按，能很快找到合适的值。
+     */
+    private void nudgeGlassesTuning(String key, float delta) {
+        if (KEY_GLASSES_FONT.equals(key)) {
+            float next = Math.max(0.6f, Math.min(3.0f,
+                    Math.round((glassesFontScale() + delta) * 100f) / 100f));
+            prefs.edit().putFloat(KEY_GLASSES_FONT, next).apply();
+        } else {
+            int current = KEY_GLASSES_MARGIN_R.equals(key) ? glassesMarginRight() : glassesMarginLeft();
+            int next = Math.max(0, Math.min(60, current + Math.round(delta)));
+            prefs.edit().putInt(key, next).apply();
+        }
+        applyGlassesTuning();
+    }
+
     private void openGlassesPreview() {
         View view = pushOverlay(R.layout.overlay_glasses);
         glassesPanel = view.findViewById(R.id.glassesPanel);
@@ -1649,6 +1710,32 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         if (title != null) title.setText(getString(R.string.glasses_preview_title) + " · v" + appVersion());
         TextView caption = view.findViewById(R.id.glassesCaption);
         if (caption != null) caption.setText(R.string.glasses_real_caption);
+
+        // 显示微调：调完立刻在眼镜上生效（投屏是实时采样）
+        view.findViewById(R.id.glassesFontMinus).setOnClickListener(v ->
+                nudgeGlassesTuning(KEY_GLASSES_FONT, -0.05f));
+        view.findViewById(R.id.glassesFontPlus).setOnClickListener(v ->
+                nudgeGlassesTuning(KEY_GLASSES_FONT, 0.05f));
+        view.findViewById(R.id.glassesRightMinus).setOnClickListener(v ->
+                nudgeGlassesTuning(KEY_GLASSES_MARGIN_R, -2));
+        view.findViewById(R.id.glassesRightPlus).setOnClickListener(v ->
+                nudgeGlassesTuning(KEY_GLASSES_MARGIN_R, 2));
+        view.findViewById(R.id.glassesLeftMinus).setOnClickListener(v ->
+                nudgeGlassesTuning(KEY_GLASSES_MARGIN_L, -2));
+        view.findViewById(R.id.glassesLeftPlus).setOnClickListener(v ->
+                nudgeGlassesTuning(KEY_GLASSES_MARGIN_L, 2));
+        // 边界标尺：戴上眼镜看一眼就知道哪一部分看不见
+        view.findViewById(R.id.glassesRulerToggle).setOnClickListener(v -> {
+            if (glassesView == null) return;
+            boolean next = !glassesView.isRulerVisible();
+            glassesView.setRulerVisible(next);
+            TextView label = overlayRoot.findViewById(R.id.glassesRulerLabel);
+            if (label != null) {
+                label.setText(next ? R.string.glasses_tune_ruler_on : R.string.glasses_tune_ruler);
+            }
+        });
+        applyGlassesTuning();
+
         renderGlassesPanel();
         renderGlassesRealStatus();
     }

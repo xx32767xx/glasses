@@ -99,6 +99,190 @@
         android:textColor="@color/ink_soft"
         android:textSize="11sp" />
 
+    <!--
+      显示微调：字号 / 左留白 / 右留白。
+      为什么做成真机可调：眼镜上的实际观感取决于光波导放大率、佩戴位置、环境亮度，
+      在电脑上推不出来。而投屏是**实时采样**这块 View 的，所以调完立刻在眼镜上生效，
+      不用重新投屏、也不用重新打包 —— 真机上"字太小""右边看不清"这类问题
+      这样才能调到合适，而不是靠改代码反复试。
+    -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="10dp"
+        android:background="@drawable/bg_card"
+        android:orientation="vertical"
+        android:padding="12dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/glasses_tune_font"
+                android:textColor="@color/ink_soft"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/glassesFontMinus"
+                android:layout_width="40dp"
+                android:layout_height="36dp"
+                android:background="@drawable/tap_pill"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:text="@string/glasses_tune_minus"
+                android:textColor="@color/brand"
+                android:textSize="18sp" />
+
+            <TextView
+                android:id="@+id/glassesFontValue"
+                android:layout_width="64dp"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:textColor="@color/ink"
+                android:textSize="14sp" />
+
+            <TextView
+                android:id="@+id/glassesFontPlus"
+                android:layout_width="40dp"
+                android:layout_height="36dp"
+                android:background="@drawable/tap_pill"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:text="@string/glasses_tune_plus"
+                android:textColor="@color/brand"
+                android:textSize="18sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/glasses_tune_right"
+                android:textColor="@color/ink_soft"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/glassesRightMinus"
+                android:layout_width="40dp"
+                android:layout_height="36dp"
+                android:background="@drawable/tap_pill"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:text="@string/glasses_tune_minus"
+                android:textColor="@color/brand"
+                android:textSize="18sp" />
+
+            <TextView
+                android:id="@+id/glassesRightValue"
+                android:layout_width="64dp"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:textColor="@color/ink"
+                android:textSize="14sp" />
+
+            <TextView
+                android:id="@+id/glassesRightPlus"
+                android:layout_width="40dp"
+                android:layout_height="36dp"
+                android:background="@drawable/tap_pill"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:text="@string/glasses_tune_plus"
+                android:textColor="@color/brand"
+                android:textSize="18sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/glasses_tune_left"
+                android:textColor="@color/ink_soft"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/glassesLeftMinus"
+                android:layout_width="40dp"
+                android:layout_height="36dp"
+                android:background="@drawable/tap_pill"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:text="@string/glasses_tune_minus"
+                android:textColor="@color/brand"
+                android:textSize="18sp" />
+
+            <TextView
+                android:id="@+id/glassesLeftValue"
+                android:layout_width="64dp"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:textColor="@color/ink"
+                android:textSize="14sp" />
+
+            <TextView
+                android:id="@+id/glassesLeftPlus"
+                android:layout_width="40dp"
+                android:layout_height="36dp"
+                android:background="@drawable/tap_pill"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:text="@string/glasses_tune_plus"
+                android:textColor="@color/brand"
+                android:textSize="18sp" />
+        </LinearLayout>
+
+        <!--
+          边界标尺：戴上眼镜看一眼就知道"哪一部分看不见"。
+          比来回描述快得多 —— 外框是画布边界，黄框是字幕实际会落的安全区。
+        -->
+        <LinearLayout
+            android:id="@+id/glassesRulerToggle"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/tap_pill"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center">
+
+            <TextView
+                android:id="@+id/glassesRulerLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/glasses_tune_ruler"
+                android:textColor="@color/brand"
+                android:textSize="13sp" />
+        </LinearLayout>
+    </LinearLayout>
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
