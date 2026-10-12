@@ -888,6 +888,20 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         boolean paused = false;
         boolean partial = false;
         String direction = "";
+
+        /**
+         * 这一场**实际**用的是哪个输入设备（安卓报的实况）。
+         *
+         * <p>为什么要有：同传进行中底部导航是隐藏的（规范第 3 节），
+         * 进不到设置里的诊断面板 —— 而这件事恰恰**必须在录的时候才知道**。
+         * 所以跟着计时器每 500ms 采一次存在这里，结束后进总结页与记录。
+         *
+         * <p>这是"眼镜收音 vs 手机收音"对比实验能不能站住脚的唯一凭据：
+         * 如果实际用的是手机麦克风，"眼镜更好"这个结论就是假的。
+         */
+        String audioInput = "";
+        /** 有没有出现过"两路录音同时在跑"（音频会混在一起，那一场数据不可用）。 */
+        boolean audioMixed = false;
     }
 
     private void onStartClicked() {
@@ -1085,6 +1099,26 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         finishing.setVisibility(pendingFinalWait ? View.VISIBLE : View.GONE);
         partialNote.setVisibility(draft.partial ? View.VISIBLE : View.GONE);
 
+        // ★ 本场实际用的输入设备。
+        //   放在总结页是因为**同传进行中进不到设置页**（底部导航被隐藏，规范第 3 节），
+        //   所以"这一场到底是不是眼镜收音"只能在结束后回答 —— 那就把它放在这里，
+        //   并且一并存进记录。
+        TextView inputView = view.findViewById(R.id.sumAudioInput);
+        if (inputView != null) {
+            if (draft.audioInput.isEmpty()) {
+                inputView.setText("本场输入设备：未采集到（录音期间没能读到设备信息）");
+            } else {
+                inputView.setText("本场输入设备：" + draft.audioInput
+                        + (draft.audioMixed ? "\n⚠ 期间出现过两路同时录音，本场音频可能被污染" : ""));
+            }
+            // 结论是坏的时候用醒目色 —— 这一场的数据不能拿去下结论
+            boolean bad = draft.audioInput.startsWith("✗")
+                    || draft.audioInput.startsWith("⚠")
+                    || draft.audioInput.startsWith("?")
+                    || (draft.audioInput.isEmpty() && !draft.lines.isEmpty());
+            inputView.setTextColor(getColor(bad ? R.color.err : R.color.ink_soft));
+        }
+
         view.findViewById(R.id.sumSave).setOnClickListener(v -> {
             records.save(draft);
             toast(getString(R.string.record_saved));
@@ -1110,6 +1144,11 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                 .format(session == null ? new Date() : session.startedAt);
         draft.durationMs = session == null ? 0 : System.currentTimeMillis() - session.startedMs;
         draft.partial = session != null && session.partial;
+        // 把"这一场实际用的是哪个输入设备"带进记录。
+        // 这是"眼镜收音 vs 手机收音"对比实验能不能站住脚的唯一留档 ——
+        // 音频一旦离开手机就没有来源信息了，事后再也补不回来。
+        draft.audioInput = session == null ? "" : session.audioInput;
+        draft.audioMixed = session != null && session.audioMixed;
         for (SubtitleList.Segment segment : subtitles.segments()) {
             Records.Session.Line line = new Records.Session.Line();
             line.time = segment.time;
@@ -1140,9 +1179,46 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         public void run() {
             if (session == null || !session.active) return;
             sessionTimer.setText(elapsedLabel());
+            sampleAudioInput();
             main.postDelayed(this, 500);
         }
     };
+
+    /**
+     * 采样"这一场实际用的是哪个输入设备"，记进会话。
+     *
+     * <p><b>为什么要在会话进行中采样</b>：诊断面板在设置页，而同传时底部导航是隐藏的
+     * （规范第 3 节：把底部空间让给音频控制）—— **中途根本进不去看**。
+     * 而这件事恰恰必须在录的时候看：等录完了，谁也说不清刚才那场是哪个麦克风。
+     *
+     * <p>所以在这里每 500ms 采一次（顺便跟着已有的计时器走，不另起轮询），
+     * 存进会话、并在结束后的总结页与记录里显示。这样"这一场到底是不是眼镜收音"
+     * 就从"当时没看见、事后说不清"变成了留档里的一行字。
+     *
+     * <p>只保留**最坏**的那个结论：一旦发现"两路同时在录"或"用的是手机麦克风"，
+     * 就不被后面正常的采样覆盖掉 —— 那一场的数据本来就已经被污染了。
+     */
+    private void sampleAudioInput() {
+        if (session == null) return;
+        AudioManager manager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        String verdict = AudioDevices.verdict(manager);
+        if (verdict.isEmpty() || "未在录音".equals(verdict)) return;
+        if (verdict.startsWith("⚠")) session.audioMixed = true;
+        // 只保留**最坏**的那条：一旦确认过"两路在录"或"用的是手机"，
+        // 就不该被后面某次正常采样洗白 —— 那一场的数据本来就已经被污染了。
+        if (inputSeverity(verdict) > inputSeverity(session.audioInput)) {
+            session.audioInput = verdict;
+        }
+    }
+
+    /** 结论的严重程度：坏消息权重高，用来实现"只保留最坏"。 */
+    private static int inputSeverity(String verdict) {
+        if (verdict == null || verdict.isEmpty()) return 0;
+        if (verdict.startsWith("✗") || verdict.startsWith("⚠")) return 3;   // 数据不可用
+        if (verdict.startsWith("?")) return 2;                               // 无法确认
+        if (verdict.startsWith("✓")) return 1;                               // 确认是眼镜
+        return 0;
+    }
 
     private void stopTimer() {
         main.removeCallbacks(timerTick);
@@ -1369,8 +1445,17 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         for (Records.Session session : all) {
             View row = LayoutInflater.from(this).inflate(R.layout.item_record, recordsList, false);
             ((TextView) row.findViewById(R.id.recTitle)).setText(session.title);
+            // 列表里带一个**音源标记**：做对比实验时一眼就能挑出"哪几场是眼镜收的音"，
+            // 不用逐条点进去看。结论是坏的（用了手机/两路混录）要显眼。
+            String inputTag = "";
+            if (session.audioInput.startsWith("✓")) inputTag = " · 🎤眼镜";
+            else if (session.audioInput.startsWith("✗")) inputTag = " · ⚠手机收音";
+            else if (session.audioInput.startsWith("⚠")) inputTag = " · ⚠音源混录";
+            else if (session.audioInput.startsWith("?")) inputTag = " · ?音源未确认";
+            else if (!session.lines.isEmpty()) inputTag = " · ?音源未采集";
             ((TextView) row.findViewById(R.id.recMeta)).setText(session.startedAt
-                    + " · " + session.direction + " · " + formatDuration(session.durationMs));
+                    + " · " + session.direction + " · " + formatDuration(session.durationMs)
+                    + inputTag);
             String excerpt = session.lines.isEmpty() ? ""
                     : session.lines.get(0).target;
             ((TextView) row.findViewById(R.id.recExcerpt)).setText(excerpt);

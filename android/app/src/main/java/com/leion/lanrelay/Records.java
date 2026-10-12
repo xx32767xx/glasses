@@ -37,6 +37,21 @@ public class Records {
         public String startedAt = "";
         public long durationMs;
         public boolean partial;                 // 部分结果未完成
+
+        /**
+         * 这一场**实际**用的是哪个输入设备（安卓报的实况）。
+         *
+         * <p>为什么要存进留档：做"眼镜收音 vs 手机收音"的对比实验时，
+         * 事后再也分不清哪一场用的是哪个麦克风 —— 音频一旦离开手机就没有来源信息了
+         * （整条链路上没有这个字段）。而如果实际用的是手机麦克风，
+         * "眼镜更好"这个结论就是假的，必须能从留档里查出来。
+         *
+         * <p>值形如 {@code "✓ 实际用的是眼镜（USB 音频设备）"}。
+         */
+        public String audioInput = "";
+        /** 有没有出现过"两路录音同时在跑"（音频会混在一起，那一场数据不可用）。 */
+        public boolean audioMixed;
+
         public final List<Line> lines = new ArrayList<>();
 
         public static class Line {
@@ -70,6 +85,8 @@ public class Records {
                 session.startedAt = item.optString("startedAt", "");
                 session.durationMs = item.optLong("durationMs", 0);
                 session.partial = item.optBoolean("partial", false);
+                session.audioInput = item.optString("audioInput", "");
+                session.audioMixed = item.optBoolean("audioMixed", false);
                 JSONArray lines = item.optJSONArray("lines");
                 if (lines != null) {
                     for (int k = 0; k < lines.length(); k++) {
@@ -140,6 +157,8 @@ public class Records {
                 item.put("startedAt", session.startedAt);
                 item.put("durationMs", session.durationMs);
                 item.put("partial", session.partial);
+                item.put("audioInput", session.audioInput);
+                item.put("audioMixed", session.audioMixed);
                 JSONArray lines = new JSONArray();
                 for (Session.Line line : session.lines) {
                     JSONObject entry = new JSONObject();

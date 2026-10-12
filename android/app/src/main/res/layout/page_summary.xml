@@ -101,6 +101,22 @@
                     android:textSize="14sp" />
             </LinearLayout>
 
+            <!--
+              本场实际用的输入设备（安卓报的实况）。
+              为什么放在总结页：同传进行中底部导航是隐藏的，进不到设置里的诊断面板，
+              所以"这一场到底是不是眼镜收音"只能在结束后回答。而这件事必须有个说法 ——
+              如果实际用的是手机麦克风，"眼镜收音更好"的结论就是假的。
+            -->
+            <TextView
+                android:id="@+id/sumAudioInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="@drawable/bg_chip"
+                android:padding="12dp"
+                android:textColor="@color/ink_soft"
+                android:textSize="12sp" />
+
             <TextView
                 android:id="@+id/sumPartialNote"
                 android:layout_width="match_parent"
