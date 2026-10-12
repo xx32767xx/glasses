@@ -281,6 +281,30 @@
                 android:textColor="@color/brand"
                 android:textSize="13sp" />
         </LinearLayout>
+
+        <!--
+          音源：眼镜 / 手机。
+          眼镜戴在说话人脸上（离嘴十几厘米），手机常在兜里或桌上（一两米开外）——
+          识别准确率对信噪比极敏感，所以音源这条要能切换，便于同一次实验里 A/B 对比。
+        -->
+        <LinearLayout
+            android:id="@+id/glassesMicToggle"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/tap_pill"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center">
+
+            <TextView
+                android:id="@+id/glassesMicLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/glasses_mic_source"
+                android:textColor="@color/brand"
+                android:textSize="13sp" />
+        </LinearLayout>
     </LinearLayout>
 
     <LinearLayout

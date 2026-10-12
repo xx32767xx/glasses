@@ -341,11 +341,108 @@ AAR 清单会带进一堆我们**不需要**的权限，用 manifest 合并规�
 | 能力 | 类 | 用途 |
 |---|---|---|
 | **眼镜端音频输出** | `GlassNativeAudioEngine`、`PcmStream`、`Playback`、`ClipSpec`、`SourceSpec` | ⭐ 方案里"耳机 TTS 播报译文"的原生路径 |
+| **眼镜端麦克风（已用上）** | `GlassAudioService` + `GlassServiceManager` | ⭐⭐ **取音从手机挪到眼镜**，见第 12 节 |
 | **眼镜按键** | `IKeyEventClient`、`IGlassKeyEvent` | 物理按键做"暂停 / 切语向" |
 | **头部姿态** | `IGlassSensor`、`SensorHeadEvent`、`HeadGestureListener` | 点头/抬头手势 |
 | 相机取帧 | `ICameraClient`、`IFrameCallback`(YUV) | 不用 |
 | **副屏取帧** | `ICaptureDisplayFrameCallback` | 用来**确认眼镜上真的显示了什么**（调试用） |
 | 推流 | RTSP / RTMP / UVC | 不用 |
+
+---
+
+## 12. 从眼镜取音（麦克风）
+
+### 为什么值得做
+
+手机常揣在兜里或放在桌上，离说话人一两米；眼镜戴在**说话人脸上**，离嘴十几厘米。
+同样的模型、同样的网络，信噪比差一大截，而识别准确率对信噪比极其敏感
+（见 [`04-语音识别验证.md`](04-语音识别验证.md)）。所以这一步不改模型也能明显提升识别。
+
+### 眼镜的麦克风在系统里是 **USB 音频输入设备**
+
+依据：SDK 里有 `UsbAudioInputDevicePolicy`，专门判断 `TYPE_USB_DEVICE` /
+`TYPE_USB_HEADSET`。**所以它只存在于眼镜连着的时候** —— 拔掉就没了，调用方必须先确认连接。
+
+### API（从 AAR 实测，不是猜的）
+
+```java
+// 1) 拿服务：binder 由 GlassServiceManager 持有
+IBinder binder = GlassServiceManager.getBinder(GlassServiceManager.GLASS_AUDIO_SERVICE);
+GlassAudioService svc = ((GlassAudioService.Binder) binder).getService();
+
+// 2) 注册消费者，PCM 从这里回来
+svc.addAudioConsumer(new GlassAudioService.GlassAudioConsumer() {
+    public void onStartAudioRecord(int rate, boolean a, int b) { /* 真实采样率 */ }
+    public void onAudioData(byte[] data, int offset, int length) { /* ★ PCM */ }
+    public void onStopAudioRecord() { }
+});
+
+// 3) 开始 / 停止（样例里也是显式调的，SDK 不会自己开录）
+svc.startAudioRecord();
+svc.stopAudioRecord();
+```
+
+常量（`javap -constants` 实测）：
+
+| 常量 | 值 | 含义 |
+|---|---|---|
+| `AUDIO_SAMPLE_RATE` | **44100** | 44.1 kHz（**不是 16 kHz**） |
+| `AUDIO_FORMAT` | 2 | `ENCODING_PCM_16BIT` |
+| `AUDIO_CHANNEL_TYPE` | 1 | `CHANNEL_IN_MONO` |
+| `AUDIO_BIT_RATE` | 88200 | 编码码率 |
+
+> `GLASS_AUDIO_SERVICE = "glass_audio_service"`；`GlassServiceManager.startGlassAudioService(ctx)`
+> 可以主动起服务，`stopAllServices()` 由 `destroy()` 负责。
+>
+> 顺带解释了一个旧问题：我们之前**必须**加 `FOREGROUND_SERVICE_MICROPHONE`
+> 才能不闪退 —— 就是这个 `GlassAudioService` 在起麦克风前台服务（见第 5 节）。
+
+### 采样率 44.1 kHz 怎么办：**下游早就准备好了，不用重采样**
+
+这一点当初就是照着"安卓录音可能降级到 44.1/48 kHz"设计的：
+
+- 转发进程的 `ALLOWED_RATES = [16000, 44100, 48000]` —— 44100 本来就在允许列表里；
+- `bridge/whisper_stream.py` 会按 `audio-in.rate` 旁文件重采样到 16 kHz，
+  而且**跨块保持相位连续**（`resample_pos` 不清零），避免块接缝处出现咔哒声。
+
+所以手机侧**只负责如实上报真实采样率**。**猜错采样率会让识别全是乱码**，
+这是这一节里最要紧的一条。
+
+还有一道防护：`GlassesMic` 会把服务报出的采样率归到允许列表里最近的那个值，
+免得错误跑到转发进程才变成 400。
+
+### 线程模型（这条不做会丢音频）
+
+`onAudioData` 是在 **SDK 的音频回调线程**上来的。在那里做 HTTP 上传会把采集卡住，
+录到的音频会成段丢失。所以分成两段：
+
+```
+音频线程：只做「攒够 1 秒 → 丢进有界队列」（纯内存，微秒级）
+上传线程：从队列取块 → 阻塞式 POST
+```
+
+队列**有界**（8 秒）：网络卡住时丢弃最旧的块并计数、报到界面上，
+而不是无限堆积内存、也不是把音频线程堵死。
+
+### 界面上的选择
+
+缺省**优先眼镜**，眼镜取不到就**自动退回手机麦克风**并把原因显示出来 ——
+眼镜是 USB 设备，偶发掉线/服务未就绪/固件忙都会让它一时不可用，
+而"整场同传没声音"比"音质差一点"糟糕得多。
+
+开发者·眼镜预览页有一个音源开关（眼镜 / 手机），
+**做识别评测时需要在同一次实验里 A/B 对比两种音源**，这条结论不能靠感觉。
+
+### 一处刻意的做法：这里用**直接类型调用**，不再反射
+
+`GlassesSdk` 里全是反射，那是当初"没法编译、签名只能靠猜"时的权宜之计，
+代价是四处签名写错、赔了四轮真机往返（第 3 节）。
+
+现在编译环境是通的、AAR 也在编译期依赖里，所以 `GlassesMic` **直接 import SDK 的类**，
+让编译器替我们验签名。写完之后 `assembleDebug` 一次通过 —— 这正是反射永远给不了的东西。
+
+> 以后若还要接 SDK 的新接口，**优先直接调用**；只有在"编译不过/类不可见"时才退回反射，
+> 并且要把原因写在注释里。
 
 ---
 

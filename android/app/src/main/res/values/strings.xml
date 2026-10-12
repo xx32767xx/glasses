@@ -83,6 +83,8 @@
     <string name="glasses_tune_minus">－</string>
     <string name="glasses_tune_ruler">显示边界标尺（校准用）</string>
     <string name="glasses_tune_ruler_on">边界标尺已开 · 点一下关掉</string>
+    <string name="glasses_mic_source">音源：眼镜麦克风（点一下换成手机）</string>
+    <string name="glasses_mic_source_phone">音源：手机麦克风（点一下换成眼镜）</string>
     <string name="connect_recent">最近成功连接</string>
     <string name="connect_recent_empty">还没有连接过</string>
     <string name="connect_progress_connecting">正在连接电脑…</string>

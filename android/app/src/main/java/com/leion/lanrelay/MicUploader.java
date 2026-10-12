@@ -28,7 +28,7 @@ import android.os.Looper;
  *     网络慢的时候这会自然形成背压；如果每块一个线程，网络一卡就会堆出几十个线程。
  *   · 停止时会**把最后不足 1 秒的部分也发出去**，否则最后半句话会被丢掉。
  */
-public class MicUploader {
+public class MicUploader implements AudioSource {
 
     /** 回调。实现方负责切回主线程。 */
     public interface Listener {
@@ -80,6 +80,7 @@ public class MicUploader {
     }
 
     /** 设置当前语种。录音中调用也安全：下一块音频就会带上新语种。 */
+    @Override
     public void setLanguage(String lang) {
         if (lang != null && !lang.isEmpty()) {
             this.language = lang;
@@ -90,7 +91,13 @@ public class MicUploader {
         return running;
     }
 
+    @Override
+    public String name() {
+        return "手机麦克风";
+    }
+
     /** 实际用上的采样率（启动后才有意义）。 */
+    @Override
     public int getSampleRate() {
         return sampleRate;
     }
@@ -99,6 +106,7 @@ public class MicUploader {
      * 开始录音上传。
      * @return null 表示成功；否则是一条人类可读的失败原因
      */
+    @Override
     public String start() {
         if (running) {
             return null;

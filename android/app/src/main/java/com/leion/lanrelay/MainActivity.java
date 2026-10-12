@@ -17,6 +17,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.LayoutInflater;
@@ -105,7 +106,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
     private SharedPreferences prefs;
     private LanClient client;
-    private MicUploader uploader;
+    private AudioSource uploader;
     private Records records;
 
     /** 已连接且握手成功的设备名；未连接为 null。 */
@@ -927,14 +928,51 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             showNote(getString(R.string.err_disconnected));
             return;
         }
-        if (uploader == null) uploader = new MicUploader(client, this);
-        uploader.setLanguage(sourceLang);
-        String problem = uploader.start();
+        uploader = startBestSource();
+    }
+
+    /**
+     * 选一个音源并启动：**优先眼镜，失败退回手机**。
+     *
+     * <p>为什么优先眼镜：眼镜戴在说话人脸上、离嘴十几厘米；手机常在兜里或桌上，
+     * 一两米开外。识别准确率对信噪比极其敏感（{@code docs/04}），
+     * 所以同样的模型与网络，换音源就能明显好一截。
+     *
+     * <p>为什么要**自动退回**而不是"眼镜失败就不录"：眼镜是 USB 设备，
+     * 偶发掉线、服务还没起来、固件忙都会让它一时不可用。
+     * 那种情况下"整场同传没声音"比"音质差一点"糟糕得多 ——
+     * 所以退回手机麦克风，并在界面上说清"退回的原因"。
+     */
+    private AudioSource startBestSource() {
+        if (preferGlassesMic() && glasses != null && glasses.isConnected()) {
+            GlassesMic candidate = new GlassesMic(this, client, this);
+            candidate.setLanguage(sourceLang);
+            String problem = candidate.start();
+            if (problem == null) return candidate;
+            candidate.stop();
+            Log.w("MainActivity", "眼镜取音失败，改用手机麦克风：" + problem);
+            showNote("眼镜取音失败，已改用手机麦克风：" + problem);
+        }
+        MicUploader phone = new MicUploader(client, this);
+        phone.setLanguage(sourceLang);
+        String problem = phone.start();
         if (problem != null) showNote(problem);
+        return phone;
     }
 
     private void stopCapture() {
         if (uploader != null && uploader.isRunning()) uploader.stop();
+    }
+
+    /**
+     * 是否优先用眼镜麦克风。
+     *
+     * <p>缺省**是**（用户要的就是把取音挪到眼镜上）。留一个开关是因为
+     * 做识别评测时需要 A/B 对比同一个模型在两种音源下的差别 ——
+     * 而"能不能用眼镜麦克风"这种结论只能靠同一次实验里两侧都测才能说清。
+     */
+    private boolean preferGlassesMic() {
+        return prefs.getBoolean(KEY_MIC_SOURCE, true);
     }
 
     private void togglePause() {
@@ -1519,6 +1557,11 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         text.append("服务证据：字幕 ").append(framesSeen).append(" 帧");
         text.append(busSeen ? "（总线见过）" : "（还没见过总线）");
         text.append(" · 收件箱 ").append(inboxLines).append(" 行\n");
+        // 音源要显示出来：出问题时第一个要回答的就是"声音到底从哪儿来的"。
+        // 没在录时显示**配置**（下一次会用哪个），在录时显示**实际在用的那个**。
+        text.append("音源：").append(uploader != null && uploader.isRunning()
+                ? uploader.name() : (preferGlassesMic() ? "眼镜麦克风（下次用）" : "手机麦克风（下次用）"))
+            .append('\n');
         text.append("采样率：").append(uploader != null && uploader.isRunning()
                 ? uploader.getSampleRate() + " Hz" : "未录音").append('\n');
         if (!uploadProgress.isEmpty()) text.append(uploadProgress).append('\n');
@@ -1673,6 +1716,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private static final String KEY_GLASSES_FONT = "glassesFontScale";
     private static final String KEY_GLASSES_MARGIN_R = "glassesMarginRight";
     private static final String KEY_GLASSES_MARGIN_L = "glassesMarginLeft";
+    /** 音源：true=优先眼镜麦克风（缺省），false=始终用手机麦克风。 */
+    private static final String KEY_MIC_SOURCE = "useGlassesMic";
     /** 缺省值：字号放大一档、右侧留 22%（单目右眼时右缘常在可见区外）。 */
     private static final float DEFAULT_GLASSES_FONT = 1.35f;
     private static final int DEFAULT_GLASSES_MARGIN_R = 22;
@@ -1736,9 +1781,18 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         CrashLog.endAction(this);
     }
 
-    /** 只刷新"当前值"那几个数字。 */
-    private void renderTuningValues() {
+    /** 刷新音源那一行的文案。 */
+    private void renderMicSourceLabel() {
         if (overlayRoot == null) return;
+        TextView label = overlayRoot.findViewById(R.id.glassesMicLabel);
+        if (label == null) return;
+        boolean glassesFirst = preferGlassesMic();
+        label.setText(glassesFirst
+                ? R.string.glasses_mic_source : R.string.glasses_mic_source_phone);
+    }
+
+    /** 只刷新"当前值"那几个数字。 */
+    private void renderTuningValues() {        if (overlayRoot == null) return;
         TextView font = overlayRoot.findViewById(R.id.glassesFontValue);
         TextView right = overlayRoot.findViewById(R.id.glassesRightValue);
         TextView left = overlayRoot.findViewById(R.id.glassesLeftValue);
@@ -1803,6 +1857,15 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             }
             CrashLog.endAction(this);
         });
+        // 音源切换：眼镜麦克风 / 手机麦克风。改的是**下一次开始同传**用哪个，
+        // 正在录的那一场不动（中途换音源会让切句器看到两段不同采样率的音频）。
+        view.findViewById(R.id.glassesMicToggle).setOnClickListener(v -> {
+            boolean next = !preferGlassesMic();
+            prefs.edit().putBoolean(KEY_MIC_SOURCE, next).apply();
+            renderMicSourceLabel();
+            showNote(next ? "下次开始同传将使用眼镜麦克风" : "下次开始同传将使用手机麦克风");
+        });
+        renderMicSourceLabel();
         applyGlassesTuning();
 
         renderGlassesPanel();
