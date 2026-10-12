@@ -11,6 +11,7 @@ import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Paint;
 import android.graphics.Typeface;
+import android.media.AudioManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -928,6 +929,16 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             showNote(getString(R.string.err_disconnected));
             return;
         }
+        // ⚠️ **先把上一个音源停掉**，再起新的。
+        //
+        // 不这么做会出现"两个音源同时在跑"：转发进程只有一个 audio-in.pcm，
+        // 两条流交错写进去 → 音频直接变成噪声，而且**从任何留档里都看不出发生过**。
+        // 这一条在做"眼镜 vs 手机"对比实验时尤其致命：你以为在测眼镜，
+        // 实际上手机麦克风也在往里灌。
+        if (uploader != null && uploader.isRunning()) {
+            uploader.stop();
+            Log.i("MainActivity", "起新音源前先停掉：" + uploader.name());
+        }
         uploader = startBestSource();
     }
 
@@ -1564,6 +1575,15 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             .append('\n');
         text.append("采样率：").append(uploader != null && uploader.isRunning()
                 ? uploader.getSampleRate() + " Hz" : "未录音").append('\n');
+        // ★ 安卓报的**实际**输入设备。这一行是"眼镜收音"这个结论的唯一硬证据：
+        //   SDK 内部到底选了眼镜还是手机内置麦克风，从我们的代码里看不出来，
+        //   只能问系统。做对比实验时必须看这一行。
+        AudioManager audioManager =
+                (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        String verdict = AudioDevices.verdict(audioManager);
+        if (!verdict.isEmpty()) text.append("实际输入：").append(verdict).append('\n');
+        text.append("录音设备：").append(AudioDevices.activeInputs(audioManager)).append('\n');
+        text.append("USB 输入：").append(AudioDevices.usbInputs(audioManager)).append('\n');
         if (!uploadProgress.isEmpty()) text.append(uploadProgress).append('\n');
         text.append("已保存记录：").append(records.load().size()).append(" 条\n");
         text.append("麦克风门槛（仅界面提示）：").append(UI_SPEECH_RMS).append('\n');
