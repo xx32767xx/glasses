@@ -510,9 +510,15 @@ export async function startRelay(rawOptions = {}) {
     state.seq += 1
     state.frameCount += 1
     state.lastFrame = frame
-    // 调试：字幕总线一变就报一行 —— 手机应该马上能看到这一帧
-    debug(`📺 字幕已更新（第 ${state.seq} 帧）[${frame.speaker ?? '?'} / ${frame.lang ?? '?'}] `
-      + `${frame.text ?? ''}`)
+    // 调试：字幕总线一变就报一行 —— 手机应该马上能看到这一帧。
+    //
+    // **一定要标出"增量还是定稿"**：这两种帧的文字看起来都正常，
+    // 但增量帧（partial=true）在手机/眼镜上会**补一个省略号**表示"还没说完"。
+    // 不标出来的话，"眼镜上显示 Ol…"这件事就无从追查 ——
+    // 到底是电脑只发了增量（这边的锅），还是手机把定稿帧丢了（那边的锅），
+    // 光看文字分不出来。标一个词就能立刻分辨。
+    debug(`📺 字幕已更新（第 ${state.seq} 帧·${frame.partial === true ? '增量' : '定稿'}）`
+      + `[${frame.speaker ?? '?'} / ${frame.lang ?? '?'}] ${frame.text ?? ''}`)
     notifyWaiters()
   }
 
