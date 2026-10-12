@@ -28,6 +28,7 @@ import { runStartAllSuite } from './start-all-suite.mjs'
 import { runNetDoctorSuite } from './net-doctor-suite.mjs'
 import { runBenchSuite } from './bench-suite.mjs'
 import { runLintSuite } from './lint-suite.mjs'
+import { runAndroidOrderSuite } from './android-order-suite.mjs'
 import { runLive } from './live/run.mjs'
 
 let passed = 0
@@ -144,6 +145,15 @@ await it('渲染结果一致（同 args/同 value 下 render 输出逐字段相�
 
 heading('ASR 桥（把语音识别结果变成收件箱里的一行一句话）')
 await runBridgeSuite(helpers)
+
+// ── 4b. 安卓侧静态检查（编译能过、一跑就崩的那一类）────────────────────────
+//
+// 我对安卓代码的验证上限是"能编译"—— 没有设备也没有模拟器。而"字段先用了再构造"
+// 这类错误编译完全通过、一打开 App 就空指针（真踩到过，用户报的）。
+// 这条静态检查精确覆盖那一类，是当前条件下唯一能自动守住它的办法。
+
+heading('安卓侧静态检查（顺序：先构造、再使用）')
+await runAndroidOrderSuite(helpers)
 
 // ── 5. 局域网转发（手机 ↔ 电脑） ────────────────────────────────────────────
 

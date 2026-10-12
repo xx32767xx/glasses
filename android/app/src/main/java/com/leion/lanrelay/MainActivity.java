@@ -284,14 +284,16 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
      * 所以只请求眼镜需要的那几条，拿到了才 init；没拿到就在状态行里说清楚。
      */
     private void setupGlasses() {
+        // ⚠️ 顺序约定：**先把对象建出来，再配置它**。
+        //    这一版我违反过一次：把 glasses.setCameraPreviewBackground(...) 写在了
+        //    `glasses = new GlassesSdk(...)` 之前，编译能过、一打开 App 就空指针。
+        //    编译通过不等于能跑 —— 凡是本方法里的 `glasses.xxx`，
+        //    都必须出现在下面那行赋值**之后**。
         glassesView = new GlassesSubtitleView(this);
         // 先把上次调好的显示参数用上 —— 否则每次重启都回到缺省，
         // 用户会以为"又变小了"，然后重调一遍
         glassesView.setTuning(glassesFontScale(), glassesMarginRight(), glassesMarginLeft());
         glassesView.setPageDelayMs(glassesPageDelayMs());
-        // 相机预览背景的偏好要在**每次投屏前**告诉 SDK，
-        // 否则用户切了之后重启 App、或重新投屏时会回到缺省值
-        glasses.setCameraPreviewBackground(glassesCameraBackground());
         // 翻页打个诊断行：长句到底有没有翻页、翻到第几页，日志里要看得见。
         // （"翻页没发生"和"翻页了但没上屏"是两回事，日志必须能分开。）
         glassesView.setPageListener((page, pageCount, lines) -> {
@@ -346,6 +348,11 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                 applyGlassesCanvasSize(width, height);
             }
         });
+
+        // **建完之后**才能配置它（见方法开头的顺序约定）。
+        // 相机预览背景的偏好在每次投屏前都会重新同步一次，
+        // 免得用户切了之后重启 App、或重新投屏时又回到缺省值。
+        glasses.setCameraPreviewBackground(glassesCameraBackground());
 
         requestGlassesPermissions();
     }

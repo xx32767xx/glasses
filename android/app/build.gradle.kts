@@ -16,8 +16,8 @@ android {
     applicationId = "com.leion.lanrelay"
     minSdk = 24
     targetSdk = 34
-    versionCode = 22
-    versionName = "0.3.8"
+    versionCode = 23
+    versionName = "0.3.9"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），
