@@ -5,6 +5,9 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Typeface;
+import android.os.Handler;
+import android.os.Looper;
+import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
@@ -437,7 +440,13 @@ public class GlassesSubtitleView {
         setPx(hint, base * 0.026f);
         setPx(idleTitle, base * 0.10f * fontScale);
         setPx(idleNote, base * 0.036f * fontScale);
-        applySubtitleSize(lastLines);
+        // 字号/留白变了要按**当前这一句**重排（行数与翻页状态都跟着变）。
+        // 只调 applySubtitleSize 的话，翻页状态会跟新的字号对不上。
+        if (lastText != null && !lastText.isEmpty()) {
+            applySubtitleLayout(lastText);
+        } else {
+            applySubtitleSize(lastLines);
+        }
     }
 
     private static void setPx(TextView view, float px) {
@@ -478,43 +487,208 @@ public class GlassesSubtitleView {
      * （半角字符宽约 0.5em，cols 个正好铺满可用宽度）。
      */
     private void fitSubtitleToText(String text) {
+        applySubtitleLayout(text);
+    }
+
+    /**
+     * 按**整句**排一次版：选字号、定行数、必要时**翻页**。
+     *
+     * <p>三件事，顺序不能反：
+     *
+     * <p><b>① 选字号</b>：从"一行放少数字"往"一行放多数字"试，取第一个能在
+     * {@link #MAX_LINES} 行内放下的字号。必须按整句真实文本试 —— 用"上一次的字号"
+     * 去估行数，短句后来个长句就会估错，字号偏大 → 换行超出可见高度 → 被截断。
+     *
+     * <p><b>② 字号下限</b>：真机算过，如果不设下限，220 字符的句子会被压到 16.9px
+     * （画布宽的 2.6%），在光波导上基本等于看不见。"放下"不等于"看得清"，
+     * 所以到下限就不再缩 —— 改为第 ③ 步。
+     *
+     * <p><b>③ 翻页</b>：放不下就分两页。**第一页显示开头**（人是从头开始读的），
+     * 延迟之后**停在最后一页 = 结尾**。万一只看了一眼，留下的也是句尾那个"重点" ——
+     * 这和插件自己的取舍一致（{@code fitSubtitle} 只保留最后 N 行，
+     * 理由是"读者永远在追最新那句话"）。
+     *
+     * <p>另外把 {@code maxLines} 与 {@code ellipsize} 也设上：原来两个都没设，
+     * 内容超出视图高度时会被**静默裁掉**（没有省略号、没有任何提示），
+     * 佩戴者不知道自己漏了内容 —— 那比"显示得难看"严重得多。
+     */
+    private void applySubtitleLayout(String text) {
         int usableWidth = usableWidthPx();
         int usableHeight = effectiveHeight();
         if (usableWidth <= 0 || usableHeight <= 0 || text == null || text.isEmpty()) {
             applySubtitleSize(lastLines);
             return;
         }
-        // 顶部状态行会占掉一点，留 15% 余量
         int heightBudget = Math.round(usableHeight * 0.85f);
-
-        // ⚠️ 字号倍率**必须**参与"一行放多少个"的决定，不能在算完字号之后再乘。
-        //    原因：字号是从"可用宽度 ÷ 每行字符数"反推出来的，
-        //    算完再乘一个放大系数，一行就装不下了 —— 那正好会退回到"被截断"。
-        //    所以倍率的作用是：倍率越大 → 每行放得越少 → 字越大。
+        // ⚠️ 字号倍率必须参与"一行放多少个"的决定，不能在算完字号之后再乘：
+        //    字号是从"可用宽度 ÷ 每行字符数"反推的，算完再放大一行就装不下，
+        //    正好退回"被截断"。倍率的作用是：倍率越大 → 一行放得越少 → 字越大。
         int startCols = (int) clamp(Math.round(14f / fontScale), 6, 44);
+        float minFont = Math.max(8f, usableHeight * minFontRatio);
 
         float chosen = 0f;
-        int chosenLines = lastLines;
-        for (int cols = startCols; cols <= 60; cols += 2) {
+        int chosenCols = 0;
+        for (int cols = startCols; cols <= 120; cols += 2) {
             float font = 2f * usableWidth / cols;
+            if (font < minFont) break;              // 到下限了：不再缩，交给翻页
             int lines = countLines(text, cols);
             if (lines > MAX_LINES) continue;
-            // 行高按 1.35 倍估算（含行距的观感）
             if (lines * font * 1.35f > heightBudget) continue;
             chosen = font;
-            chosenLines = lines;
+            chosenCols = cols;
             break;
         }
         if (chosen <= 0f) {
-            // 连最窄的一档都放不下：用最小字号，让它自行换行。
-            // 这样可以保证**不会出现"一行只剩两三个字"**那种极端情况。
-            chosen = 2f * usableWidth / 60f;
-            chosenLines = countLines(text, 60);
+            chosen = minFont;
+            chosenCols = Math.max(4, Math.round(2f * usableWidth / minFont));
         }
         // 上限：两行别把整屏占满
         chosen = Math.min(chosen, usableHeight / 2.2f);
-        lastLines = Math.max(1, chosenLines);
         setPx(subtitle, chosen);
+
+        int linesNeeded = countLines(text, chosenCols);
+        int displayLines = Math.max(1, Math.min(MAX_LINES,
+                (int) (heightBudget / (chosen * 1.35f))));
+        subtitle.setMaxLines(displayLines);
+        lastLines = Math.max(1, Math.min(linesNeeded, displayLines));
+
+        if (linesNeeded <= displayLines) {
+            cancelPaging();
+            // 单页也给一个省略号作为**安全网**：行数是按"汉字算 2 列"这个模型估的，
+            // 而安卓按真实字形排版，模型偏乐观时真实行数会更多。
+            // 设了 ellipsize，这种情况就变成"看得见的省略号"而不是**静默裁掉** ——
+            // 后者会让佩戴者以为自己听全了。
+            subtitle.setEllipsize(TextUtils.TruncateAt.END);
+            subtitle.setText(text);
+            return;
+        }
+
+        // 需要翻页。
+        //
+        // ⚠️ 这里**不能只切"开头 + 结尾"两页**：如果整句超过两页，
+        //    中间那一段就凭空消失了 —— 而且是静默消失，比不翻页更糟。
+        //    所以：恰好两页时用「开头 / 结尾」（两页都是满的，且互相重叠，读起来连贯）；
+        //    超过两页时按顺序切成若干页，保证**每一列都出现在某一页上**。
+        int totalColumns = columnsOf(text);
+        int colsPerPage = Math.max(1, displayLines * chosenCols);
+        pages.clear();
+        if (totalColumns <= 2 * colsPerPage) {
+            pages.add(sliceColumns(text, 0, colsPerPage));
+            pages.add(sliceColumns(text, Math.max(0, totalColumns - colsPerPage), colsPerPage));
+        } else {
+            for (int start = 0; start < totalColumns; start += colsPerPage) {
+                pages.add(sliceColumns(text, start, colsPerPage));
+            }
+        }
+        pageCount = pages.size();
+        cancelPagingTimerOnly();
+        showPage(0);
+        pageHandler.postDelayed(pageAdvance, pageDelayMs);
+    }
+
+    /** 整串文本占多少列（汉字算 2 列）。 */
+    private static int columnsOf(String text) {
+        int width = 0;
+        int index = 0;
+        while (index < text.length()) {
+            int codePoint = text.codePointAt(index);
+            width += codePoint < 0x2E80 ? 1 : 2;
+            index += Character.charCount(codePoint);
+        }
+        return width;
+    }
+
+    /**
+     * 取 [startColumn, startColumn + maxColumns) 这一段（汉字算 2 列）。
+     *
+     * <p>头部、尾部、中间切片全都由它一个函数完成 —— 三个各自实现的话，
+     * "列宽怎么算"这件事就会有三份，很容易只改到其中一份。
+     */
+    private static String sliceColumns(String text, int startColumn, int maxColumns) {
+        StringBuilder out = new StringBuilder();
+        int width = 0;
+        int taken = 0;
+        int index = 0;
+        while (index < text.length()) {
+            int codePoint = text.codePointAt(index);
+            int count = Character.charCount(codePoint);
+            int w = codePoint < 0x2E80 ? 1 : 2;
+            int next = width + w;
+            if (next > startColumn && taken + w <= maxColumns) {
+                out.appendCodePoint(codePoint);
+                taken += w;
+            }
+            width = next;
+            if (width >= startColumn + maxColumns) break;
+            index += count;
+        }
+        return out.toString();
+    }
+
+    // ── 翻页 ────────────────────────────────────────────────────────────────
+
+    private final Handler pageHandler = new Handler(Looper.getMainLooper());
+    private final java.util.List<String> pages = new java.util.ArrayList<>();
+    private int currentPage = 0;
+    private int pageCount = 1;
+
+    /** 翻页回调（界面用它打诊断行，确认"翻页真的发生了"）。 */
+    public interface PageListener {
+        void onPage(int page, int pageCount, int lines);
+    }
+
+    private PageListener pageListener;
+
+    public void setPageListener(PageListener listener) {
+        this.pageListener = listener;
+    }
+
+    private final Runnable pageAdvance = () -> {
+        if (pageCount > 1 && currentPage < pageCount - 1) showPage(currentPage + 1);
+    };
+
+    private void showPage(int page) {
+        if (page < 0 || page >= pages.size()) return;
+        currentPage = page;
+        boolean last = page == pages.size() - 1;
+        // 最后一页是结尾：万一还是放不下，砍**开头** —— 这就是"留结尾"的取舍。
+        // 前面的页是开头方向的内容，放不下就砍结尾（后面还有页接着）。
+        subtitle.setEllipsize(last ? TextUtils.TruncateAt.START : TextUtils.TruncateAt.END);
+        subtitle.setText(pages.get(page));
+        // ★ 翻页之后必须补一次重绘：投屏是"变化时推一串帧"，
+        //   漏掉一次变化画面就会**永久**停在旧内容上（真机上踩过，见 docs/09 §12）
+        forceRedraw();
+        if (pageListener != null) pageListener.onPage(page, pageCount, lastLines);
+    }
+
+    private void cancelPagingTimerOnly() {
+        pageHandler.removeCallbacks(pageAdvance);
+    }
+
+    private void cancelPaging() {
+        cancelPagingTimerOnly();
+        currentPage = 0;
+        pageCount = 1;
+        pages.clear();
+    }
+
+    /** 翻页间隔（毫秒），真机上可调。 */
+    private int pageDelayMs = 1600;
+
+    public void setPageDelayMs(int value) {
+        this.pageDelayMs = Math.max(400, Math.min(8000, value));
+    }
+
+    public int getPageDelayMs() {
+        return pageDelayMs;
+    }
+
+    /** 字号下限（占画布高度的比例）。低于它就不再缩小，改为翻页。 */
+    private float minFontRatio = 0.060f;
+
+    /** 当前这一句分了几页（1 = 没翻页）。界面诊断用。 */
+    public int getPageCount() {
+        return pageCount;
     }
 
     /** 切换"待机提示 / 字幕"两种状态。有字幕了就把待机提示收起来。 */
@@ -570,6 +744,9 @@ public class GlassesSubtitleView {
      */
     public void setSubtitle(String text) {
         String value = text == null ? "" : text.trim();
+        // 换了一句就把上一句的翻页取消 —— 否则旧句的"第二页"会盖到新句上
+        cancelPaging();
+        lastText = value;
         subtitle.setText(value);
         // 有内容就切到字幕态、收掉待机提示；空了就回到待机态。
         // 这样"还没开始同传"和"正在同传"两个状态不会互相覆盖。
@@ -578,9 +755,16 @@ public class GlassesSubtitleView {
             applySubtitleSize(1);
             return;
         }
-        // ★ 按**这一句的真实文本**选字号，而不是先估行数再按行数选 ——
-        //   后者会拿上一句的字号去估这一句，长句一来就放不下（真机上的"截断"）。
+        // ★ 按**这一句的真实文本**排版：选字号、定行数、必要时翻页。
         fitSubtitleToText(value);
+    }
+
+    /** 当前这一句（微调字号/留白之后要按它重排，翻页状态也要跟着重算）。 */
+    private String lastText = "";
+
+    /** 有没有正在翻页（界面诊断用）。 */
+    public boolean isPaging() {
+        return pageCount > 1;
     }
 
     /**

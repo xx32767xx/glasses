@@ -288,6 +288,14 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         // 先把上次调好的显示参数用上 —— 否则每次重启都回到缺省，
         // 用户会以为"又变小了"，然后重调一遍
         glassesView.setTuning(glassesFontScale(), glassesMarginRight(), glassesMarginLeft());
+        glassesView.setPageDelayMs(glassesPageDelayMs());
+        // 翻页打个诊断行：长句到底有没有翻页、翻到第几页，日志里要看得见。
+        // （"翻页没发生"和"翻页了但没上屏"是两回事，日志必须能分开。）
+        glassesView.setPageListener((page, pageCount, lines) -> {
+            if (client == null) return;
+            client.sendDiag("投屏：翻页 " + (page + 1) + "/" + pageCount
+                    + "（每页最多 " + lines + " 行）");
+        });
         glasses = new GlassesSdk(this, new GlassesSdk.Listener() {
             @Override
             public void onGlassesStatus(String status, boolean connected) {
@@ -1845,6 +1853,21 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private static final String KEY_GLASSES_MARGIN_L = "glassesMarginLeft";
     /** 音源：true=优先眼镜麦克风（缺省），false=始终用手机麦克风。 */
     private static final String KEY_MIC_SOURCE = "useGlassesMic";
+    /** 长句翻页间隔（毫秒）。真机上可调 —— 多快换页只有戴上才知道。 */
+    private static final String KEY_GLASSES_PAGE_DELAY = "glassesPageDelay";
+    private static final int DEFAULT_GLASSES_PAGE_DELAY = 1600;
+
+    private int glassesPageDelayMs() {
+        return prefs.getInt(KEY_GLASSES_PAGE_DELAY, DEFAULT_GLASSES_PAGE_DELAY);
+    }
+
+    /** 调翻页间隔并立刻生效。 */
+    private void nudgePageDelay(int deltaMs) {
+        int next = Math.max(400, Math.min(8000, glassesPageDelayMs() + deltaMs));
+        prefs.edit().putInt(KEY_GLASSES_PAGE_DELAY, next).apply();
+        if (glassesView != null) glassesView.setPageDelayMs(next);
+        renderTuningValues();
+    }
     /** 缺省值：字号放大一档、右侧留 22%（单目右眼时右缘常在可见区外）。 */
     private static final float DEFAULT_GLASSES_FONT = 1.35f;
     private static final int DEFAULT_GLASSES_MARGIN_R = 22;
@@ -1919,13 +1942,18 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     }
 
     /** 只刷新"当前值"那几个数字。 */
-    private void renderTuningValues() {        if (overlayRoot == null) return;
+    private void renderTuningValues() {
+        if (overlayRoot == null) return;
         TextView font = overlayRoot.findViewById(R.id.glassesFontValue);
         TextView right = overlayRoot.findViewById(R.id.glassesRightValue);
         TextView left = overlayRoot.findViewById(R.id.glassesLeftValue);
+        TextView page = overlayRoot.findViewById(R.id.glassesPageValue);
         if (font != null) font.setText(String.format(Locale.US, "×%.2f", glassesFontScale()));
         if (right != null) right.setText(glassesMarginRight() + "%");
         if (left != null) left.setText(glassesMarginLeft() + "%");
+        if (page != null) {
+            page.setText(String.format(Locale.US, "%.1fs", glassesPageDelayMs() / 1000f));
+        }
     }
 
     private void openGlassesPreview() {
@@ -1971,6 +1999,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                 nudgeGlassesTuning(KEY_GLASSES_MARGIN_L, -2));
         view.findViewById(R.id.glassesLeftPlus).setOnClickListener(v ->
                 nudgeGlassesTuning(KEY_GLASSES_MARGIN_L, 2));
+        view.findViewById(R.id.glassesPageMinus).setOnClickListener(v -> nudgePageDelay(-400));
+        view.findViewById(R.id.glassesPagePlus).setOnClickListener(v -> nudgePageDelay(400));
         // 边界标尺：戴上眼镜看一眼就知道哪一部分看不见。
         // 立刻生效 —— 和微调一样，投屏是持续采样的。
         view.findViewById(R.id.glassesRulerToggle).setOnClickListener(v -> {

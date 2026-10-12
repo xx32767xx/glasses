@@ -260,6 +260,58 @@
         </LinearLayout>
 
         <!--
+          翻页间隔：长句放不下时，先显示开头、等这么久换成结尾（并停在结尾）。
+          多久合适只有戴上才知道 —— 太快读不完，太慢下一句就来了。
+        -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/glasses_tune_page_delay"
+                android:textColor="@color/ink_soft"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/glassesPageMinus"
+                android:layout_width="40dp"
+                android:layout_height="36dp"
+                android:background="@drawable/tap_pill"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:text="@string/glasses_tune_minus"
+                android:textColor="@color/brand"
+                android:textSize="18sp" />
+
+            <TextView
+                android:id="@+id/glassesPageValue"
+                android:layout_width="64dp"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:textColor="@color/ink"
+                android:textSize="14sp" />
+
+            <TextView
+                android:id="@+id/glassesPagePlus"
+                android:layout_width="40dp"
+                android:layout_height="36dp"
+                android:background="@drawable/tap_pill"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:text="@string/glasses_tune_plus"
+                android:textColor="@color/brand"
+                android:textSize="18sp" />
+        </LinearLayout>
+
+        <!--
           边界标尺：戴上眼镜看一眼就知道"哪一部分看不见"。
           比来回描述快得多 —— 外框是画布边界，黄框是字幕实际会落的安全区。
         -->

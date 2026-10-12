@@ -79,6 +79,7 @@
     <string name="glasses_tune_font">字号</string>
     <string name="glasses_tune_right">右侧留白</string>
     <string name="glasses_tune_left">左侧留白</string>
+    <string name="glasses_tune_page_delay">长句翻页间隔</string>
     <string name="glasses_tune_plus">＋</string>
     <string name="glasses_tune_minus">－</string>
     <string name="glasses_tune_ruler">显示边界标尺（校准用）</string>
