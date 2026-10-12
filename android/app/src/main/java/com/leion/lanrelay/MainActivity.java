@@ -2149,19 +2149,57 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         String show = text == null || text.isEmpty() ? source : text;
         if (show == null) show = "";
         boolean partial = lastFramePartial;
-        if (partial) show = show + "…";
-        glassesView.setSubtitle(show);
 
-        // ★ 把"我实际投上去的是什么"回传给电脑，和"电脑发了什么"放进同一份日志。
+        // ★ 增量帧**不推给眼镜**。
         //
-        //   为什么必须两边并排：电脑端日志能证明它发了定稿帧，但手机有没有**应用**、
-        //   应用成了什么，从那边完全看不见 —— 两边各自看都正常，合起来才是问题。
-        //   （这条是从"眼镜上显示 Ol…"那次排查里加出来的：单看电脑日志查不下去。）
+        //   为什么：真机日志显示每个增量帧都只有 1~3 个字符（"Ol" / "V" / "S" / "Na"）。
+        //   原因是节流 —— partialThrottleMs=400，而短句的翻译在 400ms 内就完成了，
+        //   所以每句只来得及发出**第一个 token**。
+        //   结果是眼镜上每句话都先闪一下「首字母 + 省略号」，然后才是完整句子：
+        //   在手机大屏上这勉强算"生成中"的提示，在眼镜那块小屏上就是**纯噪声**，
+        //   还顺带制造了"卡在开头"这个 bug。
+        //
+        //   所以眼镜只显示定稿；手机上的渐进显示保持不变（那边空间大、也不会卡）。
+        //   如果以后确实要在大屏上做渐进显示，这里可以按长度放行（比如 ≥ 20 字才推）。
+        if (partial) {
+            if (client != null) {
+                client.sendDiag("投屏：增量**跳过**（眼镜只显示定稿）→ "
+                        + (show.length() > 40 ? show.substring(0, 40) + "…" : show));
+            }
+            return;
+        }
+
+        glassesView.setSubtitle(show);
+        scheduleGlassesRefresh();
+
+        // 把"我实际投上去的是什么"回传给电脑，和"电脑发了什么"放进同一份日志。
+        //
+        // 为什么必须两边并排：电脑端日志能证明它发了定稿帧，但手机有没有**应用**、
+        // 应用成了什么，从那边完全看不见 —— 两边各自看都正常，合起来才是问题。
         if (client != null) {
-            client.sendDiag("投屏：" + (partial ? "增量" : "定稿") + " → "
+            client.sendDiag("投屏：定稿 → "
                     + (show.length() > 80 ? show.substring(0, 80) + "…" : show));
         }
     }
+
+    /**
+     * 推完字幕之后隔一小会儿再强制重绘一次那块被采样的 View。
+     *
+     * <p>针对真机上"定稿推上去了、画面却停在增量帧"那个现象：
+     * 投屏跟着视图重绘采样，两次更新隔太近时后一次会被合并掉。
+     * 补一次重绘，保证最终状态一定被采样到（幂等，内容没变也没有副作用）。
+     */
+    private void scheduleGlassesRefresh() {
+        glassesRefreshHandler.removeCallbacks(glassesRefreshTask);
+        glassesRefreshHandler.postDelayed(glassesRefreshTask, 200);
+    }
+
+    private final Handler glassesRefreshHandler = new Handler(Looper.getMainLooper());
+    private final Runnable glassesRefreshTask = () -> {
+        if (glassesView != null && glasses != null && glasses.isCasting()) {
+            glassesView.forceRedraw();
+        }
+    };
 
     /**
      * 按"cols 个半角字符正好铺满面板宽度"算字号，让预览看起来就是一块固定宽度的设备屏幕。

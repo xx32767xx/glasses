@@ -523,6 +523,29 @@ public class GlassesSubtitleView {
         subtitle.setVisibility(show ? View.GONE : View.VISIBLE);
     }
 
+    /**
+     * 强制这块被采样的 View 重新走一次布局 + 绘制。
+     *
+     * <p><b>为什么需要这个</b>：真机上出现过"手机明明把定稿推上去了，眼镜上却还停在
+     * 增量帧的『Ol…』"——日志两侧都对得上（`[手机] 投屏：定稿 → Olá Olá Olá`），
+     * 可画面就是旧的。而用户点一下界面上的按钮（触发一次窗口重绘）它又自己好了。
+     *
+     * <p>这个现象指向的是：**投屏是跟着视图重绘来采样的**，两次内容更新隔得太近时，
+     * 后一次的重绘被**合并**掉了，于是画面停在先渲染出来的那一帧，
+     * 直到下一次无关的重绘才被纠正。
+     *
+     * <p>所以推完字幕之后隔一小会儿再"戳"一下，让最终状态一定被采样到。
+     * 这个操作是幂等的：内容没变时重绘一遍没有任何副作用。
+     */
+    public void forceRedraw() {
+        subtitle.requestLayout();
+        column.requestLayout();
+        root.requestLayout();
+        subtitle.invalidate();
+        column.invalidate();
+        root.invalidate();
+    }
+
     /** 待机提示的文案（比如"等待输入" / "已暂停" / "等待连接电脑"）。 */
     public void setIdleText(String title, String note) {
         idleTitle.setText(title == null ? "" : title);
