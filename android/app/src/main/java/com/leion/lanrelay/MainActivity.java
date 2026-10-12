@@ -289,6 +289,9 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         // 用户会以为"又变小了"，然后重调一遍
         glassesView.setTuning(glassesFontScale(), glassesMarginRight(), glassesMarginLeft());
         glassesView.setPageDelayMs(glassesPageDelayMs());
+        // 相机预览背景的偏好要在**每次投屏前**告诉 SDK，
+        // 否则用户切了之后重启 App、或重新投屏时会回到缺省值
+        glasses.setCameraPreviewBackground(glassesCameraBackground());
         // 翻页打个诊断行：长句到底有没有翻页、翻到第几页，日志里要看得见。
         // （"翻页没发生"和"翻页了但没上屏"是两回事，日志必须能分开。）
         glassesView.setPageListener((page, pageCount, lines) -> {
@@ -1856,6 +1859,17 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     /** 长句翻页间隔（毫秒）。真机上可调 —— 多快换页只有戴上才知道。 */
     private static final String KEY_GLASSES_PAGE_DELAY = "glassesPageDelay";
     private static final int DEFAULT_GLASSES_PAGE_DELAY = 1600;
+    /**
+     * 相机预览背景：把摄像头画面垫在字幕底下。
+     *
+     * <p>缺省**关**（样例里三处用法全传 false，而且眼镜是透视的，真实世界本来就看得见）。
+     * 但"开着是不是效果更好"只有戴上才知道，所以做成开关让用户自己验证。
+     */
+    private static final String KEY_GLASSES_CAMERA_BG = "glassesCameraBackground";
+
+    private boolean glassesCameraBackground() {
+        return prefs.getBoolean(KEY_GLASSES_CAMERA_BG, false);
+    }
 
     private int glassesPageDelayMs() {
         return prefs.getInt(KEY_GLASSES_PAGE_DELAY, DEFAULT_GLASSES_PAGE_DELAY);
@@ -1929,6 +1943,15 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         }
         applyGlassesTuning();
         CrashLog.endAction(this);
+    }
+
+    /** 刷新相机预览背景那一行的文案。 */
+    private void renderCameraLabel() {
+        if (overlayRoot == null) return;
+        TextView label = overlayRoot.findViewById(R.id.glassesCameraLabel);
+        if (label == null) return;
+        label.setText(glassesCameraBackground()
+                ? R.string.glasses_camera_bg_on : R.string.glasses_camera_bg);
     }
 
     /** 刷新音源那一行的文案。 */
@@ -2022,6 +2045,23 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             renderMicSourceLabel();
             showNote(next ? "下次开始同传将使用眼镜麦克风" : "下次开始同传将使用手机麦克风");
         });
+        // 相机预览背景开关：立刻在当前投屏上生效，并记进偏好（下次投屏也按它来）。
+        // 刻意**不**走"停投屏→改→重投"那套：它是显示端的独立设置，
+        // 而且用户要的正是"当场来回切、对比两种效果"。
+        view.findViewById(R.id.glassesCameraToggle).setOnClickListener(v -> {
+            boolean next = !glassesCameraBackground();
+            prefs.edit().putBoolean(KEY_GLASSES_CAMERA_BG, next).apply();
+            if (glasses != null) {
+                glasses.setCameraPreviewBackground(next);
+                String note = glasses.applyCameraPreviewBackground();
+                CrashLog.beginAction(this, "切换相机预览背景");
+                glassesStatus = note;
+                CrashLog.endAction(this);
+            }
+            renderCameraLabel();
+            renderGlassesRealStatus();
+        });
+        renderCameraLabel();
         renderMicSourceLabel();
         applyGlassesTuning();
 

@@ -611,6 +611,48 @@ public class GlassesSdk {
     }
 
     /**
+     * 投屏时要不要把**摄像头画面**垫在底下。
+     *
+     * <p>缺省 false（关掉）。依据：样例里三处用到 {@code setCameraPreviewOnLcdScreen}
+     * 的地方全部传 false，而且眼镜是**透视**的 —— 真实世界本来就直接看得见，
+     * 再叠一层相机画面只会重影（相机在鼻梁中间，与人眼位置有偏差）。
+     *
+     * <p>那为什么还要做成开关：**"哪种更好"只有戴上才知道**。
+     * 用户明确说要验证"带背景是不是效果更好"，那就得能切。
+     * 这也符合这个项目一贯的做法 —— 不确定的东西做成真机可调，而不是替用户拍板。
+     */
+    private volatile boolean cameraPreviewBackground = false;
+
+    /** 设置"摄像头画面垫底"（界面从偏好设置里读出来传进来）。 */
+    public void setCameraPreviewBackground(boolean enabled) {
+        this.cameraPreviewBackground = enabled;
+    }
+
+    public boolean isCameraPreviewBackground() {
+        return cameraPreviewBackground;
+    }
+
+    /**
+     * 立刻在当前这次投屏上应用"相机预览背景"开关。
+     *
+     * <p>它是显示端的一个独立设置，不需要重投屏 —— 但为了稳妥，
+     * 界面切完之后也会在下次投屏时按偏好重新应用一遍（见 {@link #prepareDisplay}）。
+     *
+     * @return 一行说明（成功/失败原因），显示在诊断行上
+     */
+    public String applyCameraPreviewBackground() {
+        if (display == null) return "还没投屏，切了下次生效";
+        try {
+            Method method = display.getClass()
+                    .getMethod("setCameraPreviewOnLcdScreen", boolean.class);
+            method.invoke(display, cameraPreviewBackground);
+            return cameraPreviewBackground ? "相机预览背景：已开" : "相机预览背景：已关";
+        } catch (Throwable error) {
+            return "切相机预览失败：" + shortMessage(error);
+        }
+    }
+
+    /**
      * 投屏前的准备：关掉相机预览铺底、开 LCD、开双眼端口。返回一行给界面看的说明。
      *
      * <p>三步的来历各不相同，都是真机上撞出来的：
@@ -635,15 +677,15 @@ public class GlassesSdk {
     private String prepareDisplay(Object display) {
         StringBuilder note = new StringBuilder();
 
-        // ① 关掉相机预览铺底
+        // ① 相机预览铺底（按用户偏好：关掉更干净，开着能看取景画面 —— 哪种更好只有戴上知道）
         try {
             Method setPreview = display.getClass()
                     .getMethod("setCameraPreviewOnLcdScreen", boolean.class);
             // 这个方法是 void，没有返回值可比对 —— 只要不抛就是执行了
-            setPreview.invoke(display, false);
-            note.append("相机预览=已关");
+            setPreview.invoke(display, cameraPreviewBackground);
+            note.append("相机预览=").append(cameraPreviewBackground ? "开" : "关");
         } catch (Throwable error) {
-            note.append("关相机预览失败(").append(shortMessage(error)).append(")");
+            note.append("设相机预览失败(").append(shortMessage(error)).append(")");
         }
 
         // ② 开 LCD

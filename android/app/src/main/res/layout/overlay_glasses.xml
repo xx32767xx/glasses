@@ -357,6 +357,30 @@
                 android:textColor="@color/brand"
                 android:textSize="13sp" />
         </LinearLayout>
+
+        <!--
+          相机预览背景：把摄像头画面垫在字幕底下。
+          眼镜是透视的，真实世界本来就看得见 —— 但"哪种效果更好"只有戴上才知道，
+          所以做成开关让用户自己验证，而不是替他拍板。
+        -->
+        <LinearLayout
+            android:id="@+id/glassesCameraToggle"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/tap_pill"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center">
+
+            <TextView
+                android:id="@+id/glassesCameraLabel"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/glasses_camera_bg"
+                android:textColor="@color/brand"
+                android:textSize="13sp" />
+        </LinearLayout>
     </LinearLayout>
 
     <LinearLayout
