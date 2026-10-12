@@ -1290,7 +1290,29 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         overlayConnectProgress = null;
         glassesPanel = null;
         fullscreenList = null;
+        // 停止诊断行的定时刷新（否则关了页面还在白跑）
+        glassesDiagHandler.removeCallbacks(glassesDiagTick);
+        glassesRealDiag = null;
+        glassesRealStatus = null;
     }
+
+    /**
+     * 诊断行定时刷新（眼镜预览页开着时才跑）。
+     *
+     * <p><b>为什么必须有这个</b>：诊断行原来只在"状态变化"时重画一次，
+     * 所以上面那个「帧 N」**是个不会动的快照** —— 而它存在的全部意义就是
+     * 让人盯着看它涨不涨（涨 = 采集在持续采样；几乎不动 = 采集是事件驱动的）。
+     * 一个不会更新的计数器，正好不能回答它该回答的问题。
+     */
+    private final Handler glassesDiagHandler = new Handler(Looper.getMainLooper());
+    private final Runnable glassesDiagTick = new Runnable() {
+        @Override
+        public void run() {
+            if (glassesRealDiag == null) return;      // 页面已关
+            renderGlassesRealStatus();
+            glassesDiagHandler.postDelayed(this, 500);
+        }
+    };
 
     // ── 连接电脑页 ──────────────────────────────────────────────────────────
 
@@ -1975,6 +1997,10 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
         renderGlassesPanel();
         renderGlassesRealStatus();
+        // 诊断行定时刷新：那个「帧 N」必须能自己动，
+        // 否则它作为一个"看采集涨不涨"的计数器就是废的（原来只在状态变化时重画一次）
+        glassesDiagHandler.removeCallbacks(glassesDiagTick);
+        glassesDiagHandler.postDelayed(glassesDiagTick, 500);
     }
 
     /** 待机提示下面那行小字：说清"为什么现在没字幕"，比只显示"等待输入"有用。 */

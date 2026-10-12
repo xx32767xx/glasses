@@ -130,6 +130,8 @@ public class GlassesSdk {
      * 留着只会让人以为"宽度真的是 0"。
      */
     private volatile int frameBytes = 0;
+    /** 本次投屏开始的时刻（用来算平均帧率，见 {@link #getFrameInfo}）。 */
+    private volatile long castStartedAt = 0;
     private volatile String frameArgs = "";
     private volatile String frameHead = "";
     private volatile String frameFormat = "";
@@ -693,6 +695,7 @@ public class GlassesSdk {
     private void registerFrameProbe(Object display) {
         frameCount.set(0);
         frameBytes = 0;
+        castStartedAt = System.currentTimeMillis();
         frameArgs = "";
         frameHead = "";
         frameFormat = "";
@@ -811,11 +814,21 @@ public class GlassesSdk {
         return frameFormat;
     }
 
-    /** 诊断用：帧数 / 每帧字节数 / 首帧格式。 */
+    /** 诊断用：帧数 / 每帧字节数 / 平均帧率。 */
     public String getFrameInfo() {
         if (frameCount.get() == 0) return "帧 0（采集没出画面）";
         StringBuilder out = new StringBuilder();
         out.append("帧 ").append(frameCount.get());
+        // 平均帧率 —— 这个数才真正回答"采集是不是在持续采样"：
+        //   · 每秒几十帧 → 持续视频流，画面本不该停在旧内容上
+        //   · 每秒不到 1 帧 → 采集是**事件驱动**的（只在视图变化时才采一次），
+        //     那么"两次更新隔太近被合并掉、画面停在旧帧"就完全说得通
+        // 只报个数、不报帧率的话，这两者光看数字分不出来。
+        if (castStartedAt > 0) {
+            long seconds = Math.max(1, (System.currentTimeMillis() - castStartedAt) / 1000);
+            out.append(" · 已投 ").append(seconds).append("s（≈")
+               .append(frameCount.get() / seconds).append(" 帧/秒）");
+        }
         if (frameBytes > 0) {
             out.append(" · 每帧 ").append(frameBytes).append(" 字节");
             // 用已知分辨率反推每像素字节数 —— 顺带验证"采集尺寸和画布一致"
