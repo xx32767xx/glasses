@@ -798,7 +798,10 @@ export async function startRelay(rawOptions = {}) {
         // **每一块都打印** —— 用户要的就是"收到手机的音频就输出"。
         // 早先按秒节流（阈值 900ms），结果手机上块号看着像 1,2,3,5，像是丢了数据，
         // 其实只是被节流吞掉了 —— 这种"看起来像故障"的日志比不打印更糟。要安静就用 --quiet。
-        debug(`📥 收到手机音频：+${body.length} 字节（第 ${state.audioChunks} 块）`
+        // 措辞说明白：音源现在可能是眼镜的麦克风（见 docs/09 §12），不再是"手机音频"。
+        // 转发进程本身看不到音源（链路上没有这个字段），所以这里只说"音频"，
+        // 不替调用方声称它来自哪个设备。
+        debug(`📥 收到音频：+${body.length} 字节（第 ${state.audioChunks} 块）`
           + ` → 累计 ${totalSeconds.toFixed(1)}s @ ${state.audioRateValue ?? rate}Hz`
           + `，语种 ${state.audioLangValue ?? lang}${fresh ? '（手机开始了新一次录音）' : ''}`)
         // 电平单独一行：这是"手机到底有没有录到人声"的唯一直接证据

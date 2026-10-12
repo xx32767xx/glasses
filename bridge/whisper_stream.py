@@ -852,16 +852,44 @@ class PcmFollower:
         return self.language if self.language is not None else default
 
     def _resample(self, samples):
-        """把任意采样率线性插值到 16 kHz。够用：这是给人听的语音，不是音频制品。"""
+        """
+        把任意采样率线性插值到 16 kHz。够用：这是给人听的语音，不是音频制品。
+
+        ⚠️ **跨块连续是本方法的全部难点**，踩过一次真机故障，记在这里：
+
+        每次 read() 传进来的 `samples` 都是**从新读到的字节重新构造的数组**，
+        不是上一个数组的延续。所以 `resample_pos` 必须记成
+        **"下一块里第一个输出采样落在哪个位置（相对本块起点，可能为负）"**，
+        而不是一个全局绝对位置。
+
+        写错时的表现极具误导性：第一块正常输出 16000 个采样，
+        然后 `resample_pos` 变成 44100 —— 恰好等于块长，
+        于是后面每一块的 count 都算成 0，**永远返回空**。
+        结果就是"识别器只在最开始拿到过约 1 秒音频，之后一直是空的"，
+        而转发进程那边电平、字节数、采样率全都正常 ——
+        从日志上看不出任何异常，只有字幕永远不出来。
+
+        为什么一直没暴露：手机麦克风正常是 16 kHz，本方法会直接 return，
+        **这条路径从来没被走到过**。眼镜的麦克风固定 44.1 kHz，
+        一上来就命中它，问题才现形。
+        """
         if self.rate == TARGET_RATE or samples.size == 0:
             return samples
         step = self.rate / float(TARGET_RATE)
-        count = int((samples.shape[0] - self.resample_pos) / step)
+        n = samples.shape[0]
+        # 上一块的尾巴已经越过这一块了：整块都被吃掉，位置往下一块挪
+        if self.resample_pos >= n:
+            self.resample_pos -= n
+            return samples[:0]
+        count = int((n - self.resample_pos) / step)
         if count <= 0:
+            self.resample_pos -= n
             return samples[:0]
         index = self.resample_pos + step * self.np.arange(count, dtype="float64")
-        self.resample_pos = index[-1] + step
-        return self.np.interp(index, self.np.arange(samples.shape[0]), samples).astype("float32")
+        result = self.np.interp(index, self.np.arange(n), samples).astype("float32")
+        # 关键：换算成**相对下一块**的位置（减掉本块长度），下一次才是对的
+        self.resample_pos = index[-1] + step - n
+        return result
 
     def read(self):
         """读一次新数据，返回若干个 float32 块（可能为空列表）。"""

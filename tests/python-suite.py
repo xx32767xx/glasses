@@ -362,6 +362,28 @@ def main():
           abs(resampled - TARGET_RATE) <= block_samples,
           f"重采样后 {resampled} 个采样（期望约 {TARGET_RATE}）")
 
+    # ★ 连续多块：这才是真实节奏（手机每秒上传一块，跟随进程每轮读一块）。
+    #
+    # 上面那条"一次性写 44100 个采样、只 read 一次"的断言**放过了真 bug**：
+    # 老实现里 resample_pos 记的是绝对位置，而每块 samples 都是新数组 ——
+    # 第一块正常，之后每块 count 都算成 0、永远返回空。
+    # 结果就是"识别器只在最开始拿到约 1 秒音频"，而转发进程的电平/字节数全正常。
+    # 眼镜固定 44.1k，必然走这条路径，所以这个 bug 一上眼镜就暴露。
+    follow_pcm.write_bytes(b"")
+    follower.read()
+    follower.resample_pos = 0.0
+    block_sizes = []
+    for _ in range(5):
+        append(ramp(44100))                   # 又一块 1 秒的 44.1k 音频
+        blocks = follower.read()
+        block_sizes.append(sum(b.shape[0] for b in blocks))
+    check("连续 5 块 44.1k 音频，**每一块**都要出约 16000 个采样（不能只有第一块有）",
+          all(abs(size - TARGET_RATE) <= block_samples for size in block_sizes),
+          f"各块重采样后采样数：{block_sizes}")
+    check("多块总量也对（没有累积漂移）",
+          abs(sum(block_sizes) - TARGET_RATE * 5) <= block_samples * 5,
+          f"总量 {sum(block_sizes)}，期望约 {TARGET_RATE * 5}")
+
     # 语种标记 → Whisper 码。手机说的是 pt-BR / zh-CN，Whisper 要的是 pt / zh；
     # 认不出来时要返回 None（让 Whisper 自己判），而不是猜一个错的语种。
     heading("语种标记转换 · whisper_language_of")
