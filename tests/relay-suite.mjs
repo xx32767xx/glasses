@@ -596,6 +596,39 @@ export async function runRelaySuite({ it, check, assert }) {
       text.includes('deadbeef'.repeat(3)) && !text.includes('undefined'), '密钥没渲染对')
   })
 
+  // ── 9. 手机侧诊断回传（/diag）────────────────────────────────────────────
+  //
+  // 这条通道是被一次"查不下去"逼出来的：电脑端日志能证明它**发了**定稿帧，
+  // 但手机收到之后有没有**应用**、应用成了什么，从电脑那边完全看不见 ——
+  // 两边各自看都正常，合起来才是问题。所以让手机回传一行，打进同一份日志。
+  //
+  // 它必须满足两点：真的能收到；以及**失败不能影响主流程**（手机那边是
+  // fire-and-forget，这里验证端点在、且计数正确）。
+
+  await it('/diag：收下手机回传的一行并计数（两边并排放才查得下去的那类问题）', async () => {
+    const before = (await call('/status')).json.diagLines
+    const result = await call('/diag', { method: 'POST', body: { line: '投屏：定稿 → Olá, apresente-se.' } })
+    check('200', result.status === 200, String(result.status))
+    check('回执里带上累计行数', typeof result.json.received === 'number', JSON.stringify(result.json))
+
+    const after = (await call('/status')).json
+    check('计数 +1', after.diagLines === before + 1, `${before} → ${after.diagLines}`)
+  })
+
+  await it('/diag：空行不计、超长行被截断（诊断不该把日志刷爆），且仍然要密钥', async () => {
+    const before = (await call('/status')).json.diagLines
+    const empty = await call('/diag', { method: 'POST', body: { line: '' } })
+    check('空行也返回 200（手机不该因为诊断失败而报错）', empty.status === 200, String(empty.status))
+    const afterEmpty = (await call('/status')).json.diagLines
+    check('空行不计入', afterEmpty === before, `${before} → ${afterEmpty}`)
+
+    const long = await call('/diag', { method: 'POST', body: { line: 'x'.repeat(1000) } })
+    check('超长行照样收下（截断在打日志那一侧做）', long.status === 200, String(long.status))
+
+    const noSecret = await call('/diag', { method: 'POST', body: { line: 'x' }, secret: null })
+    check('**仍然要密钥**（诊断通道不能成为后门）', noSecret.status === 401, String(noSecret.status))
+  })
+
   await relay.close()
   await rm(TMP, { recursive: true, force: true })
 }

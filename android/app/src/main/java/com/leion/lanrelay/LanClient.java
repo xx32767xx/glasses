@@ -163,9 +163,36 @@ public class LanClient {
         return request("/status", "GET", null, 8000);
     }
 
-    /** 诊断：把 /status 的计数读回来。 */
-    public void fetchStatus() {        Thread thread = new Thread(() -> {
+    /**
+     * 把一行"我这边实际做了什么"回传给电脑，打进同一份日志。
+     *
+     * <p><b>为什么需要它</b>：有些问题**只有把两边并排放才能定位**。
+     * 比如"眼镜上显示 Ol…"：电脑端日志能证明它**发了**定稿帧，
+     * 但手机收到之后有没有**应用**、应用成了什么，从电脑那边完全看不见 ——
+     * 两边各自看都"正常"，合起来才是问题。
+     *
+     * <p><b>刻意做成 fire-and-forget</b>：在独立线程里发、失败**静默忽略**。
+     * 诊断通道坏掉绝不能影响同传本身 —— 它是为了查问题，不是为了制造问题。
+     */
+    public void sendDiag(String line) {
+        if (line == null || line.isEmpty()) return;
+        final String baseUrl = this.baseUrl;
+        final String secret = this.secret;
+        Thread thread = new Thread(() -> {
             try {
+                JSONObject body = new JSONObject();
+                body.put("line", line);
+                request("/diag", "POST", body, 4000);
+            } catch (Throwable ignored) {
+                // 诊断失败就失败：不报错、不影响主流程
+            }
+        }, "diag-send");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    /** 诊断：把 /status 的计数读回来。 */
+    public void fetchStatus() {        Thread thread = new Thread(() -> {            try {
                 JSONObject json = request("/status", "GET", null, 8000);
                 listener.onStatus("电脑侧：字幕 " + json.optInt("frames", 0)
                         + " 帧 / 收到 " + json.optInt("says", 0)

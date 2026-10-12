@@ -2148,8 +2148,19 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
         String show = text == null || text.isEmpty() ? source : text;
         if (show == null) show = "";
-        if (lastFramePartial) show = show + "…";
+        boolean partial = lastFramePartial;
+        if (partial) show = show + "…";
         glassesView.setSubtitle(show);
+
+        // ★ 把"我实际投上去的是什么"回传给电脑，和"电脑发了什么"放进同一份日志。
+        //
+        //   为什么必须两边并排：电脑端日志能证明它发了定稿帧，但手机有没有**应用**、
+        //   应用成了什么，从那边完全看不见 —— 两边各自看都正常，合起来才是问题。
+        //   （这条是从"眼镜上显示 Ol…"那次排查里加出来的：单看电脑日志查不下去。）
+        if (client != null) {
+            client.sendDiag("投屏：" + (partial ? "增量" : "定稿") + " → "
+                    + (show.length() > 80 ? show.substring(0, 80) + "…" : show));
+        }
     }
 
     /**

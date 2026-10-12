@@ -462,6 +462,8 @@ export async function startRelay(rawOptions = {}) {
     rejected: 0,
     /** 被限流拒掉的请求数（公网模式下才有意义）。 */
     rateLimited: 0,
+    /** 手机回传的诊断行数（见 /diag）。用来确认那条通道是活的。 */
+    diagLines: 0,
     /** 密钥不对的来源 IP（只记一份，免得扫端口的把日志刷爆）。 */
     rejectedIps: new Set(),
     sockets: 0,
@@ -888,6 +890,38 @@ export async function startRelay(rawOptions = {}) {
         return
       }
 
+      // ── POST /diag ────────────────────────────────────────────────────────
+      //
+      // 手机把"我这边实际做了什么"回传一行，转发进程原样打进日志（前缀 [手机]）。
+      //
+      // 为什么需要这条通道：有些问题**只有把两边并排放才能定位**。
+      // 例如"眼镜上显示 Ol…"这件事：
+      //   · 电脑端的日志能证明它发了定稿帧；
+      //   · 但手机收到之后有没有**应用**、应用成了什么，从电脑这边完全看不见。
+      // 两边各自看都"正常"，合起来才是问题 —— 那就需要一条回传通道把它们放进同一份日志。
+      //
+      // 刻意做成**只读、无状态、可失败**：手机发这个请求是 fire-and-forget，
+      // 失败也不影响同传（诊断通道坏掉不该把主功能拖下水）。
+      if (request.method === 'POST' && url.pathname === '/diag') {
+        let body
+        try {
+          body = await readBody(request)
+        } catch (error) {
+          send(response, error.statusCode ?? 400, { ok: false, error: String(error.message) })
+          return
+        }
+        const line = typeof body.line === 'string' ? body.line : ''
+        if (line !== '') {
+          // 截断：诊断行不该把日志刷爆。
+          // 计数放在这个分支里 —— "收到了几条诊断"应该是**有效行数**，
+          // 把空请求也算上会让这个数失去意义（看它来确认通道是活的，得是有效行）。
+          debug(`[手机] ${line.length > 200 ? line.slice(0, 200) + '…' : line}`)
+          state.diagLines += 1
+        }
+        send(response, 200, { ok: true, received: state.diagLines })
+        return
+      }
+
       // ── GET /status ───────────────────────────────────────────────────────
       if (request.method === 'GET' && url.pathname === '/status') {
         send(response, 200, {
@@ -898,6 +932,7 @@ export async function startRelay(rawOptions = {}) {
           inboxLines: state.writer.stats.lines,
           rejected: state.rejected,
           rateLimited: state.rateLimited,
+          diagLines: state.diagLines,
           waiting: state.waiters.size,
           busSeen: state.lastFrame !== null,
           // 「手机有没有连到这里」的证据。手机连不上时它自己没法说话，
