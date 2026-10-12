@@ -116,13 +116,24 @@ public class GlassesSdk {
     /** 采集帧计数（回调在传输线程上触发，所以用原子量）。 */
     private final java.util.concurrent.atomic.AtomicInteger frameCount =
             new java.util.concurrent.atomic.AtomicInteger();
-    private volatile int frameWidth;
-    private volatile int frameHeight;
-    /** 第一帧的非黑字节千分比；-1 = 还没拿到帧。 */
-    private volatile int frameNonBlack = -1;
-    private Object frameCallback;
     /** 投屏前那几步（LCD 开关 / 双眼端口）的结果，显示在诊断行上。 */
     private String prepareNote = "";
+    /**
+     * 第一帧的**字节数**。
+     *
+     * <p>⚠️ 以前这里有两个字段被当成"宽/高"显示，真机上打出 {@code 0×1024000}。
+     * 1024000 正好是 640×400×4 —— 它是**这一帧的字节数**，不是高度。
+     * 回调的字节码里没有参数名，所以别猜：只记字节长度、十六进制头、
+     * 以及各通道非零比例，让事实自己说话（见 {@link #observeFrame}）。
+     *
+     * <p>那三个误读的字段（frameWidth / frameHeight / frameNonBlack）已经删掉了 ——
+     * 留着只会让人以为"宽度真的是 0"。
+     */
+    private volatile int frameBytes = 0;
+    private volatile String frameArgs = "";
+    private volatile String frameHead = "";
+    private volatile String frameFormat = "";
+    private Object frameCallback;
 
     public interface Listener {
         /** 状态变化（连接、投屏、错误）。每条都会带上"发生了什么"，界面直接显示。 */
@@ -681,9 +692,10 @@ public class GlassesSdk {
      */
     private void registerFrameProbe(Object display) {
         frameCount.set(0);
-        frameWidth = 0;
-        frameHeight = 0;
-        frameNonBlack = -1;
+        frameBytes = 0;
+        frameArgs = "";
+        frameHead = "";
+        frameFormat = "";
         try {
             Class<?> callbackClass = Class.forName(
                     "com.llvision.glass3.core.lcd.client.ICaptureDisplayFrameCallback");
@@ -691,15 +703,8 @@ public class GlassesSdk {
                     callbackClass.getClassLoader(),
                     new Class<?>[] { callbackClass },
                     (proxy, method, args) -> {
-                        if ("onFrameAvailable".equals(method.getName())
-                                && args != null && args.length >= 3) {
-                            frameCount.incrementAndGet();
-                            if (args[1] instanceof Integer) frameWidth = (Integer) args[1];
-                            if (args[2] instanceof Integer) frameHeight = (Integer) args[2];
-                            // 只测第一帧
-                            if (frameNonBlack < 0 && args[0] instanceof byte[]) {
-                                frameNonBlack = nonBlackPermille((byte[]) args[0]);
-                            }
+                        if ("onFrameAvailable".equals(method.getName())) {
+                            observeFrame(args);
                         }
                         return null;
                     });
@@ -712,24 +717,118 @@ public class GlassesSdk {
         }
     }
 
-    /** 采样统计非零字节的千分比（不关心像素格式，只区分"全黑"和"有内容"）。 */
-    private static int nonBlackPermille(byte[] data) {
-        if (data == null || data.length == 0) return 0;
-        int step = Math.max(1, data.length / 4096);
-        int sampled = 0;
-        int nonZero = 0;
-        for (int index = 0; index < data.length; index += step) {
-            sampled += 1;
-            if (data[index] != 0) nonZero += 1;
+    /**
+     * 记录**原始事实**，不替 SDK 猜参数含义。
+     *
+     * <p>⚠️ 这里以前是把前两个 int 当成 width/height 直接显示的，结果真机上打出
+     * {@code 0×1024000} —— 看起来很荒谬，其实是**我的标注错了**：
+     * 1024000 正好等于 640×400×4，它是**这一帧的字节数**，不是高度。
+     * 回调的字节码里没有参数名（{@code onFrameAvailable(byte[], int, int)}），
+     * 所以从签名上根本看不出哪个是哪个 —— 那就别猜，把原始值全打出来。
+     *
+     * <p>同时把像素格式也验一下：按 2/3/4 字节每像素分别统计"非零字节比例"。
+     * 如果某个通道几乎全是非零（常见是 alpha=255），那就能确定是 4 字节格式，
+     * 也就顺带解释了"非黑 100%"这个看着不对的数。
+     */
+    private void observeFrame(Object[] args) {
+        frameCount.incrementAndGet();
+        if (args == null) return;
+
+        // 第一个字节数组就是帧数据；其余参数原样记下来（含类型，避免再猜错）
+        for (int index = 0; index < args.length; index += 1) {
+            Object arg = args[index];
+            if (arg instanceof byte[] && frameBytes == 0) {
+                byte[] data = (byte[]) arg;
+                frameBytes = data.length;
+                frameHead = hexHead(data, 32);
+                frameFormat = guessFormat(data);
+                return;   // 只分析第一帧：这个回调按帧率触发，逐帧扫像素会拖慢投屏
+            }
         }
-        return sampled == 0 ? 0 : nonZero * 1000 / sampled;
+        // 没有字节数组时，把参数类型与取值记下来（这也是有用的信息）
+        if (frameArgs.isEmpty()) {
+            StringBuilder out = new StringBuilder();
+            for (int index = 0; index < args.length; index += 1) {
+                if (index > 0) out.append("  ");
+                Object arg = args[index];
+                out.append("arg").append(index).append('=')
+                   .append(arg == null ? "null"
+                           : arg.getClass().getSimpleName() + "(" + arg + ")");
+            }
+            frameArgs = out.toString();
+        }
     }
 
-    /** 诊断用：帧数 / 采集尺寸 / 首帧非黑比例。 */
+    /** 前 n 个字节的十六进制（用来认文件头：JPEG 是 FF D8 FF，PNG 是 89 50 4E 47）。 */
+    private static String hexHead(byte[] data, int count) {
+        StringBuilder out = new StringBuilder();
+        int limit = Math.min(count, data.length);
+        for (int index = 0; index < limit; index += 1) {
+            out.append(String.format(java.util.Locale.US, "%02X ", data[index]));
+        }
+        return out.toString().trim();
+    }
+
+    /** 按 2/3/4 字节每像素分别统计非零比例 —— 哪个"整除"得合理，就是哪个格式。 */
+    private static String guessFormat(byte[] data) {
+        if (data == null || data.length == 0) return "空数据";
+        StringBuilder out = new StringBuilder();
+        for (int bytesPerPixel : new int[] { 4, 3, 2 }) {
+            if (data.length % bytesPerPixel != 0) continue;
+            int[] nonZeroPerChannel = new int[bytesPerPixel];
+            int total = 0;
+            // 采样，不逐字节扫：只统计够用的量
+            int step = Math.max(1, data.length / 65536);
+            for (int index = 0; index + bytesPerPixel <= data.length; index += step) {
+                total += 1;
+                for (int channel = 0; channel < bytesPerPixel; channel += 1) {
+                    if (data[index + channel] != 0) nonZeroPerChannel[channel] += 1;
+                }
+            }
+            if (total == 0) continue;
+            out.append(bytesPerPixel).append("字节/像素[");
+            for (int channel = 0; channel < bytesPerPixel; channel += 1) {
+                if (channel > 0) out.append(' ');
+                out.append(nonZeroPerChannel[channel] * 100 / total).append('%');
+            }
+            out.append("] ");
+        }
+        return out.length() == 0 ? "长度不是 2/3/4 的整数倍，可能不是原始像素" : out.toString().trim();
+    }
+
+    /** 采集帧的字节数（真实值，不再当成"高度"）。 */
+    public int getFrameBytes() {
+        return frameBytes;
+    }
+
+    /** 第一帧的十六进制头（认文件头用）。 */
+    public String getFrameHead() {
+        return frameHead;
+    }
+
+    /** 第一帧的像素格式猜测依据（各通道非零比例）。 */
+    public String getFrameFormat() {
+        return frameFormat;
+    }
+
+    /** 诊断用：帧数 / 每帧字节数 / 首帧格式。 */
     public String getFrameInfo() {
         if (frameCount.get() == 0) return "帧 0（采集没出画面）";
-        return "帧 " + frameCount.get() + " · " + frameWidth + "×" + frameHeight
-                + " · 非黑 " + (frameNonBlack < 0 ? "?" : frameNonBlack / 10 + "%");
+        StringBuilder out = new StringBuilder();
+        out.append("帧 ").append(frameCount.get());
+        if (frameBytes > 0) {
+            out.append(" · 每帧 ").append(frameBytes).append(" 字节");
+            // 用已知分辨率反推每像素字节数 —— 顺带验证"采集尺寸和画布一致"
+            int[] size = queryDisplaySize();
+            if (size[0] > 0 && size[1] > 0) {
+                int pixels = size[0] * size[1];
+                if (frameBytes % pixels == 0) {
+                    out.append("（=").append(size[0]).append("×").append(size[1])
+                       .append("×").append(frameBytes / pixels).append("）");
+                }
+            }
+        }
+        return out.toString();
     }
 
     /**
@@ -1046,6 +1145,14 @@ public class GlassesSdk {
 
         // ⑩ 采集帧：判断"SDK 有没有真的在出画面"的唯一硬证据
         out.append("⑩ ").append(getFrameInfo()).append("\n");
+        if (frameBytes > 0) {
+            out.append("   首帧头：").append(frameHead).append("\n");
+            out.append("   通道非零：").append(frameFormat).append("\n");
+            out.append("   （非零比例里有接近 100% 的那一通道，通常就是 alpha）\n");
+        }
+        if (!frameArgs.isEmpty()) {
+            out.append("   回调参数：").append(frameArgs).append("\n");
+        }
         if (prepareNote.length() > 0) {
             out.append("   投屏前准备：").append(prepareNote).append("\n");
         }
