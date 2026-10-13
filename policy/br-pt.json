@@ -66,20 +66,40 @@
       "zh": "亮亮视野",
       "approved": ["LLVision", "亮亮视野"],
       "soundsLike": ["Liangliang", "Liang Liang"],
+      "sourceForms": ["亮亮视野", "LLVision", "Liangliang", "Liang Liang"],
       "warnWhenApproved": true,
-      "why": "公司英文名是 LLVision。实测 Hunyuan-MT 与 Qwen2.5 都音译成 Liangliang Vision —— 对方看到这个写法认不出是哪家公司。warnWhenApproved：这个名气大到模型能自己想起来，所以它写对时也要提示一句（那是先验知识，不是从原文推的）。"
+      "mustKeep": true,
+      "why": "公司英文名是 LLVision。实测 Hunyuan-MT 与 Qwen2.5 都音译成 Liangliang Vision / Liang Liang Vision —— 对方看到这个写法认不出是哪家公司。warnWhenApproved：这个名气大到模型能自己想起来，所以它写对时也要提示一句（那是先验知识，不是从原文推的）。mustKeep：对方必须能认出是哪家公司，所以**整段丢掉**也要报。"
     },
     {
       "zh": "亮亮眼镜",
       "approved": ["Leion", "亮亮眼镜"],
-      "soundsLike": ["Liangliang"],
-      "why": "产品线名。"
+      "soundsLike": [],
+      "sourceForms": ["亮亮眼镜", "Leion", "Leion Pro"],
+      "mustKeep": true,
+      "why": "产品线名 Leion。sourceForms 里放「Leion Pro」是**真机实测逼出来的**：那句「…合作开发的这款 Leion Pro…」译成了 `Esses óculos que desenvolvemos…`，产品名整个消失，而旧判据一声不响 —— 因为第一关是「原文含 entry.zh」，而 entry.zh 是「亮亮眼镜」，原文写的是 Leion Pro，**这条 entry 压根没进入检查**。mustKeep：说话人专门点了型号，听的人却不知道是哪个产品。⚠️ soundsLike **故意留空**：原来这里跟着写了「Liangliang」，但那是**公司名**（亮亮视野）的音译，不是产品名的 —— 同一个错拼会被两条 entry 各判一次「新造」，一句话报两条同样的错。产品名要防的是**丢掉**，那条路走 mustKeep。"
     },
     {
       "zh": "高通",
       "approved": ["Qualcomm", "高通"],
-      "soundsLike": ["Gaotong"],
-      "why": "芯片厂商。实测各家都译对了（Qualcomm）—— 这是**正常翻译**，所以不设 warnWhenApproved：每次都报会变成噪音，而噪音会让人开始忽略警告。留在这里是为了防将来出现 Gaotong 这种音译。"
+      "soundsLike": ["Gaotong", "Qualcom"],
+      "sourceForms": ["高通", "Qualcomm"],
+      "mustKeep": true,
+      "why": "芯片厂商。实测各家都译对了（Qualcomm）—— 这是**正常翻译**，所以不设 warnWhenApproved：每次都报会变成噪音，而噪音会让人开始忽略警告。soundsLike 里的 Qualcom 是**少一个 m 的常见写法**（此时认可写法不成立，所以能命中）；Gaotong 是音译，留着防将来。"
+    },
+    {
+      "zh": "安卓",
+      "approved": ["Android", "安卓"],
+      "sourceForms": ["安卓", "Android"],
+      "mustKeep": true,
+      "why": "操作系统名。实测各家都译对（Android 12）。留着防的是**整个丢掉**（只留版本号「12」的话，听的人不知道是什么系统的 12）。⚠️ soundsLike **故意留空**：曾想加「Androide」，但那是葡语里对 Android 的**正常写法**（不是错），加了就会假报 —— 这正是「宁可不报」要挡住的那类误报。"
+    },
+    {
+      "zh": "GLXSS ME",
+      "approved": ["GLXSS ME", "GLXSS"],
+      "sourceForms": ["GLXSS ME", "GLXSS"],
+      "mustKeep": true,
+      "why": "并列型号（README：「目标型号：Leion Pro（并列 GLXSS ME）」）。⚠️ 它的 sourceForms **只认拉丁写法**，故意不含「亮亮眼镜」—— 否则一句话里提到产品线就会同时命中 Leion 和 GLXSS 两条 entry，而译文只能写一个，另一条必然假报「丢失」。soundsLike 留空：没有实测证据说模型会把它写成什么样，编几个变体就是在赌假报。"
     }
   ],
 
@@ -114,5 +134,5 @@
     "objetivo": "m", "atraso": "m", "ritmo": "m"
   },
 
-  "lintNote": "properNouns / nounGenders 与上面的术语表是**离线译文质检**的判据数据，见 lib/translation-lint.mjs 与 docs/08。它们**不进产线提示词** —— 判据需要拿原文比对，而产线那一层只看当前这一句。"
+  "lintNote": "properNouns / nounGenders 是**译文质检**的判据数据，见 lib/translation-lint.mjs 与 docs/08。质检**已经接进产线**（转发进程对每个定稿帧跑，只报不改），但**这两张表仍然不进提示词** —— nounGenders 要靠原文比对才判得出来，而产线那一层只看当前这一句。⚠️ 但 properNouns.approved 是另一回事：它和上面的术语表性质相同（都是「这个词必须这么写」），所以**「要不要把认可的英文名写进提示词」是一个还没做的决定** —— 目前模型不知道「亮亮视野 → LLVision」，只能靠先验知识猜或音译，这正是「专名新造」那类错的来源。没做的原因：改提示词等于改模型行为，会让 docs/08 那批横评数字失去可比性，得先量一版再上。"
 }

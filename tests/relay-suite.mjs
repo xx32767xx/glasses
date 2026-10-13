@@ -229,7 +229,11 @@ export async function runRelaySuite({ it, check, assert }) {
       after = await call('/status')
     }
     check('lint 开着', after.json.lint === true, JSON.stringify(after.json.lint))
-    check('报出 1 条确定错', after.json.lintBad === before.lintBad + 1,
+    // ⚠️ 这里**故意不写死条数**（早先写的是 +1，后来判据加了"专名丢失"就变成 +4）：
+    //    这条测的是**接线**（定稿帧有没有被送到判据、结果有没有进 /status），
+    //    不是判据本身的判分。写死条数会让每次加检查都误伤这条测试，
+    //    而"该报几条"是 lint-suite 该管的事。
+    check('计数增加了', after.json.lintBad > before.lintBad,
       `${before.lintBad} → ${after.json.lintBad}`)
     check('错类记成"专名新造"', after.json.lintKinds?.['专名新造'] >= 1,
       JSON.stringify(after.json.lintKinds))

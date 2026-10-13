@@ -126,6 +126,116 @@ export async function runLintSuite({ it, check, assert }) {
       JSON.stringify(notes))
   })
 
+  // ── ①b 专名丢失：查"写没了"，不只是"写错了" ──────────────────────────────
+  //
+  // 这是旧判据的**盲区**，由真机数据暴露：那句「…这款 Leion Pro…」译成了
+  // `Esses óculos que desenvolvemos…`，产品名整个消失，而判据一声不响。
+
+  await it('①b 专名丢失：真机那一帧（Leion Pro 整个没了）现在必须报', async () => {
+    const source = '我们和亮亮视野合作开发的这款 Leion Pro，用的是高通的芯片，系统版本是安卓十二。'
+    // 这就是归档日志里的真实译文（帧 9）
+    const result = lint(source,
+      'Esses óculos que desenvolvemos em parceria com a LLVision usam chip da Qualcomm, versão do sistema é Android 12.')
+    check('报出"专名丢失"', result.fatal.some(n => n.kind === '专名丢失'), JSON.stringify(result.fatal))
+    const note = result.fatal.find(n => n.kind === '专名丢失')
+    check('指出丢的是哪个专名（Leion / 亮亮眼镜）',
+      note.text.includes('亮亮眼镜'), note.text)
+    check('公司名(S)、芯片(N)、系统名(S)都在 → 只丢一条',
+      result.fatal.filter(n => n.kind === '专名丢失').length === 1, JSON.stringify(result.fatal))
+  })
+
+  await it('①b 专名丢失：只有该丢的才丢 —— 各自单独丢都要单独报', async () => {
+    // 逐条验"丢一个报一个"，免得整条判据只在某个特例上碰巧成立
+    const company = lint('我们和亮亮视野合作。', 'Desenvolvemos este produto juntos.')
+    check('丢公司名 → 报', company.fatal.some(n => n.kind === '专名丢失'), JSON.stringify(company.fatal))
+
+    const os = lint('系统版本是安卓十二。', 'A versão do sistema é 12.')
+    check('丢系统名（只留版本号）→ 报', os.fatal.some(n => n.kind === '专名丢失'), JSON.stringify(os.fatal))
+
+    const chip = lint('用的是高通的芯片。', 'usa um chip de fabricante chinês.')
+    check('丢芯片厂商 → 报', chip.fatal.some(n => n.kind === '专名丢失'), JSON.stringify(chip.fatal))
+  })
+
+  await it('①b 专名丢失：认可写法 / 保留中文 / 未提到 三种情况都不许报', async () => {
+    // 负对照：这三条是"正确"的三种样子，一条都不许报丢失
+    const approved = lint('我们和亮亮视野合作。', 'Em parceria com a LLVision.')
+    check('用认可写法 → 不报丢失',
+      approved.fatal.some(n => n.kind === '专名丢失') === false, JSON.stringify(approved.fatal))
+
+    const kept = lint('我们和亮亮视野合作。', 'Em parceria com a 亮亮视野.')
+    check('原样保留中文 → 不报丢失',
+      kept.fatal.some(n => n.kind === '专名丢失') === false, JSON.stringify(kept.fatal))
+
+    // ⭐ 最关键的一条：原文压根没提到的专名，译文里没有它天经地义
+    const notMentioned = lint('我们今天的会议改到了下午三点。', 'Nossa reunião de hoje mudou para as três da tarde.')
+    check('原文没提到 → 不许报丢失',
+      notMentioned.fatal.some(n => n.kind === '专名丢失') === false, JSON.stringify(notMentioned.fatal))
+  })
+
+  await it('①b sourceForms：原文用英文名提起也算"提到了"', async () => {
+    // 真机那句原文写的是「Leion Pro」（不是「亮亮眼镜」）—— 旧判据因此整条 entry 都没进检查
+    const source = '这款 Leion Pro 是我们做的。'
+    const dropped = lint(source, 'Este produto foi feito por nós.')
+    check('原文用 Leion Pro 提起、译文里没了 → 报',
+      dropped.fatal.some(n => n.kind === '专名丢失'), JSON.stringify(dropped.fatal))
+
+    const keptProduct = lint(source, 'Este Leion Pro foi feito por nós.')
+    check('译文保留了 Leion Pro → 不报',
+      keptProduct.fatal.some(n => n.kind === '专名丢失') === false, JSON.stringify(keptProduct.fatal))
+  })
+
+  await it('①b mustKeep：没声明 mustKeep 的专名，丢了不报（政策判断不能由判据替用户做）', async () => {
+    const soft = [{ zh: '某公司', approved: ['SomeCo'], sourceForms: ['某公司'] }]
+    const notes = properNounProblems('我们和某公司合作。', 'Trabalhamos juntos.', soft)
+    check('没 mustKeep → 不报丢失', notes.length === 0, JSON.stringify(notes))
+
+    const hard = [{ zh: '某公司', approved: ['SomeCo'], sourceForms: ['某公司'], mustKeep: true }]
+    const flagged = properNounProblems('我们和某公司合作。', 'Trabalhamos juntos.', hard)
+    check('声明了 mustKeep → 报丢失', flagged.some(n => n.kind === '专名丢失'), JSON.stringify(flagged))
+  })
+
+  await it('①b 同一个错拼只报一条（不许两条 entry 各报一次）', async () => {
+    // 「Liangliang」是**公司名**的音译，不是产品名的。早先产品那条 entry 也把它列进
+    // soundsLike，于是同一个错拼被两条 entry 各判一次「新造」—— 一句话报两条同样的错。
+    const source = '我们和亮亮视野合作开发的这款 Leion Pro。'
+    const bad = lint(source, 'Desenvolvemos em parceria com a Liangliang.')
+    const coined = bad.fatal.filter(n => n.kind === '专名新造')
+    check('新造只报一条', coined.length === 1, JSON.stringify(bad.fatal))
+    check('丢的是产品名（公司名已由"新造"覆盖）',
+      bad.fatal.filter(n => n.kind === '专名丢失').length === 1, JSON.stringify(bad.fatal))
+  })
+
+  await it('①b Androide 是葡语里的正常写法，不许判新造（自己挡住的一次误报）', async () => {
+    // 曾经想给「安卓」加 soundsLike: ["Androide"] —— 但 Androide 是葡语里对 Android 的
+    // **正常写法**，不是错。而且它的 latinKey 里含 "android"，所以 approved 会先命中。
+    const ok = lint('系统版本是安卓十二。', 'A versão do sistema é Androide 12.')
+    check('Androide → 不报',
+      ok.fatal.some(n => n.kind === '专名新造' || n.kind === '专名丢失') === false,
+      JSON.stringify(ok.fatal))
+  })
+
+  await it('①b 专名表本身的形状：每条都要有 approved 与 why，zh 不许重复', async () => {
+    // 表是会长的（靠真机会话发现新实体）。加条目是机械操作，所以用机械检查兜住形状 ——
+    // 少写 why 就没人知道那个名字为什么必须保留，以后会被误删。
+    const entries = policy.properNouns
+    check('表非空', Array.isArray(entries) && entries.length > 0, String(entries?.length))
+    check('每条都有非空 approved', entries.every(e => Array.isArray(e.approved) && e.approved.length > 0),
+      JSON.stringify(entries.filter(e => !Array.isArray(e.approved) || e.approved.length === 0).map(e => e.zh)))
+    check('每条都写了 why（说明为什么这个名不能丢/不能改）',
+      entries.every(e => typeof e.why === 'string' && e.why.length >= 10),
+      JSON.stringify(entries.filter(e => typeof e.why !== 'string' || e.why.length < 10).map(e => e.zh)))
+    check('zh 不重复', new Set(entries.map(e => e.zh)).size === entries.length, String(entries.length))
+    check('sourceForms 若写了就必须是非空字符串数组',
+      entries.every(e => e.sourceForms === undefined
+        || (Array.isArray(e.sourceForms) && e.sourceForms.length > 0
+          && e.sourceForms.every(f => typeof f === 'string' && f !== ''))),
+      JSON.stringify(entries.filter(e => e.sourceForms !== undefined
+        && (Array.isArray(e.sourceForms) === false || e.sourceForms.length === 0)).map(e => e.zh)))
+    check('mustKeep 若写了必须是布尔',
+      entries.every(e => e.mustKeep === undefined || typeof e.mustKeep === 'boolean'),
+      JSON.stringify(entries.filter(e => e.mustKeep !== undefined && typeof e.mustKeep !== 'boolean').map(e => e.zh)))
+  })
+
   // ── ② 实体槽 ───────────────────────────────────────────────────────────────
 
   await it('② 实体槽：楼层丢了必须报（实测 Qwen2.5 的真错）', async () => {
