@@ -2152,6 +2152,12 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         if (glasses != null && glasses.getPrepareNote().length() > 0) {
             diag.append("\n投屏前准备：").append(glasses.getPrepareNote());
         }
+        // 服务列表：相机预览需要**相机服务**在跑。用户报"隔夜之后相机预览不生效"，
+        // 这一行能直接回答"是服务没起来，还是设置没生效"——两者修法完全不同。
+        if (glasses != null && (casting || glassesCameraBackground())) {
+            String services = glasses.queryServices();
+            if (services.length() > 0) diag.append("\n服务：").append(services);
+        }
         if (glasses != null && glasses.getStep().length() > 0) {
             diag.append("\n投屏步：").append(glasses.getStep());
         }

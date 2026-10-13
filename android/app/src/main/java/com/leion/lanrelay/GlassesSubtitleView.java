@@ -7,6 +7,7 @@ import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.Layout;
 import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -520,65 +521,74 @@ public class GlassesSubtitleView {
             return;
         }
         int heightBudget = Math.round(usableHeight * 0.85f);
+        float minFont = Math.max(8f, usableHeight * minFontRatio);
+        // 上限：两行别把整屏占满
+        float fontCap = usableHeight / 2.2f;
         // ⚠️ 字号倍率必须参与"一行放多少个"的决定，不能在算完字号之后再乘：
         //    字号是从"可用宽度 ÷ 每行字符数"反推的，算完再放大一行就装不下，
         //    正好退回"被截断"。倍率的作用是：倍率越大 → 一行放得越少 → 字越大。
         int startCols = (int) clamp(Math.round(14f / fontScale), 6, 44);
-        float minFont = Math.max(8f, usableHeight * minFontRatio);
+
+        // ── 选字号：**每一档都真的排一遍**，用安卓给的行数判定，不用估算模型 ──────
+        //
+        // 以前这里用 countLines()（"汉字算 2 列"的模型）估行数。它和真实排版有偏差：
+        // 葡语的宽字母（m/w/大写/带音标）比模型假设的宽，一行放不下那么多字，
+        // **真实行数比估算多**。偏差随字号与留白放大 —— 这正是用户改过那些参数之后
+        // 开始出现问题的原因。
+        //
+        // 代价：一次排版要做几次到几十次 measure（都在主线程，每次 ≤1ms 量级）。
+        // 一句一次、秒级间隔，可以接受；换来的是"判定与真实显示一致"。
+        subtitle.setMaxLines(Integer.MAX_VALUE);
+        subtitle.setEllipsize(null);
+        subtitle.setText(text);
 
         float chosen = 0f;
-        int chosenCols = 0;
+        Layout layout = null;
         for (int cols = startCols; cols <= 120; cols += 2) {
-            float font = 2f * usableWidth / cols;
-            if (font < minFont) break;              // 到下限了：不再缩，交给翻页
-            int lines = countLines(text, cols);
+            float font = Math.min(2f * usableWidth / cols, fontCap);
+            if (font < minFont) break;               // 到下限了：不再缩，交给翻页
+            setPx(subtitle, font);
+            Layout candidate = measureLayout(usableWidth);
+            int lines = candidate == null ? 1 : Math.max(1, candidate.getLineCount());
+            int lineHeight = lineHeightOf(candidate, font);
             if (lines > MAX_LINES) continue;
-            if (lines * font * 1.35f > heightBudget) continue;
+            if ((long) lines * lineHeight > heightBudget) continue;
             chosen = font;
-            chosenCols = cols;
+            layout = candidate;
             break;
         }
         if (chosen <= 0f) {
+            // 连下限那一档都放不下 → 用下限字号，交给翻页
             chosen = minFont;
-            chosenCols = Math.max(4, Math.round(2f * usableWidth / minFont));
+            setPx(subtitle, chosen);
+            layout = measureLayout(usableWidth);
         }
-        // 上限：两行别把整屏占满
-        chosen = Math.min(chosen, usableHeight / 2.2f);
         setPx(subtitle, chosen);
 
-        int linesNeeded = countLines(text, chosenCols);
-        int displayLines = Math.max(1, Math.min(MAX_LINES,
-                (int) (heightBudget / (chosen * 1.35f))));
+        int totalLines = layout == null ? 1 : Math.max(1, layout.getLineCount());
+        int lineHeight = lineHeightOf(layout, chosen);
+        int displayLines = Math.max(1, Math.min(MAX_LINES, heightBudget / lineHeight));
+        lastRealLines = totalLines;
+        lastLines = Math.max(1, Math.min(totalLines, displayLines));
         subtitle.setMaxLines(displayLines);
-        lastLines = Math.max(1, Math.min(linesNeeded, displayLines));
 
-        if (linesNeeded <= displayLines) {
+        if (totalLines <= displayLines) {
             cancelPaging();
-            // 单页也给一个省略号作为**安全网**：行数是按"汉字算 2 列"这个模型估的，
-            // 而安卓按真实字形排版，模型偏乐观时真实行数会更多。
-            // 设了 ellipsize，这种情况就变成"看得见的省略号"而不是**静默裁掉** ——
-            // 后者会让佩戴者以为自己听全了。
+            // 单页仍然留一个省略号当**安全网**：万一真实排版还是超了（字体替换、
+            // 极端宽字符等），至少给出"看得见的省略号"而不是静默裁掉。
             subtitle.setEllipsize(TextUtils.TruncateAt.END);
             subtitle.setText(text);
             return;
         }
 
-        // 需要翻页。
-        //
-        // ⚠️ 这里**不能只切"开头 + 结尾"两页**：如果整句超过两页，
-        //    中间那一段就凭空消失了 —— 而且是静默消失，比不翻页更糟。
-        //    所以：恰好两页时用「开头 / 结尾」（两页都是满的，且互相重叠，读起来连贯）；
-        //    超过两页时按顺序切成若干页，保证**每一列都出现在某一页上**。
-        int totalColumns = columnsOf(text);
-        int colsPerPage = Math.max(1, displayLines * chosenCols);
+        // 需要翻页：**按真实行切片**。每一页正好是"整行"，
+        // 所以重新排版时换行位置一致，不会一页里冒出半行。
         pages.clear();
-        if (totalColumns <= 2 * colsPerPage) {
-            pages.add(sliceColumns(text, 0, colsPerPage));
-            pages.add(sliceColumns(text, Math.max(0, totalColumns - colsPerPage), colsPerPage));
-        } else {
-            for (int start = 0; start < totalColumns; start += colsPerPage) {
-                pages.add(sliceColumns(text, start, colsPerPage));
-            }
+        for (int start = 0; start < totalLines; start += displayLines) {
+            int end = Math.min(totalLines, start + displayLines);
+            int from = Math.max(0, layout.getLineStart(start));
+            int to = Math.min(text.length(), Math.max(from, layout.getLineEnd(end - 1)));
+            pages.add(text.substring(from, to).trim());
         }
         pageCount = pages.size();
         cancelPagingTimerOnly();
@@ -586,43 +596,37 @@ public class GlassesSubtitleView {
         pageHandler.postDelayed(pageAdvance, pageDelayMs);
     }
 
-    /** 整串文本占多少列（汉字算 2 列）。 */
-    private static int columnsOf(String text) {
-        int width = 0;
-        int index = 0;
-        while (index < text.length()) {
-            int codePoint = text.codePointAt(index);
-            width += codePoint < 0x2E80 ? 1 : 2;
-            index += Character.charCount(codePoint);
+    /** 真实行高（从 Layout 里取，取不到才退回按字号估）。 */
+    private static int lineHeightOf(Layout layout, float font) {
+        if (layout != null && layout.getLineCount() > 0) {
+            int height = layout.getLineBottom(0) - layout.getLineTop(0);
+            if (height > 0) return height;
         }
-        return width;
+        return Math.max(1, Math.round(font * 1.35f));
     }
 
     /**
-     * 取 [startColumn, startColumn + maxColumns) 这一段（汉字算 2 列）。
+     * 按给定宽度把当前文本**真的排一遍**，把 Layout 要回来。
      *
-     * <p>头部、尾部、中间切片全都由它一个函数完成 —— 三个各自实现的话，
-     * "列宽怎么算"这件事就会有三份，很容易只改到其中一份。
+     * <p>为什么必须真的排：行数、行高、每行的字符区间，只有安卓自己算得准 ——
+     * 用"汉字算 2 列"那种模型去估，遇到葡语的宽字母就会低估行数，
+     * 结果是"判成放得下、实际放不下"，多出来的词被省略号吃掉。
+     *
+     * <p>只调用 {@code measure}，不影响真实布局：下一次父容器的布局遍历会
+     * 用真实规格重新测量它（{@code measure} 本身不改变视图树结构）。
      */
-    private static String sliceColumns(String text, int startColumn, int maxColumns) {
-        StringBuilder out = new StringBuilder();
-        int width = 0;
-        int taken = 0;
-        int index = 0;
-        while (index < text.length()) {
-            int codePoint = text.codePointAt(index);
-            int count = Character.charCount(codePoint);
-            int w = codePoint < 0x2E80 ? 1 : 2;
-            int next = width + w;
-            if (next > startColumn && taken + w <= maxColumns) {
-                out.appendCodePoint(codePoint);
-                taken += w;
-            }
-            width = next;
-            if (width >= startColumn + maxColumns) break;
-            index += count;
-        }
-        return out.toString();
+    private Layout measureLayout(int width) {
+        subtitle.measure(
+                View.MeasureSpec.makeMeasureSpec(Math.max(1, width), View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+        return subtitle.getLayout();
+    }
+
+    /** 诊断用：上一次排版**真实**排了几行（不是估算）。 */
+    private int lastRealLines = 0;
+
+    public int getRealLines() {
+        return lastRealLines;
     }
 
     // ── 翻页 ────────────────────────────────────────────────────────────────
@@ -783,42 +787,22 @@ public class GlassesSubtitleView {
     }
 
     /**
-     * 画布一行大约放得下几个半角字符 —— 只用来给 {@link #fitSubtitleToText} 兜底。
+     * ⚠️ 这里原来有几个"列宽模型"的辅助函数（{@code countLines} / {@code columnsOf} /
+     * {@code sliceColumns} / {@code columnsPerLine}）—— 全部**删掉了**。
+     *
+     * <p>它们算的是"汉字 2 列、其他 1 列"的估算值，而翻页/截断的判据现在一律用
+     * 安卓**真实排版**的结果（见 {@link #applySubtitleLayout} 与 {@link #measureLayout}）。
+     * 留着它们只会让人误以为"判定还在用这个模型" —— 那正是上一版出问题的地方。
+     *
+     * <p>相关背景：用户的怀疑（"是不是我调了字号/留白导致判断偏差"）是对的。
+     * 模型的偏差随字号与可用宽度放大，所以他一改参数，偏差就从"无所谓"变成
+     * "几个词被吃掉"。
      */
-    private int columnsPerLine() {
-        int usable = usableWidthPx();
-        if (usable <= 0) return 20;
-        int height = effectiveHeight();
-        float fontPx = height > 0 ? Math.max(1f, height * 0.085f * fontScale) : 32f;
-        return Math.max(5, Math.round((float) usable / (fontPx / 2f)));
-    }
-
-    /** 粗略估行数：按当前画布能放多少列来折行算。只用来选字号，不需要精确。 */
-    private static int countLines(String text, int cols) {
-        int lines = 1;
-        int width = 0;
-        for (int index = 0; index < text.length(); index += 1) {
-            char ch = text.charAt(index);
-            if (ch == '\n') {
-                lines += 1;
-                width = 0;
-                continue;
-            }
-            // 与插件那边同一套规则：汉字算 2 列
-            int columns = ch < 0x2E80 ? 1 : 2;
-            if (width + columns > cols) {
-                lines += 1;
-                width = 0;
-            }
-            width += columns;
-        }
-        return lines;
-    }
 
     /**
      * 连接状态一行 + 右上角提示。
      *
-     * <p>为什么要显示这个：眼镜连没连上、投屏成没成功，在手机上**看不出来** ——
+     * <p>为什么要显示这个：眼镜连没连上、投屏成没成，在手机上**看不出来** ——
      * 如果不写，出问题时只能靠猜（而这套 SDK 的失败大多是"什么都不显示"）。
      */
     public void setStatus(String left, String right) {

@@ -600,6 +600,10 @@ public class GlassesSdk {
             casting = true;
             step = "⑤ 已投屏";
 
+            // 建流之后再补设一次"相机预览铺底" —— createCaptureScreen 会改显示模式，
+            // 而相机预览是叠加模式下的附加层（幂等，关着时等于没做）
+            reapplyCameraPreviewAfterCast(display);
+
             // ⑤ 挂帧回调：这是**唯一能证明"SDK 到底有没有在出画面"**的东西。
             //    onFrameAvailable(byte[], width, height) 直接给出采集尺寸和像素。
             //    没有它，"投屏中但看不见"就无法区分是
@@ -677,27 +681,16 @@ public class GlassesSdk {
     private String prepareDisplay(Object display) {
         StringBuilder note = new StringBuilder();
 
-        // ① 相机预览铺底（按用户偏好：关掉更干净，开着能看取景画面 —— 哪种更好只有戴上知道）
-        try {
-            Method setPreview = display.getClass()
-                    .getMethod("setCameraPreviewOnLcdScreen", boolean.class);
-            // 这个方法是 void，没有返回值可比对 —— 只要不抛就是执行了
-            setPreview.invoke(display, cameraPreviewBackground);
-            note.append("相机预览=").append(cameraPreviewBackground ? "开" : "关");
-        } catch (Throwable error) {
-            note.append("设相机预览失败(").append(shortMessage(error)).append(")");
-        }
-
-        // ② 开 LCD
+        // ① **先开 LCD**（后面两步都依赖屏幕已经开起来）
         try {
             Method setSwitch = display.getClass().getMethod("setSwitch", boolean.class);
             Object switched = setSwitch.invoke(display, true);
-            note.append(" LCD开关=").append(switched);
+            note.append("LCD开关=").append(switched);
         } catch (Throwable error) {
-            note.append(" setSwitch失败(").append(shortMessage(error)).append(")");
+            note.append("setSwitch失败(").append(shortMessage(error)).append(")");
         }
 
-        // ③ 开双眼端口
+        // ② 开双眼端口
         try {
             Class<?> displayClass = Class.forName("com.llvision.glass3.core.lcd.client.IGlassDisplay");
             int port = displayClass.getField("DOUBLE_EYE_PORT").getInt(null);
@@ -709,8 +702,67 @@ public class GlassesSdk {
             note.append(" 眼位失败(").append(shortMessage(error)).append(")");
         }
 
+        // ③ 相机预览铺底（按用户偏好：关掉更干净，开着能看取景画面）
+        //
+        // ⚠️ **顺序很要紧，这一条是真机现象推出来的**：原来它排在"开 LCD"**之前**，
+        //    结果用户遇到"第一次用正常，过一晚再打开就不生效" ——
+        //    最合理的解释是先对一块**还没开的屏**设了预览，设置被丢掉，
+        //    紧接着才把屏幕开起来。第一次用的时候屏幕可能本来就是开的（上次会话留下的
+        //    状态），所以看起来是好的；隔夜之后设备是干净的关闭态，就失效了。
+        //
+        //    现在固定为"先开屏、再设预览"，并且在投屏建立之后**再补设一次**
+        //    （见 cast()）—— 建流可能重置显示模式。两次都是幂等的。
+        note.append(" ").append(applyCameraPreview(display));
+
         Log.i(TAG, "prepareDisplay: " + note);
         return note.toString();
+    }
+
+    /** 把"相机预览铺底"按当前偏好设一次。返回一行说明。 */
+    private String applyCameraPreview(Object display) {
+        try {
+            Method setPreview = display.getClass()
+                    .getMethod("setCameraPreviewOnLcdScreen", boolean.class);
+            // 这个方法返回 void，没有回执可比对 —— 只要不抛就是执行了
+            setPreview.invoke(display, cameraPreviewBackground);
+            return "相机预览=" + (cameraPreviewBackground ? "开" : "关");
+        } catch (Throwable error) {
+            return "设相机预览失败(" + shortMessage(error) + ")";
+        }
+    }
+
+    /**
+     * 投屏建立之后**再补设一次**相机预览。
+     *
+     * <p>为什么补：{@code createCaptureScreen} 会改变显示模式（0=同步 / 1=叠加），
+     * 而"相机预览铺底"是叠加模式下的一个附加层 —— 建流之后重新声明一次最稳妥。
+     * 幂等，关着的时候等于没做任何事。
+     */
+    private void reapplyCameraPreviewAfterCast(Object display) {
+        if (!cameraPreviewBackground) return;
+        String note = applyCameraPreview(display);
+        Log.i(TAG, "投屏后补设相机预览：" + note);
+    }
+
+    /** 查询当前在跑的服务（诊断用：相机预览需要相机服务在跑）。 */
+    public String queryServices() {
+        try {
+            Class<?> manager = Class.forName(CLS_SERVICE_MANAGER);
+            Object list = manager.getMethod("listServices").invoke(null);
+            if (list instanceof String[]) {
+                String[] names = (String[]) list;
+                if (names.length == 0) return "（SDK 报没有在跑的服务）";
+                StringBuilder out = new StringBuilder();
+                for (String name : names) {
+                    if (out.length() > 0) out.append(" · ");
+                    out.append(name == null ? "?" : name.replace("glass_", "").replace("_service", ""));
+                }
+                return out.toString();
+            }
+            return "";
+        } catch (Throwable error) {
+            return "读服务列表失败：" + shortMessage(error);
+        }
     }
 
     /** 供诊断行显示：投屏前那几步（LCD/眼位）的结果。 */
