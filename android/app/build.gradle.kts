@@ -16,8 +16,11 @@ android {
     applicationId = "com.leion.lanrelay"
     minSdk = 24
     targetSdk = 34
-    versionCode = 28
-    versionName = "0.3.14"
+    // 显示那一块（字号固定值化、投屏样例、排版自检）到此收口，版本进 4.0，
+    // 下一阶段的重点转到**准确率**。versionCode 从 29 起继续递增，
+    // 不跟着 versionName 的位数走 —— 它只保证"每次都比上一个大"。
+    versionCode = 29
+    versionName = "4.0"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

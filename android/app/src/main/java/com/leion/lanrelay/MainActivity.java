@@ -1943,12 +1943,26 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private static final int DEFAULT_GLASSES_MARGIN_R = 22;
     private static final int DEFAULT_GLASSES_MARGIN_L = 4;
 
+    /**
+     * 把字号夹在 [下界, 上界] 里。**这是字号进入 App 的唯一入口** ——
+     * 读偏好、按加减、将来加"直接输入"都要过这一道，
+     * 这样"上界/下界"是**一个事实**，而不是散在各个调用点上的一条约定。
+     *
+     * <p>为什么要夹在**读**的时候、而不只是夹在"按加减"的时候：
+     * 之前把上界写成 110px，如果谁存过一个更大的值（或者以后改了上界），
+     * 那个值会一直被用下去，界面上还显示得好好的。夹在入口就堵住了这种陈旧值。
+     */
+    private float clampGlassesFont(float px) {
+        return Math.max(GlassesSubtitleView.FONT_FLOOR_PX,
+                Math.min(GlassesSubtitleView.FONT_CEIL_PX, px));
+    }
+
     private float glassesFontZh() {
-        return prefs.getFloat(KEY_GLASSES_FONT_ZH, DEFAULT_GLASSES_FONT_ZH);
+        return clampGlassesFont(prefs.getFloat(KEY_GLASSES_FONT_ZH, DEFAULT_GLASSES_FONT_ZH));
     }
 
     private float glassesFontPt() {
-        return prefs.getFloat(KEY_GLASSES_FONT_PT, DEFAULT_GLASSES_FONT_PT);
+        return clampGlassesFont(prefs.getFloat(KEY_GLASSES_FONT_PT, DEFAULT_GLASSES_FONT_PT));
     }
 
     private int glassesMarginRight() {
@@ -2001,9 +2015,10 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             // 下界用**戴出来的那条**（31.6px），不是随手拍的 24px：
             // 用户自己在真机上量过"再小就看不清了"，那就不该让他能调下去 ——
             // 调下去的结果不是"报错"，而是"整场没看清"，没人会来报。
-            // 上界 110px：再大一行只剩两三个字，没有实用意义。
-            float next = Math.max(GlassesSubtitleView.FONT_FLOOR_PX,
-                    Math.min(110f, Math.round(current + delta)));
+            // 上下界都在 GlassesSubtitleView 里定义、并各有注释说明来历：
+            // 下界 31.6px 是**戴上量出来的**，上界 64px 是**算出来的**（防呆 + 保底体验）。
+            // 这里只负责"用它们"，不重新定值 —— 免得两个地方各写一个数。
+            float next = clampGlassesFont(Math.round(current + delta));
             prefs.edit().putFloat(key, next).apply();
         } else {
             int current = KEY_GLASSES_MARGIN_R.equals(key) ? glassesMarginRight() : glassesMarginLeft();
@@ -2052,11 +2067,12 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         }
     }
 
-    /** 字号那一格的文案（在下限上就标出来）。 */
+    /** 字号那一格的文案（在上下界上就标出来）。 */
     private String fontLabel(float px) {
         String base = String.format(Locale.US, "%.0fpx", px);
-        return px <= GlassesSubtitleView.FONT_FLOOR_PX + 0.01f
-                ? base + "（下限）" : base;
+        if (px <= GlassesSubtitleView.FONT_FLOOR_PX + 0.01f) return base + "（下限）";
+        if (px >= GlassesSubtitleView.FONT_CEIL_PX - 0.01f) return base + "（上限）";
+        return base;
     }
 
     private void openGlassesPreview() {
