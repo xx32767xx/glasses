@@ -37,8 +37,17 @@ import android.widget.TextView;
  */
 public class GlassesSubtitleView {
 
-    /** 译文最多显示几行。超出就缩小字号（见 {@link #setSubtitle}），不截断。 */
-    private static final int MAX_LINES = 4;
+    /**
+     * 每页最多几行的**防呆上限**。
+     *
+     * <p>⚠️ 它不是"设计上只想显示 4 行"，而是"防止画布异常高时一页冒出几十行"。
+     *    真正决定一页几行的是**可用高度**（见 {@link #applySubtitleLayout}）。
+     *
+     * <p>原来这里叫 {@code MAX_LINES = 4}，而且被当成硬上限用 —— 结果是
+     * 小字号明明能放下 7 行却只显示 4 行，下面一片空白还多翻一页。
+     * 改名 + 改大是为了让"它只是防呆，不是设计意图"这件事写在名字里。
+     */
+    private static final int MAX_LINES_ABS = 14;
 
     /**
      * 投屏画布尺寸（= 眼镜的真实分辨率）。0 表示还不知道。
@@ -476,7 +485,7 @@ public class GlassesSubtitleView {
 
     /**
      * 按**整句**重新选字号：从"一行放少数字"往"一行放多数字"试，
-     * 取第一个能在 {@link #MAX_LINES} 行内放下、且纵向也放得下的字号。
+     * 取第一个能在**可用高度内**放下（且不低于字号下限）的字号。
      *
      * <p>为什么必须按整句来选：原来的顺序是"先估行数 → 再按行数选字号"，
      * 而估行数用的是**上一次**的字号。两句长度差很多时就会估错：
@@ -496,9 +505,10 @@ public class GlassesSubtitleView {
      *
      * <p>三件事，顺序不能反：
      *
-     * <p><b>① 选字号</b>：从"一行放少数字"往"一行放多数字"试，取第一个能在
-     * {@link #MAX_LINES} 行内放下的字号。必须按整句真实文本试 —— 用"上一次的字号"
-     * 去估行数，短句后来个长句就会估错，字号偏大 → 换行超出可见高度 → 被截断。
+     * <p><b>① 选字号</b>：从"一行放少数字"往"一行放多数字"试，取第一个
+     * **纵向放得下**的字号（唯一的约束是高度，不再有"最多 4 行"的硬上限）。
+     * 必须按整句真实文本、真的排一遍来试 —— 用"上一次的字号"去估行数，
+     * 短句后来个长句就会估错，字号偏大 → 换行超出可见高度 → 被截断。
      *
      * <p><b>② 字号下限</b>：真机算过，如果不设下限，220 字符的句子会被压到 16.9px
      * （画布宽的 2.6%），在光波导上基本等于看不见。"放下"不等于"看得清"，
@@ -551,7 +561,14 @@ public class GlassesSubtitleView {
             Layout candidate = measureLayout(usableWidth);
             int lines = candidate == null ? 1 : Math.max(1, candidate.getLineCount());
             int lineHeight = lineHeightOf(candidate, font);
-            if (lines > MAX_LINES) continue;
+            // ⚠️ **唯一的约束是"放得下"（高度）**，不再有"最多 4 行"这种硬上限。
+            //
+            //    原来两个条件都要满足（lines <= MAX_LINES 且总高度够），
+            //    而 MAX_LINES=4 先卡住了：小字号时明明能放下 7 行，却只显示 4 行 ——
+            //    下面的空间全空着（用户报的"过多留白"），而且白白多翻一页。
+            //
+            //    现在按高度算：字号越大、行数越少、块越矮；循环从大字往小字试，
+            //    取**第一个纵向放得下的** —— 也就是"能看清的前提下尽量用满屏幕"。
             if ((long) lines * lineHeight > heightBudget) continue;
             chosen = font;
             layout = candidate;
@@ -567,7 +584,9 @@ public class GlassesSubtitleView {
 
         int totalLines = layout == null ? 1 : Math.max(1, layout.getLineCount());
         int lineHeight = lineHeightOf(layout, chosen);
-        int displayLines = Math.max(1, Math.min(MAX_LINES, heightBudget / lineHeight));
+        // 每页放几行：**按可用高度算**，不再固定 4 行。
+        // ABS 上限只是个防呆（万一画布异常高，别一页几十行）。
+        int displayLines = Math.max(1, Math.min(MAX_LINES_ABS, heightBudget / lineHeight));
         lastRealLines = totalLines;
         lastLines = Math.max(1, Math.min(totalLines, displayLines));
         subtitle.setMaxLines(displayLines);
@@ -765,9 +784,10 @@ public class GlassesSubtitleView {
     /**
      * 更新字幕。这是唯一会被高频调用的方法（每次收到字幕帧一次）。
      *
-     * <p>字号自适应：行数越多、字号越小，保证 {@link #MAX_LINES} 行以内放得下。
-     * 为什么这么在意行数 —— 同传的译文经常比"3 行"长，而眼镜上**看不到就是没翻**，
-     * 所以宁可缩小字号也不要截断（截断会把句尾丢掉，那通常是最关键的信息）。
+     * <p>字号自适应：整句真的排一遍，取"纵向放得下"的字号 —— 能大就大、放不下才缩，
+     * 缩到下限（见 {@link #minFontRatio}）还不放不下就翻页。
+     * 眼镜上**看不到就是没翻**，所以宁可缩字号/翻页，也不要截断
+     * （截断会把句尾丢掉，那通常是最关键的信息）。
      */
     public void setSubtitle(String text) {
         String value = text == null ? "" : text.trim();
