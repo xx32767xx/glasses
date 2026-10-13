@@ -76,7 +76,9 @@
     <string name="connect_selfcheck">连接自检（查是哪一层断了）</string>
     <string name="connect_selfcheck_running">正在自检…</string>
     <string name="connect_selfcheck_done">自检完成</string>
-    <string name="glasses_tune_font">字号</string>
+    <string name="glasses_tune_font_zh">中文字号</string>
+    <string name="glasses_tune_font_pt">葡语字号</string>
+    <string name="glasses_self_check">排版自检（在当前字号下量一遍）</string>
     <string name="glasses_tune_right">右侧留白</string>
     <string name="glasses_tune_left">左侧留白</string>
     <string name="glasses_tune_page_delay">长句翻页间隔</string>

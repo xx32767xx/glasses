@@ -292,7 +292,9 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         glassesView = new GlassesSubtitleView(this);
         // 先把上次调好的显示参数用上 —— 否则每次重启都回到缺省，
         // 用户会以为"又变小了"，然后重调一遍
-        glassesView.setTuning(glassesFontScale(), glassesMarginRight(), glassesMarginLeft());
+        glassesView.setTuning(
+                glassesFontZh(), glassesFontPt(),
+                glassesMarginRight(), glassesMarginLeft());
         glassesView.setPageDelayMs(glassesPageDelayMs());
         // 翻页打个诊断行：长句到底有没有翻页、翻到第几页，日志里要看得见。
         // （"翻页没发生"和"翻页了但没上屏"是两回事，日志必须能分开。）
@@ -1863,11 +1865,19 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
     // ── 眼镜显示微调（真机上才调得出来）─────────────────────────────────────
     //
-    // 这两组值来自真机反馈："字太小"、"投射在右眼上，过于靠右的内容看不清"。
+    // 这组值来自真机反馈："字太小"、"投射在右眼上，过于靠右的内容看不清"。
     // 眼镜上的实际观感取决于光波导放大率、佩戴位置、环境亮度 —— 在电脑上推不出来。
     // 而投屏是**实时采样那块 View**，所以调完立刻在眼镜上生效：
     // 用户戴着眼镜按加减，当场就能调到顺眼，不用重新打包。
-    private static final String KEY_GLASSES_FONT = "glassesFontScale";
+    //
+    // ⚠️ 字号从"一个倍率"改成了"两个绝对值（像素）"，**中葡分开**。
+    //    为什么不再用倍率：倍率是相对某个基准算的，而基准本身（画布高度、
+    //    行高系数）在不同的眼镜/分辨率下会变 —— 用户调到一个顺眼的 ×1.35，
+    //    换台设备就不是同一个视觉大小了。绝对值 px 才是"看到多大就是多大"。
+    //    为什么中葡分开：汉字是方块字、葡语是拉丁字母，同样 px 下葡语的
+    //    x-height 只有约 0.5em，观感明显偏小；两者要各自一个数才对得上。
+    private static final String KEY_GLASSES_FONT_ZH = "glassesFontZh";
+    private static final String KEY_GLASSES_FONT_PT = "glassesFontPt";
     private static final String KEY_GLASSES_MARGIN_R = "glassesMarginRight";
     private static final String KEY_GLASSES_MARGIN_L = "glassesMarginLeft";
     /** 音源：true=优先眼镜麦克风（缺省），false=始终用手机麦克风。 */
@@ -1898,13 +1908,47 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         if (glassesView != null) glassesView.setPageDelayMs(next);
         renderTuningValues();
     }
-    /** 缺省值：字号放大一档、右侧留 22%（单目右眼时右缘常在可见区外）。 */
-    private static final float DEFAULT_GLASSES_FONT = 1.35f;
+    /**
+     * 缺省字号（像素，投屏画布上的绝对大小）。
+     *
+     * <p>缺省值不是拍脑袋来的：眼镜分辨率 640×400，去掉左右留白后可用宽约 474px，
+     * 可用高约 340px。**下界 31.6px**（见 {@link GlassesSubtitleView#FONT_FLOOR_PX}）
+     * 是戴过之后给的结论：再小就看不清了。所以缺省取 40px，落在"看得清"那一侧，
+     * 用户嫌大可以往下调到 32 附近。
+     *
+     * <p><b>为什么中葡缺省一样是 40px</b>（原来给葡语 44px，理由是"拉丁 x-height 只有
+     * 约 0.5em，同 px 看着更小"）—— 那条理由本身没错，但它只管"看着多大"，
+     * 而真正把葡语卡住的是**翻页**：葡语一行放的字更多，可它**按单词换行**，
+     * 每行末尾都要浪费几个字符的宽度。拿真实那句译文（88 字符）手算：
+     *
+     * <pre>
+     *   字号    每行约几个字符   实际排几行   一页几行   结果
+     *   44px   21              6            5         要翻页  ← 一句普通句子就翻页
+     *   40px   23              5            6         一页放下
+     *   36px   26              5            6         一页放下
+     * </pre>
+     *
+     * <p>一句普通句子的译文就撞上翻页，代价太大 —— 而且用户此前专门查过
+     * "为什么只剩几个词也要翻页"，说明翻页本身就是要尽量避开的。
+     * 所以葡语也取 40px：**可读性上它仍然高于中文字号的下界**
+     * （中文下界 31.6px 是"笔画密的方块字刚能看清"，拉丁 40px 的 cap height 约 29px，
+     * 远比那宽松），同时把常见的单句译文留在了一页之内。
+     *
+     * <p>两个旋钮仍然分开：字"看着够不够大"和"一页放不放得下"是两件事，
+     * 佩戴者可能想把葡语调大、同时把中文调小。上面的数字只是**起点**，
+     * 真正的判据是那两句样例在真机上的「排版自检」结果。
+     */
+    private static final float DEFAULT_GLASSES_FONT_ZH = 40f;
+    private static final float DEFAULT_GLASSES_FONT_PT = 40f;
     private static final int DEFAULT_GLASSES_MARGIN_R = 22;
     private static final int DEFAULT_GLASSES_MARGIN_L = 4;
 
-    private float glassesFontScale() {
-        return prefs.getFloat(KEY_GLASSES_FONT, DEFAULT_GLASSES_FONT);
+    private float glassesFontZh() {
+        return prefs.getFloat(KEY_GLASSES_FONT_ZH, DEFAULT_GLASSES_FONT_ZH);
+    }
+
+    private float glassesFontPt() {
+        return prefs.getFloat(KEY_GLASSES_FONT_PT, DEFAULT_GLASSES_FONT_PT);
     }
 
     private int glassesMarginRight() {
@@ -1935,7 +1979,9 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
      */
     private void applyGlassesTuning() {
         if (glassesView != null) {
-            glassesView.setTuning(glassesFontScale(), glassesMarginRight(), glassesMarginLeft());
+            glassesView.setTuning(
+                    glassesFontZh(), glassesFontPt(),
+                    glassesMarginRight(), glassesMarginLeft());
         }
         renderTuningValues();
     }
@@ -1943,15 +1989,22 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     /**
      * 调一个微调值，立刻生效。
      *
-     * @param key   {@link #KEY_GLASSES_FONT} / {@link #KEY_GLASSES_MARGIN_R} / {@link #KEY_GLASSES_MARGIN_L}
-     * @param delta 增量（字号是倍率步进，留白是百分点）
+     * @param key   {@link #KEY_GLASSES_FONT_ZH} / {@link #KEY_GLASSES_FONT_PT}
+     *              / {@link #KEY_GLASSES_MARGIN_R} / {@link #KEY_GLASSES_MARGIN_L}
+     * @param delta 增量（字号是像素步进，留白是百分点）
      */
     private void nudgeGlassesTuning(String key, float delta) {
         CrashLog.beginAction(this, "调整眼镜显示参数");
-        if (KEY_GLASSES_FONT.equals(key)) {
-            float next = Math.max(0.6f, Math.min(3.0f,
-                    Math.round((glassesFontScale() + delta) * 100f) / 100f));
-            prefs.edit().putFloat(KEY_GLASSES_FONT, next).apply();
+        if (KEY_GLASSES_FONT_ZH.equals(key) || KEY_GLASSES_FONT_PT.equals(key)) {
+            boolean zh = KEY_GLASSES_FONT_ZH.equals(key);
+            float current = zh ? glassesFontZh() : glassesFontPt();
+            // 下界用**戴出来的那条**（31.6px），不是随手拍的 24px：
+            // 用户自己在真机上量过"再小就看不清了"，那就不该让他能调下去 ——
+            // 调下去的结果不是"报错"，而是"整场没看清"，没人会来报。
+            // 上界 110px：再大一行只剩两三个字，没有实用意义。
+            float next = Math.max(GlassesSubtitleView.FONT_FLOOR_PX,
+                    Math.min(110f, Math.round(current + delta)));
+            prefs.edit().putFloat(key, next).apply();
         } else {
             int current = KEY_GLASSES_MARGIN_R.equals(key) ? glassesMarginRight() : glassesMarginLeft();
             int next = Math.max(0, Math.min(60, current + Math.round(delta)));
@@ -1983,16 +2036,27 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     /** 只刷新"当前值"那几个数字。 */
     private void renderTuningValues() {
         if (overlayRoot == null) return;
-        TextView font = overlayRoot.findViewById(R.id.glassesFontValue);
+        TextView fontZh = overlayRoot.findViewById(R.id.glassesFontZhValue);
+        TextView fontPt = overlayRoot.findViewById(R.id.glassesFontPtValue);
         TextView right = overlayRoot.findViewById(R.id.glassesRightValue);
         TextView left = overlayRoot.findViewById(R.id.glassesLeftValue);
         TextView page = overlayRoot.findViewById(R.id.glassesPageValue);
-        if (font != null) font.setText(String.format(Locale.US, "×%.2f", glassesFontScale()));
+        // 到底了就把"下限"写出来 —— 按了没反应会让人以为坏了，
+        // 写出来才知道"是系统不让，不是按钮坏了"。
+        if (fontZh != null) fontZh.setText(fontLabel(glassesFontZh()));
+        if (fontPt != null) fontPt.setText(fontLabel(glassesFontPt()));
         if (right != null) right.setText(glassesMarginRight() + "%");
         if (left != null) left.setText(glassesMarginLeft() + "%");
         if (page != null) {
             page.setText(String.format(Locale.US, "%.1fs", glassesPageDelayMs() / 1000f));
         }
+    }
+
+    /** 字号那一格的文案（在下限上就标出来）。 */
+    private String fontLabel(float px) {
+        String base = String.format(Locale.US, "%.0fpx", px);
+        return px <= GlassesSubtitleView.FONT_FLOOR_PX + 0.01f
+                ? base + "（下限）" : base;
     }
 
     private void openGlassesPreview() {
@@ -2026,10 +2090,16 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         if (caption != null) caption.setText(R.string.glasses_real_caption);
 
         // 显示微调：调完立刻在眼镜上生效（投屏是实时采样）
-        view.findViewById(R.id.glassesFontMinus).setOnClickListener(v ->
-                nudgeGlassesTuning(KEY_GLASSES_FONT, -0.05f));
-        view.findViewById(R.id.glassesFontPlus).setOnClickListener(v ->
-                nudgeGlassesTuning(KEY_GLASSES_FONT, 0.05f));
+        view.findViewById(R.id.glassesFontZhMinus).setOnClickListener(v ->
+                nudgeGlassesTuning(KEY_GLASSES_FONT_ZH, -2f));
+        view.findViewById(R.id.glassesFontZhPlus).setOnClickListener(v ->
+                nudgeGlassesTuning(KEY_GLASSES_FONT_ZH, 2f));
+        view.findViewById(R.id.glassesFontPtMinus).setOnClickListener(v ->
+                nudgeGlassesTuning(KEY_GLASSES_FONT_PT, -2f));
+        view.findViewById(R.id.glassesFontPtPlus).setOnClickListener(v ->
+                nudgeGlassesTuning(KEY_GLASSES_FONT_PT, 2f));
+        // 排版自检：真机上真的排一遍，把"一行几个字/一页几行"报出来
+        view.findViewById(R.id.glassesSelfCheck).setOnClickListener(v -> showGlassesSelfCheck());
         view.findViewById(R.id.glassesRightMinus).setOnClickListener(v ->
                 nudgeGlassesTuning(KEY_GLASSES_MARGIN_R, -2));
         view.findViewById(R.id.glassesRightPlus).setOnClickListener(v ->
@@ -2213,6 +2283,37 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             out.append(lines[index].trim());
         }
         return out.toString();
+    }
+
+    /**
+     * 「排版自检」：在当前字号下把两句真实样例**真的排一遍**，把实况数字弹出来。
+     *
+     * <p>为什么要有这个按钮：选字号的时候我算过一张"字号 → 每行几个字"的表，
+     * 但那是**模型估的**（中文 ≈1em、拉丁 ≈0.5em/字符）。葡语的宽字母
+     * （m / w / 大写 / 带音标）比 0.5em 宽，估算偏乐观 —— 真机上就表现为
+     * 句尾几个词被省略号吃掉。教训是**别拿估算当判据**，所以这个按钮
+     * 不计算、不换算，直接把安卓的排版结果念出来。
+     *
+     * <p>顺带把结果写进诊断行 → relay 日志，这样"用户报的问题"和"用户当时的
+     * 字号"能对上号，不用来回问。
+     */
+    private void showGlassesSelfCheck() {
+        if (glassesView == null) return;
+        CrashLog.beginAction(this, "排版自检");
+        String report;
+        try {
+            report = glassesView.selfCheck();
+        } catch (Throwable error) {
+            report = "自检本身出错了：" + error.getClass().getSimpleName()
+                    + "：" + error.getMessage();
+        }
+        CrashLog.endAction(this);
+        // 一行版塞进诊断行（诊断行会被 relay 收走），完整版给弹窗
+        String oneLine = report.replace('\n', ' ');
+        if (oneLine.length() > 180) oneLine = oneLine.substring(0, 180) + "…";
+        if (glassesRealDiag != null) glassesRealDiag.setText("排版自检：" + oneLine);
+        if (client != null) client.sendDiag("排版自检 " + oneLine);
+        showTextDialog("排版自检（当前字号下的真实排版）", report);
     }
 
     /**

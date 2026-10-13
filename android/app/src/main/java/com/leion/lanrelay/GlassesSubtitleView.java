@@ -73,7 +73,25 @@ public class GlassesSubtitleView {
      * 而投屏是**实时采样这块 View** 的，所以调完立刻能在眼镜上看到效果，
      * 不需要重新投屏、也不需要重新打包。
      */
-    private float fontScale = 1.35f;
+    /**
+     * 中文字幕的字号（px）。
+     *
+     * <p><b>为什么改成"固定字号 + 按语种分开"，而不是按句子长度自动缩放</b>：
+     * 自动缩放那条路走过，问题不是"不好看"，而是**不可预期**：
+     * 同一块屏上短句 95px、长句 32px，相差 3 倍，佩戴者**每句话都要重新适应字号**，
+     * 而规则他既看不见也预测不了；每页行数还随字号变，翻页节奏也没法预期。
+     * 对"边听边读"这件事来说，稳定比"尽量大"更值钱。
+     *
+     * <p><b>为什么中文和葡语要分开两个数</b>：密度差 2 倍以上 ——
+     * 一个汉字占一格，而葡语一个词平均 5~6 个字符。
+     * 同一个字号不可能两边都好：按中文调舒服了，看葡语会每行字太少、翻页频繁；
+     * 按葡语调舒服了，看中文又嫌小。
+     */
+    private float fontPxZh = 40f;
+
+    /** 葡语字幕的字号（px）。默认略大于中文 —— 拉丁字母的 x-height 只有约 0.5em，
+     *  同样 px 下看起来比汉字小，等观感需要更大的数值。 */
+    private float fontPxPt = 44f;
 
     /**
      * 右侧留白（占画布宽度的百分比）。
@@ -300,12 +318,14 @@ public class GlassesSubtitleView {
      * <p>投屏是对这块 View 的实时采样，所以调完**立刻**在眼镜上生效，
      * 不用重新投屏。界面把值存进 prefs，下次启动沿用。
      *
-     * @param fontScale          字号倍率（0.6–3.0）
+     * @param fontZh             中文字幕字号（px，20–120）
+     * @param fontPt             葡语字幕字号（px，20–120）
      * @param marginRightPercent 右侧留白百分比（0–60）
      * @param marginLeftPercent  左侧留白百分比（0–60）
      */
-    public void setTuning(float fontScale, int marginRightPercent, int marginLeftPercent) {
-        this.fontScale = clamp(fontScale, 0.6f, 3.0f);
+    public void setTuning(float fontZh, float fontPt, int marginRightPercent, int marginLeftPercent) {
+        this.fontPxZh = clamp(fontZh, 20f, 120f);
+        this.fontPxPt = clamp(fontPt, 20f, 120f);
         this.marginRightPercent = (int) clamp(marginRightPercent, 0, 60);
         this.marginLeftPercent = (int) clamp(marginLeftPercent, 0, 60);
         applyCanvasSize();
@@ -315,8 +335,12 @@ public class GlassesSubtitleView {
         return Math.max(low, Math.min(high, value));
     }
 
-    public float getFontScale() {
-        return fontScale;
+    public float getFontPxZh() {
+        return fontPxZh;
+    }
+
+    public float getFontPxPt() {
+        return fontPxPt;
     }
 
     public int getMarginRightPercent() {
@@ -437,21 +461,21 @@ public class GlassesSubtitleView {
         }
         applyTextSizes();
         log("投屏画布 " + canvasWidth + "×" + canvasHeight
-            + " · 字号×" + fontScale + " · 留白 左" + marginLeftPercent + "%/右" + marginRightPercent + "%");
+            + " · 字号 中" + Math.round(fontPxZh) + "px/葡" + Math.round(fontPxPt) + "px"
+            + " · 留白 左" + marginLeftPercent + "%/右" + marginRightPercent + "%");
     }
 
     /** 按画布尺寸与当前微调把各处字号算一遍。 */
     private void applyTextSizes() {
-        // 顶部状态行不跟着放大：它只是线索，放大后会挤掉译文。
-        // 用 effectiveHeight() 而不是 canvasHeight —— 尺寸未知时靠"已测量到的尺寸"自愈。
-        int height = effectiveHeight();
-        float base = height > 0 ? height : 640f;
-        setPx(status, base * 0.026f);
-        setPx(hint, base * 0.026f);
-        setPx(idleTitle, base * 0.10f * fontScale);
-        setPx(idleNote, base * 0.036f * fontScale);
+        // 附属文字**按字幕字号派生**，不再各自乘一个"画布高度比例 × 倍率"：
+        // 字幕是主角，它的字号定了，其余的相对关系就定了。
+        // 这样也少一个旋钮（原来的 fontScale 只影响这些派生值，容易让人以为它管字幕）。
+        float base = fontPxZh;
+        setPx(status, base * 0.30f);
+        setPx(hint, base * 0.30f);
+        setPx(idleTitle, base * 1.15f);
+        setPx(idleNote, base * 0.42f);
         // 字号/留白变了要按**当前这一句**重排（行数与翻页状态都跟着变）。
-        // 只调 applySubtitleSize 的话，翻页状态会跟新的字号对不上。
         if (lastText != null && !lastText.isEmpty()) {
             applySubtitleLayout(lastText);
         } else {
@@ -463,24 +487,20 @@ public class GlassesSubtitleView {
         view.setTextSize(TypedValue.COMPLEX_UNIT_PX, Math.max(1f, px));
     }
 
-    /** 上一次的字幕行数（微调字号时要按同一个行数重算，不能跳回 1 行）。 */
+    /** 上一次的字幕行数（微调之后要按同一个行数重算，不能跳回 1 行）。 */
     private int lastLines = 1;
 
-    /** 按行数选字号（**兜底路径**：尺寸完全未知、连测量都没有时才会用到）。 */
+    /** 兜底：尺寸完全未知（连测量都没有）时按行数给一个大致的 SP 字号。 */
     private void applySubtitleSize(int lines) {
         this.lastLines = Math.max(1, lines);
         int height = effectiveHeight();
         if (height <= 0) {
-            // 尺寸完全未知（连测量都没有）：退回 SP，
-            // 但**压低缺省** —— 原来那档（34sp × 倍率）在手机 density 2.75 下能到 126px，
-            // 在几百像素宽的眼镜画布上一行只放得下 4 个字符，反而是不可用的。
-            float sp = (lines <= 2 ? 16f : lines == 3 ? 13f : 11f) * fontScale;
+            float sp = lines <= 2 ? 16f : lines == 3 ? 13f : 11f;
             subtitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
             return;
         }
-        float ratio = lines <= 1 ? 0.095f : lines == 2 ? 0.085f
-                : lines == 3 ? 0.068f : lines == 4 ? 0.056f : 0.046f;
-        setPx(subtitle, height * ratio * fontScale);
+        // 尺寸已知：直接用配置的固定字号（与语种无关，反正只是兜底）
+        setPx(subtitle, containsCjk(lastText) ? fontPxZh : fontPxPt);
     }
 
     /**
@@ -531,61 +551,23 @@ public class GlassesSubtitleView {
             return;
         }
         int heightBudget = Math.round(usableHeight * 0.85f);
-        float minFont = Math.max(8f, usableHeight * minFontRatio);
-        // 上限：两行别把整屏占满
-        float fontCap = usableHeight / 2.2f;
-        // ⚠️ 字号倍率必须参与"一行放多少个"的决定，不能在算完字号之后再乘：
-        //    字号是从"可用宽度 ÷ 每行字符数"反推的，算完再放大一行就装不下，
-        //    正好退回"被截断"。倍率的作用是：倍率越大 → 一行放得越少 → 字越大。
-        int startCols = (int) clamp(Math.round(14f / fontScale), 6, 44);
 
-        // ── 选字号：**每一档都真的排一遍**，用安卓给的行数判定，不用估算模型 ──────
+        // ── 字号：**固定值，按语种取**，不再随句子长度缩放 ────────────────────
         //
-        // 以前这里用 countLines()（"汉字算 2 列"的模型）估行数。它和真实排版有偏差：
-        // 葡语的宽字母（m/w/大写/带音标）比模型假设的宽，一行放不下那么多字，
-        // **真实行数比估算多**。偏差随字号与留白放大 —— 这正是用户改过那些参数之后
-        // 开始出现问题的原因。
-        //
-        // 代价：一次排版要做几次到几十次 measure（都在主线程，每次 ≤1ms 量级）。
-        // 一句一次、秒级间隔，可以接受；换来的是"判定与真实显示一致"。
+        // 怎么判断用哪个：**看要显示的这串字里有没有汉字**。
+        // 为什么不用帧里的 lang：这里要排的是"将要显示的那串文字"，
+        // 直接看它自己最准（中英混说时也会落到中文档，而汉字的字面本来就更大）。
+        float chosen = containsCjk(text) ? fontPxZh : fontPxPt;
+
         subtitle.setMaxLines(Integer.MAX_VALUE);
         subtitle.setEllipsize(null);
         subtitle.setText(text);
-
-        float chosen = 0f;
-        Layout layout = null;
-        for (int cols = startCols; cols <= 120; cols += 2) {
-            float font = Math.min(2f * usableWidth / cols, fontCap);
-            if (font < minFont) break;               // 到下限了：不再缩，交给翻页
-            setPx(subtitle, font);
-            Layout candidate = measureLayout(usableWidth);
-            int lines = candidate == null ? 1 : Math.max(1, candidate.getLineCount());
-            int lineHeight = lineHeightOf(candidate, font);
-            // ⚠️ **唯一的约束是"放得下"（高度）**，不再有"最多 4 行"这种硬上限。
-            //
-            //    原来两个条件都要满足（lines <= MAX_LINES 且总高度够），
-            //    而 MAX_LINES=4 先卡住了：小字号时明明能放下 7 行，却只显示 4 行 ——
-            //    下面的空间全空着（用户报的"过多留白"），而且白白多翻一页。
-            //
-            //    现在按高度算：字号越大、行数越少、块越矮；循环从大字往小字试，
-            //    取**第一个纵向放得下的** —— 也就是"能看清的前提下尽量用满屏幕"。
-            if ((long) lines * lineHeight > heightBudget) continue;
-            chosen = font;
-            layout = candidate;
-            break;
-        }
-        if (chosen <= 0f) {
-            // 连下限那一档都放不下 → 用下限字号，交给翻页
-            chosen = minFont;
-            setPx(subtitle, chosen);
-            layout = measureLayout(usableWidth);
-        }
         setPx(subtitle, chosen);
+        Layout layout = measureLayout(usableWidth);
 
         int totalLines = layout == null ? 1 : Math.max(1, layout.getLineCount());
         int lineHeight = lineHeightOf(layout, chosen);
-        // 每页放几行：**按可用高度算**，不再固定 4 行。
-        // ABS 上限只是个防呆（万一画布异常高，别一页几十行）。
+        // 每页放几行：按可用高度算。ABS 上限只是防呆（画布异常高时别一页几十行）。
         int displayLines = Math.max(1, Math.min(MAX_LINES_ABS, heightBudget / lineHeight));
         lastRealLines = totalLines;
         lastLines = Math.max(1, Math.min(totalLines, displayLines));
@@ -613,6 +595,15 @@ public class GlassesSubtitleView {
         cancelPagingTimerOnly();
         showPage(0);
         pageHandler.postDelayed(pageAdvance, pageDelayMs);
+    }
+
+    /** 这串文字里有没有汉字（用来决定用中文字号还是葡语字号）。 */
+    private static boolean containsCjk(String text) {
+        if (text == null) return false;
+        for (int index = 0; index < text.length(); index += 1) {
+            if (text.charAt(index) >= 0x2E80) return true;
+        }
+        return false;
     }
 
     /** 真实行高（从 Layout 里取，取不到才退回按字号估）。 */
@@ -646,6 +637,83 @@ public class GlassesSubtitleView {
 
     public int getRealLines() {
         return lastRealLines;
+    }
+
+    /**
+     * 排版自检：用**当前字号与当前画布**，把两句内置样例真的排一遍，报出真实数字。
+     *
+     * <p><b>为什么需要它</b>：决定字号时我算过一张"字号 → 每行几个字"的表，但那是
+     * **模型估的**（中文 ≈1em、拉丁 ≈0.5em/字符）。而葡语的宽字母（m/w/大写/带音标）
+     * 比 0.5em 宽，真实每行字数比表里少 —— 上一轮"几个词被省略号吃掉"就是这个偏差。
+     * 所以**别拿估算当判据**：这个自检在设备上真的排一遍，给的是实况。
+     *
+     * <p>样例是**项目里本来就有的真实句子**，不是现编的：
+     * 中文取自 {@code scripts/test-phrases.mjs} 第 1 句，
+     * 葡语取自 relay 日志里那条真实的译文。
+     *
+     * <p>用一个**临时 TextView** 量，不动正在显示的那一个 —— 自检不该有副作用。
+     */
+    public String selfCheck() {
+        // 画布未知时不自检 —— 排出来的行数会是假的（宽度按 1px 算，一行一个字）。
+        // 与其给一个会误导人的数字，不如说清楚"现在量不了、还差什么"。
+        if (usableWidthPx() <= 0 || effectiveHeight() <= 0) {
+            return "画布尺寸还不知道（" + effectiveWidth() + "×" + effectiveHeight() + "），量不了。\n"
+                    + "先用「投屏到眼镜」连上，让 SDK 报出真实分辨率，再回来点这个自检。";
+        }
+        StringBuilder out = new StringBuilder();
+        out.append("画布 ").append(effectiveWidth()).append("×").append(effectiveHeight())
+           .append(" · 可用宽 ").append(usableWidthPx()).append("px\n")
+           .append("字号 中文 ").append(Math.round(fontPxZh)).append("px / 葡语 ")
+           .append(Math.round(fontPxPt)).append("px\n\n");
+        out.append(measureSample("中文", SAMPLE_ZH, fontPxZh));
+        out.append('\n');
+        out.append(measureSample("葡语", SAMPLE_PT, fontPxPt));
+        return out.toString();
+    }
+
+    /** 项目里本来就有的真实句子（中文取自 test-phrases 第 1 句）。 */
+    private static final String SAMPLE_ZH =
+            "我们这款眼镜的核心思路是把翻译结果直接放在佩戴者的视野里。";
+    /** 真实译文（relay.log 里那条）。 */
+    private static final String SAMPLE_PT =
+            "A Universidade de Aeronáutica e Astronáutica de Pequim é uma universidade de alta qualidade.";
+
+    private String measureSample(String label, String sample, float fontPx) {
+        // 临时 TextView：只用来量，不加入视图树、不影响显示中的那一块
+        TextView probe = new TextView(root.getContext());
+        probe.setTypeface(Typeface.DEFAULT_BOLD);
+        probe.setTextSize(TypedValue.COMPLEX_UNIT_PX, Math.max(1f, fontPx));
+        probe.setMaxLines(Integer.MAX_VALUE);
+        probe.setText(sample);
+        int width = Math.max(1, usableWidthPx());
+        probe.measure(
+                View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED));
+        Layout layout = probe.getLayout();
+        int lines = layout == null ? 0 : layout.getLineCount();
+        int lineHeight = lineHeightOf(layout, fontPx);
+        int heightBudget = Math.round(effectiveHeight() * 0.85f);
+        int displayLines = Math.max(1, Math.min(MAX_LINES_ABS, heightBudget / Math.max(1, lineHeight)));
+        int pages = lines <= 0 ? 0 : (lines + displayLines - 1) / displayLines;
+
+        StringBuilder out = new StringBuilder();
+        out.append(label).append("（").append(Math.round(fontPx)).append("px）\n");
+        out.append("  ").append(sample).append('\n');
+        out.append("  排出来 ").append(lines).append(" 行 · 行高 ").append(lineHeight)
+           .append("px · 每页放 ").append(displayLines).append(" 行\n");
+        out.append("  → ").append(pages <= 1
+                ? "一页放下"
+                : ("要翻 " + pages + " 页（每 " + (pageDelayMs / 1000f) + "s 翻一次，"
+                        + "总共要看 " + String.format(java.util.Locale.US, "%.1f", pages * pageDelayMs / 1000f)
+                        + "s）"));
+        out.append('\n');
+        if (lines > 0) {
+            // 真实每行字数：直接看第 1 行排到哪 —— 这是实况，不是估算
+            out.append("  第 1 行排了 ")
+               .append(layout.getLineEnd(0) - layout.getLineStart(0))
+               .append(" 个字符（含空格与标点）\n");
+        }
+        return out.toString();
     }
 
     // ── 翻页 ────────────────────────────────────────────────────────────────
@@ -715,22 +783,26 @@ public class GlassesSubtitleView {
     }
 
     /**
-     * 字号下限（占画布高度的比例）。低于它就不再缩小，改为翻页。
+     * 字号**下界**（像素）：比这个再小，戴在脸上就看不清了。
      *
-     * <p><b>这个数字是戴上之后定的，不是推出来的。</b>
+     * <p><b>这个数字是戴上之后量出来的，不是推出来的。</b>所以它写进代码、并由界面强制，
+     * 而不是留给用户自己试错 —— 试错的代价是"看了一整场却没看清"，而那不会有人来报错。
      *
-     * <p>定标过程：按"字号随句子长度自动缩小"跑一遍，把每档的字号算出来，让用户戴着眼镜看
-     * 哪一档开始看不清 —— 结论是 **120 字符 → 31.6px（画布宽的 4.9%）还是能看清，
-     * 再小就不行了**。画布高 400px，所以 31.6/400 ≈ 0.079。
+     * <p>定标过程：按"字号随句子长度自动缩小"跑一遍，把每档字号算出来，让用户戴着眼镜看
+     * 哪一档开始看不清 —— 结论是 **120 字符 → 31.6px 还能看清，再小就不行了**。
+     * 画布高 400px，31.6/400 ≈ 7.9%。（"120 字符 31.6px 4.9% 作为下界，
+     * 不然太小的看不清"。）
      *
-     * <p>为什么不能靠"能放下"来定：不设下限时，220 字符的句子会被压到 16.9px，
-     * 数学上确实"放下了"，但那是 2.6% 画布宽 —— 在光波导上等于没显示。
-     * <b>"放得下"和"看得清"是两回事</b>，下限就是这条界线。
+     * <p>为什么不能靠"放得下"来定：不设下界时 220 字符的句子会被压到 16.9px，
+     * 数学上确实"放下了"，但在光波导上等于没显示。
+     * <b>"放得下"和"看得清"是两回事</b>，下界就是这条界线。
      *
-     * <p>它**不随 {@link #fontScale} 缩放**：倍率是"平时想要多大"，下限是"最小能看多小"，
-     * 是两件事 —— 用户把整体调小，也不该让长句小到看不见。
+     * <p>⚠️ 它曾经是 {@code minFontRatio}（一个比例），配合"按句子长度自动缩放"用。
+     * 现在字号改成了**固定值、不随句子缩放**，比例就没有意义了 —— 但这条下界的
+     * 证据仍然有效，只是角色变了：从"缩放的停止线"变成"用户能调到多小"。
+     * 所以改成绝对值 px 保留下来，并真的用上（见 {@code MainActivity} 的加减档）。
      */
-    private float minFontRatio = 0.079f;
+    public static final float FONT_FLOOR_PX = 31.6f;
 
     /** 当前这一句分了几页（1 = 没翻页）。界面诊断用。 */
     public int getPageCount() {
@@ -784,9 +856,11 @@ public class GlassesSubtitleView {
     /**
      * 更新字幕。这是唯一会被高频调用的方法（每次收到字幕帧一次）。
      *
-     * <p>字号自适应：整句真的排一遍，取"纵向放得下"的字号 —— 能大就大、放不下才缩，
-     * 缩到下限（见 {@link #minFontRatio}）还不放不下就翻页。
-     * 眼镜上**看不到就是没翻**，所以宁可缩字号/翻页，也不要截断
+     * <p>字号是**固定的**（中文一个值、葡语一个值），不随句子长度缩放；
+     * 内容超出一页高度才翻页。为什么不再自适应：见 {@link #applySubtitleLayout}
+     * 上面那段 —— 简言之"每句都变字号"会让佩戴者一直在重新适应。
+     *
+     * <p>眼镜上**看不到就是没翻**，所以宁可翻页，也不要截断
      * （截断会把句尾丢掉，那通常是最关键的信息）。
      */
     public void setSubtitle(String text) {

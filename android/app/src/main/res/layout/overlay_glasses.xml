@@ -126,12 +126,12 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="@string/glasses_tune_font"
+                android:text="@string/glasses_tune_font_zh"
                 android:textColor="@color/ink_soft"
                 android:textSize="13sp" />
 
             <TextView
-                android:id="@+id/glassesFontMinus"
+                android:id="@+id/glassesFontZhMinus"
                 android:layout_width="40dp"
                 android:layout_height="36dp"
                 android:background="@drawable/tap_pill"
@@ -143,7 +143,7 @@
                 android:textSize="18sp" />
 
             <TextView
-                android:id="@+id/glassesFontValue"
+                android:id="@+id/glassesFontZhValue"
                 android:layout_width="64dp"
                 android:layout_height="wrap_content"
                 android:gravity="center"
@@ -151,7 +151,55 @@
                 android:textSize="14sp" />
 
             <TextView
-                android:id="@+id/glassesFontPlus"
+                android:id="@+id/glassesFontZhPlus"
+                android:layout_width="40dp"
+                android:layout_height="36dp"
+                android:background="@drawable/tap_pill"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:text="@string/glasses_tune_plus"
+                android:textColor="@color/brand"
+                android:textSize="18sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/glasses_tune_font_pt"
+                android:textColor="@color/ink_soft"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/glassesFontPtMinus"
+                android:layout_width="40dp"
+                android:layout_height="36dp"
+                android:background="@drawable/tap_pill"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:text="@string/glasses_tune_minus"
+                android:textColor="@color/brand"
+                android:textSize="18sp" />
+
+            <TextView
+                android:id="@+id/glassesFontPtValue"
+                android:layout_width="64dp"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:textColor="@color/ink"
+                android:textSize="14sp" />
+
+            <TextView
+                android:id="@+id/glassesFontPtPlus"
                 android:layout_width="40dp"
                 android:layout_height="36dp"
                 android:background="@drawable/tap_pill"
@@ -330,6 +378,31 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="@string/glasses_tune_ruler"
+                android:textColor="@color/brand"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <!--
+          排版自检：在**真机上真的排一遍**，报出"这个字号一行能放几个字、一页几行"。
+          为什么需要它：选字号时我算过一张"字号 → 每行字数"的表，但那是模型估的
+          （中文≈1em、拉丁≈0.5em）。葡语的宽字母比 0.5em 宽，估算会偏乐观 ——
+          上一轮"句尾几个词被省略号吃掉"就是这个偏差造成的。
+          所以这里不猜：用当前字号把两句真实样例排一遍，给用户看实况数字。
+        -->
+        <LinearLayout
+            android:id="@+id/glassesSelfCheck"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/tap_pill"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/glasses_self_check"
                 android:textColor="@color/brand"
                 android:textSize="13sp" />
         </LinearLayout>
