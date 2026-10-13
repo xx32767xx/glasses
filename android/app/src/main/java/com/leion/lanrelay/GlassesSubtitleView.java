@@ -640,20 +640,19 @@ public class GlassesSubtitleView {
     }
 
     /**
-     * 排版自检：用**当前字号与当前画布**，把两句内置样例真的排一遍，报出真实数字。
+     * 排版自检：用**当前字号与当前画布**，把给进来的样例各排一遍，报出真实数字。
      *
      * <p><b>为什么需要它</b>：决定字号时我算过一张"字号 → 每行几个字"的表，但那是
      * **模型估的**（中文 ≈1em、拉丁 ≈0.5em/字符）。而葡语的宽字母（m/w/大写/带音标）
      * 比 0.5em 宽，真实每行字数比表里少 —— 上一轮"几个词被省略号吃掉"就是这个偏差。
      * 所以**别拿估算当判据**：这个自检在设备上真的排一遍，给的是实况。
      *
-     * <p>样例是**项目里本来就有的真实句子**，不是现编的：
-     * 中文取自 {@code scripts/test-phrases.mjs} 第 1 句，
-     * 葡语取自 relay 日志里那条真实的译文。
+     * <p>样例由调用方给（`MainActivity` 从生成的资源数组里取）——
+     * 这样"点开看的句子"和"量数字的句子"是同一批，不会各说各话。
      *
      * <p>用一个**临时 TextView** 量，不动正在显示的那一个 —— 自检不该有副作用。
      */
-    public String selfCheck() {
+    public String selfCheck(java.util.List<String> zhSamples, java.util.List<String> ptSamples) {
         // 画布未知时不自检 —— 排出来的行数会是假的（宽度按 1px 算，一行一个字）。
         // 与其给一个会误导人的数字，不如说清楚"现在量不了、还差什么"。
         if (usableWidthPx() <= 0 || effectiveHeight() <= 0) {
@@ -662,23 +661,32 @@ public class GlassesSubtitleView {
         }
         StringBuilder out = new StringBuilder();
         out.append("画布 ").append(effectiveWidth()).append("×").append(effectiveHeight())
-           .append(" · 可用宽 ").append(usableWidthPx()).append("px\n")
+           .append(" · 可用宽 ").append(usableWidthPx()).append("px")
+           .append("（左右留白 ").append(marginLeftPercent).append("%/")
+           .append(marginRightPercent).append("%）\n")
            .append("字号 中文 ").append(Math.round(fontPxZh)).append("px / 葡语 ")
-           .append(Math.round(fontPxPt)).append("px\n\n");
-        out.append(measureSample("中文", SAMPLE_ZH, fontPxZh));
-        out.append('\n');
-        out.append(measureSample("葡语", SAMPLE_PT, fontPxPt));
+           .append(Math.round(fontPxPt)).append("px\n");
+        reportSamples(out, "中文", zhSamples, fontPxZh);
+        reportSamples(out, "葡语", ptSamples, fontPxPt);
         return out.toString();
     }
 
-    /** 项目里本来就有的真实句子（中文取自 test-phrases 第 1 句）。 */
-    private static final String SAMPLE_ZH =
-            "我们这款眼镜的核心思路是把翻译结果直接放在佩戴者的视野里。";
-    /** 真实译文（relay.log 里那条）。 */
-    private static final String SAMPLE_PT =
-            "A Universidade de Aeronáutica e Astronáutica de Pequim é uma universidade de alta qualidade.";
+    private void reportSamples(StringBuilder out, String label,
+                              java.util.List<String> samples, float fontPx) {
+        if (samples == null || samples.isEmpty()) return;
+        out.append("\n══ ").append(label).append("（").append(Math.round(fontPx)).append("px）══\n");
+        for (String sample : samples) {
+            if (sample == null || sample.isEmpty()) continue;
+            out.append(measureSample(sample, fontPx));
+        }
+    }
 
-    private String measureSample(String label, String sample, float fontPx) {
+    /** 这串文字里有没有汉字（`MainActivity` 也要用，用来决定用户输的那句归哪一档）。 */
+    public boolean containsCjkText(String text) {
+        return containsCjk(text);
+    }
+
+    private String measureSample(String sample, float fontPx) {
         // 临时 TextView：只用来量，不加入视图树、不影响显示中的那一块
         TextView probe = new TextView(root.getContext());
         probe.setTypeface(Typeface.DEFAULT_BOLD);
@@ -696,22 +704,35 @@ public class GlassesSubtitleView {
         int displayLines = Math.max(1, Math.min(MAX_LINES_ABS, heightBudget / Math.max(1, lineHeight)));
         int pages = lines <= 0 ? 0 : (lines + displayLines - 1) / displayLines;
 
+        // 每行的字符数。**为什么要最长的那一行、而不是第 1 行**：
+        // 这是真机上量出来的教训。葡语例子 40px 下第 1 行只有 18 个字符，
+        // 但那一行是 "A Universidade de " —— 因为下一个词 Aeronáutica（11 字符）
+        // 塞不进去，**整词挪到了下一行**。所以第 1 行短并不代表放不下，
+        // 它只是"碰巧断在了一个长词前面"。
+        // 最长的行才是最接近"一行到底能放多少"的那个数。
+        // （中文可以任意位置断行，所以对中文两者差不多；葡语差别很大。）
+        int maxLineChars = 0;
+        int firstLineChars = 0;
+        if (layout != null && lines > 0) {
+            for (int index = 0; index < lines; index += 1) {
+                int count = layout.getLineEnd(index) - layout.getLineStart(index);
+                if (count > maxLineChars) maxLineChars = count;
+            }
+            firstLineChars = layout.getLineEnd(0) - layout.getLineStart(0);
+        }
+
         StringBuilder out = new StringBuilder();
-        out.append(label).append("（").append(Math.round(fontPx)).append("px）\n");
-        out.append("  ").append(sample).append('\n');
-        out.append("  排出来 ").append(lines).append(" 行 · 行高 ").append(lineHeight)
-           .append("px · 每页放 ").append(displayLines).append(" 行\n");
-        out.append("  → ").append(pages <= 1
-                ? "一页放下"
-                : ("要翻 " + pages + " 页（每 " + (pageDelayMs / 1000f) + "s 翻一次，"
-                        + "总共要看 " + String.format(java.util.Locale.US, "%.1f", pages * pageDelayMs / 1000f)
-                        + "s）"));
-        out.append('\n');
+        out.append("· ").append(sample).append('\n');
+        out.append("  ").append(lines).append(" 行 · 行高 ").append(lineHeight)
+           .append("px · 每页 ").append(displayLines).append(" 行 → ")
+           .append(pages <= 1
+                   ? "一页放下"
+                   : ("翻 " + pages + " 页（每 " + (pageDelayMs / 1000f) + "s 一次，共 "
+                           + String.format(java.util.Locale.US, "%.1f", pages * pageDelayMs / 1000f) + "s）"))
+           .append('\n');
         if (lines > 0) {
-            // 真实每行字数：直接看第 1 行排到哪 —— 这是实况，不是估算
-            out.append("  第 1 行排了 ")
-               .append(layout.getLineEnd(0) - layout.getLineStart(0))
-               .append(" 个字符（含空格与标点）\n");
+            out.append("  最长一行 ").append(maxLineChars).append(" 字符")
+               .append("（第 1 行 ").append(firstLineChars).append("，含空格与标点）\n");
         }
         return out.toString();
     }

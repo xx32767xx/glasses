@@ -42,6 +42,24 @@
     </LinearLayout>
 
     <!--
+      正文放进 ScrollView：这一页的内容已经超出手机一屏了
+      （真眼镜状态卡 + 诊断行 + 微调卡 + 投屏样例卡）。
+      标题栏留在外面**不滚** —— 返回按钮任何时候都要够得着，
+      而这一页的正文用户本来就要来回翻着看（改字号 → 看样例 → 再改）。
+    -->
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingBottom="16dp">
+
+    <!--
       真眼镜（USB 接的那副）的状态与开关。
       为什么必须显示：眼镜连没连上、投屏成没成功，**在手机上看不出来** ——
       而这套 SDK 的失败大多是"什么都不显示"。不写这一行，出问题只能靠猜。
@@ -456,42 +474,119 @@
         </LinearLayout>
     </LinearLayout>
 
+    <!--
+      ── 投屏样例（原「模拟预览」在这里，已删）────────────────────────────────
+      为什么删掉模拟预览：它是**用旧模型画的**（按"汉字算 2 列"折成 40 列 × 3 行），
+      而真实投屏早就改成"固定字号 + 安卓真实排版"了。也就是说它**不再预测眼镜上会发生什么** ——
+      一块"看起来像、其实规则不同"的预览，比没有预览更坏：用户会照着它调字号。
+
+      换成这个：把真实句子**真的投到眼镜上**（走的是同传那条同一条路径）。
+      这样"手机上调了一个数 → 眼镜上是什么样"是同一个事实，中间没有模型。
+
+      为什么要这个：调字号原来必须先开同传、等对方说话，才能看到效果 ——
+      一次实验要好几分钟，而且句长随机、没法对比。现在点一下就能看，
+      还能连着点"短 / 中 / 长"三档，**翻页从多长开始**一眼就能看出来。
+    -->
     <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="16dp"
-        android:layout_marginEnd="16dp"
-        android:background="@drawable/panel_bg"
-        android:orientation="vertical"
-        android:padding="14dp">
-
-        <TextView
-            android:id="@+id/glassesBadge"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="8dp"
-            android:letterSpacing="0.08"
-            android:textColor="@color/screen_ink_dim"
-            android:textSize="10sp" />
-
-        <TextView
-            android:id="@+id/glassesPanel"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:fontFamily="monospace"
-            android:lineSpacingExtra="6dp"
-            android:text="@string/glasses_preview_empty"
-            android:textColor="@color/screen_ink"
-            android:textSize="16sp" />
-    </LinearLayout>
-
-    <TextView
-        android:id="@+id/glassesCaption"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginStart="16dp"
         android:layout_marginTop="10dp"
         android:layout_marginEnd="16dp"
-        android:textColor="@color/ink_faint"
-        android:textSize="12sp" />
+        android:background="@drawable/bg_card"
+        android:orientation="vertical"
+        android:padding="12dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="2dp"
+            android:text="@string/glasses_sample_title"
+            android:textColor="@color/ink"
+            android:textSize="14sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:text="@string/glasses_sample_hint"
+            android:textColor="@color/ink_faint"
+            android:textSize="12sp" />
+
+        <!-- 例句按语言分两行，按钮在代码里按资源数组生成（改句集不用改布局） -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="@string/glasses_sample_zh"
+            android:textColor="@color/ink_soft"
+            android:textSize="12sp" />
+
+        <LinearLayout
+            android:id="@+id/glassesSamplesZh"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="@string/glasses_sample_pt"
+            android:textColor="@color/ink_soft"
+            android:textSize="12sp" />
+
+        <LinearLayout
+            android:id="@+id/glassesSamplesPt"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal" />
+
+        <!--
+          自己输一句：例句再多也覆盖不到"我关心的那句话"。
+          比如用户想确认"某个专有名词会不会换行",那就该能把它打进去试。
+        -->
+        <EditText
+            android:id="@+id/glassesSampleInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:hint="@string/glasses_sample_custom_hint"
+            android:importantForAutofill="no"
+            android:inputType="textMultiLine"
+            android:maxLines="3"
+            android:textColor="@color/ink"
+            android:textColorHint="@color/ink_faint"
+            android:textSize="13sp" />
+
+        <LinearLayout
+            android:id="@+id/glassesSampleSend"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/tap_pill"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/glasses_sample_send"
+                android:textColor="@color/brand"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/glassesSampleNote"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:textColor="@color/ink_faint"
+            android:textSize="12sp" />
+    </LinearLayout>
+        </LinearLayout>
+    </ScrollView>
 </LinearLayout>

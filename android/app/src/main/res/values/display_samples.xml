@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ⚠️ 本文件由 lib/artifacts.mjs 从 lib/display-samples.mjs 生成，**不要手改**。
+  改句子请改 lib/display-samples.mjs，然后 npm run generate。
+  不一致时 npm run check 会直接报错（和插件产物同一个门禁）。
+
+  用途：眼镜预览页的「投屏样例」——不开同传也能推一句话到眼镜上，用来校字号/留白/翻页。
+  中文样例来自 scripts/test-phrases.mjs 的测试句集；葡语样例来自 relay.log 里真实的定稿帧。
+  两组**互相独立、不是互译**（日志里没记源句，硬配对就是编数据）。
+-->
+<resources>
+    <string-array name="glasses_sample_zh_label">
+        <item>短</item>
+        <item>中 · 中英混说</item>
+        <item>长 · 会翻页</item>
+    </string-array>
+    <string-array name="glasses_sample_zh">
+        <item>请在设置里把语言切换成简体中文，然后重新开始录音。</item>
+        <item>我们和亮亮视野合作开发的这款 Leion Pro，用的是高通的芯片，系统版本是安卓十二。</item>
+        <item>我们的目标是在明年第一季度之前把这套同传系统的延迟压到两秒以内，同时把中文识别的字错率控制在百分之五以下，并且让佩戴者连续使用两小时之后仍然觉得字幕跟得上对话的节奏，因为如果一句话要等三四秒才出现，那用户就会干脆不用了。</item>
+    </string-array>
+    <string-array name="glasses_sample_pt_label">
+        <item>短</item>
+        <item>中</item>
+        <item>长 · 会翻页</item>
+    </string-array>
+    <string-array name="glasses_sample_pt">
+        <item>A versão do sistema é Android 12.</item>
+        <item>O ponto central desta nossa palestra é colocar o conteúdo traduzido direto no campo de visão de quem usa.</item>
+        <item>O núcleo deste nosso óculos é colocar a tradução direto no campo de visão de quem usa, assim a pessoa não precisa baixar a cabeça pra olhar o celular.</item>
+    </string-array>
+</resources>

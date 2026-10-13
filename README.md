@@ -16,9 +16,9 @@
 ## 现在就能做的事
 
 ```powershell
-node scripts/generate.mjs        # 从核心逻辑生成两个产物
-node tests/run-all.mjs           # 152 项断言：新鲜度门禁 + 两个包装版本各跑一遍 + 一致性对比
-python tests/python-suite.py     # 另 106 项：语音分段器 + 音频尾随 + 语种转换（不加载模型，很快）
+node scripts/generate.mjs        # 从核心逻辑生成 6 个产物（插件 3 个 + 技能文档 + 2 份文档/资源）
+node tests/run-all.mjs           # 264 项断言：新鲜度门禁 + 两个包装版本各跑一遍 + 一致性对比
+python tests/python-suite.py     # 另 108 项：语音分段器 + 音频尾随 + 语种转换（不加载模型，很快）
                                  # + ASR 桥契约 + 局域网契约 + 真实 Cordis 组合
 
 # A) 不需要麦克风、不需要手机：重放一段中葡对照的剧本，看整条同传链路
@@ -67,6 +67,7 @@ node scripts/fake-phone.mjs --wav var/audio/zh/short-16k.wav --url http://127.0.
 | `plugin/schemas.generated.mjs` | 生成：由 core 的 DSL 经真实 `defineTool` 编译出的原始 schema |
 | `plugin/cordis.patch.yml` · `cordis.local.patch.yml` | 装进 profile 用 / 开发 `--patch` 用 |
 | `dynamic/leion-pro.host.js` | 生成：**动态插件**，可直接粘贴给创造模式的 `cordis_define` |
+| `lib/display-samples.mjs` | **眼镜校准句的唯一来源**（中文取自测试句集、葡语取自真实定稿帧，逐条记出处）→ 生成 `android/.../res/values/display_samples.xml` |
 | `bridge/asr-bridge.mjs` | **ASR 桥**（harness 之外）：把语音识别结果变成收件箱里的一行一句话；`--whisper-follow` 直接尾随手机上传的音频 |
 | `bridge/whisper_stream.py` | 本地 Whisper 引擎（faster-whisper）：按音量切句 + 自适应门槛 + 防幻听 + 预热；`--follow` 尾随手机上传的裸 PCM ✅ 已实测，见 `docs/04` |
 | `bridge/whisper_transcribe.py` | 转写单个音频文件并测耗时/RTF（自带解码器，绕开 PyAV 版本坑） |

@@ -127,14 +127,12 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private boolean bilingual = true;
     private String themeMode = "system";
 
-    /** 最近一帧的完整信息，供眼镜预览用。 */
+    /** 最近一帧的完整信息（诊断用；原本还给"模拟预览"面板用，那块已经删了）。 */
     private String lastFrameText = "";
     private String lastFrameSource = "";
     private String lastFrameSpeaker = "them";
     /** 最近一帧是不是"还在生成中"的流式增量（用来决定要不要在末尾加省略号）。 */
     private boolean lastFramePartial = false;
-    private int panelCols = 40;
-    private int panelLines = 3;
 
     /** 眼镜投屏（真眼镜，不是界面里那个"眼镜预览"面板）。见 GlassesSdk 与 docs/09。 */
     private GlassesSdk glasses = null;
@@ -783,8 +781,10 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     public void onHello(final String device, final int serverCols, final int serverLineBudget) {
         main.post(() -> {
             deviceName = device;
-            panelCols = serverCols > 0 ? serverCols : 40;
-            panelLines = serverLineBudget > 0 ? serverLineBudget : 3;
+            // ⚠️ serverCols / serverLineBudget（电脑那边的 40 列 × 3 行预算）这里**故意不用**。
+            //    它们只对电脑端"把译文排成 40×3"有意义；手机这块早就改成按真实分辨率投屏、
+            //    由安卓真实排版决定行数了。原来它们被用来渲染"模拟预览"面板 ——
+            //    那块面板已删（它按列数模型画，而真实投屏不是那个模型，会误导校准）。
             renderConnectionCard();
             // 连上电脑了 → 眼镜上的待机提示也要跟着变（"已连接电脑 · 点开始同传"）
             refreshGlassesIdle();
@@ -805,13 +805,12 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             lastFrameSource = source;
             lastFrameSpeaker = speaker;
             lastFramePartial = partial;
-            if (glassesPanel != null) renderGlassesPanel();
             // ★ 真眼镜：把这一帧投上去。
             //
-            //   注意这里投的是**手机该显示的那一侧**（和 renderGlassesPanel 用的同一份），
-            //   不是原始译文：如果佩戴者在看对方的字幕，那一侧就是译文；
-            //   如果这一帧是"佩戴者自己说的话"（出站给对方），投上去的是它对应的显示侧。
-            //   这样眼镜上的内容和手机面板永远一致，不会出现"眼镜和手机显示不同语言"。
+            //   眼镜上投的是**手机该显示的那一侧**，不是原始译文：如果佩戴者在看对方的字幕，
+            //   那一侧就是译文；如果这一帧是"佩戴者自己说的话"（出站给对方），
+            //   投上去的是它对应的显示侧。这样眼镜上的内容和手机永远一致，
+            //   不会出现"眼镜和手机显示不同语言"。
             pushToGlasses(text, source);
             if (session != null && session.active) {
                 String time = elapsedLabel();
@@ -1317,7 +1316,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         overlayHost.setVisibility(View.GONE);
         overlayRoot = null;
         overlayConnectProgress = null;
-        glassesPanel = null;
+        glassesSampleNote = null;
         fullscreenList = null;
         // 停止诊断行的定时刷新（否则关了页面还在白跑）
         glassesDiagHandler.removeCallbacks(glassesDiagTick);
@@ -1852,7 +1851,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
     // ── 眼镜预览（开发者用途）────────────────────────────────────────────────
 
-    private TextView glassesPanel = null;
+    /** 「投屏样例」下面那行提示（没投屏 / 已投屏 N 行 N 页 / 同传在跑）。 */
+    private TextView glassesSampleNote = null;
     /** 真眼镜的状态行与投屏开关（只有打开这个预览页时才有）。 */
     private TextView glassesRealStatus = null;
     private TextView glassesRealToggle = null;
@@ -2061,7 +2061,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
     private void openGlassesPreview() {
         View view = pushOverlay(R.layout.overlay_glasses);
-        glassesPanel = view.findViewById(R.id.glassesPanel);
+        glassesSampleNote = view.findViewById(R.id.glassesSampleNote);
         glassesRealStatus = view.findViewById(R.id.glassesRealStatus);
         glassesRealToggle = view.findViewById(R.id.glassesRealToggle);
         glassesRealDiag = view.findViewById(R.id.glassesRealDiag);
@@ -2086,8 +2086,6 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         //  没有这个，很容易出现"改了但装的是旧包，然后一起怀疑代码"。
         TextView title = view.findViewById(R.id.glassesTitle);
         if (title != null) title.setText(getString(R.string.glasses_preview_title) + " · v" + appVersion());
-        TextView caption = view.findViewById(R.id.glassesCaption);
-        if (caption != null) caption.setText(R.string.glasses_real_caption);
 
         // 显示微调：调完立刻在眼镜上生效（投屏是实时采样）
         view.findViewById(R.id.glassesFontZhMinus).setOnClickListener(v ->
@@ -2100,6 +2098,24 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                 nudgeGlassesTuning(KEY_GLASSES_FONT_PT, 2f));
         // 排版自检：真机上真的排一遍，把"一行几个字/一页几行"报出来
         view.findViewById(R.id.glassesSelfCheck).setOnClickListener(v -> showGlassesSelfCheck());
+
+        // ── 投屏样例 ───────────────────────────────────────────────────────
+        // 点例句 → 走**真实投屏路径**推到眼镜上。这样"改了字号 → 眼镜上什么样"
+        // 是同一个事实，中间没有模型去近似。理由见 overlay_glasses.xml 里那段注释。
+        buildSampleChips(view.findViewById(R.id.glassesSamplesZh),
+                R.array.glasses_sample_zh_label, R.array.glasses_sample_zh);
+        buildSampleChips(view.findViewById(R.id.glassesSamplesPt),
+                R.array.glasses_sample_pt_label, R.array.glasses_sample_pt);
+        view.findViewById(R.id.glassesSampleSend).setOnClickListener(v -> {
+            EditText input = view.findViewById(R.id.glassesSampleInput);
+            String typed = input == null ? "" : input.getText().toString().trim();
+            if (typed.isEmpty()) {
+                setSampleNote(getString(R.string.glasses_sample_need_text), true);
+                return;
+            }
+            pushSample(typed);
+        });
+        setSampleNote(getString(R.string.glasses_sample_hint), false);
         view.findViewById(R.id.glassesRightMinus).setOnClickListener(v ->
                 nudgeGlassesTuning(KEY_GLASSES_MARGIN_R, -2));
         view.findViewById(R.id.glassesRightPlus).setOnClickListener(v ->
@@ -2151,7 +2167,6 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         renderMicSourceLabel();
         applyGlassesTuning();
 
-        renderGlassesPanel();
         renderGlassesRealStatus();
         // 诊断行定时刷新：那个「帧 N」必须能自己动，
         // 否则它作为一个"看采集涨不涨"的计数器就是废的（原来只在状态变化时重画一次）
@@ -2286,7 +2301,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     }
 
     /**
-     * 「排版自检」：在当前字号下把两句真实样例**真的排一遍**，把实况数字弹出来。
+     * 「排版自检」：在当前字号下把**全部投屏样例**真的排一遍，把实况数字弹出来。
      *
      * <p>为什么要有这个按钮：选字号的时候我算过一张"字号 → 每行几个字"的表，
      * 但那是**模型估的**（中文 ≈1em、拉丁 ≈0.5em/字符）。葡语的宽字母
@@ -2294,15 +2309,31 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
      * 句尾几个词被省略号吃掉。教训是**别拿估算当判据**，所以这个按钮
      * 不计算、不换算，直接把安卓的排版结果念出来。
      *
+     * <p>量的是**同一批句子**，就是「投屏样例」里点的那几句 ——
+     * 这样"点开看"和"看数字"说的是同一件事；用户自己输的那句也一起量，
+     * 因为他用的一定是他最关心的那句。
+     *
      * <p>顺带把结果写进诊断行 → relay 日志，这样"用户报的问题"和"用户当时的
      * 字号"能对上号，不用来回问。
      */
     private void showGlassesSelfCheck() {
         if (glassesView == null) return;
+        java.util.List<String> zh = new ArrayList<>(java.util.Arrays.asList(
+                getResources().getStringArray(R.array.glasses_sample_zh)));
+        java.util.List<String> pt = new ArrayList<>(java.util.Arrays.asList(
+                getResources().getStringArray(R.array.glasses_sample_pt)));
+        // 用户自己输的那句也量 —— 那是他最关心的
+        if (overlayRoot != null) {
+            EditText input = overlayRoot.findViewById(R.id.glassesSampleInput);
+            String typed = input == null ? "" : input.getText().toString().trim();
+            if (!typed.isEmpty()) {
+                (glassesView.containsCjkText(typed) ? zh : pt).add(typed);
+            }
+        }
         CrashLog.beginAction(this, "排版自检");
         String report;
         try {
-            report = glassesView.selfCheck();
+            report = glassesView.selfCheck(zh, pt);
         } catch (Throwable error) {
             report = "自检本身出错了：" + error.getClass().getSimpleName()
                     + "：" + error.getMessage();
@@ -2349,8 +2380,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     }
 
     /**
-     * 把当前这一帧推到**真眼镜**上（手机界面里那个"眼镜预览"面板是另一回事，见本文件里的
-     * {@code glassesPanel} —— 那个只是给用户看"眼镜上大概长什么样"的模拟）。
+     * 把当前这一帧推到**真眼镜**上。
      *
      * <p>SDK 的投屏是**持续采集你给的那个 View**，所以这里只要改 View 的文字，
      * 眼镜上的画面就会跟着变 —— 不需要每次重新 createCaptureScreen。
@@ -2421,70 +2451,88 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     };
 
     /**
-     * 按"cols 个半角字符正好铺满面板宽度"算字号，让预览看起来就是一块固定宽度的设备屏幕。
-     * 等宽字体下 CJK 正好占两格，与电脑端"汉字算 2 列"的算法一致。
+     * 按资源数组生成「投屏样例」的按钮（一句一个）。
+     *
+     * <p>为什么在代码里生成而不是写死在布局里：句子来自
+     * `lib/display-samples.mjs` → 生成 `res/values/display_samples.xml`。
+     * 布局写死的话，改句集就得同时改布局；在代码里按数组生成，
+     * **改句集只需重新 generate**，界面自动跟着变。
      */
-    private void renderGlassesPanel() {
-        if (glassesPanel == null) return;
-        String[] lines = new String[panelLines];
-        if (lastFrameText.isEmpty() && lastFrameSource.isEmpty()) {
-            // ⚠️ 这里原来写死显示「（还没有收到字幕）」，于是**看不到投屏的真实内容** ——
-            //    用户没法用它在手机上判断"眼镜上现在到底是什么"。
-            //    现在改成显示**真正会投到眼镜上的那块待机画面**：
-            //    眼镜连着就显示"等待输入"（与 GlassesSubtitleView 的待机文案一致），
-            //    没连就说明没连。这样手机上的预览和眼镜上的画面是同一回事。
-            String idleTitle = session != null && session.active ? "等待输入" : "等待开始同传";
-            glassesPanel.setText(glassesConnected ? idleTitle : "（眼镜未连接）");
-        } else {
-            String text = lastFrameText == null || lastFrameText.isEmpty()
-                    ? lastFrameSource : lastFrameText;
-            String[] wrapped = wrap(text, panelCols);
-            for (int index = 0; index < panelLines; index++) {
-                lines[index] = index < wrapped.length ? wrapped[index] : "";
-            }
-            glassesPanel.setText(String.join("\n", lines));
+    private void buildSampleChips(LinearLayout row, int labelArrayId, int textArrayId) {
+        if (row == null) return;
+        row.removeAllViews();
+        String[] labels = getResources().getStringArray(labelArrayId);
+        String[] texts = getResources().getStringArray(textArrayId);
+        for (int index = 0; index < texts.length; index += 1) {
+            final String text = texts[index];
+            String label = index < labels.length ? labels[index] : ("#" + (index + 1));
+            TextView chip = new TextView(this);
+            chip.setText(label);
+            chip.setTextSize(13f);
+            chip.setTextColor(getColor(R.color.brand));
+            chip.setBackgroundResource(R.drawable.tap_pill);
+            chip.setClickable(true);
+            chip.setFocusable(true);
+            chip.setGravity(Gravity.CENTER);
+            chip.setPadding(dp(12), dp(8), dp(12), dp(8));
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            if (index > 0) params.setMarginStart(dp(8));
+            chip.setLayoutParams(params);
+            chip.setOnClickListener(v -> pushSample(text));
+            row.addView(chip);
         }
-        TextView badge = overlayRoot.findViewById(R.id.glassesBadge);
-        if (badge != null) {
-            badge.setText("眼镜显示 · " + panelCols + " 列 × " + panelLines + " 行");
-        }
-        glassesPanel.post(() -> {
-            int available = glassesPanel.getWidth()
-                    - glassesPanel.getPaddingLeft() - glassesPanel.getPaddingRight();
-            if (available <= 0) return;
-            Paint paint = glassesPanel.getPaint();
-            float oneChar = paint.measureText("M");
-            if (oneChar <= 0f) return;
-            float desired = available / (float) panelCols;
-            float target = glassesPanel.getTextSize() * desired / oneChar;
-            target = Math.max(8f, Math.min(target, glassesPanel.getTextSize() * 1.6f));
-            glassesPanel.setTextSize(TypedValue.COMPLEX_UNIT_PX, target);
-        });
     }
 
-    /** 简版折行：和插件那边的 fitSubtitle 同一套规则（汉字算 2 列）。 */
-    private static String[] wrap(String text, int cols) {
-        List<String> out = new ArrayList<>();
-        StringBuilder line = new StringBuilder();
-        int width = 0;
-        for (char ch : text.toCharArray()) {
-            if (ch == '\n') {
-                out.add(line.toString());
-                line.setLength(0);
-                width = 0;
-                continue;
-            }
-            int w = ch < 0x2E80 ? 1 : 2;
-            if (width + w > cols) {
-                out.add(line.toString());
-                line.setLength(0);
-                width = 0;
-            }
-            line.append(ch);
-            width += w;
+    /**
+     * 把一个样例句子**真的投到眼镜上**，然后在提示行写下这一句的真实排版结果。
+     *
+     * <p>走的是同传那条**同一条路径**（{@link GlassesSubtitleView#setSubtitle}），
+     * 不是另做一套渲染 —— 否则"样例好看"和"真字幕好看"就是两回事了。
+     *
+     * <p>为什么要把行数/页数也写出来：眼镜戴在脸上，手机这边看不见；
+     * 而"这句话翻不翻页、翻几页"正是校准时最想知道的事。
+     */
+    private void pushSample(String text) {
+        // ⚠️ 顺序：先确认能投，再动视图。
+        if (glassesView == null || glasses == null) {
+            setSampleNote(getString(R.string.glasses_sample_need_cast), true);
+            return;
         }
-        out.add(line.toString());
-        return out.toArray(new String[0]);
+        if (!glasses.isCasting()) {
+            setSampleNote(getString(R.string.glasses_sample_need_cast), true);
+            return;
+        }
+        CrashLog.beginAction(this, "投屏样例");
+        glassesView.setSubtitle(text);
+        scheduleGlassesRefresh();
+        CrashLog.endAction(this);
+
+        // 取**真实排版结果**（setSubtitle 里已经排过一遍了）
+        int lines = glassesView.getRealLines();
+        int pages = glassesView.getPageCount();
+        setSampleNote(getString(R.string.glasses_sample_sent, text.length(), lines, pages), false);
+        // 同传在跑的话，真实字幕下一帧就会盖掉这个样例 —— 先说明，别让人以为是坏了
+        boolean busy = session != null && session.active;
+        if (busy) {
+            setSampleNote(getString(R.string.glasses_sample_sent, text.length(), lines, pages)
+                    + "\n" + getString(R.string.glasses_sample_busy), true);
+        }
+
+        if (client != null) {
+            client.sendDiag("投屏样例：" + text.length() + " 字 → " + lines + " 行 / " + pages + " 页"
+                    + "（字号 中" + Math.round(glassesFontZh()) + "px 葡"
+                    + Math.round(glassesFontPt()) + "px）"
+                    + "｜" + (text.length() > 60 ? text.substring(0, 60) + "…" : text));
+        }
+    }
+
+    /** 写「投屏样例」下面那行提示。warn=true 用醒目一点的语气（但仍然是同一行文字）。 */
+    private void setSampleNote(String message, boolean warn) {
+        if (glassesSampleNote == null) return;
+        glassesSampleNote.setText(message);
+        glassesSampleNote.setTextColor(getColor(warn ? R.color.warn : R.color.ink_faint));
     }
 
     // ── 小工具 ──────────────────────────────────────────────────────────────
