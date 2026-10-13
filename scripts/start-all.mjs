@@ -29,7 +29,7 @@
  */
 
 import { spawn } from 'node:child_process'
-import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, copyFileSync, unlinkSync, statSync, writeFileSync } from 'node:fs'
 import { connect } from 'node:net'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -251,6 +251,116 @@ export function childEnv(base = process.env) {
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 /**
+ * 把所有日志流**写完**（等到 'finish'），然后才允许动这些文件。
+ *
+ * <p>⚠️ 为什么必须单独抽出来、而不是在 `shutdown()` 里就地 `stream.end()`：
+ * `end()` 只是"不再写了"，缓冲里的数据是**异步**落盘的（`createWriteStream` 的
+ * highWaterMark 是 16KB，日志很容易超过）。不等 'finish' 就去改名/复制，
+ * 会读到**被截断的文件** —— 而丢掉的正好是最后几行，
+ * 也就是这次运行最该看的东西（最后一句字幕、最后的报错）。
+ *
+ * <p>抽成导出函数还有一个好处：它能被单元测试**直接**验（喂真实 WriteStream 进去），
+ * 不必真的去 spawn 三个子进程 —— 而 spawn 在受限环境里是跑不起来的
+ * （管道 stdio 会被拒），那样这段逻辑就只能靠"我看着对"来保证。
+ */
+export async function flushLogStreams(logs) {
+  const streams = Object.values(logs ?? {})
+  await Promise.all(streams.map(stream => new Promise(resolve => { stream.end(resolve) })))
+}
+
+/** 会话时间戳，用作归档目录名（本地时间，人能读）。 */
+export function sessionStamp(date = new Date()) {
+  const pad = value => String(value).padStart(2, '0')
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`
+    + `-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`
+}
+
+/**
+ * 日志里的"有内容的行"数 —— 也就是**除掉了启动头**的行数。
+ *
+ * 每份日志开头都有一行 `# <ISO> node <script> <args>`（见下面写日志的地方）。
+ * 数它没有意义：只要进程起过就有。所以判断"这份日志值不值得归档"时要把它排除掉 ——
+ * 否则每次启动失败的尝试都会在归档目录里留下一个只有一个头的空壳。
+ */
+export function meaningfulLineCount(text) {
+  let count = 0
+  for (const line of String(text).split('\n')) {
+    if (line.trim() === '') continue
+    if (line.startsWith('#')) continue
+    count += 1
+  }
+  return count
+}
+
+/**
+ * 把这一次运行的日志归档到 `var/logs/archive/<会话时间戳>/`。
+ *
+ * <p><b>为什么归档的时机是"进程结束"，而不是"一次对话结束"</b>：
+ * 系统里**没有一个可靠的"对话结束"信号** —— 用户可能暂停又继续、可能一直开着，
+ * 也可能手机断一下又连回来。按"静音超过 N 秒"或"手机断开"去切，
+ * 切出来的边界是**猜的**，而猜错的边界会让"这一场到底错了多少"这个数字直接失真。
+ * 而"进程结束"是**唯一明确、可观测、零成本**的边界。
+ * 代价是：一次运行里可能有 0 段或好几段对话。但这不影响归档的目的 ——
+ * 归档是为了**让日志读得下去**（不然永远只有一份越滚越大的 relay.log），
+ * 不是为了产出"每场对话的统计"。真要做后者，得**记录**边界而不是猜
+ * （在"开始同传/停止同传"处打一行标记），那是另一件事。
+ *
+ * <p><b>为什么按目录分组、而不是几个平行的 .log</b>：一次运行会产生 relay/asr/brain
+ * 三份日志，它们**说的是同一场对话的三个侧面**。归档成
+ * `archive/20261013-223523/{relay,asr,brain}.log` 之后，
+ * "这一场"就是一个目录 —— 翻日志时不会把两场的 asr 和 relay 配错。
+ *
+ * @returns {{archived: boolean, dir: string|null, keys: string[]}}
+ */
+export function archiveSessionLogs({ logsDir, keys, stamp = sessionStamp() }) {
+  // ⚠️ 目录名要**先找一个没被占用的**，而不是直接用时间戳。
+  //    同一秒内启动两次（或者上一次的归档还在，例如两个终端各跑一个 start-all）
+  //    会让两次的日志落进同一个目录，后一次把前一次**盖掉** ——
+  //    而那正是"想翻日志时发现日志没了"的那类损失，且无声无息。
+  //    所以撞名就加 -2 / -3。目录**惰性创建**：确认真要有东西归档才建，
+  //    免得每次启动失败的尝试都留下一个空目录。
+  let dir = null
+  const freeDir = () => {
+    const base = join(logsDir, 'archive', stamp)
+    if (existsSync(base) === false) return base
+    for (let n = 2; n < 100; n += 1) {
+      const candidate = `${base}-${n}`
+      if (existsSync(candidate) === false) return candidate
+    }
+    return `${base}-${Date.now()}`
+  }
+
+  const moved = []
+  for (const key of keys) {
+    const from = join(logsDir, `${key}.log`)
+    if (existsSync(from) === false) continue
+    let text = ''
+    try {
+      text = readFileSync(from, 'utf-8')
+    } catch { continue }
+    // 只有启动头 → 这次运行没留下任何东西，不留空壳
+    if (meaningfulLineCount(text) === 0) continue
+    if (dir === null) dir = freeDir()
+    try {
+      mkdirSync(dir, { recursive: true })
+      try {
+        // 首选改名（原子、不占双份空间）。
+        renameSync(from, join(dir, `${key}.log`))
+      } catch {
+        // ⚠️ Windows 上**另一个终端正用 `Get-Content -Wait` 盯着这个文件时改名会失败**
+        //    （文件被占用）。这是很可能发生的用法，所以退回复制 + 删除；
+        //    再不行就放弃这一份 —— **归档是收尾的杂活，绝不能因为它让退出卡住或报错**。
+        copyFileSync(from, join(dir, `${key}.log`))
+        unlinkSync(from)
+      }
+      moved.push(key)
+    } catch { /* 单份失败不影响其他份 */ }
+  }
+  if (moved.length === 0) return { archived: false, dir: null, keys: [] }
+  return { archived: true, dir, keys: moved }
+}
+
+/**
  * 主流程。
  *
  * ⚠️ argv 作为参数传进来（而不是直接读 process.argv），是为了让测试能在**同一个进程里**
@@ -298,6 +408,12 @@ export async function main(argv = process.argv.slice(2)) {
     try { staleAudioSeconds = statSync(options.audio).size / 2 / 16000 } catch { /* 忽略 */ }
   }
 
+  // 会话时间戳**在启动时**就定下来，用来当归档目录名。
+  // 为什么不等到退出时再取：那样目录名会是"结束时刻"，
+  // 而翻归档时想知道的是"这是**哪一次**运行"—— 用开始时刻才对得上
+  // 日志头那行 `# <ISO>`，也对得上手机上"我什么时候连的"。
+  const sessionStartedAt = sessionStamp()
+
   let logs = null
   if (options.writeLogs && !options.dryRun) {
     mkdirSync(LOGS_DIR, { recursive: true })
@@ -332,6 +448,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (logs) console.log(`  日志文件    ${LOGS_DIR.replace(ROOT, '.').replace(/\\/g, '/')}\\{relay,asr,brain}.log`)
   console.log('')
   console.log(`  ${DIM}Ctrl-C 一次停掉全部（含识别进程起的 python 子进程）${RESET}`)
+  console.log(`  ${DIM}退出时这三份日志会自动归档到 var/logs/archive/${sessionStartedAt}/${RESET}`)
   console.log('─'.repeat(72))
   console.log('')
 
@@ -407,7 +524,19 @@ export async function main(argv = process.argv.slice(2)) {
     console.log('  正在停止全部进程…')
     for (const child of children) killTree(child)
     await sleep(600)
-    if (logs) for (const stream of Object.values(logs)) stream.end()
+    if (logs) {
+      await flushLogStreams(logs)
+      try {
+        const result = archiveSessionLogs({ logsDir: LOGS_DIR, keys: steps.map(step => step.key), stamp: sessionStartedAt })
+        if (result.archived) {
+          console.log(`  日志已归档  ${result.dir.replace(ROOT, '.').replace(/\\/g, '/')}`
+            + `（${result.keys.join(' / ')}）`)
+        }
+      } catch (error) {
+        // 归档失败**不能**影响退出，也不能让人以为日志没了 —— 它还在原地。
+        console.log(`  ⚠️ 日志归档失败（日志仍在 var/logs/ 里）：${String(error?.message ?? error)}`)
+      }
+    }
     console.log('  已全部停止。')
     process.exit(code)
   }

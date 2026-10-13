@@ -10,7 +10,7 @@
 
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { buildSteps, childEnv, main, parseArgs, portInUse } from '../scripts/start-all.mjs'
+import { archiveSessionLogs, buildSteps, childEnv, flushLogStreams, main, parseArgs, portInUse, sessionStamp } from '../scripts/start-all.mjs'
 import { defaultAudioIn, defaultBus, defaultInbox, VAR_DIR } from '../lib/paths.mjs'
 
 const argsOf = step => step.args.join(' ')
@@ -272,6 +272,125 @@ export async function runStartAllSuite({ it, check, assert }) {
       output.includes('模型缓存'), output.slice(0, 400))
     check('打印了下载源', output.includes('下载源'), output.slice(0, 400))
     check('说明是 dry-run、没真的启动', output.includes('--dry-run'), output.slice(-120))
+  })
+
+  // ── 退出时自动归档日志 ─────────────────────────────────────────────────────
+  //
+  // 为什么归档的时机是"进程结束"而不是"一次对话结束"：系统里没有可靠的
+  // "对话结束"信号（暂停又继续、一直开着、手机断一下又连回来都会把边界猜错），
+  // 而进程结束是唯一明确可观测的边界。详见 archiveSessionLogs 的注释。
+
+  await it('归档：三份日志进同一个会话目录，启动头不算"有内容"', async () => {
+    const { mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } = await import('node:fs')
+    const tmp = join(VAR_DIR, 'test', 'archive-suite')
+    rmSync(tmp, { recursive: true, force: true })
+    mkdirSync(tmp, { recursive: true })
+    // relay 有真实内容；asr 只有启动头（这次运行里它什么都没干）；brain 有内容
+    writeFileSync(join(tmp, 'relay.log'), '# 2026-01-01T00:00:00.000Z  node relay\n📺 字幕已更新\n', 'utf-8')
+    writeFileSync(join(tmp, 'asr.log'), '# 2026-01-01T00:00:00.000Z  node asr\n', 'utf-8')
+    writeFileSync(join(tmp, 'brain.log'), '# 2026-01-01T00:00:00.000Z  node brain\n🔍 确定错\n', 'utf-8')
+
+    const result = archiveSessionLogs({ logsDir: tmp, keys: ['relay', 'asr', 'brain'], stamp: '20260101-000000' })
+    check('归档了', result.archived === true, JSON.stringify(result))
+    check('目录按会话时间戳', result.dir.endsWith(join('archive', '20260101-000000')), result.dir)
+    check('有内容的两份都进去了', result.keys.sort().join(',') === 'brain,relay', result.keys.join(','))
+    check('只有启动头的那份**不留空壳**', existsSync(join(result.dir, 'asr.log')) === false,
+      'asr.log 不该被归档（它这次什么都没干）')
+    check('内容原样保留', readFileSync(join(result.dir, 'relay.log'), 'utf-8').includes('字幕已更新'))
+    check('活动日志已移走（下次运行是干净的一份）', existsSync(join(tmp, 'relay.log')) === false)
+    rmSync(tmp, { recursive: true, force: true })
+  })
+
+  await it('归档：全是启动头（启动就失败）→ 一个目录都不建', async () => {
+    const { mkdirSync, writeFileSync, existsSync, readdirSync, rmSync } = await import('node:fs')
+    const tmp = join(VAR_DIR, 'test', 'archive-suite-empty')
+    rmSync(tmp, { recursive: true, force: true })
+    mkdirSync(tmp, { recursive: true })
+    for (const key of ['relay', 'asr', 'brain']) {
+      writeFileSync(join(tmp, `${key}.log`), `# 2026-01-01T00:00:00.000Z  node ${key}\n`, 'utf-8')
+    }
+    const result = archiveSessionLogs({ logsDir: tmp, keys: ['relay', 'asr', 'brain'], stamp: '20260101-000001' })
+    check('没归档', result.archived === false, JSON.stringify(result))
+    const archiveDir = join(tmp, 'archive')
+    check('archive 目录没有被建出来（不留空壳）',
+      existsSync(archiveDir) === false || readdirSync(archiveDir).length === 0,
+      existsSync(archiveDir) ? readdirSync(archiveDir).join(',') : '不存在')
+    check('活动日志留在原地（没被删掉）', existsSync(join(tmp, 'relay.log')) === true)
+    rmSync(tmp, { recursive: true, force: true })
+  })
+
+  await it('归档：日志目录里什么都没有时不报错（不能因为收尾杂活让退出崩掉）', async () => {
+    const { mkdirSync, rmSync } = await import('node:fs')
+    const tmp = join(VAR_DIR, 'test', 'archive-suite-none')
+    rmSync(tmp, { recursive: true, force: true })
+    mkdirSync(tmp, { recursive: true })
+    const result = archiveSessionLogs({ logsDir: tmp, keys: ['relay'], stamp: '20260101-000002' })
+    check('返回"没归档"而不是抛异常', result.archived === false, JSON.stringify(result))
+    rmSync(tmp, { recursive: true, force: true })
+  })
+
+  await it('归档：同一秒的两次运行不会互相覆盖（撞名要加序号）', async () => {
+    const { mkdirSync, writeFileSync, readFileSync, rmSync } = await import('node:fs')
+    const tmp = join(VAR_DIR, 'test', 'archive-suite-collide')
+    rmSync(tmp, { recursive: true, force: true })
+    mkdirSync(tmp, { recursive: true })
+    const stamp = sessionStamp(new Date(2026, 0, 2, 3, 4, 5))
+    check('时间戳格式是 YYYYMMDD-HHMMSS', /^\d{8}-\d{6}$/.test(stamp), stamp)
+    check('值对得上', stamp === '20260102-030405', stamp)
+
+    // 第一次
+    writeFileSync(join(tmp, 'relay.log'), '# 头\n第一次的内容\n', 'utf-8')
+    const first = archiveSessionLogs({ logsDir: tmp, keys: ['relay'], stamp })
+    // 第二次：**同一个时间戳**（模拟同秒启动两次 / 上一次归档还在）
+    writeFileSync(join(tmp, 'relay.log'), '# 头\n第二次的内容\n', 'utf-8')
+    const second = archiveSessionLogs({ logsDir: tmp, keys: ['relay'], stamp })
+
+    check('两次都归档了', first.archived === true && second.archived === true,
+      `${JSON.stringify(first)} / ${JSON.stringify(second)}`)
+    check('落在**不同**的目录里', first.dir !== second.dir, `${first.dir} vs ${second.dir}`)
+    check('第二次带序号', second.dir.endsWith('-2'), second.dir)
+    check('第一次的内容没被盖掉',
+      readFileSync(join(first.dir, 'relay.log'), 'utf-8').includes('第一次的内容'),
+      readFileSync(join(first.dir, 'relay.log'), 'utf-8'))
+    check('第二次的内容也在',
+      readFileSync(join(second.dir, 'relay.log'), 'utf-8').includes('第二次的内容'))
+    rmSync(tmp, { recursive: true, force: true })
+  })
+
+  await it('归档：必须**等写盘完成**再移动文件，否则丢掉的是最后几行', async () => {
+    // 这条测的是 `shutdown()` 用的那个顺序契约（`flushLogStreams` + `archiveSessionLogs`）：
+    //   `stream.end()` 只是"不再写了"，缓冲里的数据是异步落盘的；
+    //   不等 'finish' 就去改名，会读到**被截断的文件** ——
+    //   而丢掉的正好是最后几行，也就是这次运行最该看的东西（最后一句字幕、最后的报错）。
+    // 这里喂**真实 WriteStream** 进去，验的就是产线用的那两个函数本身。
+    const { createWriteStream, mkdirSync, readFileSync, rmSync, statSync } = await import('node:fs')
+    const tmp = join(VAR_DIR, 'test', 'archive-suite-flush')
+    rmSync(tmp, { recursive: true, force: true })
+    mkdirSync(tmp, { recursive: true })
+    const file = join(tmp, 'relay.log')
+
+    const stream = createWriteStream(file, { flags: 'w' })
+    // 写够多：createWriteStream 的 highWaterMark 是 16KB，
+    // 写少了会一次就落盘、于是"不等写完"也照样能过 —— 那样测不出东西。
+    const lines = []
+    for (let i = 0; i < 500; i += 1) lines.push(`第 ${i} 行 ` + 'x'.repeat(80))
+    stream.write('# 头\n')
+    for (const line of lines) stream.write(line + '\n')
+    await flushLogStreams({ relay: stream })
+
+    const before = statSync(file).size
+    const result = archiveSessionLogs({ logsDir: tmp, keys: ['relay'], stamp: '20260101-000003' })
+    check('归档成功', result.archived === true, JSON.stringify(result))
+    const body = readFileSync(join(result.dir, 'relay.log'), 'utf-8')
+    check('最后一行还在（没被截断）', body.includes('第 499 行'), `长度 ${body.length} / 原文件 ${before} 字节`)
+    check('启动头也在', body.startsWith('# 头'), body.slice(0, 20))
+    // ⚠️ 要比**字节数**，不能比 `body.length`（那是 UTF-16 码元数）：
+    //    这份日志里全是中文，一个字 3 字节，两者差得很远。
+    //    （第一版就写成了 body.length，结果自己造了个假失败。）
+    check('字节数与写盘后一致（一个字节都没丢）',
+      Buffer.byteLength(body, 'utf-8') === before,
+      `${Buffer.byteLength(body, 'utf-8')} vs ${before}`)
+    rmSync(tmp, { recursive: true, force: true })
   })
 
   await it('--dry-run 不留下副作用（不写日志、不动音频）', async () => {
