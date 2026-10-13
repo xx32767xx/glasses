@@ -296,10 +296,19 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         glassesView.setPageDelayMs(glassesPageDelayMs());
         // 翻页打个诊断行：长句到底有没有翻页、翻到第几页，日志里要看得见。
         // （"翻页没发生"和"翻页了但没上屏"是两回事，日志必须能分开。）
-        glassesView.setPageListener((page, pageCount, lines) -> {
+        glassesView.setPageListener((page, pageCount, lines, pageText) -> {
             if (client == null) return;
+            boolean last = page == pageCount - 1;
+            // 把每一页的**首尾几个字**都打出来。
+            // 为什么要这个：翻页有没有发生、末页有没有把结尾那几个词带上，
+            // 光看"第几/共几页"是答不了的 —— 而那正是要验证的东西。
+            // （未页的结尾就是整句的结尾，丢了会一眼看出来。）
+            String head = pageText.length() > 14 ? pageText.substring(0, 14) + "…" : pageText;
+            String tail = pageText.length() > 14
+                    ? "…" + pageText.substring(pageText.length() - 14) : "";
             client.sendDiag("投屏：翻页 " + (page + 1) + "/" + pageCount
-                    + "（每页最多 " + lines + " 行）");
+                    + (last ? "（末页）" : "") + " 每页≤" + lines + "行  ["
+                    + head + tail + "]");
         });
         glasses = new GlassesSdk(this, new GlassesSdk.Listener() {
             @Override

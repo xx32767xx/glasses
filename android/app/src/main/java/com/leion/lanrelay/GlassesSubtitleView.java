@@ -638,7 +638,15 @@ public class GlassesSubtitleView {
 
     /** 翻页回调（界面用它打诊断行，确认"翻页真的发生了"）。 */
     public interface PageListener {
-        void onPage(int page, int pageCount, int lines);
+        /**
+         * @param page      当前第几页（从 0 起）
+         * @param pageCount 这一句共几页
+         * @param lines     每页最多几行
+         * @param text      这一页**实际显示的文字** —— 界面会把它末尾几个字打进日志，
+         *                  这样"结尾那几个词有没有丢"在日志里就直接看得见，
+         *                  不必靠盯着眼镜猜。
+         */
+        void onPage(int page, int pageCount, int lines, String text);
     }
 
     private PageListener pageListener;
@@ -662,7 +670,7 @@ public class GlassesSubtitleView {
         // ★ 翻页之后必须补一次重绘：投屏是"变化时推一串帧"，
         //   漏掉一次变化画面就会**永久**停在旧内容上（真机上踩过，见 docs/09 §12）
         forceRedraw();
-        if (pageListener != null) pageListener.onPage(page, pageCount, lastLines);
+        if (pageListener != null) pageListener.onPage(page, pageCount, lastLines, pages.get(page));
     }
 
     private void cancelPagingTimerOnly() {
