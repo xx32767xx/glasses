@@ -40,6 +40,7 @@ import { createInboxWriter } from '../bridge/asr-bridge.mjs'
 import {
   LIVE_DIR, defaultAudioIn, defaultAudioLang, defaultAudioRate, defaultBus, defaultInbox, defaultSecret,
 } from '../lib/paths.mjs'
+import { lintTranslation } from '../lib/translation-lint.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
 
@@ -51,6 +52,13 @@ export const DEFAULT_DATA_DIR = LIVE_DIR
 
 /** 每次请求体上限。字幕/一句话都很短，超过这个大小基本不是正常客户端。 */
 const MAX_BODY_BYTES = 8 * 1024
+
+/**
+ * 音频心跳的聚合间隔（毫秒）。见 `logAudioChunk` 的注释：
+ * 一秒钟一块 = 一秒钟两行，会把日志淹掉；聚合到 5 秒一行，
+ * 同时用"块 12–17（6 块）"的写法保证块号可核，不会造成"像丢了数据"的假象。
+ */
+const AUDIO_LOG_MS = 5000
 
 /**
  * 音频请求体的上限，单独一档。
@@ -91,6 +99,10 @@ const HELP = `lan-relay —— 手机 ↔ 电脑 的局域网转发进程
   --bus-poll-ms <n>     字幕总线轮询间隔（缺省 60）
   --public              公网部署模式：强制强密钥 + 每 IP 限流 + 音频总量上限
                         **绑到公网地址时必须加这个**（见 docs/10）
+  --lint                译文质检：每个定稿帧拿原文对一遍，报"确定错/警告"（**缺省就开**）
+                        判据见 lib/translation-lint.mjs（专名新造、数字/房间号丢失、
+                        性数不一致、量级错）。**只报不改**，不改字幕、不影响延迟。
+  --no-lint             关掉译文质检
   --quiet               关掉调试输出（收到的音频/文字/字幕都不打印）
   --verbose             每一块音频都打印（缺省是每秒汇总一行）
   --help
@@ -167,7 +179,7 @@ export function createRateLimiter({ windowMs, maxRequests }) {
   }
 }
 
-export function parseArgs(argv) {  const options = { port: 8788, host: '0.0.0.0', pollHoldMs: 25000, busPollMs: 60, quiet: false }
+export function parseArgs(argv) {  const options = { port: 8788, host: '0.0.0.0', pollHoldMs: 25000, busPollMs: 60, quiet: false, lint: true }
   const takesValue = new Set(['port', 'host', 'secret', 'data-dir', 'inbox', 'bus', 'audio', 'audio-rate', 'audio-lang', 'poll-hold-ms', 'bus-poll-ms'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
@@ -177,6 +189,10 @@ export function parseArgs(argv) {  const options = { port: 8788, host: '0.0.0.0'
     if (key === 'verbose') { options.verbose = true; continue }
     if (key === 'public') { options.public = true; continue }
     if (key === 'help') { options.help = true; continue }
+    // 译文质检**缺省开**：它只读不改、不拖慢字幕，而"现在到底错多少"还没有基线。
+    // 不想看就 --no-lint。
+    if (key === 'lint') { options.lint = true; continue }
+    if (key === 'no-lint') { options.lint = false; continue }
     if (!takesValue.has(key)) throw new Error(`未知选项 --${key}（用 --help 看用法）`)
     const value = argv[index + 1]
     if (value === undefined || value.startsWith('--')) throw new Error(`--${key} 需要一个值`)
@@ -471,12 +487,22 @@ export async function startRelay(rawOptions = {}) {
     connections: 0,
     lastConnectionAt: null,
     inboxLines: 0,
+    /** 译文质检（见 lib/translation-lint.mjs）：报了多少条确定错 / 警告。 */
+    lintBad: 0,
+    lintWarn: 0,
+    /** 每种错各出现几次（kind → 次数），用来一眼看出"最常犯的是哪一类"。 */
+    lintKinds: new Map(),
     writer: null,
     /** 写入串行化：收件箱的顺序就是字幕的顺序，不能乱 */
     writeChain: Promise.resolve(),
     /** 音频：已落盘字节数 / 已收块数 / 当前采样率（null = 还没收到过） */
     audioBytes: 0,
     audioChunks: 0,
+    /** 音频日志聚合用：上次打印到第几块、什么时候、当时的 rate/lang。 */
+    audioLoggedChunk: 0,
+    audioLoggedAt: 0,
+    audioLoggedRate: null,
+    audioLoggedLang: null,
     audioRateValue: null,
     audioLangValue: null,
     /** 音频写入也要串行化：追加写交错会把 PCM 数据搅碎，识别必然出错 */
@@ -485,6 +511,21 @@ export async function startRelay(rawOptions = {}) {
   }
 
   state.writer = await createInboxWriter({ inboxPath: options.inbox, format: 'text' })
+
+  // 译文质检要用的策略数据（专名表 / 名词性别表）。
+  //
+  // 直接读 policy/br-pt.json，**不走 lib/artifacts.mjs**：那个模块为了生成产物
+  // 会拖进 real-tools / test-phrases 一堆东西，而这里只要一份 JSON。
+  // 读不到就把质检关掉并说明 —— 质检是旁路，**绝不能因为它连不上而让转发起不来**。
+  state.lintPolicy = { properNouns: [], nounGenders: {} }
+  if (options.lint === true) {
+    try {
+      state.lintPolicy = JSON.parse(await readFile(join(ROOT, 'policy', 'br-pt.json'), 'utf-8'))
+    } catch (error) {
+      options.lint = false
+      debug(`⚠️ 译文质检关掉了：读不到 policy/br-pt.json（${error?.message ?? error}）`)
+    }
+  }
 
   function notifyWaiters() {
     for (const resolve of state.waiters) resolve()
@@ -521,7 +562,103 @@ export async function startRelay(rawOptions = {}) {
     // 光看文字分不出来。标一个词就能立刻分辨。
     debug(`📺 字幕已更新（第 ${state.seq} 帧·${frame.partial === true ? '增量' : '定稿'}）`
       + `[${frame.speaker ?? '?'} / ${frame.lang ?? '?'}] ${frame.text ?? ''}`)
+    lintFrame(frame)
     notifyWaiters()
+  }
+
+  /**
+   * 译文质检：把这一帧的原文与译文交给 `lib/translation-lint.mjs` 判一遍，**只报不改**。
+   *
+   * <p><b>为什么放在转发进程、而不是插件里</b>：插件（`plugin/core.mjs`）要被**内联**进
+   * 动态插件的沙箱，而那个沙箱**没有 import** —— 生成器只会剥掉 `export ` 前缀，
+   * 一个字面 `import` 会原样落进 `dynamic/leion-pro.host.js` 然后在沙箱里炸。
+   * 而字幕总线里本来就**同时带着 `source`（原文）和 `text`（译文）**，
+   * 这个进程又是唯一读它的地方 —— 所以在这里判，一行都不用动产线代码。
+   *
+   * <p>这也正是"只报"最该待的位置：它**不进入翻译管线**，
+   * 所以不可能拖慢字幕、也不可能因为自己出错而让字幕出不来。
+   * 以后要"报完顺手修"（重译或替换），那才需要进管线，届时再单独设计。
+   *
+   * <p>⚠️ **只判定稿帧**。增量帧是半句话，缺数字、缺专名都是**正常现象**
+   * （说到一半而已），拿它去判会满屏假错 —— 而假错的代价是让人开始忽略警告。
+   */
+  function lintFrame(frame) {
+    if (options.lint !== true) return
+    if (frame.partial === true) return
+    const source = typeof frame.source === 'string' ? frame.source : ''
+    const text = typeof frame.text === 'string' ? frame.text : ''
+    if (source === '' || text === '') return
+    let result
+    try {
+      result = lintTranslation(source, text, state.lintPolicy)
+    } catch (error) {
+      // 质检自己出错**绝不能影响字幕转发** —— 它只是个旁路观察者。
+      debug(`⚠️ 译文质检本身出错（已忽略）：${error?.message ?? error}`)
+      return
+    }
+    for (const note of result.notes) {
+      state.lintKinds.set(note.kind, (state.lintKinds.get(note.kind) ?? 0) + 1)
+    }
+    state.lintBad += result.fatal.length
+    state.lintWarn += result.warn.length
+    if (result.notes.length === 0) return
+    // 报的时候必须**把原文和译文一起打出来**：只说"专名新造"没法判断，
+    // 得看到"原文是亮亮视野、译文写成了 Liangliang"才能一眼确认。
+    for (const note of result.notes) {
+      const mark = note.level === 'bad' ? '❌ 确定错' : '⚠️ 警告'
+      debug(`🔍 ${mark}（${note.kind}）：${note.text}`)
+    }
+    debug(`   原文 ${source}`)
+    debug(`   译文 ${text}`)
+  }
+
+  /**
+   * 打印一块收到的音频（+ 电平），**默认按 5 秒聚合**。
+   *
+   * <p><b>为什么不是每块都打</b>：一秒钟一块，也就是一秒钟两行（一块一行 + 电平一行）。
+   * 实测一场 2 分半的会话：350 行日志里 **280 行是这两行心跳**，
+   * 而真正要看的东西（19 条字幕、25 条手机诊断、质检报告）被淹在中间 ——
+   * "看日志判断准确率"这件事就做不成了。
+   *
+   * <p>⚠️ <b>但这里踩过一个坑，改之前必须先看懂</b>：早先按秒节流（阈值 900ms），
+   * 因为**把块号一起吞掉了**，手机上看到的块号像 1,2,3,5 —— 看起来像丢了数据，
+   * 其实只是被节流没打印。**这种"看起来像故障"的日志比不打印更糟。**
+   *
+   * <p>所以这里的做法是：**聚合但绝不隐藏块号** —— 一行的开头就写明
+   * `块 12–17（6 块）`，范围和块数都在。想核"有没有丢块"，
+   * 相邻两行的范围首尾相接就证完了，不需要逐块打印。
+   *
+   * <p>要回到逐块打印用 `--verbose`（排查音频本身的问题时才需要）。
+   *
+   * <p>⚠️ 已知的一个小缺口：**音频停止之后，最后一小段窗口不会补打**
+   * （聚合是"下一块到了才知道上一段该收尾了"，而这里没有"录音结束"事件）。
+   * 所以"一共收了多少"要看 `/status` 的 `audioBytes` / `audioChunks` ——
+   * 那两个数永远是准的，日志只是心跳。
+   */
+  function logAudioChunk(body, info) {
+    const chunk = state.audioChunks
+    const previous = state.audioLoggedChunk
+    const elapsed = Date.now() - state.audioLoggedAt
+    const first = previous === 0
+    // 新一次录音 / 采样率或语种变了 → 立刻打，这些是"状态变了"，不能等
+    const important = first || info.fresh === true
+      || info.rate !== state.audioLoggedRate || info.lang !== state.audioLoggedLang
+    if (options.verbose !== true && important === false && elapsed < AUDIO_LOG_MS) return
+
+    const from = previous + 1
+    const count = chunk - previous
+    const range = count <= 1 ? `第 ${chunk} 块` : `块 ${from}–${chunk}（${count} 块）`
+    // 措辞说明白：音源现在可能是眼镜的麦克风（见 docs/09 §12），不再是"手机音频"。
+    // 转发进程本身看不到音源（链路上没有这个字段），所以这里只说"音频"，
+    // 不替调用方声称它来自哪个设备。
+    debug(`📥 收到音频：${range} → 累计 ${info.totalSeconds.toFixed(1)}s`
+      + ` @ ${info.rate}Hz，语种 ${info.lang}${info.fresh === true ? '（开始了新一次录音）' : ''}`)
+    // 电平单独一行：这是"到底有没有录到人声"的唯一直接证据（见 pcmLevel 的注释）
+    debug(`   ${describeLevel(pcmLevel(body))}`)
+    state.audioLoggedChunk = chunk
+    state.audioLoggedAt = Date.now()
+    state.audioLoggedRate = info.rate
+    state.audioLoggedLang = info.lang
   }
 
   const busTimer = setInterval(() => { void pollBus() }, options.busPollMs)
@@ -802,18 +939,12 @@ export async function startRelay(rawOptions = {}) {
         }
 
         const totalSeconds = state.audioRateValue ? state.audioBytes / 2 / state.audioRateValue : 0
-        // 调试：让这个终端能直接看出"音频上来了"。
-        // **每一块都打印** —— 用户要的就是"收到手机的音频就输出"。
-        // 早先按秒节流（阈值 900ms），结果手机上块号看着像 1,2,3,5，像是丢了数据，
-        // 其实只是被节流吞掉了 —— 这种"看起来像故障"的日志比不打印更糟。要安静就用 --quiet。
-        // 措辞说明白：音源现在可能是眼镜的麦克风（见 docs/09 §12），不再是"手机音频"。
-        // 转发进程本身看不到音源（链路上没有这个字段），所以这里只说"音频"，
-        // 不替调用方声称它来自哪个设备。
-        debug(`📥 收到音频：+${body.length} 字节（第 ${state.audioChunks} 块）`
-          + ` → 累计 ${totalSeconds.toFixed(1)}s @ ${state.audioRateValue ?? rate}Hz`
-          + `，语种 ${state.audioLangValue ?? lang}${fresh ? '（手机开始了新一次录音）' : ''}`)
-        // 电平单独一行：这是"手机到底有没有录到人声"的唯一直接证据
-        debug(`   ${describeLevel(pcmLevel(body))}`)
+        logAudioChunk(body, {
+          fresh,
+          rate: state.audioRateValue ?? rate,
+          lang: state.audioLangValue ?? lang,
+          totalSeconds,
+        })
         send(response, 200, {
           ok: true,
           bytes: body.length,
@@ -933,6 +1064,12 @@ export async function startRelay(rawOptions = {}) {
           rejected: state.rejected,
           rateLimited: state.rateLimited,
           diagLines: state.diagLines,
+          // 译文质检：定稿帧里判出多少条确定错 / 警告，以及**每类各几条**。
+          // 放上来是为了不用 grep 日志就能看到"这一场到底错了多少、错在哪一类"。
+          lint: options.lint === true,
+          lintBad: state.lintBad,
+          lintWarn: state.lintWarn,
+          lintKinds: Object.fromEntries([...state.lintKinds].sort((a, b) => b[1] - a[1])),
           waiting: state.waiters.size,
           busSeen: state.lastFrame !== null,
           // 「手机有没有连到这里」的证据。手机连不上时它自己没法说话，

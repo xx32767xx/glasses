@@ -46,6 +46,8 @@ export async function runRelaySuite({ it, check, assert }) {
   const relay = await startRelay({
     port: 0, host: '127.0.0.1', secret: 'test-secret', inbox, bus,
     dataDir: TMP, pollHoldMs: 300, busPollMs: 30, quiet: true,
+    // 译文质检开着：下面 §3b 用它验"定稿帧判错、增量帧不判"。
+    lint: true,
   })
   const base = `http://127.0.0.1:${relay.port}`
 
@@ -164,6 +166,7 @@ export async function runRelaySuite({ it, check, assert }) {
       JSON.stringify({ cols: result.json.cols, lineBudget: result.json.lineBudget }))
   })
 
+
   await it('长轮询：没有新帧就挂住，来新帧后立刻返回（不是等超时）', async () => {
     const started = Date.now()
     const pending = call('/frame?since=1')
@@ -205,6 +208,69 @@ export async function runRelaySuite({ it, check, assert }) {
     const status = await call('/status')
     check('服务还在', status.status === 200, String(status.status))
     check('ok', status.json.ok === true)
+  })
+
+  // ── 3b. 译文质检（只报不改）────────────────────────────────────────────────
+  //
+  // 判据本身在 tests/lint-suite.mjs 里逐条测过；这里测的是**接线**：
+  // 定稿帧要判、增量帧不许判（半句话缺数字是正常的，判了就是满屏假错）、
+  // 而且判错**绝不能让字幕转发受影响** —— 它是旁路。
+
+  await it('译文质检：定稿帧里的"专名新造"要报出来，并计入 /status', async () => {
+    const before = (await call('/status')).json
+    const bad = frame('Nós e o Liangliang interpretamos esse óculos,', {
+      source: '我们和亮亮视野合作开发的这款 Leion Pro，用的是高通的芯片，系统版本是安卓十二。',
+      partial: false,
+    })
+    await writeFile(bus, JSON.stringify(bad), 'utf-8')
+    let after = null
+    for (let i = 0; i < 40 && (after?.json?.lintBad ?? 0) <= (before.lintBad ?? 0); i += 1) {
+      await sleep(30)
+      after = await call('/status')
+    }
+    check('lint 开着', after.json.lint === true, JSON.stringify(after.json.lint))
+    check('报出 1 条确定错', after.json.lintBad === before.lintBad + 1,
+      `${before.lintBad} → ${after.json.lintBad}`)
+    check('错类记成"专名新造"', after.json.lintKinds?.['专名新造'] >= 1,
+      JSON.stringify(after.json.lintKinds))
+    check('字幕照常下发（质检没有挡住它）', after.json.seq > before.seq,
+      `${before.seq} → ${after.json.seq}`)
+  })
+
+  await it('译文质检：增量帧不判（半句话缺专名是正常的，判了就是假错）', async () => {
+    const before = (await call('/status')).json
+    const partial = frame('Nós e o Liangliang', {
+      source: '我们和亮亮视野合作开发的这款 Leion Pro，用的是高通的芯片，系统版本是安卓十二。',
+      partial: true,
+    })
+    await writeFile(bus, JSON.stringify(partial), 'utf-8')
+    let after = null
+    for (let i = 0; i < 40 && (after?.json?.seq ?? 0) <= (before.seq ?? 0); i += 1) {
+      await sleep(30)
+      after = await call('/status')
+    }
+    check('帧确实收到了（seq 涨了）', after.json.seq > before.seq, `${before.seq} → ${after.json.seq}`)
+    check('但一条错都没报', after.json.lintBad === before.lintBad,
+      `${before.lintBad} → ${after.json.lintBad}`)
+    check('警告也没多', after.json.lintWarn === before.lintWarn,
+      `${before.lintWarn} → ${after.json.lintWarn}`)
+  })
+
+  await it('译文质检：没有原文的帧不判（判据要靠原文，凭空判必然误报）', async () => {
+    const before = (await call('/status')).json
+    // ⚠️ 这一句的译文里**故意放一个真错**（`do segundo sala`：sala 是阴性，应作 `da segunda sala`）。
+    //    为什么非要用"性数不一致"来测：判据里只有它**完全不需要原文**
+    //    （`agreementProblems` 只看译文）。所以这个用例才真的在测那道"没有原文就不判"的闸 ——
+    //    换成专名来测的话，原文为空时本来就匹配不上，那种测试**怎么都能过**，等于没测。
+    await writeFile(bus, JSON.stringify(frame('O local foi alterado do segundo sala no 12º andar.')), 'utf-8')
+    let after = null
+    for (let i = 0; i < 40 && (after?.json?.seq ?? 0) <= (before.seq ?? 0); i += 1) {
+      await sleep(30)
+      after = await call('/status')
+    }
+    check('帧收到了', after.json.seq > before.seq, `${before.seq} → ${after.json.seq}`)
+    check('不判 → 不报', after.json.lintBad === before.lintBad,
+      `${before.lintBad} → ${after.json.lintBad}`)
   })
 
   // ── 4. 错误与边界 ──────────────────────────────────────────────────────────
