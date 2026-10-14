@@ -21,6 +21,8 @@ import sys
 import os
 import subprocess
 import wave
+import contextlib
+import io
 from pathlib import Path
 
 import numpy as np
@@ -31,7 +33,7 @@ sys.path.insert(0, str(ROOT / "bridge"))
 from whisper_stream import (   # noqa: E402
     IdleTracker, LANGUAGE_PROMPTS, PcmFollower, SPEECH_RMS_FLOOR, UtteranceSegmenter,
     decide_no_speech, looks_like_hallucination, looks_like_prompt_echo,
-    normalize_peak, parse_args, prompt_for, rms_of, whisper_language_of,
+    normalize_peak, parse_args, pick_language, prompt_for, rms_of, whisper_language_of,
 )
 from whisper_transcribe import TARGET_RATE, load_audio                    # noqa: E402
 from asr_eval import (   # noqa: E402
@@ -393,6 +395,55 @@ def main():
     check("认不出来返回 None（交给 Whisper 自动判定，不瞎猜）",
           whisper_language_of("klingon") is None, str(whisper_language_of("klingon")))
     check("None / 空值不炸", whisper_language_of(None) is None and whisper_language_of("") is None)
+
+    # ── 9b. 限定候选语种（护栏）───────────────────────────────────────────────
+    #
+    # 不指定语种时，Whisper 会在**99 种语言**里挑一个。实测（pt-coraa 20 条真实口语）：
+    #   不限定 → 判定 {pt:19, **he**:1}，词错率 13.3%，被认成希伯来语的那条**整句报废**
+    #   限定到 zh,pt → 只会是这两种，词错率 12.2%（与"直接强制 pt"一模一样）
+    # 这个系统只可能是中文与巴葡，所以"在 99 种里挑"是纯亏的自由度。
+    heading("限定候选语种 · --lang-candidates")
+    check("缺省就是 zh,pt（护栏默认生效，不靠人记得加）",
+          parse_args([]).lang_candidates == ("zh", "pt"), str(parse_args([]).lang_candidates))
+    check("显式写也对", parse_args(["--lang-candidates", "zh,pt"]).lang_candidates == ("zh", "pt"))
+    check("顺序按写法走、重复会去掉",
+          parse_args(["--lang-candidates", "pt,pt,zh"]).lang_candidates == ("pt", "zh"),
+          str(parse_args(["--lang-candidates", "pt,pt,zh"]).lang_candidates))
+    check("空串 = 关掉限定（回到全域挑最大，即会挑出 he 的旧行为）",
+          parse_args(["--lang-candidates", ""]).lang_candidates is None,
+          str(parse_args(["--lang-candidates", ""]).lang_candidates))
+    # ⚠️ 写错语种码必须**明确报错**，不能静默变成空集 ——
+    #    空集会让"限定"悄悄失效，而"护栏悄悄失效"是最难发现的一类问题。
+    #
+    # 把 argparse 的报错**收进缓冲区**：它是被故意触发的，不该出现在全量验证的输出里 ——
+    # 否则每次跑完都会有一行 `error: ...` 挂在 stderr 上，让人以为真出错了
+    # （"狼来了"的代价是下次真出错时没人看）。
+    bad_codes_rejected = False
+    noise = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(noise):
+            parse_args(["--lang-candidates", "zh,tlh"])
+    except SystemExit:
+        bad_codes_rejected = True
+    check("认不出的语种码直接报错（不许静默失效）", bad_codes_rejected,
+          "写了 zh,tlh 却没报错")
+    check("报错里说清了是哪个码不对（可照做）",
+          "tlh" in noise.getvalue(), noise.getvalue()[:80])
+
+    # 挑选逻辑本身：喂假概率表，不需要模型。
+    # 这正是"抽成纯函数"的目的 —— 判错了整句都错，所以必须能被逐条钉住。
+    tricky = [("he", 0.64), ("pt", 0.30), ("zh", 0.02)]
+    check("全局最大是 he 时，限定到 zh,pt 要取 pt（实测那条整句报废就是 he）",
+          pick_language(tricky, ("zh", "pt")) == "pt", str(pick_language(tricky, ("zh", "pt"))))
+    check("不限定时仍然取全局最大（保留旧行为，便于对照）",
+          pick_language(tricky, None) is None, "None = 不判，由调用方交给 Whisper 自动")
+    clear = [("pt", 0.91), ("zh", 0.05)]
+    check("本来就是对的时候结果不变", pick_language(clear, ("zh", "pt")) == "pt",
+          str(pick_language(clear, ("zh", "pt"))))
+    check("中文占优时取 zh（双向都要能用）",
+          pick_language([("zh", 0.88), ("pt", 0.06)], ("zh", "pt")) == "zh")
+    check("候选里一个都没有 → 返回 None（不硬选一个）",
+          pick_language([("en", 0.5), ("fr", 0.4)], ("zh", "pt")) is None)
 
     # ── 10. 输出编码（真实事故：识别结果变乱码，一句字幕都出不来）─────────────
     #

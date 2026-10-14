@@ -239,6 +239,22 @@ export async function runBridgeSuite({ it, check, assert }) {
     check('把语种转成了 --language pt', options.command.includes('--language pt'), options.command)
   })
 
+  await it('parseArgs：--from 必须**同时**关掉侧车语种，否则这个开关是假的', async () => {
+    // ⚠️ 真实踩到的坑：whisper_stream 默认听手机发来的 audio-in.lang，**优先于命令行**；
+    //    而安卓那边 sourceLang 的缺省值就是 pt-BR。于是 `--from zh-CN` 会被手机的声明
+    //    覆盖成 pt —— 正好是反的，而且**安静地**反（识别会把中文"翻"成葡语，
+    //    日志上看不出异常）。所以 --from 必须带上 --no-sidecar-lang。
+    const zh = parseArgs(['--inbox', 'a.jsonl', '--engine', 'whisper', '--from', 'zh-CN'])
+    check('--from zh-CN → --language zh', zh.command.includes('--language zh'), zh.command)
+    check('--from zh-CN → 带 --no-sidecar-lang', zh.command.includes('--no-sidecar-lang'), zh.command)
+    const pt = parseArgs(['--inbox', 'a.jsonl', '--engine', 'whisper', '--from', 'pt-BR'])
+    check('--from pt-BR → 也带 --no-sidecar-lang', pt.command.includes('--no-sidecar-lang'), pt.command)
+    // 没给 --from 时**不能**动侧车 —— 手机上的「听葡语/听中文」开关要靠它生效
+    const auto = parseArgs(['--inbox', 'a.jsonl', '--engine', 'whisper'])
+    check('没给 --from 就不许关侧车（否则手机切语种会失效）',
+      auto.command.includes('--no-sidecar-lang') === false, auto.command)
+  })
+
   await it('parseArgs：whisper 的模型/设备/精度能透传到 Python 脚本', async () => {
     const options = parseArgs([
       '--inbox', 'a.jsonl', '--engine', 'whisper', '--from', 'pt-BR',

@@ -64,7 +64,10 @@ def parse_args():
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--compute-type", default="int8")
     parser.add_argument("--language", default=None,
-                        help="固定语种（zh / pt）；缺省自动判定")
+                        help="固定语种（zh / pt）；缺省限定在 --lang-candidates 里挑")
+    parser.add_argument("--lang-candidates", default="zh,pt",
+                        help="不指定语种时的候选集（逗号分隔，缺省 zh,pt；空串=不限定，"
+                             "回到「99 种里挑最大」—— 那正是会挑出 he 的旧行为）")
     parser.add_argument("--beam-size", type=int, default=5, help="缺省 5（与生产链路一致）")
     parser.add_argument("--no-normalize", action="store_true",
                         help="不做峰值归一化（缺省做，与生产链路一致）")
@@ -283,8 +286,18 @@ def main():
             if peak > 1e-6:
                 audio = audio * (0.9 / peak)
         start = time.perf_counter()
+        # 不指定语种时**限定候选集**：与产线 whisper_stream.py 同一个做法、同一个理由。
+        # 不加这一步的话，评测里的"语种判定"是在 99 种语言里挑最大 ——
+        # 实测就会挑出 he（希伯来语）并把整句报废，而产线根本不会那样做，
+        # 于是评测与产线的行为**不一致**，数字也就不能代表产线。
+        language = args.language
+        if language is None and args.lang_candidates:
+            _detected, _prob, all_probs = model.detect_language(audio)
+            picks = [(code, p) for code, p in all_probs if code in args.lang_candidates]
+            if picks:
+                language = max(picks, key=lambda item: item[1])[0]
         segments, info = model.transcribe(
-            audio, language=args.language, beam_size=args.beam_size,
+            audio, language=language, beam_size=args.beam_size,
             vad_filter=True, condition_on_previous_text=False,
             initial_prompt=args.initial_prompt,
         )

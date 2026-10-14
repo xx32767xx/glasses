@@ -300,7 +300,16 @@ export function parseArgs(argv) {
       // 注意：只有自动拼出来的命令才追加这些参数；用户自己写了 --command 就原样执行，
       // 免得"你以为跑的是你的命令，其实被塞了两个参数"。
       let command = `python "${join(HERE, 'whisper_stream.py')}"`
-      if (options.from !== undefined) command += ` --language ${options.from === 'zh-CN' ? 'zh' : 'pt'}`
+      if (options.from !== undefined) {
+        command += ` --language ${options.from === 'zh-CN' ? 'zh' : 'pt'}`
+        // ⚠️ **必须同时关掉侧车语种**，否则 `--from` 是**假的**：
+        //    whisper_stream 默认听手机发来的 `audio-in.lang`，而且**优先于命令行**；
+        //    而安卓那边 `sourceLang` 的缺省值就是 `pt-BR`。
+        //    于是 `--from zh-CN` 会被手机的声明覆盖成 pt —— 正好是反的，
+        //    而且**安静地**反：识别会把中文"翻"成葡语，日志上看不出异常。
+        //    （真实踩到：这是我上一版接线时漏掉的，`--from` 看着生效其实没生效。）
+        command += ' --no-sidecar-lang'
+      }
       if (options['whisper-follow'] !== undefined) command += ` --follow "${options['whisper-follow']}"`
       if (options['whisper-model'] !== undefined) command += ` --model ${options['whisper-model']}`
       if (options['whisper-device'] !== undefined) command += ` --device ${options['whisper-device']}`

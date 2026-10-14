@@ -115,7 +115,12 @@ def whisper_language_of(tag):
     if not isinstance(tag, str):
         return None
     code = tag.strip().split("-")[0].strip().lower()
-    return code if code in ("pt", "zh", "en", "es") else None
+    return code if code in WHISPER_LANG_CODES else None
+
+
+# 这个系统可能出现的语种码（与 relay 的 LANGS、桥接的校验保持一致）。
+# 用来校验 `--lang-candidates`，免得写错了变成"限定悄悄失效"。
+WHISPER_LANG_CODES = ("pt", "zh", "en", "es")
 
 
 # ── 参数 ─────────────────────────────────────────────────────────────────────
@@ -129,6 +134,15 @@ def parse_args(argv=None):
     parser.add_argument("--compute-type", default="int8",
                         help="int8 / int8_float16 / float16 / float32（CPU 用 int8，GPU 用 float16）")
     parser.add_argument("--language", default=None, help="固定语种（zh / pt）；缺省自动判定")
+    # 限定候选语种：不指定 `--language` 时，只在候选里挑，而不是在 99 种语言里挑。
+    #
+    # 实测依据（pt-coraa 20 条真实巴葡口语，large-v3）：
+    #   不限定 → 判定 {pt:19, he:1}，词错率 13.3%，那条被认成希伯来语的整句报废（100%）
+    #   限定   → 只会是 pt 或 zh，整体 12.2%
+    # 这个系统只可能是中文与巴葡，所以"在 99 种里挑"是纯亏的自由度。
+    # 传空串（`--lang-candidates ""`）可以关掉限定，回到"全域挑最大"。
+    parser.add_argument("--lang-candidates", default="zh,pt",
+                        help="不指定语种时的候选集（逗号分隔，缺省 zh,pt；空串=不限定）")
     parser.add_argument("--file", default=None, help="转写一个音频文件而不是麦克风")
     parser.add_argument("--follow", default=None,
                         help="尾随一个**不断追加**的裸 PCM 文件（16-bit 小端、单声道）。"
@@ -218,7 +232,21 @@ def parse_args(argv=None):
     parser.add_argument("--min-logprob", type=float, default=-1.00,
                         help="avg_logprob 低于这个值就丢弃该段（太不确定就别显示）")
     parser.add_argument("--self-check", action="store_true", help="只检查依赖与模型能否加载")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    # 把 `--lang-candidates zh,pt` 解析成集合；空串 = 不限定（回到全域挑最大）。
+    # 顺带做校验：写错了就**明确报错**，而不是静默变成一个空集（空集会让限定悄悄失效，
+    # 而"护栏悄悄失效"正是最难发现的一类问题）。
+    raw = (args.lang_candidates or "").strip()
+    if raw == "":
+        args.lang_candidates = None
+    else:
+        codes = [part.strip().lower() for part in raw.split(",") if part.strip() != ""]
+        unknown = [code for code in codes if code not in WHISPER_LANG_CODES]
+        if unknown:
+            parser.error(f"--lang-candidates 里有认不出的语种码：{unknown}"
+                         f"（可用：{', '.join(sorted(WHISPER_LANG_CODES))}）")
+        args.lang_candidates = tuple(dict.fromkeys(codes))   # 去重且保持顺序
+    return args
 
 
 # ── 依赖 ─────────────────────────────────────────────────────────────────────
@@ -692,11 +720,64 @@ def preview(text, limit=40):
     return flat if len(flat) <= limit else flat[:limit] + "…"
 
 
+def pick_language(all_probs, candidates):
+    """在**候选集**里挑概率最大的语种码；候选一个都没有就返回 None（表示"不判"）。
+
+    <p>抽成纯函数就是为了能被测试逐条钉住 —— 它决定"这句话按哪种语言去识别"，
+    判错了整句都是错的（而且**安静地**错：强制错语种会让识别输出"译文"而非乱码）。
+    模型跑不起来的环境里也应该能验它，所以它不碰模型、只吃概率表。
+
+    @param all_probs 形如 [("pt", 0.97), ("he", 0.01), ...]
+    @param candidates 语种码的可迭代对象；None/空 表示不限定
+    """
+    if not candidates:
+        return None
+    picks = [(code, prob) for code, prob in all_probs if code in set(candidates)]
+    if not picks:
+        return None
+    return max(picks, key=lambda item: item[1])[0]
+
+
 def transcribe(model, audio, language, min_logprob, no_speech_prob,
                beam_size=1, initial_prompt=None, do_normalize=True,
-               speech_floor=SPEECH_RMS_FLOOR):
+               speech_floor=SPEECH_RMS_FLOOR, candidates=None):
     """返回 (文字, 是否被丢弃, 丢弃原因, 是否用"电平证据"压过了 no_speech_prob)。"""
     data = normalize_peak(audio) if do_normalize else audio
+    if language is None and candidates:
+        # ── 限定候选语种 ────────────────────────────────────────────────────
+        #
+        # 为什么需要这一步：不指定语种时 Whisper 会在**99 种语言**里挑一个。
+        # 实测（pt-coraa，20 条真实巴葡口语，large-v3）：
+        #   不限定  → 语种判定 {pt:19, **he**:1}，词错率 13.3%
+        #             被认成希伯来语的那一条**整句报废（词错率 100%）**
+        #   限定    → 只会是 pt 或 zh，那一条从 100% 降到 60%，整体 12.2%
+        #
+        # 而这个系统**只可能是两种语言**（中文 / 巴葡），
+        # 所以"在 99 种里挑"这件事本身就是多余的自由度：
+        # 多出来的每一种语言都是一个**纯亏**的失败可能。
+        #
+        # ⚠️ 成本要说准，别说成"免费"：**相对于自动判定是零额外成本**
+        #    `transcribe(language=None)` 内部本来就是"先检测、再解码"，
+        #    这里只是把同一步的结果**在候选里取最大**而不是全域取最大。
+        #    实测（large-v3/CUDA，1.63 秒片段，取 5 次最快）：
+        #        transcribe('pt')                     650 ms   ← 强制语种最便宜
+        #        detect_language()                    507 ms
+        #        detect_language() + transcribe('pt') 1045 ms  ← 本函数现在的做法
+        #        transcribe(None)（自动判定）          1204 ms  ← 与上一行是同一件事
+        #    也就是说：**限定候选集不比自动判定贵，但自动判定比强制语种贵 1.9 倍**
+        #    （检测要把短音频补到 30 秒窗口跑一遍编码器，短片段上这笔钱很显眼 ——
+        #     同传的总延迟才 1.3~2.2 秒，500ms/句不是小数目）。
+        #    所以**最优解仍然是"让手机声明语种"**（那样走强制语种路径、又快又准）；
+        #    候选集是"没人声明时"的兜底护栏。
+        detected, _prob, all_probs = model.detect_language(data)
+        picked = pick_language(all_probs, candidates)
+        if picked is not None:
+            if picked != detected:
+                # 记录下来：这正是"本来会判错"的那些句子，是这条护栏在起作用的证据。
+                print(f"[whisper_stream] 语种限定生效：全局最大是 {detected}，"
+                      f"限定到 {tuple(candidates)} 后取 {picked}",
+                      file=sys.stderr, flush=True)
+            language = picked
     segments, _info = model.transcribe(
         data,
         language=language,
@@ -1046,6 +1127,8 @@ def main():
             # 缺省按语种给提示词（实测能压繁体、提准确率）；--no-prompt 才不发。
             initial_prompt=None if args.no_prompt else prompt_for(active["language"], args.initial_prompt),
             do_normalize=not args.no_normalize,
+            # 只有在**没指定语种**时才用得上（指定了就不检测）。见 transcribe 里的说明。
+            candidates=args.lang_candidates,
         )
         elapsed = time.perf_counter() - start
         stats.add(seconds, elapsed, empty)   # 每段都记：短段的固定开销正是同传的敌人
