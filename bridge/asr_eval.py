@@ -33,9 +33,11 @@ asr_eval.py —— 用带标准答案的葡语音频，测出"识别得准不准
 """
 
 import argparse
+import hashlib
 import io
 import json
 import re
+import subprocess
 import sys
 import time
 import wave
@@ -46,6 +48,10 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from whisper_transcribe import TARGET_RATE, decode_with_av   # noqa: E402
+from asr_score import (                                       # noqa: E402
+    SCORING_RULES_VERSION, TRADITIONAL_ONLY, count_traditional, error_rate,
+    key_term_hits, normalize, overall_rate, percentile,
+)
 
 
 def parse_args():
@@ -87,17 +93,8 @@ def parse_args():
 # 所以中文按**字**算 CER（Character Error Rate），葡语按词算 WER。
 
 # 只在繁体里出现的常用字。用来把"输出成繁体"这个已知毛病**量化**出来 ——
-# 否则 CER 只会告诉你"错了"，不会告诉你"错在哪一类"。
-# （不是完备的繁简对照表，只覆盖口语里最常出现的一批；所以指标叫"疑似繁体字数"。）
-TRADITIONAL_ONLY = set(
-    "這說麼為個們來時會對開過實現學國產與東車門見長問間題讓從應該裡樣還進發經頭幾語聽讀寫"
-    "電話點認識覺辦體條壓點無萬業員這樣實際應該處理總機關於當來後東車馬鳥魚龍風飛隻億據"
-    "處臟選擇觀觀點運動員圖書館總結經驗營運營養")
-# 这些字在简体里也这么写，去掉以免误报（上面列表里混进来的）。
-TRADITIONAL_ONLY -= set("由只几只")
 
 CJK = re.compile(r"[\u4e00-\u9fff]")
-PUNCT = re.compile(r"[^\w\u4e00-\u9fff]", flags=re.UNICODE)
 
 
 def looks_chinese(text):
@@ -124,53 +121,12 @@ def detect_unit(reference_texts):
     return "char" if chinese * 2 > len(samples) else "word"
 
 
-def normalize(text, unit="word"):
-    """比较前先归一。
-
-    两种单位都要做的：统一小写、去标点。
-    差别在于**空白**：
-      · word —— 用空白分词，所以把标点换成空格再合并（葡语的重音**必须保留**，那是有意义的）。
-      · char —— 中文里的空白不是语义的一部分（而且 FLEURS 的 transcription 字段是逐字用空格
-        分开的），所以要把空白**全部删掉**，否则"字数"会被空格搞错。
-    """
-    text = text.lower().replace("’", "'")
-    if unit == "char":
-        return PUNCT.sub("", text)
-    text = re.sub(r"[^\w\s']", " ", text, flags=re.UNICODE)
-    return " ".join(text.split())
-
-
-def count_traditional(text):
-    """数一数输出里出现了多少个"疑似繁体专用字"。"""
-    return sum(1 for char in text if char in TRADITIONAL_ONLY)
-
-
-def edit_distance(sequence_a, sequence_b):
-    """编辑距离（滚动数组，长句不吃内存）。"""
-    previous = list(range(len(sequence_b) + 1))
-    for i, item_a in enumerate(sequence_a, start=1):
-        current = [i] + [0] * len(sequence_b)
-        for j, item_b in enumerate(sequence_b, start=1):
-            cost = 0 if item_a == item_b else 1
-            current[j] = min(previous[j] + 1,        # 删除
-                             current[j - 1] + 1,     # 插入
-                             previous[j - 1] + cost)  # 替换 / 正确
-        previous = current
-    return previous[len(sequence_b)]
-
-
-def error_rate(reference, hypothesis, unit="word"):
-    """返回 (错误率, 参考单位数, 距离)。中文 unit='char' 时就是 CER。"""
-    if unit == "char":
-        ref = list(normalize(reference, "char"))
-        hyp = list(normalize(hypothesis, "char"))
-    else:
-        ref = normalize(reference, "word").split()
-        hyp = normalize(hypothesis, "word").split()
-    if not ref:
-        return float("nan"), 0, 0
-    distance = edit_distance(ref, hyp)
-    return distance / len(ref), len(ref), distance
+# ⚠️ 评分相关的实现（normalize / count_traditional / error_rate / edit_distance）
+#    **已经搬到 bridge/asr_score.py**，理由写在那里：评分规则要冻结、带版本号、能被逐条测试。
+#    这里只从那边 import 再转出来 —— 以前 `asr_eval.error_rate` 是 3 元组，
+#    现在统一成 dict（多了替换/删除/插入），segment_eval.py 已跟着改。
+#    ⚠️ **绝对不要在本文件里重新定义这些函数**：定义了就会把 import 进来的**盖掉**，
+#    于是"用新评分"变成"看着像用新评分、其实还是旧的" —— 我这一版就是这么错了一次。
 
 
 # ── 抽取测试集 ───────────────────────────────────────────────────────────────
@@ -241,6 +197,41 @@ def read_manifest(wavset):
     return path, items
 
 
+def run_provenance(args, wavset, items, unit):
+    """把"这次运行到底是什么配置"固化下来。
+
+    老师 §六 的要求：每次运行绑定 **代码 / 模型 / 提示词 / 参数 / 数据清单 / 评分规则版本**。
+    为什么要这么细：报告一旦离开现场，"这个 12.2% 是哪一版代码、哪个模型、哪批数据算的"
+    就没人说得清 —— 而过几周连自己都记不住。git 提交号与数据清单指纹能让它可复现。
+    """
+    manifest = Path(wavset) / "manifest.jsonl"
+    digest = hashlib.sha256()
+    if manifest.is_file():
+        digest.update(manifest.read_bytes())
+    commit = None
+    try:
+        commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=str(HERE.parent),
+                                capture_output=True, text=True, timeout=5).stdout.strip() or None
+    except Exception:
+        commit = None
+    return {
+        "codeCommit": commit,
+        "scoringRules": SCORING_RULES_VERSION,
+        "model": args.model,
+        "device": args.device,
+        "computeType": args.compute_type,
+        "beamSize": args.beam_size,
+        "language": args.language,
+        "langCandidates": list(args.lang_candidates) if args.lang_candidates else None,
+        "initialPrompt": args.initial_prompt,
+        "normalizePeak": not args.no_normalize,
+        "unit": unit,
+        "dataset": str(wavset),
+        "manifestSha256": digest.hexdigest()[:16],
+        "sampleCount": len(items),
+    }
+
+
 def main():
     args = parse_args()
     if args.extract:
@@ -277,10 +268,19 @@ def main():
     print(f"预热完成：{time.perf_counter() - warm_start:.2f}s")
 
     rows = []
+    failures = []
     for item in items:
         sys.stdout.write(".")
         sys.stdout.flush()
-        audio = _read_wav(wavset / item["file"])
+        # ⚠️ 每条的加载与推理都单独兜住 —— 老师的要求："检查样本是否全部完成；
+        #    **加载失败不能静默排除**"。静默排除会让"只测了 460/500 条"看起来像"全测完了"，
+        #    而且失败的那些往往是坏文件/异常音频，恰恰最该被看见。
+        try:
+            audio = _read_wav(wavset / item["file"])
+        except Exception as error:
+            failures.append({"file": item["file"], "stage": "load",
+                             "error": f"{type(error).__name__}: {error}"})
+            continue
         if not args.no_normalize:
             peak = float(np.max(np.abs(audio))) if audio.size else 0.0
             if peak > 1e-6:
@@ -296,34 +296,51 @@ def main():
             picks = [(code, p) for code, p in all_probs if code in args.lang_candidates]
             if picks:
                 language = max(picks, key=lambda item: item[1])[0]
-        segments, info = model.transcribe(
-            audio, language=language, beam_size=args.beam_size,
-            vad_filter=True, condition_on_previous_text=False,
-            initial_prompt=args.initial_prompt,
-        )
-        text = " ".join(seg.text.strip() for seg in segments).strip()
+        try:
+            segments, info = model.transcribe(
+                audio, language=language, beam_size=args.beam_size,
+                vad_filter=True, condition_on_previous_text=False,
+                initial_prompt=args.initial_prompt,
+            )
+            text = " ".join(seg.text.strip() for seg in segments).strip()
+        except Exception as error:
+            # 推理失败也要记下来，不能让它把"少测了几条"藏起来
+            failures.append({"file": item["file"], "stage": "transcribe",
+                             "error": f"{type(error).__name__}: {error}"})
+            continue
         elapsed = time.perf_counter() - start
-        score, ref_units, distance = error_rate(item["reference"], text, unit)
+        score = error_rate(item["reference"], text, unit)
         rows.append({
             "file": item["file"],
             "seconds": item["seconds"],
             "reference": item["reference"],
             "hypothesis": text,
-            "rate": score,
-            "units": ref_units,
-            "distance": distance,
+            # ── 老师的 §八：逐条保存 参考原文 / 识别原文 / 替换·删除·插入 / 耗时 ──
+            "rate": score["rate"],
+            "units": score["units"],
+            "distance": score["distance"],
+            "substitutions": score["substitutions"],
+            "deletions": score["deletions"],
+            "insertions": score["insertions"],
             "traditional": count_traditional(text),
             "seconds_used": elapsed,
             "detected": getattr(info, "language", "?"),
             "detected_prob": getattr(info, "language_probability", 0.0),
+            "language_used": language,
+            # 分组标签从 manifest 带过来，报告才能按口音/语体分组
+            "tags": item.get("tags") or {},
+            "key_terms": key_term_hits(item["reference"], text, item.get("key_terms")),
         })
     print("")
 
     scored = [r for r in rows if r["units"] > 0 and not np.isnan(r["rate"])]
-    total_units = sum(r["units"] for r in scored)
-    weighted = sum(r["rate"] * r["units"] for r in scored) / total_units if total_units else float("nan")
+    # 整体错误率 = 全部编辑错误 ÷ 全部参考单位（老师明确要求，不是每句百分比的平均）；
+    # 同时把 S/D/I 拆开报出来。
+    weighted, total_units, total_distance, (sum_s, sum_d, sum_i) = overall_rate(scored)
+    mean_per_sentence = (sum(r["rate"] for r in scored) / len(scored)) if scored else float("nan")
     audio_seconds = sum(r["seconds"] for r in rows)
     used_seconds = sum(r["seconds_used"] for r in rows)
+    latencies = [r["seconds_used"] for r in rows]
     detections = {}
     for r in rows:
         detections[r["detected"]] = detections.get(r["detected"], 0) + 1
@@ -341,22 +358,50 @@ def main():
 
     print("=" * 76)
     print(f"结果 · 模型 {args.model} / {args.device} / {args.compute_type} / beam {args.beam_size}")
+    print(f"评分规则 {SCORING_RULES_VERSION}")
     print("=" * 76)
     print(f"  样本数        {len(rows)} 条（{corpus_label}）")
+    if failures:
+        # 老师的 §四：加载失败不能静默排除。所以**显式报出来**，
+        # 并且说清"分母是多少" —— 否则"跑了 500 条"看起来像"500 条都算出了分"。
+        print(f"  ⚠️ 失败样本    {len(failures)} 条（已排除出评分，分母是 {len(items)}）")
+        for item in failures[:5]:
+            print(f"       {item['stage']}: {item['file']} — {item['error']}")
+        if len(failures) > 5:
+            print(f"       …还有 {len(failures) - 5} 条")
     print(f"  错误率单位    {unit_label}"
           f"（中文必须按字：没有空格，按词算整句就是一个 token）")
     print(f"  语种判定      {detections}"
           f"{'（已固定为 ' + args.language + '）' if args.language else '（自动判定）'}")
-    print(f"  加权错误率    {weighted * 100:.1f}%   ← 按句子长度加权，反映整体")
-    print(f"  按句平均      {np.mean([r['rate'] for r in scored]) * 100:.1f}%")
+    print(f"  整体错误率    {weighted * 100:.1f}%   ← 全部编辑错误 ÷ 全部参考{unit_label}数"
+          f"（{total_distance}/{total_units}）")
+    print(f"    其中替换    {sum_s} 次（{sum_s / max(1, total_units) * 100:.1f}%）")
+    print(f"    其中删除    {sum_d} 次（{sum_d / max(1, total_units) * 100:.1f}%）"
+          f"  ← 漏字/漏词，同传里最容易被忽略的一类")
+    print(f"    其中插入    {sum_i} 次（{sum_i / max(1, total_units) * 100:.1f}%）"
+          f"  ← 多字/重复")
+    print(f"  按句平均      {mean_per_sentence * 100:.1f}%（**仅供参考**：短句权重过大，"
+          f"不作为主指标 —— 老师明确要求用上面的整体错误率）")
     good = sum(1 for r in scored if r["rate"] <= 0.10)
     print(f"  完全/近乎正确 {good}/{len(scored)} 句的错误率 ≤ 10%")
     if unit == "char":
         print(f"  疑似繁体输出  {traditional_total} 个字，涉及 {traditional_sentences}/{len(rows)} 句"
               f"（Whisper 在中文上的已知毛病，这一项单独列出来）")
+    keyed = [r for r in rows if r["key_terms"]]
+    if keyed:
+        hits = sum(1 for r in keyed for k in r["key_terms"] if k["hit"])
+        alls = sum(len(r["key_terms"]) for r in keyed)
+        print(f"  关键内容专项  {hits}/{alls} 个关键项在识别输出里还在"
+              f"（{len(keyed)}/{len(rows)} 条样本有人工确认的清单）")
+    else:
+        print(f"  关键内容专项  ⚠️ 本批样本没有人工确认的 key_terms，**这一项不可用**"
+              f"（老师要求关键内容必须人工确认，脚本不猜；"
+              f"用 python bridge/asr_pack.py --keys 生成候选清单）")
     print(f"  音频总时长    {audio_seconds:.1f}s")
     print(f"  识别总耗时    {used_seconds:.1f}s（RTF {used_seconds / audio_seconds:.3f}）")
-    print(f"  每句识别      {used_seconds / len(rows):.2f}s（含静音过滤）")
+    p50, p95 = percentile(latencies, 0.50), percentile(latencies, 0.95)
+    print(f"  单条识别耗时  P50 {p50:.2f}s / P95 {p95:.2f}s"
+          f"（老师的 §八 要求 P50/P95，不是只看平均）")
     print("")
     print(f"  随机看 {min(args.show, len(rows))} 条对照：")
     for row in rows[: args.show]:
@@ -364,7 +409,8 @@ def main():
         print(f"    参考  {row['reference']}")
         print(f"    识别  {row['hypothesis']}")
         print(f"    {'CER' if unit == 'char' else 'WER'} {row['rate'] * 100:5.1f}%"
-              f"   [{row['seconds']:.2f}s 音频 / {row['seconds_used']:.2f}s{extra}]")
+              f"  S{row['substitutions']} D{row['deletions']} I{row['insertions']}"
+              f"  [{row['seconds']:.2f}s 音频 / {row['seconds_used']:.2f}s{extra}]")
         print("")
     print("=" * 76)
 
@@ -372,23 +418,35 @@ def main():
     # 都从同一批 rows 算出来，所以不会出现"打印说 3.9%、JSON 说 4.1%"这种漂移。
     if args.out_json:
         summary = {
+            # ── 运行可追溯（老师的 §六：每次运行绑定代码/模型/提示词/参数/数据清单/规则版本）──
+            "provenance": run_provenance(args, wavset, items, unit),
             "set": str(wavset),
             "model": args.model,
             "device": args.device,
             "compute_type": args.compute_type,
             "beam_size": args.beam_size,
             "language": args.language,
+            "langCandidates": list(args.lang_candidates) if args.lang_candidates else None,
+            "scoringRules": SCORING_RULES_VERSION,
             "unit": unit,
             "count": len(rows),
             "scoredCount": len(scored),
+            "failures": failures,
             "weightedRate": None if np.isnan(weighted) else float(weighted),
-            "meanRate": None if len(scored) == 0 else float(np.mean([r["rate"] for r in scored])),
+            "substitutions": sum_s,
+            "deletions": sum_d,
+            "insertions": sum_i,
+            "totalUnits": total_units,
+            "totalDistance": total_distance,
+            "meanRate": None if len(scored) == 0 else float(mean_per_sentence),
             "goodCount": good,
             "detections": detections,
             "traditionalTotal": traditional_total,
             "traditionalSentences": traditional_sentences,
             "audioSeconds": float(audio_seconds),
             "usedSeconds": float(used_seconds),
+            "latencyP50": p50,
+            "latencyP95": p95,
             "rows": rows,
         }
         Path(args.out_json).parent.mkdir(parents=True, exist_ok=True)

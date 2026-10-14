@@ -746,23 +746,87 @@ def main():
           detect_unit(["Bom dia", "tudo bem"]) == "word",
           detect_unit(["Bom dia", "tudo bem"]))
 
+    # ⚠️ error_rate 现在返回 dict（多了替换/删除/插入三项），不再是 3 元组 ——
+    #    这是本次升级的一部分，所以这里全部改成按字段取。
     check("CER：完全正确 = 0",
-          error_rate("这是一条测试信息", "这是一条测试信息", "char")[0] == 0.0)
-    rate, units, distance = error_rate("这是一条测试信息", "这是一条测试消息", "char")
+          error_rate("这是一条测试信息", "这是一条测试信息", "char")["rate"] == 0.0)
+    case = error_rate("这是一条测试信息", "这是一条测试消息", "char")
     check("CER：错一个字 = 1/8",
-          abs(rate - 0.125) < 1e-9 and units == 8 and distance == 1,
-          f"rate={rate} units={units} distance={distance}")
-    rate_trad, _, distance_trad = error_rate("这是一条测试信息", "這是一條測試信息", "char")
+          abs(case["rate"] - 0.125) < 1e-9 and case["units"] == 8 and case["distance"] == 1,
+          f"{case}")
+    check("而且归类为**替换 1**（不是删除或插入）",
+          case["substitutions"] == 1 and case["deletions"] == 0 and case["insertions"] == 0,
+          f"S{case['substitutions']} D{case['deletions']} I{case['insertions']}")
+    traditional_case = error_rate("这是一条测试信息", "這是一條測試信息", "char")
     check("CER：整句输出成繁体 = 0.5（4 个字不同）",
-          abs(rate_trad - 0.5) < 1e-9 and distance_trad == 4,
-          f"rate={rate_trad} distance={distance_trad}")
+          abs(traditional_case["rate"] - 0.5) < 1e-9 and traditional_case["distance"] == 4,
+          f"{traditional_case}")
     check("按字算时忽略标点与空格（中文的空白没有语义）",
-          error_rate("这是一条测试信息。", "这 是 一 条 测 试 信 息", "char")[0] == 0.0,
+          error_rate("这是一条测试信息。", "这 是 一 条 测 试 信 息", "char")["rate"] == 0.0,
           str(error_rate("这是一条测试信息。", "这 是 一 条 测 试 信 息", "char")))
+    # 漏字/多字要能被分开报出来 —— 这是老师 §八 明确要的"含替换／删除／插入"
+    missing = error_rate("这是一条测试信息", "这是一条信息", "char")
+    extra = error_rate("这是一条信息", "这是一条测试信息", "char")
+    check("漏字 → 删除（D>0、S=0）",
+          missing["deletions"] > 0 and missing["substitutions"] == 0,
+          f"S{missing['substitutions']} D{missing['deletions']}")
+    check("多字 → 插入（I>0、S=0）",
+          extra["insertions"] > 0 and extra["substitutions"] == 0,
+          f"S{extra['substitutions']} I{extra['insertions']}")
 
     check("疑似繁体计数：繁体句 > 0，简体句 = 0",
           count_traditional("這是一條測試信息") > 0 and count_traditional("这是一条测试信息") == 0,
           f"{count_traditional('這是一條測試信息')} / {count_traditional('这是一条测试信息')}")
+
+    # ── 评分规则冻结（asr_score v1）──────────────────────────────────────────
+    #
+    # 老师 §三：评分规则必须**冻结并绑定版本号**，否则历史数字不可比。
+    # 所以这里钉三件事：① 归一化与旧实现逐字一致（历史可比）
+    # ② 整体错误率是"总错误÷总单位"，不是每句百分比的平均 ③ S/D/I 拆得开。
+    heading("评分规则 · asr-score-v1 冻结")
+    from asr_score import SCORING_RULES_VERSION, key_term_hits, overall_rate, percentile
+    check("规则带版本号（报告里要打出来）", SCORING_RULES_VERSION == "asr-score-v1",
+          SCORING_RULES_VERSION)
+    # ① 归一化：逐字对齐旧实现（旧实现的两条正则抄在这里，免得将来"顺手改好"了没人发现）
+    import re as _re
+    _old_punct = _re.compile(r"[^\w\u4e00-\u9fff]", flags=_re.UNICODE)
+
+    def _old_normalize(text, unit="word"):
+        text = text.lower().replace("\u2019", "'")
+        if unit == "char":
+            return _old_punct.sub("", text)
+        return " ".join(_re.sub(r"[^\w\s']", " ", text, flags=_re.UNICODE).split())
+
+    from asr_score import normalize as _new_normalize
+    fixtures = [("报告警告称，没有人能保证。", "char"), ("报 告 警 告", "char"),
+                ("Hello, world!", "word"), ("Versão é 3980 reais.", "word")]
+    for text, unit in fixtures:
+        check(f"归一化与旧实现一致 [{unit}] {text[:14]}",
+              _old_normalize(text, unit) == _new_normalize(text, unit),
+              f"旧={_old_normalize(text, unit)!r} 新={_new_normalize(text, unit)!r}")
+    check("重音必须保留（é ≠ e）", _new_normalize("versão", "word") == "versão")
+    check("中文按字时空白要去掉（否则 FLEURS 的逐字字段会算错字数）",
+          _new_normalize("报 告 警 告", "char") == "报告警告", _new_normalize("报 告 警 告", "char"))
+    # ② 整体错误率 vs 平均每句：长度差异大时才看得出区别
+    pair = [error_rate("a b", "a b", "word"), error_rate("a b c d e f g h i j", "x x x x x x x x x x", "word")]
+    pooled, pooled_units, pooled_distance, pooled_sdi = overall_rate(pair)
+    mean_each = sum(r["rate"] for r in pair) / len(pair)
+    check("整体错误率 = 总错误 ÷ 总单位（不是每句平均）",
+          abs(pooled - 10 / 12) < 1e-9 and pooled_units == 12 and pooled_distance == 10,
+          f"pooled={pooled:.3f} units={pooled_units}")
+    check("而且它与「每句平均」确实不同（否则这条测试没意义）",
+          abs(pooled - mean_each) > 0.2, f"pooled={pooled:.3f} mean={mean_each:.3f}")
+    check("S/D/I 三项能加总回总错误",
+          sum(pooled_sdi) == pooled_distance, f"{pooled_sdi} vs {pooled_distance}")
+    # ③ 关键内容专项只按人工给的清单判，且清单为空时不许瞎猜
+    check("清单为空 → 一条都不判（不许自己猜哪些是专名）",
+          key_term_hits("八楼的 802 房间", "no oitavo andar 802", []) == [])
+    check("清单命中/未命中都能如实分开",
+          [h["hit"] for h in key_term_hits("八楼的 802 房间", "no oitavo andar 802", ["802", "1201"])]
+          == [True, False])
+    check("听错的数字不许被洗成正确（802 听成 800 → 未命中）",
+          key_term_hits("房间 802", "quarto 800", ["802"])[0]["hit"] is False)
+    check("分位数：空列表返回 None，不假装是 0", percentile([], 0.5) is None)
     check("葡语重音不被当成繁体字（那是两回事）",
           count_traditional("A reunião é às três") == 0)
 

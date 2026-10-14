@@ -357,6 +357,40 @@ def build(name, force=False):
     return pack_meta
 
 
+def write_key_candidates():
+    """为每个包生成**关键内容候选清单**，供人工确认。
+
+    老师 §三 要求"专名、数字另做专项评分"，而且 key_terms 必须是**人工确认过的**。
+    所以这一步只提候选、不下结论：脚本提客观可判的两类（数字 + 拉丁字母词），
+    人过一遍把确认的填回 manifest 的 `key_terms`，之后再跑评测才有专项分数。
+    ⚠️ 中文人名/机构名故意不提 —— 没有可靠启发式，硬提会把清单淹掉。
+    """
+    from asr_score import key_term_candidates
+
+    total = 0
+    print("关键内容候选（需人工确认后填回 manifest 的 key_terms）：")
+    for name in PACKS:
+        manifest = AUDIO_DIR / name / "manifest.jsonl"
+        if not manifest.is_file():
+            continue
+        items = [json.loads(line) for line in manifest.read_text(encoding="utf-8").splitlines() if line.strip()]
+        rows = []
+        for item in items:
+            candidates = key_term_candidates(item["reference"])
+            if candidates:
+                rows.append({"file": item["file"], "reference": item["reference"],
+                             "candidates": candidates})
+        target = AUDIO_DIR / name / "key-candidates.jsonl"
+        with open(target, "w", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        total += len(rows)
+        print(f"  {name:<20} {len(rows):>4}/{len(items)} 条有候选 → var/audio/{name}/key-candidates.jsonl")
+    print("")
+    print(f"共 {total} 条待人工确认。确认后把词填进对应 manifest 行的 key_terms 字段。")
+    return 0
+
+
 def verify():
     """把"切分卫生"变成一条命令 —— 老师的要求里最容易被忽略、也最致命的一条：
     dev 与保留集必须不相交（按样本、也按说话人），且都不能混进历史回归集。
@@ -444,8 +478,13 @@ def main():
     parser.add_argument("--list", action="store_true", help="列出所有包与本地可切数量")
     parser.add_argument("--build", default=None, help="包名，或 all")
     parser.add_argument("--verify", action="store_true", help="检查已切好的包（切分卫生）")
+    parser.add_argument("--keys", action="store_true",
+                        help="为每个包生成关键内容候选清单（供人工确认，脚本不替人拍板）")
     parser.add_argument("--force", action="store_true", help="已存在也重建")
     args = parser.parse_args()
+
+    if args.keys:
+        return write_key_candidates()
 
     if args.verify:
         return verify()

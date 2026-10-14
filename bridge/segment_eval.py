@@ -491,21 +491,23 @@ def recognize(clips, result, rate, args, unit, model):
         )
         text = "".join(p.text for p in pieces).strip()
         elapsed += time.perf_counter() - start
-        _, ref_units, dist = error_rate(reference, text, unit)
-        units += ref_units
-        distance += dist
+        # error_rate 现在返回一个 dict（多了替换/删除/插入三项），
+        # 从 asr_score 统一提供，见那个模块头部冻结的评分规则。
+        score = error_rate(reference, text, unit)
+        units += score["units"]
+        distance += score["distance"]
         traditional += sum(1 for c in text if c in TRADITIONAL_ONLY)
         texts.append(text)
         kept += 1
 
     # 漏掉多少字：一次都没进过模型的句子。切得太碎时碎片会被 min_speech_ms 丢掉，
     # 那些内容就是**无声地消失**了 —— 比识别错更严重，所以单独报一个数。
-    missed = sum(error_rate(clips[j]["reference"], "", unit)[1]
+    missed = sum(error_rate(clips[j]["reference"], "", unit)["units"]
                  for j in range(len(clips)) if j not in reached)
     joined_reference = " ".join(clips[j]["reference"] for j in sorted(reached))
-    joined_rate, joined_units, _ = error_rate(joined_reference, " ".join(texts), unit)
+    joined = error_rate(joined_reference, " ".join(texts), unit)
     return {"rate": distance / units if units else float("nan"), "units": units,
-            "joined": joined_rate, "joined_units": joined_units,
+            "joined": joined["rate"], "joined_units": joined["units"],
             "traditional": traditional, "elapsed": elapsed, "segments": kept,
             "missed": missed}
 
