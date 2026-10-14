@@ -29,6 +29,7 @@ import { runNetDoctorSuite } from './net-doctor-suite.mjs'
 import { runBenchSuite } from './bench-suite.mjs'
 import { runLintSuite } from './lint-suite.mjs'
 import { runAndroidOrderSuite } from './android-order-suite.mjs'
+import { runAsrPackSuite } from './asr-pack-suite.mjs'
 import { runLive } from './live/run.mjs'
 
 let passed = 0
@@ -192,6 +193,14 @@ await runBenchSuite(helpers)
 
 heading('译文质检判据（专名音译 / 楼层房间号丢失 / 葡语性数不一致）')
 await runLintSuite(helpers)
+
+// ── 7e. 识别测试包（"这是朗读还是真实口语"这类标签）─────────────────────────
+// 这一节的由来很具体：测试包的语体标签原来是**猜**的，新语料一律被标成"朗读"；
+// 改成从 manifest 读之后我又漏写了一个 `.tags`，于是所有标签**静默消失**。
+// 两次都是"不报错、只是数字变得不可比"，所以这条链必须被自动检查。
+
+heading('识别测试包（语体标签与 --set-path）')
+await runAsrPackSuite(helpers)
 
 // ── 8. 真实 Cordis 组合（真实 ToolRuntime + 真实执行流水线） ─────────────────
 

@@ -48,13 +48,16 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from whisper_transcribe import TARGET_RATE, decode_with_av   # noqa: E402
+from whisper_stream import parse_lang_candidates             # noqa: E402
 from asr_score import (                                       # noqa: E402
     SCORING_RULES_VERSION, TRADITIONAL_ONLY, count_traditional, error_rate,
     key_term_hits, normalize, overall_rate, percentile,
 )
 
 
-def parse_args():
+def parse_args(argv=None):
+    """argv 可传（缺省读 sys.argv）—— 与 whisper_stream.parse_args 同一个形状，
+    这样测试才能直接断言"缺省值到底是什么 / 写错了会不会报错"，而不是靠人读源码。"""
     parser = argparse.ArgumentParser(description="用带参考文本的音频测错误率（中文 CER / 葡语 WER）与延迟")
     parser.add_argument("--parquet", help="FLEURS parquet 文件（--extract 时用）")
     parser.add_argument("--set", dest="wavset", help="抽好的测试集目录（测错误率时用）")
@@ -102,7 +105,18 @@ def parse_args():
     parser.add_argument("--decode-json", default=None,
                         help="透传给 transcribe() 的参数（JSON）。例："
                              "'{\"no_speech_threshold\": null, \"log_prob_threshold\": -2.0}'")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    # 解析并校验候选语种。
+    # ⚠️ 这里原来把 `--lang-candidates` 的**原始字符串**直接拿去用，两处都错：
+    #    · provenance 里 `list("zh,pt")` 记成 ['z','h',',','p','t']（记错了配置）；
+    #    · 挑语种时 `code in "zh,pt"` 是**子串**匹配而不是"在候选集里"。
+    #    现在两边共用产线那个解析函数，语义不可能再漂 —— 而"评测口径 = 产线口径"
+    #    正是这些数字能不能代表产线的全部依据。写错语种码一律**明确报错**。
+    try:
+        args.lang_candidates = parse_lang_candidates(args.lang_candidates)
+    except ValueError as error:
+        parser.error(str(error))
 
     # 解析并校验透传参数
     args.decode = {}

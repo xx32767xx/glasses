@@ -35,7 +35,8 @@
 
 import { readFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
-import { join } from 'node:path'
+import { join, resolve, basename } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 // 路径从 lib/paths.mjs 取 —— 仓库的规矩是"凡是落盘的路径都从这里取"。
 // ⚠️ 第一版这里用 process.cwd() 自己拼了 var/audio 与 var/logs/asr-eval，
@@ -124,7 +125,7 @@ function resolveModel(options) {
 
 function parseArgs(argv) {
   const options = {
-    set: null, model: null, device: null, compute: null, language: null,
+    set: null, setPath: null, model: null, device: null, compute: null, language: null,
     count: null, compare: false, list: false, byAccent: false, show: 3, keep: false,
   }
   for (let index = 0; index < argv.length; index += 1) {
@@ -133,6 +134,10 @@ function parseArgs(argv) {
     if (token === '--compare') { options.compare = true; continue }
     if (token === '--by-accent') { options.byAccent = true; continue }
     if (token === '--set') { options.set = argv[++index]; continue }
+    // --set-path：直接给**目录**（绝对或相对都行），不必非得放在 var/audio 下。
+    // 为什么要这条：别处切好的包（另一台机器、另一块盘、临时实验）不该被逼着先拷进 var/audio
+    // 才能测 —— 拷贝既费时间，又会让"测的到底是哪一份"变得说不清。
+    if (token === '--set-path') { options.setPath = argv[++index]; continue }
     if (token === '--model') { options.model = argv[++index]; continue }
     if (token === '--device') { options.device = argv[++index]; continue }
     if (token === '--compute-type') { options.compute = argv[++index]; continue }
@@ -149,16 +154,52 @@ function listSets() {
   if (existsSync(AUDIO_DIR) === false) return []
   return readdirSync(AUDIO_DIR)
     .filter(name => existsSync(join(AUDIO_DIR, name, 'manifest.jsonl')))
-    .map(name => {
-      const dir = join(AUDIO_DIR, name)
-      const items = readManifest(dir)
-      const wavs = readdirSync(dir).filter(file => file.endsWith('.wav'))
-      return {
-        name, dir, items, wavCount: wavs.length,
-        accents: [...new Set(items.map(item => item.accent).filter(Boolean))],
-        corpus: items.some(item => item.source) ? 'CORAA（真实口语）' : 'FLEURS（朗读）',
-      }
-    })
+    .map(name => setFromDir(name, join(AUDIO_DIR, name)))
+}
+
+/** 从一个目录读出一个测试集 —— `--set`（var/audio 下的名字）和 `--set-path`（任意路径）共用。 */
+function setFromDir(name, dir) {
+  const items = readManifest(dir)
+  const wavs = readdirSync(dir).filter(file => file.endsWith('.wav'))
+  return {
+    name, dir, items, wavCount: wavs.length,
+    accents: [...new Set(items.map(item => item.accent).filter(Boolean))],
+    corpus: corpusLabel(items),
+  }
+}
+
+/**
+ * 从**任意路径**读出测试集（`--set-path`），没切过的目录返回 null。
+ *
+ * 结果文件名与打印出来的名字都用**目录名** —— 所以目录名要能认出是哪一包
+ * （`zh-speech-dev` 而不是 `tmp1`），否则 `var/logs/asr-eval/` 里会堆一堆看不出是什么的 json。
+ */
+function setFromPath(path) {
+  const dir = resolve(path)
+  if (existsSync(join(dir, 'manifest.jsonl')) === false) return null
+  return setFromDir(basename(dir), dir)
+}
+
+/**
+ * 语料/语体标签 —— **从 manifest 里读**，不从脚本里的假设推。
+ *
+ * ⚠️ 这里原来是 `items.some(item => item.source) ? 'CORAA（真实口语）' : 'FLEURS（朗读）'`：
+ *    只认识"有 source 字段 = CORAA"，别的语料一律当成 FLEURS 朗读。
+ *    于是新切的 MagicData 中文口语包会被标成「FLEURS（朗读）」——
+ *    而"朗读还是口语"恰恰是这些数字最关键的限定条件（口语的错误率高得多）。
+ *    标签错了比没有标签更糟：它会让人拿两个不可比的数字并排看。
+ */
+export function corpusLabel(items) {
+  const dataset = items.find(item => item.dataset)?.dataset ?? null
+  // ⚠️ 这里踩过一次：写成 `find(...)?.register`（漏了 `.tags`）→ 每个包都算出 null，
+  //    于是所有语料都没了语体标签。**它不报错**，只是悄悄把"真实口语"降级成没标签。
+  //    所以下面有一条测试专门钉住"新切的包必须带得出语体"。
+  const register = items.find(item => item.tags?.register)?.tags.register ?? null
+  // 语体：能在 manifest 里读到就用读到的；读不到才退回老口径（有 source 字段 = CORAA）
+  const kind = register === 'spontaneous' ? '真实口语'
+    : register === 'read' ? '朗读'
+      : (items.some(item => item.source) ? '真实口语' : null)
+  return [dataset, kind ? `（${kind}）` : ''].join('') || 'FLEURS（朗读）'
 }
 
 function readManifest(dir) {
@@ -264,14 +305,19 @@ function main() {
     }
     console.log('')
     console.log('用法：node scripts/test-asr.mjs --set ' + (sets[0]?.name ?? 'zh-eval') + ' [--model large-v3] [--compare]')
+    console.log('      node scripts/test-asr.mjs --set-path <任意绝对/相对目录>（目录里要有 manifest.jsonl）')
     return
   }
 
-  if (options.set === null) {
-    console.log('缺 --set。可选的测试集：' + sets.map(set => set.name).join('、'))
+  if (options.set === null && options.setPath === null) {
+    console.log('缺 --set（或 --set-path）。可选的测试集：' + sets.map(set => set.name).join('、'))
     return
   }
-  const set = sets.find(item => item.name === options.set)
+  const set = options.setPath !== null ? setFromPath(options.setPath) : sets.find(item => item.name === options.set)
+  if (set === null) {
+    console.log('没有这个测试集：' + options.setPath + '（这个目录里没有 manifest.jsonl）')
+    return
+  }
   if (set === undefined) {
     console.log('没有这个测试集：' + options.set + '（可选：' + sets.map(item => item.name).join('、') + '）')
     return
@@ -394,9 +440,14 @@ function main() {
   }
 }
 
-try {
-  main()
-} catch (error) {
-  console.error('失败：' + String(error && error.message ? error.message : error))
-  process.exitCode = 1
+// ⚠️ 只在**直接运行**时才跑 main()（照抄 start-all.mjs 的做法）：
+//    测试要 import 这个文件来单独验 corpusLabel 这类纯函数，
+//    无条件跑 main() 的话 import 一次就等于跑一遍评测。
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  try {
+    main()
+  } catch (error) {
+    console.error('失败：' + String(error && error.message ? error.message : error))
+    process.exitCode = 1
+  }
 }

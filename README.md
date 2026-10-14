@@ -17,9 +17,9 @@
 
 ```powershell
 node scripts/generate.mjs        # 从核心逻辑生成 6 个产物（插件 3 个 + 技能文档 + 2 份文档/资源）
-node tests/run-all.mjs           # 264 项断言：新鲜度门禁 + 两个包装版本各跑一遍 + 一致性对比
-python tests/python-suite.py     # 另 108 项：语音分段器 + 音频尾随 + 语种转换（不加载模型，很快）
-                                 # + ASR 桥契约 + 局域网契约 + 真实 Cordis 组合
+node tests/run-all.mjs           # 299 项断言：新鲜度门禁 + 两个包装版本各跑一遍 + 一致性对比
+python tests/python-suite.py     # 另 174 项：语音分段器 + 音频尾随 + 语种转换 + 评分规则 + 测试包切分
+                                 # （不加载模型，很快）+ ASR 桥契约 + 局域网契约 + 真实 Cordis 组合
 
 # A) 不需要麦克风、不需要手机：重放一段中葡对照的剧本，看整条同传链路
 node bridge/asr-bridge.mjs --inbox var/demo/asr-inbox.jsonl `
@@ -73,7 +73,10 @@ node scripts/fake-phone.mjs --wav var/audio/zh/short-16k.wav --url http://127.0.
 | `bridge/whisper_transcribe.py` | 转写单个音频文件并测耗时/RTF（自带解码器，绕开 PyAV 版本坑） |
 | `bridge/make_long_wav.py` | 把短录音拼成长的测试音频（可加底噪），用来测真实延迟 |
 | `bridge/asr_eval.py` | **准确率基准**：用带参考文本的语料算错误率（中文按**字** CER、葡语按**词** WER），不靠肉眼。`--out-json` 另写结构化结果供汇总用 |
-| `scripts/test-asr.mjs` | **跑 ASR 测试**：`--set pt-coraa --model large-v3`。测试集自动发现（有 `manifest.jsonl` 的目录）、`--compare` 多模型排序、`--by-accent` 按口音分组、结果留存可复用。**只做编排，指标计算调 `bridge/asr_eval.py`**（避免两套口径漂移） |
+| `bridge/asr_pack.py` | **切识别测试包 + 查切分卫生**：`--build` / `--verify` / `--keys`。确定性抽样、按录音整组、与历史回归集不相交、每场给名额（否则 300 条只覆盖 2 个说话人 —— 实测踩过）。规程见 `docs/14` |
+| `bridge/asr_score.py` | **评分规则唯一来源**（`asr-score-v1`）：归一化、整体错误率、S/D/I、关键内容命中、**逐项对齐 `align_ops`**（"错在哪些字上"靠它） |
+| `bridge/asr_error_analysis.py` | **把"错在什么上"分类**：删除/替换逐项归到"写法差异 / 语气词 / 口吃 / 真错"。中文朗读那 12.3% 里 77% 是计分假象、口语那 12.7~15.3% 是真的 —— 两次结论都是它给的（`docs/14` §6.3/§6.6） |
+| `scripts/test-asr.mjs` | **跑 ASR 测试**：`--set pt-coraa --model large-v3`。测试集自动发现（有 `manifest.jsonl` 的目录，也可 `--set-path <任意目录>`）、`--compare` 多模型排序、`--by-accent` 按口音分组、结果留存可复用。**只做编排，指标计算调 `bridge/asr_eval.py`**（避免两套口径漂移） |
 | `bridge/segment_eval.py` | **切句基准**：直接 import 生产那个分段器，量"静音判定该设多久"——切碎/合并各多少次、最长合并多久、错误率变好还是变坏。缺省 500ms 就是它量出来的，见 `docs/04` §13 |
 | `bridge/sample-transcript.txt` | 中葡对照的样例转写，用于无麦克风演示 |
 | `relay/lan-relay.mjs` | **局域网转发**：手机 ↔ 电脑，5 个端点 + 共享密钥（含 `POST /audio` 录音上传，见下） |

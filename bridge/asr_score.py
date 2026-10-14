@@ -96,6 +96,31 @@ def align(reference, hypothesis, unit="word"):
       · 删除：参考里有、识别里**没有**（漏字/漏词）
       · 插入：识别里多出来的（多字/多词、重复）
     老师要的"含替换／删除／插入"就是这三项。
+
+    ⚠️ 这里**只是把 align_ops 的结果数出来** —— 两套实现各算一遍是危险的：
+       "总数对得上、S/D/I 分配不一样"会让报告里的三项悄悄漂移。
+    """
+    ops = align_ops(reference, hypothesis, unit)
+    subs = sum(1 for op in ops if op[0] == "S")
+    dels = sum(1 for op in ops if op[0] == "D")
+    inss = sum(1 for op in ops if op[0] == "I")
+    return subs, dels, inss
+
+
+def align_ops(reference, hypothesis, unit="word"):
+    """返回**逐项**对齐结果：`[("S"|"D"|"I", 参考项 或 None, 识别项 或 None), …]`
+
+    为什么要它（不是为了好看）：整体错误率只能说明"错了多少"，
+    **说不出错在什么上**。真正查出问题靠的是逐项：
+      · 中文朗读那 12.3% 是怎么来的？—— 把删除项打出来才看到，
+        参考里的拉丁字母括注（`（Maciej Krezel ）`、`(NHK)`）从来没被念出来，
+        325 次删除里有 321 次集中在这类片段上（见 docs/14 §6.3）；
+      · 葡语/中文口语里的删除到底是不是"语气词与自我重复"？——
+        同样只能靠逐项统计回答。
+    所以"错在哪些字上"必须是**能反复跑出来**的东西，而不是我某次手工看的结论。
+
+    并列时的取舍与 `_better` 完全一致（优先替换 > 删除 > 插入），
+    所以 `align()` 数出来的 S/D/I 与历史报告逐字一致（有测试钉住）。
     """
     if unit == "char":
         ref = list(normalize(reference, "char"))
@@ -104,26 +129,54 @@ def align(reference, hypothesis, unit="word"):
         ref = normalize(reference, "word").split()
         hyp = normalize(hypothesis, "word").split()
 
-    previous = [(j, 0, 0, j) for j in range(len(hyp) + 1)]     # (总错, S, D, I)
+    # 存整张表再回溯（而不是每个格子存一份操作列表）：句子只有几百个单位，
+    # 表本身很小，但每格存列表会平白多出一个数量级的开销。
+    table = [[None] * (len(hyp) + 1) for _ in range(len(ref) + 1)]
+    table[0][0] = (0, 0, 0, 0)
+    for j in range(1, len(hyp) + 1):
+        table[0][j] = (j, 0, 0, j)                      # 前面全是插入
     for i in range(1, len(ref) + 1):
-        current = [None] * (len(hyp) + 1)
-        current[0] = (i, 0, i, 0)
+        table[i][0] = (i, 0, i, 0)                      # 前面全是删除
+    for i in range(1, len(ref) + 1):
         for j in range(1, len(hyp) + 1):
-            best = None
             if ref[i - 1] == hyp[j - 1]:
-                best = previous[j - 1]                          # 命中，不花代价
-            else:
-                sub, dele, ins = previous[j - 1], previous[j], current[j - 1]
-                if sub is not None:
-                    best = _better(best, (sub[0] + 1, sub[1] + 1, sub[2], sub[3]))
-                if dele is not None:
-                    best = _better(best, (dele[0] + 1, dele[1], dele[2] + 1, dele[3]))
-                if ins is not None:
-                    best = _better(best, (ins[0] + 1, ins[1], ins[2], ins[3] + 1))
-            current[j] = best
-        previous = current
-    total, subs, dels, inss = previous[len(hyp)]
-    return subs, dels, inss
+                table[i][j] = table[i - 1][j - 1]       # 命中，不花代价
+                continue
+            # ⚠️ 来源格子别写反了（我第一版就写反过）：
+            #    删除 ref[i-1] 是从 **[i-1][j]** 过来的（参考前进、识别不动），
+            #    插入 hyp[j-1] 是从 **[i][j-1]** 过来的。
+            sub = table[i - 1][j - 1]
+            dele = table[i - 1][j]
+            ins = table[i][j - 1]
+            candidates = [(sub[0] + 1, sub[1] + 1, sub[2], sub[3]),
+                          (dele[0] + 1, dele[1], dele[2] + 1, dele[3]),
+                          (ins[0] + 1, ins[1], ins[2], ins[3] + 1)]
+            # ⚠️ 顺序即优先级：替换 > 删除 > 插入（与 _better 的并列取舍一致）。
+            #    `min` 在并列时取**第一个**，所以这里的顺序就是"怎么分 S/D/I"的规则。
+            table[i][j] = min(candidates)
+
+    ops = []
+    i, j = len(ref), len(hyp)
+    while i > 0 or j > 0:
+        if i > 0 and j > 0 and ref[i - 1] == hyp[j - 1] and table[i][j] == table[i - 1][j - 1]:
+            ops.append(("=", ref[i - 1], hyp[j - 1]))
+            i, j = i - 1, j - 1
+            continue
+        if i > 0 and j > 0 and table[i][j] == (table[i - 1][j - 1][0] + 1, table[i - 1][j - 1][1] + 1,
+                                               table[i - 1][j - 1][2], table[i - 1][j - 1][3]):
+            ops.append(("S", ref[i - 1], hyp[j - 1]))
+            i, j = i - 1, j - 1
+            continue
+        if i > 0 and table[i][j] == (table[i - 1][j][0] + 1, table[i - 1][j][1],
+                                     table[i - 1][j][2] + 1, table[i - 1][j][3]):
+            ops.append(("D", ref[i - 1], None))
+            i -= 1
+            continue
+        # 只剩插入（表的第一行/第一列保证这里一定有得走）
+        ops.append(("I", None, hyp[j - 1]))
+        j -= 1
+    ops.reverse()
+    return ops
 
 
 def error_rate(reference, hypothesis, unit="word"):

@@ -123,6 +123,30 @@ def whisper_language_of(tag):
 WHISPER_LANG_CODES = ("pt", "zh", "en", "es")
 
 
+def parse_lang_candidates(raw):
+    """把 `--lang-candidates zh,pt` 解析成元组；空串 = None（不限定）。
+
+    为什么抽成函数、而不是留在 parse_args 里：
+      **产线（whisper_stream）与评测（asr_eval）都要用同一个语义**。
+      评测那边原来直接把原始字符串拿去用 —— `code in "zh,pt"` 是**子串**匹配，
+      provenance 里还记成 `list("zh,pt")` = ['z','h',',','p','t']。
+      两处一旦不一致，"评测口径 = 产线口径"就成了一句空话，而这些数字能不能
+      代表产线，全部押在这句话上。
+
+    写错语种码**必须报错**，不能静默变成空集：空集会让限定失效，
+    退回"99 种语言里挑最大"，而那正是会挑出 he 的旧行为（实测踩过）。
+    """
+    raw = (raw or "").strip()
+    if raw == "":
+        return None
+    codes = [part.strip().lower() for part in raw.split(",") if part.strip() != ""]
+    unknown = [code for code in codes if code not in WHISPER_LANG_CODES]
+    if unknown:
+        raise ValueError(f"--lang-candidates 里有认不出的语种码：{unknown}"
+                         f"（可用：{', '.join(sorted(WHISPER_LANG_CODES))}）")
+    return tuple(dict.fromkeys(codes))                   # 去重且保持顺序
+
+
 # ── 参数 ─────────────────────────────────────────────────────────────────────
 
 def parse_args(argv=None):
@@ -233,19 +257,13 @@ def parse_args(argv=None):
                         help="avg_logprob 低于这个值就丢弃该段（太不确定就别显示）")
     parser.add_argument("--self-check", action="store_true", help="只检查依赖与模型能否加载")
     args = parser.parse_args(argv)
-    # 把 `--lang-candidates zh,pt` 解析成集合；空串 = 不限定（回到全域挑最大）。
+    # 把 `--lang-candidates zh,pt` 解析成元组；空串 = 不限定（回到全域挑最大）。
     # 顺带做校验：写错了就**明确报错**，而不是静默变成一个空集（空集会让限定悄悄失效，
     # 而"护栏悄悄失效"正是最难发现的一类问题）。
-    raw = (args.lang_candidates or "").strip()
-    if raw == "":
-        args.lang_candidates = None
-    else:
-        codes = [part.strip().lower() for part in raw.split(",") if part.strip() != ""]
-        unknown = [code for code in codes if code not in WHISPER_LANG_CODES]
-        if unknown:
-            parser.error(f"--lang-candidates 里有认不出的语种码：{unknown}"
-                         f"（可用：{', '.join(sorted(WHISPER_LANG_CODES))}）")
-        args.lang_candidates = tuple(dict.fromkeys(codes))   # 去重且保持顺序
+    try:
+        args.lang_candidates = parse_lang_candidates(args.lang_candidates)
+    except ValueError as error:
+        parser.error(str(error))
     return args
 
 

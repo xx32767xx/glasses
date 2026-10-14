@@ -36,10 +36,15 @@ from whisper_stream import (   # noqa: E402
     normalize_peak, parse_args, pick_language, prompt_for, rms_of, whisper_language_of,
 )
 from whisper_transcribe import TARGET_RATE, load_audio                    # noqa: E402
-from asr_pack import select_from_pool   # noqa: E402
+import asr_pack                                                          # noqa: E402
+from asr_pack import (select_from_pool, per_session_quota, pool_for,     # noqa: E402
+                      real_speakers, PLACEHOLDER_SPEAKERS)
+import asr_eval                                                          # noqa: E402
+import asr_error_analysis as analysis                                    # noqa: E402
 from asr_eval import (   # noqa: E402
     count_traditional, detect_unit, error_rate, looks_chinese,
 )
+from asr_score import align, align_ops                                 # noqa: E402
 
 passed = 0
 failures = []
@@ -431,6 +436,35 @@ def main():
     check("报错里说清了是哪个码不对（可照做）",
           "tlh" in noise.getvalue(), noise.getvalue()[:80])
 
+    # ── 9b-2. 评测脚本**用同一份语义**（真踩过）──────────────────────────────
+    #
+    # 实测逮到的 bug：asr_eval.py 把 `--lang-candidates` 的**原始字符串**直接拿去用 ——
+    #   · provenance 里 `list("zh,pt")` 记成 ['z','h',',','p','t']（配置记错了）；
+    #   · 挑语种时 `code in "zh,pt"` 是**子串**匹配，不是"在候选集里"。
+    # 这些数字能不能代表产线，全押在"评测口径 = 产线口径"上，所以两处必须同一个解析函数。
+    heading("评测脚本的候选语种 · 与产线同一份语义")
+    eval_args = asr_eval.parse_args(["--set", "x"])
+    check("缺省解析成元组（不是原始字符串）",
+          eval_args.lang_candidates == ("zh", "pt") and isinstance(eval_args.lang_candidates, tuple),
+          f"{eval_args.lang_candidates!r}")
+    check("provenance 记下来的是 ['zh','pt'] 而不是被逐字拆开",
+          list(asr_eval.parse_args(["--set", "x"]).lang_candidates) == ["zh", "pt"],
+          str(list(eval_args.lang_candidates)))
+    check("空串 = 关掉限定（与产线一致）",
+          asr_eval.parse_args(["--set", "x", "--lang-candidates", ""]).lang_candidates is None)
+    eval_bad = False
+    eval_noise = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(eval_noise):
+            asr_eval.parse_args(["--set", "x", "--lang-candidates", "zh,xx"])
+    except SystemExit:
+        eval_bad = True
+    check("评测脚本同样对错码明确报错", eval_bad, "写了 zh,xx 却没报错")
+    check("两边解析结果逐项一致（防止以后再漂）",
+          [parse_args(["--lang-candidates", raw]).lang_candidates for raw in ("zh,pt", "pt", "")]
+          == [asr_eval.parse_args(["--set", "x", "--lang-candidates", raw]).lang_candidates
+              for raw in ("zh,pt", "pt", "")])
+
     # 挑选逻辑本身：喂假概率表，不需要模型。
     # 这正是"抽成纯函数"的目的 —— 判错了整句都错，所以必须能被逐条钉住。
     tricky = [("he", 0.64), ("pt", 0.30), ("zh", 0.02)]
@@ -482,6 +516,84 @@ def main():
     check("同一输入 → 同一结果（可复现）",
           [item["i"] for item in again] == [item["i"] for item in dev],
           f"{[item['i'] for item in again]}")
+
+    # ── 9d. 每场名额：为什么必须**向上取整** ────────────────────────────────
+    #
+    # 这一条是切 zh-speech 时实测出来的坑：第一版按说话人分组取前 N 条，
+    # 300 条只覆盖了 **2 个说话人**（按组整取 = 取字典序最靠前的两组）。
+    # 改成"按录音分组 + 每场给名额"之后才铺开。名额的算术很小，
+    # 但它直接决定"这一包覆盖了几个说话人"，所以单独钉住。
+    heading("测试包切分 · 每场名额（覆盖度）")
+    check("名额向上取整：19 场取 300 条 → 16 条/场（15 会装不下）",
+          per_session_quota(300, 19) == 16, str(per_session_quota(300, 19)))
+    check("向上取整后 名额×场数 ≥ 请求条数（不然总有场次被挤掉）",
+          per_session_quota(300, 19) * 19 >= 300 and per_session_quota(500, 43) * 43 >= 500)
+    check("至少 1 条/场（请求条数比场数还少时也不能有 0）",
+          per_session_quota(5, 43) == 1, str(per_session_quota(5, 43)))
+    check("没给 spread 就不限名额（老语料的行为不变）",
+          per_session_quota(None, 19) is None and per_session_quota(300, 0) is None)
+
+    # ── 9e. 占位说话人不能污染身份统计 ─────────────────────────────────────
+    #
+    # MagicData 里 `G00000000` 出现在**全部** 62 场录音的转写里（实测），它是标记不是身份。
+    # ⚠️ 这里要说准它**现在**的影响（我第一版说错了，是实测纠正的）：
+    #    它那些句子全都过不了合格门槛 —— dev 6627 条、test 13198 条合格片段里它占 **0 条**。
+    #    所以"排除它会清空池子"是**错的**，当前切分下这个特判是空操作。
+    #    它防的是门槛放低之后：那时它会让 dev/test **天天报说话人重叠**（假警报），
+    #    并且"精确地"把短回执整类从保留集里删掉。所以留下它，但把话说准。
+    heading("测试包切分 · 占位说话人（G00000000）")
+    check("占位说话人被登记为特例", "G00000000" in PLACEHOLDER_SPEAKERS, str(PLACEHOLDER_SPEAKERS))
+    check("说话人统计剔掉占位标记（不然每个包都虚报一位）",
+          real_speakers([{"speaker": "G00000000"}, {"speaker": "spk-1"}, {"speaker": "spk-1"},
+                         {"speaker": None}, {}]) == {"spk-1"})
+    check("全是占位标记 → 真实说话人为空（如实报 0，不硬凑一个）",
+          real_speakers([{"speaker": "G00000000"}]) == set())
+
+    fake = []
+    for session, count in (("rec-a", 40), ("rec-b", 40), ("rec-c", 40)):
+        for index in range(count):
+            fake.append({
+                "original_id": f"{session}#{index}", "dataset": "fake", "dataset_version": "t",
+                "split": "dev", "reference": f"{session} 第 {index} 句",
+                "reference_char_spaced": None, "session": session,
+                "speaker": "G00000000" if index % 3 == 0 else f"spk-{session}-{index % 2}",
+                "tags": {"register": "spontaneous"}, "audio_bytes": b"",
+            })
+    original_load = asr_pack.load_source
+    try:
+        asr_pack.load_source = lambda *a, **k: list(fake)
+        spread_pool = pool_for("magicdata", "dev", "zh-speech", group_by="session", spread=60)
+        sizes = [len(group) for group in spread_pool["groups"]]
+        check("按场分组 + 名额：三场都有份（不是只取前一场）",
+              len(spread_pool["groups"]) == 3, str(sizes))
+        check("每场不超过名额（60 条请求 / 3 场 → 20 条/场）",
+              max(sizes) <= 20 and spread_pool["per_group"] == 20, f"{sizes} {spread_pool['per_group']}")
+        check("池子够得着请求条数（向上取整的意义）",
+              spread_pool["available"] >= 60, str(spread_pool["available"]))
+
+        # 排除到底怎么起作用 —— 这里钉住的是**实测行为**，不是我的猜想：
+        #   在"按场分组 + 每场有名额"的语料上，排除是**换掉片段**（被排掉的位置由
+        #   本场剩下的片段补上），而不是把池子变小。所以该查的是"被排除的人还在不在"，
+        #   不是"池子小了多少"。（我第一版就是这么写错的，测试直接把它顶回来了。）
+        def speakers_in(pool):
+            return {row["speaker"] for group in pool["groups"] for row in group}
+
+        without_placeholder = pool_for("magicdata", "dev", "zh-speech", group_by="session",
+                                       spread=60, exclude_speakers={"G00000000"})
+        check("排除占位标记：池子里确实不再有它",
+              "G00000000" not in speakers_in(without_placeholder)
+              and "G00000000" in speakers_in(spread_pool))
+        check("而且名额由本场剩下的片段补满（池子不会因此变小）",
+              without_placeholder["available"] == spread_pool["available"],
+              f"{without_placeholder['available']} vs {spread_pool['available']}")
+        without_real = pool_for("magicdata", "dev", "zh-speech", group_by="session", spread=60,
+                                exclude_speakers={"spk-rec-a-0"})
+        check("排除真实说话人：同样只换片段，不影响其他场次",
+              "spk-rec-a-0" not in speakers_in(without_real)
+              and without_real["available"] == spread_pool["available"]
+              and len(without_real["groups"]) == 3)
+    finally:
+        asr_pack.load_source = original_load
 
     # ── 10. 输出编码（真实事故：识别结果变乱码，一句字幕都出不来）─────────────
     #
@@ -818,6 +930,88 @@ def main():
           abs(pooled - mean_each) > 0.2, f"pooled={pooled:.3f} mean={mean_each:.3f}")
     check("S/D/I 三项能加总回总错误",
           sum(pooled_sdi) == pooled_distance, f"{pooled_sdi} vs {pooled_distance}")
+
+    # ── 逐项对齐（"错在哪些字上"必须能反复跑出来）───────────────────────────
+    #
+    # 由来：中文朗读那个 12.3% 里有 ~77% 是**计分假象** —— 参考里的拉丁字母括注
+    # （`（Maciej Krezel ）`、`(NHK)`）从来没被念出来。查出这件事靠的不是"整体错误率"，
+    # 而是**把删除项逐条打出来**。所以"错在哪些单位上"必须是可复现的输出。
+    heading("评分规则 · 逐项对齐 align_ops")
+    ops = align_ops("从十二楼换到八楼", "从八楼换到十二楼", "char")
+    check("逐项对齐能看出数字被调换了（不是「看着差不多就算对」）",
+          any(op[0] in ("S", "D", "I") for op in ops)
+          and align("从十二楼换到八楼", "从八楼换到十二楼", "char")[0] > 0,
+          str(ops))
+    check("删除项带得出漏掉的那个字（插入项反之）",
+          all(op[1] is not None and op[2] is None for op in ops if op[0] == "D")
+          and all(op[1] is None and op[2] is not None for op in ops if op[0] == "I"),
+          str(ops[:8]))
+    # ⚠️ 这一条是**防两套实现漂移**：align() 现在只是把 align_ops() 的结果数出来；
+    #    如果哪天又变成各算一遍，"总数对得上、S/D/I 分配不一样"就会悄悄发生
+    #    —— 而报告里那三项正是老师要求单列的东西。
+    cases = [("你好世界这是测试", "你好世界是测试", "char"),
+             ("从十二楼换到八楼", "从八楼换到十二楼", "char"),
+             ("Versão é 3980 reais", "versao e 3980 reais", "word"),
+             ("明镜与点点栏目", "明镜与点点栏目。", "char"),
+             ("", "多说了一句", "word")]
+    same = True
+    for ref, hyp, unit in cases:
+        if align(ref, hyp, unit) != tuple(sum(1 for op in align_ops(ref, hyp, unit) if op[0] == kind)
+                                          for kind in ("S", "D", "I")):
+            same = False
+    check("align() 与 align_ops() 逐例一致（同一份实现的两种视图）", same, str(cases))
+
+    # ── 错误来源分类（"错在什么上"的判据本身也要被钉住）──────────────────────
+    #
+    # 这个分类器决定的是**结论方向**：中文口语那 15.6% 里有多少是"不是听错"的写法差异、
+    # 葡语口语那 16.8% 里有多少是语气词。分类规则松一点，结论就会整个反过来 ——
+    # 我第一版把"整句里还出现过"当成"自我重复"，于是 71~83% 的删除都被归到那一格，
+    # 真实漏词被掩盖。所以这里逐类验，并且专门验**不该归进去的不许归**。
+    heading("错误来源分类（asr_error_analysis 的判据）")
+    check("她→他是「音频分不出来」（tā 同音，不是听错）",
+          analysis.classify_substitution("她", "他", "char").startswith("同音异形"),
+          analysis.classify_substitution("她", "他", "char"))
+    check("后→後 归到繁体字形（不是听错，但用户看得到）",
+          analysis.classify_substitution("后", "後", "char").startswith("繁体字形"),
+          analysis.classify_substitution("后", "後", "char"))
+    check("一→1 归到数字写法（念出来一样）",
+          analysis.classify_substitution("一", "1", "char").startswith("数字写法"),
+          analysis.classify_substitution("一", "1", "char"))
+    check("睡→摔 老老实实算真错（不许被归进「写法」那几格）",
+          analysis.classify_substitution("睡", "摔", "char") == "真错",
+          analysis.classify_substitution("睡", "摔", "char"))
+    check("pra→para 归到口语缩写（葡语里念出来是同一个词）",
+          analysis.classify_substitution("pra", "para", "word").startswith("口语缩写"),
+          analysis.classify_substitution("pra", "para", "word"))
+    check("à→a 归到变音符号差异", analysis.classify_substitution("à", "a", "word").startswith("只差变音"),
+          analysis.classify_substitution("à", "a", "word"))
+    check("martelly→martelli 算真错（专名听错，不给它找理由）",
+          analysis.classify_substitution("martelly", "martelli", "word") == "真错",
+          analysis.classify_substitution("martelly", "martelli", "word"))
+    check("葡语删除只有**整段都是语气词**才算语气词（单个词不乱归类）",
+          analysis.classify_deletion(["é"], "word", False) == "语气词/填充词"
+          and analysis.classify_deletion(["para"], "word", False) == "内容词",
+          analysis.classify_deletion(["para"], "word", False))
+
+    # ⚠️ 位置判据：只认**相邻**的重复。放宽到"附近出现过"会把同句里任何一个相同的字
+    #    都算成"口吃"，于是"内容字"这一格被吃空（真实漏词全被掩盖）。
+    stutter_ops = align_ops("就就就这样", "就这样", "char")
+    runs = analysis.deleted_runs(stutter_ops)
+    check("口吃（就就就）判得出自我重复",
+          len(runs) == 1 and analysis.looks_like_repetition(runs[0][0], runs[0][1],
+                                                            list("就就就这样")),
+          str(runs))
+    far_ops = align_ops("他来了他走了", "来了他走了", "char")
+    far_runs = analysis.deleted_runs(far_ops)
+    check("隔了几个字的同一个字**不算**自我重复（否则真实漏字会被掩盖）",
+          len(far_runs) == 1
+          and analysis.looks_like_repetition(far_runs[0][0], far_runs[0][1],
+                                             list("他来了他走了")) is False,
+          str(far_runs))
+    check("删除片段带得出它在参考里的起始位置（不然位置判据无从谈起）",
+          analysis.deleted_runs(align_ops("从十二楼换到八楼", "从八楼换到十二楼", "char"))
+          and all(isinstance(start, int) for _span, start in
+                  analysis.deleted_runs(align_ops("甲乙丙", "甲丙", "char"))))
     # ③ 关键内容专项只按人工给的清单判，且清单为空时不许瞎猜
     check("清单为空 → 一条都不判（不许自己猜哪些是专名）",
           key_term_hits("八楼的 802 房间", "no oitavo andar 802", []) == [])
