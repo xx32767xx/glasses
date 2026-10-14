@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs'
 import {
   lintTranslation, properNounProblems, slotProblems, agreementProblems,
   numberValues, hasNumber, parseChineseNumber, floorSlots, roomSlots,
+  currencySlots, currencyInTranslation, moneyProblems, transferSlots, transferProblems, ptFloorSlots,
 } from '../lib/translation-lint.mjs'
 
 export async function runLintSuite({ it, check, assert }) {
@@ -269,6 +270,121 @@ export async function runLintSuite({ it, check, assert }) {
     const judged = lint('我们今天的会议改到了下午三点二十。', 'Nossa reunião de hoje mudou para as três e vinte da tarde.')
     check('无槽可丢 → 不报', judged.fatal.length === 0, JSON.stringify(judged.fatal))
     check('也不报警告', judged.warn.length === 0, JSON.stringify(judged.warn))
+  })
+
+  // ── ②b 金额：值 + **币种** ─────────────────────────────────────────────────
+  //
+  // 老师提的"数字要查值、单位和关系"。这一组查的是**单位（币种）**。
+  // 实测依据（4 个模型译「每台 3980 元」，共 72 条里抓出来的）：
+  //   deepseek → 3980 **reais**（产线在用的模型）  hunyuan → 3980 **reais**
+  //   qwen2.5  → 3980 yuans（对）                  glm     → 3980 yuan（对）
+  // 「元」是人民币、`reais` 是雷亚尔 —— **不同币种**，数字对也是另一个价钱。
+
+  await it('②b 币种：把「元」译成 reais 必须报（实测产线模型 DeepSeek 的真错）', async () => {
+    const source = '这批设备的报价是每台 3980 元，也就是每台 3582 元。'
+    const bad = lint(source,
+      'O preço é 3980 reais por unidade, ou seja, 3582 reais por unidade.')
+    check('元 → reais → 判币种错', bad.fatal.some(n => n.kind === '币种错'), JSON.stringify(bad.fatal))
+  })
+
+  await it('②b 币种：译对（yuans / yuan）不许报', async () => {
+    const source = '这批设备的报价是每台 3980 元。'
+    for (const good of ['O preço é 3980 yuans por unidade.',
+      'O preço é 3980 yuan por unidade.',
+      'O preço é 3980 renminbi por unidade.']) {
+      const judged = lint(source, good)
+      check('币种对 → 不报', judged.fatal.some(n => n.kind === '币种错') === false,
+        JSON.stringify(judged.fatal) + '｜' + good)
+    }
+  })
+
+  await it('②b 币种：**省略**币种不许报（同传里省略单位很常见，报了就是误报）', async () => {
+    const judged = lint('这批设备的报价是每台 3980 元。', 'O preço é 3980 por unidade.')
+    check('只写数字没写单位 → 不报', judged.fatal.some(n => n.kind === '币种错') === false,
+      JSON.stringify(judged.fatal))
+  })
+
+  await it('②b 币种：原文没提币种时一律不判', async () => {
+    const judged = lint('这批设备一共 3980 台。', 'São 3980 unidades, o preço é em reais.')
+    check('原文没有币种 → 不判（无从比较）', judged.fatal.some(n => n.kind === '币种错') === false,
+      JSON.stringify(judged.fatal))
+  })
+
+  await it('②b 币种：`real` 这个短词不许在别的词里误命中', async () => {
+    // `real` 是 BRL 的写法，但它也是形容词（"真实"）。用词边界匹配才安全：
+    // `realmente` / `realidade` 里都含 `real`，误命中会让整条判据变成噪音源。
+    const judged = lint('报价是 3980 元。', 'O preço é 3980, e isso é realmente importante para a realidade.')
+    check('realmente / realidade 不算 BRL → 不报',
+      judged.fatal.some(n => n.kind === '币种错') === false, JSON.stringify(judged.fatal))
+  })
+
+  // ── ②c 关系：数字对但**方向反了** ───────────────────────────────────────────
+  //
+  // 老师提的那条：「从十二楼换到八楼」—— 就算译文里 12 和 8 都在，
+  // 把起点终点调过来仍然是严重错误，而"比对数字集合"的判据看不出来。
+
+  await it('②c 方向：起点终点对调必须报（数字都在也要报）', async () => {
+    const source = '地点从十二楼的第二会议室换到了八楼的 802 房间。'
+    for (const inverted of [
+      'A reunião foi adiada para as 15h20, e o local mudou do 8º andar para o 12º andar, na sala 802.',
+      'A reunião foi adiada para as 15h20, e o local mudou do oitavo andar para o décimo segundo andar, na sala 802.',
+    ]) {
+      const bad = lint(source, inverted)
+      check('方向反了 → 判起终点对调', bad.fatal.some(n => n.kind === '起终点对调'),
+        JSON.stringify(bad.fatal) + '｜' + inverted)
+      check('而且**不报**楼层丢失（数字确实都在）',
+        bad.fatal.some(n => n.kind === '楼层丢失') === false,
+        '方向错和丢失是两回事，报错了会指向错的方向')
+    }
+  })
+
+  await it('②c 方向：三份真实译文（方向都对）一条都不许报', async () => {
+    const source = '我们今天的会议改到了下午三点二十，地点从十二楼的第二会议室换到了八楼的 802 房间。'
+    const real = [
+      // deepseek：缩合形式 da...para
+      'Nossa reunião de hoje mudou para as três e vinte da tarde, e o local mudou da sala de reunião 2 do 12º andar para a sala 802 do 8º andar.',
+      // glm：中间夹逗号
+      'Nossa reunião de hoje foi remarcada para as 15h20, e o local mudou da sala de reuniões 2, no 12º andar, para a sala 802, no 8º andar.',
+      // hunyuan：序数词写法 + 性数错（那一条另报，但不该报方向）
+      'A reunião de hoje foi adiada para as 15h20, e o local foi alterado do segundo auditório no 12º andar para o sala 802 no 8º andar.',
+    ]
+    for (const translation of real) {
+      const judged = lint(source, translation)
+      check('方向对 → 不报', judged.fatal.some(n => n.kind === '起终点对调') === false,
+        JSON.stringify(judged.fatal) + '｜' + translation)
+    }
+  })
+
+  await it('②c 方向：**语序反了但意思是对的**，绝不许报（这条判据最大的误报来源）', async () => {
+    // 同一个意思有太多说法。这句把顺序完全倒过来说（先说到哪、再提原来在哪），
+    // 意思与原文一致 —— 靠"数出现的先后"去判方向的做法会在这里误报。
+    // 本判据只在**两侧都能用明确模式解析**时才判，所以这里必须一条不报。
+    const source = '地点从十二楼的第二会议室换到了八楼的 802 房间。'
+    const reordered = 'A sala 802 agora fica no 8º andar; antes era no 12º andar.'
+    const judged = lint(source, reordered)
+    check('语序反了但意思对 → 不报方向', judged.fatal.some(n => n.kind === '起终点对调') === false,
+      JSON.stringify(judged.fatal))
+  })
+
+  await it('②c 方向：原文没有"从…到…"就不判（不硬凑）', async () => {
+    const judged = lint('八楼的 802 房间在 12 楼下面。', 'A sala 802 no 8º andar fica abaixo do 12º andar.')
+    check('没有位移关系 → 不报方向', judged.fatal.some(n => n.kind === '起终点对调') === false,
+      JSON.stringify(judged.fatal))
+  })
+
+  await it('②c 葡语楼层抽取：`décimo segundo`(12) 不许被拆成 `segundo`(2)', async () => {
+    // 真实踩到的坑：`décimo segundo andar` 里含 `segundo`，两句都命中 →
+    // 一侧算出 [12, 2] 两个楼层 → "恰好一个"不满足 → 整条判据**静默失效**。
+    // 这是"漏报",比误报更隐蔽（看起来像通过了），所以单独钉一条。
+    check('décimo segundo andar → 12', JSON.stringify(ptFloorSlots('no décimo segundo andar')) === '[12]',
+      JSON.stringify(ptFloorSlots('no décimo segundo andar')))
+    check('oitavo andar → 8', JSON.stringify(ptFloorSlots('no oitavo andar')) === '[8]',
+      JSON.stringify(ptFloorSlots('no oitavo andar')))
+    check('12º andar → 12', JSON.stringify(ptFloorSlots('no 12º andar')) === '[12]',
+      JSON.stringify(ptFloorSlots('no 12º andar')))
+    check('`segundo auditório` 不是楼层（auditório 不是 andar）',
+      ptFloorSlots('do segundo auditório').length === 0,
+      JSON.stringify(ptFloorSlots('do segundo auditório')))
   })
 
   // ── ③ 性数一致 ─────────────────────────────────────────────────────────────
