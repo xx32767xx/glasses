@@ -75,6 +75,17 @@ def parse_args():
                         help="不指定语种时的候选集（逗号分隔，缺省 zh,pt；空串=不限定，"
                              "回到「99 种里挑最大」—— 那正是会挑出 he 的旧行为）")
     parser.add_argument("--beam-size", type=int, default=5, help="缺省 5（与生产链路一致）")
+    # ⚠️ 这两个开关是"评测与产线不一致"查出来的，见 docs/14 §5.4：
+    #    产线 whisper_stream.py 是 `vad_filter=False`（它自己已经按能量切好了），
+    #    而且**默认会发语种提示词**（zh: 请用简体中文输出 / pt: 巴西葡语）。
+    #    评测这边原来一直是 `vad_filter=True` 且**不发提示词** ——
+    #    也就是说"基线"其实不是在产线的解码参数下测的。老师要求"保留现有解码参数"，
+    #    所以把这两项做成显式开关，两种配置都要能跑、并在 provenance 里记下来。
+    parser.add_argument("--vad-filter", dest="vad_filter", action="store_true", default=True,
+                        help="用 faster-whisper 内置的 Silero VAD 再切一遍（缺省开；"
+                             "**产线是关的**，因为它自己已经切好了）")
+    parser.add_argument("--no-vad-filter", dest="vad_filter", action="store_false",
+                        help="关掉内置 VAD —— 与产线一致，做产线口径的基准时要用这个")
     parser.add_argument("--no-normalize", action="store_true",
                         help="不做峰值归一化（缺省做，与生产链路一致）")
     parser.add_argument("--initial-prompt", default=None,
@@ -225,6 +236,7 @@ def run_provenance(args, wavset, items, unit):
         "langCandidates": list(args.lang_candidates) if args.lang_candidates else None,
         "initialPrompt": args.initial_prompt,
         "normalizePeak": not args.no_normalize,
+        "vadFilter": args.vad_filter,
         "unit": unit,
         "dataset": str(wavset),
         "manifestSha256": digest.hexdigest()[:16],
@@ -299,7 +311,7 @@ def main():
         try:
             segments, info = model.transcribe(
                 audio, language=language, beam_size=args.beam_size,
-                vad_filter=True, condition_on_previous_text=False,
+                vad_filter=args.vad_filter, condition_on_previous_text=False,
                 initial_prompt=args.initial_prompt,
             )
             text = " ".join(seg.text.strip() for seg in segments).strip()
