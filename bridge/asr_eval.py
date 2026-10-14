@@ -94,7 +94,35 @@ def parse_args():
     parser.add_argument("--out-json", default=None,
                         help="把结构化结果写到这里（供 scripts/test-asr.mjs 汇总用）。"
                              "只增加输出，不改任何计算逻辑 —— 这样两边的口径永远一致")
-    return parser.parse_args()
+    # 调参通道：faster-whisper 有 35 个可调参数，逐个加命令行开关既啰嗦、又永远加不全。
+    # 给一个 JSON 通道，把任意参数透传进 transcribe()，并记进 provenance。
+    #
+    # ⚠️ 参数名写错必须**明确报错**，不能静默忽略 —— 否则"我调了那个参数"会变成一句空话，
+    #    实验结论就建立在"其实没生效"的配置上。这个项目已经栽过同类跟头（护栏悄悄失效）。
+    parser.add_argument("--decode-json", default=None,
+                        help="透传给 transcribe() 的参数（JSON）。例："
+                             "'{\"no_speech_threshold\": null, \"log_prob_threshold\": -2.0}'")
+    args = parser.parse_args()
+
+    # 解析并校验透传参数
+    args.decode = {}
+    if args.decode_json:
+        try:
+            parsed = json.loads(args.decode_json)
+        except Exception as error:
+            parser.error(f"--decode-json 不是合法 JSON：{error}")
+        if not isinstance(parsed, dict):
+            parser.error("--decode-json 必须是一个 JSON 对象")
+        import inspect as _inspect
+
+        from faster_whisper import WhisperModel as _WhisperModel
+
+        allowed = set(_inspect.signature(_WhisperModel.transcribe).parameters)
+        unknown = [key for key in parsed if key not in allowed]
+        if unknown:
+            parser.error(f"--decode-json 里有 transcribe() 不认的参数：{unknown}")
+        args.decode = parsed
+    return args
 
 
 # ── 错误率：中文按**字**，葡语按**词** ────────────────────────────────────────
@@ -237,6 +265,7 @@ def run_provenance(args, wavset, items, unit):
         "initialPrompt": args.initial_prompt,
         "normalizePeak": not args.no_normalize,
         "vadFilter": args.vad_filter,
+        "decodeOverrides": args.decode,
         "unit": unit,
         "dataset": str(wavset),
         "manifestSha256": digest.hexdigest()[:16],
@@ -308,12 +337,16 @@ def main():
             picks = [(code, p) for code, p in all_probs if code in args.lang_candidates]
             if picks:
                 language = max(picks, key=lambda item: item[1])[0]
+        decode_kwargs = {
+            "language": language,
+            "beam_size": args.beam_size,
+            "vad_filter": args.vad_filter,
+            "condition_on_previous_text": False,
+            "initial_prompt": args.initial_prompt,
+        }
+        decode_kwargs.update(args.decode)          # --decode-json 最后覆盖
         try:
-            segments, info = model.transcribe(
-                audio, language=language, beam_size=args.beam_size,
-                vad_filter=args.vad_filter, condition_on_previous_text=False,
-                initial_prompt=args.initial_prompt,
-            )
+            segments, info = model.transcribe(audio, **decode_kwargs)
             text = " ".join(seg.text.strip() for seg in segments).strip()
         except Exception as error:
             # 推理失败也要记下来，不能让它把"少测了几条"藏起来
