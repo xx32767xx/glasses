@@ -256,8 +256,11 @@ def main():
         print(f"（--count {args.count}：只测前 {len(items)} 条）")
     unit = args.unit if args.unit != "auto" else detect_unit([i["reference"] for i in items])
     unit_label = "字" if unit == "char" else "词"
-    print(f"测试集：{wavset}（{len(items)} 条；错误率按**{unit_label}**算"
-          f"{'，auto 判定为中文' if args.unit == 'auto' else ''}）")
+    # ⚠️ 这句原来写的是 `'，auto 判定为中文' if args.unit == 'auto'` —— 只要 unit 是 auto 就
+    #    印"判定为中文"，**不管实际判成什么**。跑葡语时也会印出来，看着像是判错了语种。
+    #    这里要说明的是"单位是怎么定的"，与语种无关，所以直接写清依据。
+    unit_note = "" if args.unit != "auto" else "，单位按参考文本是否含空格自动判"
+    print(f"测试集：{wavset}（{len(items)} 条；错误率按**{unit_label}**算{unit_note}）")
 
     from faster_whisper import WhisperModel
 
@@ -314,13 +317,23 @@ def main():
     traditional_total = sum(r["traditional"] for r in rows)
     traditional_sentences = sum(1 for r in rows if r["traditional"] > 0)
 
+    # ⚠️ 这句原来**写死**成「朗读语音 —— 比真实会议乐观」。跑 CORAA（真实口语）时也是这么印的，
+    #    把那批数字说成了朗读 —— 而 CORAA 恰恰是这三个测试集里**最接近真实**的一个。
+    #    标签错了会直接误导读数的人，所以按语料本身判断（manifest 里有 source/dataset 的是 CORAA）。
+    _, raw_items = read_manifest(wavset)
+    heard = any(isinstance(i, dict) and (i.get("source") or i.get("dataset")) for i in raw_items)
+    corpus_label = ("真实口语（自发说话，含口音/语速变化）—— 比朗读更接近真实会议，"
+                    "但仍不是多人抢话的会议室" if heard
+                    else "朗读语音 —— 比真实会议**乐观**，见 docs/04 §8")
+
     print("=" * 76)
     print(f"结果 · 模型 {args.model} / {args.device} / {args.compute_type} / beam {args.beam_size}")
     print("=" * 76)
-    print(f"  样本数        {len(rows)} 条（朗读语音 —— 比真实会议**乐观**，见 docs/04 §8）")
+    print(f"  样本数        {len(rows)} 条（{corpus_label}）")
     print(f"  错误率单位    {unit_label}"
           f"（中文必须按字：没有空格，按词算整句就是一个 token）")
-    print(f"  语种判定      {detections}")
+    print(f"  语种判定      {detections}"
+          f"{'（已固定为 ' + args.language + '）' if args.language else '（自动判定）'}")
     print(f"  加权错误率    {weighted * 100:.1f}%   ← 按句子长度加权，反映整体")
     print(f"  按句平均      {np.mean([r['rate'] for r in scored]) * 100:.1f}%")
     good = sum(1 for r in scored if r["rate"] <= 0.10)

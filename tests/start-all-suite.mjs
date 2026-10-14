@@ -274,7 +274,37 @@ export async function runStartAllSuite({ it, check, assert }) {
     check('说明是 dry-run、没真的启动', output.includes('--dry-run'), output.slice(-120))
   })
 
-  // ── 退出时自动归档日志 ─────────────────────────────────────────────────────
+  // ── 固定语种（单向模式）──────────────────────────────────────────────────
+  //
+  // 用户在"中文发言 → 译成巴葡"这种单向场景下要求显式指定语种，不要自动判定。
+  // 实测依据（pt-coraa，20 条真实巴葡口语）：
+  //   自动判定 → 语种 {pt:19, he:1}，词错率 13.3%，那条被认成希伯来语的**整句报废**
+  //   固定 pt  → 语种 {pt:20}，词错率 12.2%
+  // 所以这两个开关存在的意义是**消掉"整句报废"那一类**，不是普遍提升准确率。
+
+  await it('固定语种：--from/--to 必须真的传到识别进程（否则单向模式是假的）', async () => {
+    const asr = buildSteps(parseArgs(['--from', 'zh-CN', '--to', 'pt-BR'])).find(s => s.key === 'asr')
+    check('带上 --from zh-CN', argsOf(asr).includes('--from zh-CN'), argsOf(asr))
+    check('带上 --to pt-BR', argsOf(asr).includes('--to pt-BR'), argsOf(asr))
+  })
+
+  await it('固定语种：缺省**不固定**（自动判定仍是缺省行为，不能悄悄改掉）', async () => {
+    const asr = buildSteps(parseArgs([])).find(s => s.key === 'asr')
+    check('没有 --from', argsOf(asr).includes('--from') === false, argsOf(asr))
+    check('没有 --to', argsOf(asr).includes('--to') === false, argsOf(asr))
+  })
+
+  await it('固定语种：非法语种与"同一个语种"都在入口就被拒（不让子进程起来才报）', async () => {
+    // 起不来的表现只是"某个进程起来就退了"，真正的原因在几百行日志之后 ——
+    // 所以在 parseArgs 就拦住。
+    assert.throws(() => parseArgs(['--from', 'en-US']), /只能是 zh-CN 或 pt-BR/)
+    assert.throws(() => parseArgs(['--to', 'ja']), /只能是 zh-CN 或 pt-BR/)
+    assert.throws(() => parseArgs(['--from', 'zh-CN', '--to', 'zh-CN']), /不能是同一个语种/)
+    check('合法的两个方向都通过',
+      parseArgs(['--from', 'pt-BR', '--to', 'zh-CN']).from === 'pt-BR',
+      'zh-CN→pt-BR 与 pt-BR→zh-CN 都该允许')
+  })
+
   //
   // 为什么归档的时机是"进程结束"而不是"一次对话结束"：系统里没有可靠的
   // "对话结束"信号（暂停又继续、一直开着、手机断一下又连回来都会把边界猜错），
