@@ -36,6 +36,7 @@ from whisper_stream import (   # noqa: E402
     normalize_peak, parse_args, pick_language, prompt_for, rms_of, whisper_language_of,
 )
 from whisper_transcribe import TARGET_RATE, load_audio                    # noqa: E402
+from asr_pack import select_from_pool   # noqa: E402
 from asr_eval import (   # noqa: E402
     count_traditional, detect_unit, error_rate, looks_chinese,
 )
@@ -444,6 +445,43 @@ def main():
           pick_language([("zh", 0.88), ("pt", 0.06)], ("zh", "pt")) == "zh")
     check("候选里一个都没有 → 返回 None（不硬选一个）",
           pick_language([("en", 0.5), ("fr", 0.4)], ("zh", "pt")) is None)
+
+    # ── 9c. 测试包切分：dev 与保留集**必须**不相交 ────────────────────────────
+    #
+    # 这是老师那份测试建议里最容易被忽略、也最致命的一条：
+    # 切分一旦泄漏，**后面所有"保留集上的成绩"都是假的** ——
+    # 它不会报错、不会崩，只会让数字好看一点。
+    heading("测试包切分 · dev 与保留集不相交")
+    # 造一批"组"：每组 1~3 条，模拟 CORAA 同一个受访者录了多段的情况。
+    groups = [[{"i": n} for n in range(start, start + size)]
+              for start, size in ((0, 3), (3, 1), (4, 2), (6, 1), (7, 3), (10, 1), (11, 2), (13, 1))]
+    requested = 5
+    dev = select_from_pool(groups, 0, requested)
+    check("按组整取会略超出请求条数（所以偏移不能用请求值算）",
+          len(dev) > requested, f"请求 {requested} 条，实际 {len(dev)} 条")
+    holdout = select_from_pool(groups, len(dev), 6)
+    dev_ids = {item["i"] for item in dev}
+    hold_ids = {item["i"] for item in holdout}
+    check("dev 与保留集没有重复样本",
+          dev_ids & hold_ids == set(), f"dev={sorted(dev_ids)} holdout={sorted(hold_ids)}")
+    # 边界守卫：偏移略有偏差时**也不会**重叠。
+    # ⚠️ 这一条是我原本判错的证据：我一度以为"偏移用请求条数"会造成泄漏，
+    #    实际写反面对照才发现——`seen < offset` 那道守卫会把跨边界的组整组跳过，
+    #    所以怎么算偏移都不重叠（代价是那一组只落在 dev 里，不会两边都有）。
+    #    把这条性质钉下来，比留一个我猜想的"bug 复现"要有用。
+    skew_ids = {item["i"] for item in select_from_pool(groups, requested, 6)}
+    check("偏移用请求条数（偏小）时也不重叠 —— 边界守卫在起作用",
+          dev_ids & skew_ids == set(), f"重叠 {sorted(dev_ids & skew_ids)}")
+    check("两包合起来不丢样本（顺序切，不跳）",
+          dev_ids | hold_ids == set(range(len(dev_ids) + len(hold_ids))),
+          f"{sorted(dev_ids | hold_ids)}")
+    check("同一个组不会被拆到两包",
+          all(len({item["i"] for item in group} & dev_ids) in (0, len(group)) for group in groups),
+          "组内样本必须整组落在同一侧")
+    again = select_from_pool(groups, 0, requested)
+    check("同一输入 → 同一结果（可复现）",
+          [item["i"] for item in again] == [item["i"] for item in dev],
+          f"{[item['i'] for item in again]}")
 
     # ── 10. 输出编码（真实事故：识别结果变乱码，一句字幕都出不来）─────────────
     #
