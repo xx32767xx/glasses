@@ -347,14 +347,24 @@ def main():
     traditional_total = sum(r["traditional"] for r in rows)
     traditional_sentences = sum(1 for r in rows if r["traditional"] > 0)
 
-    # ⚠️ 这句原来**写死**成「朗读语音 —— 比真实会议乐观」。跑 CORAA（真实口语）时也是这么印的，
-    #    把那批数字说成了朗读 —— 而 CORAA 恰恰是这三个测试集里**最接近真实**的一个。
-    #    标签错了会直接误导读数的人，所以按语料本身判断（manifest 里有 source/dataset 的是 CORAA）。
+    # ⚠️ 这段标签换过两次，两次都是因为"猜语料性质"而不是"读语料自报的性质"：
+    #    第一版**写死**成「朗读语音」，跑 CORAA（真实口语）时也照印；
+    #    第二版改成"manifest 里有 source/dataset 就算真实口语" ——
+    #    结果新的测试包（FLEURS）也带 `dataset` 字段，于是**朗读包被标成真实口语**。
+    #    现在优先读样本**自报的语体**（tags.register，切包时按语料官方标签写入），
+    #    不靠猜；读不到才如实说"未标注"。
     _, raw_items = read_manifest(wavset)
-    heard = any(isinstance(i, dict) and (i.get("source") or i.get("dataset")) for i in raw_items)
-    corpus_label = ("真实口语（自发说话，含口音/语速变化）—— 比朗读更接近真实会议，"
-                    "但仍不是多人抢话的会议室" if heard
-                    else "朗读语音 —— 比真实会议**乐观**，见 docs/04 §8")
+    registers = {(i.get("tags") or {}).get("register")
+                 for i in raw_items if isinstance(i, dict)}
+    registers.discard(None)
+    if registers == {"read"}:
+        corpus_label = "朗读语音 —— 比真实会议**乐观**（见 docs/14 §2）"
+    elif "spontaneous" in registers:
+        corpus_label = ("真实口语（自发说话，含口音/语速变化）—— 比朗读更接近真实会议，"
+                        "但仍不是多人抢话的会议室")
+    else:
+        corpus_label = ("语体未标注（老格式 manifest，没有 tags.register）—— "
+                        "请对照 docs/14 §2 确认它是朗读还是口语")
 
     print("=" * 76)
     print(f"结果 · 模型 {args.model} / {args.device} / {args.compute_type} / beam {args.beam_size}")
