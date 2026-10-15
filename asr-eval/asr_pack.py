@@ -15,13 +15,17 @@ asr_pack.py —— 从本地缓存的公开语料切出**固定、可复现、�
      否则就是"把同一段录音随机切开分到两组"，那是典型的泄漏。
 
 用法
-  python bridge/asr_pack.py --list                  # 列出能切哪些包、各有多少条
-  python bridge/asr_pack.py --build zh-read-dev     # 切一个包
-  python bridge/asr_pack.py --build all             # 全切
+  python asr-eval/asr_pack.py --list                  # 列出能切哪些包、各有多少条
+  python asr-eval/asr_pack.py --build zh-read-dev     # 切一个包
+  python asr-eval/asr_pack.py --build all             # 全切
 
 每个包容器的内容
   <pack>/manifest.jsonl   每条样本一行，字段见 docs/14（样本身份 / 音频 / 会话 / 正确答案 / 分组标签）
   <pack>/pack.json        这一包是怎么切出来的（数据集、版本、切分规则、种子、统计）—— 审计用
+
+切出来的包放在哪
+  var/asr-eval/packs/<包名>/   —— 识别评测的数据**单独一层**，不跟生产录音混在 var/audio，
+                                  也不跟"随便删"的日志混在 var/logs（见 lib/paths.mjs 的说明）。
 """
 
 import argparse
@@ -36,9 +40,13 @@ from pathlib import Path
 
 import numpy as np
 
-HERE = Path(__file__).resolve().parent
-ROOT = HERE.parent
-sys.path.insert(0, str(HERE))
+HERE = Path(__file__).resolve().parent          # 本文件在 asr-eval/ 下
+ROOT = HERE.parent                              # 仓库根
+sys.path.insert(0, str(HERE))                   # 同层的兄弟模块（asr_eval / asr_score …）
+# ⚠️ 依赖方向是**单向**的：评测层（asr-eval/）可以用 bridge/ 里的产线引擎与共享工具
+#    （whisper_stream / whisper_transcribe），但 bridge/ **永远不许** import asr-eval/ ——
+#    反了就等于把测量工具塞进了产线。这条不靠自觉：tests/asr-pack-suite.mjs 里有断言在查。
+sys.path.insert(0, str(ROOT / "bridge"))
 
 from asr_eval import load_wav_bytes                      # noqa: E402
 from whisper_stream import force_utf8_stdio               # noqa: E402
@@ -52,7 +60,10 @@ force_utf8_stdio()
 
 FLEURS_CACHE = ROOT / "var" / "cache" / "fleurs"
 CORAA_CACHE = ROOT / "var" / "cache" / "coraa"
-AUDIO_DIR = ROOT / "var" / "audio"
+# ⚠️ 这个字面量与 lib/paths.mjs 里的 `ASR_PACKS_DIR` **必须指向同一个目录** ——
+#    Python 侧读不到 JS 常量，所以只能各写一份；靠 tests/asr-pack-suite.mjs 里
+#    一条断言（真的去问 python 要这个值）挡住漂移，而不是靠人记得同步。
+PACKS_DIR = ROOT / "var" / "asr-eval" / "packs"
 
 # MagicData-RAMC（中文日常交流口语）默认放在仓库外 —— 它 19.8 GB，不该进 var/。
 # ⚠️ 绝对路径**不写死**：可用 --magicdata-dir 覆盖，实际用的路径会记进 pack.json。
@@ -133,7 +144,7 @@ def regression_ids():
     """历史回归集里已经用过的原始 id / 文件名 —— 新包要避开它们。"""
     used = set()
     for name in REGRESSION_SETS:
-        manifest = AUDIO_DIR / name / "manifest.jsonl"
+        manifest = PACKS_DIR / name / "manifest.jsonl"
         if not manifest.is_file():
             continue
         for line in manifest.read_text(encoding="utf-8").splitlines():
@@ -560,7 +571,7 @@ def select_from_pool(groups, offset, count):
 
 def read_manifest(name):
     """读一个已经切好的包的 manifest；没切过就返回 None（不抛异常，让调用方决定怎么办）。"""
-    path = AUDIO_DIR / name / "manifest.jsonl"
+    path = PACKS_DIR / name / "manifest.jsonl"
     if path.is_file() is False:
         return None
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -568,7 +579,7 @@ def read_manifest(name):
 
 def build(name, force=False, magicdata_root=None):
     spec = PACKS[name]
-    target = AUDIO_DIR / name
+    target = PACKS_DIR / name
     manifest_path = target / "manifest.jsonl"
     if manifest_path.is_file() and not force:
         print(f"⏭  {name} 已经存在（要重建加 --force）")
@@ -598,7 +609,7 @@ def build(name, force=False, magicdata_root=None):
         dev_items = read_manifest(dev_name)
         if dev_items is None:
             sys.exit(f"❌ {name} 的说话人排除名单来自 {dev_name}，但它还没切。\n"
-                     f"   先跑：python bridge/asr_pack.py --build {dev_name}")
+                     f"   先跑：python asr-eval/asr_pack.py --build {dev_name}")
         exclude_speakers = {item["speaker"] for item in dev_items if item.get("speaker")}
         exclude_speakers -= PLACEHOLDER_SPEAKERS
         print(f"{dev_name} 的真实说话人 {len(exclude_speakers)} 位（占位标记已剔除）")
@@ -735,7 +746,7 @@ def build(name, force=False, magicdata_root=None):
         json.dump(pack_meta, handle, ensure_ascii=False, indent=2)
 
     print(f"✅ {name:<20} {len(manifest):>4} 条  {sum(seconds_all):>7.1f} 秒  "
-          f"说话人 {len(real) or '—'}  录音 {len(sessions) or '—'}  →  var/audio/{name}")
+          f"说话人 {len(real) or '—'}  录音 {len(sessions) or '—'}  →  var/asr-eval/packs/{name}")
     return pack_meta
 
 
@@ -752,7 +763,7 @@ def write_key_candidates():
     total = 0
     print("关键内容候选（需人工确认后填回 manifest 的 key_terms）：")
     for name in PACKS:
-        manifest = AUDIO_DIR / name / "manifest.jsonl"
+        manifest = PACKS_DIR / name / "manifest.jsonl"
         if not manifest.is_file():
             continue
         items = [json.loads(line) for line in manifest.read_text(encoding="utf-8").splitlines() if line.strip()]
@@ -762,12 +773,12 @@ def write_key_candidates():
             if candidates:
                 rows.append({"file": item["file"], "reference": item["reference"],
                              "candidates": candidates})
-        target = AUDIO_DIR / name / "key-candidates.jsonl"
+        target = PACKS_DIR / name / "key-candidates.jsonl"
         with open(target, "w", encoding="utf-8") as handle:
             for row in rows:
                 handle.write(json.dumps(row, ensure_ascii=False) + "\n")
         total += len(rows)
-        print(f"  {name:<20} {len(rows):>4}/{len(items)} 条有候选 → var/audio/{name}/key-candidates.jsonl")
+        print(f"  {name:<20} {len(rows):>4}/{len(items)} 条有候选 → var/asr-eval/packs/{name}/key-candidates.jsonl")
     print("")
     print(f"共 {total} 条待人工确认。确认后把词填进对应 manifest 行的 key_terms 字段。")
     return 0
@@ -784,7 +795,7 @@ def verify():
     problems = []
     print("包清单：")
     for name in PACKS:
-        manifest = AUDIO_DIR / name / "manifest.jsonl"
+        manifest = PACKS_DIR / name / "manifest.jsonl"
         if not manifest.is_file():
             print(f"  ⬜ {name:<20} 未切")
             continue
@@ -796,7 +807,7 @@ def verify():
         ids = [item["original_id"] for item in items]
         if len(set(ids)) != len(ids):
             problems.append(f"{name}: original_id 有重复（{len(ids)} 条里只有 {len(set(ids))} 个唯一）")
-        missing = [item["file"] for item in items if not (AUDIO_DIR / name / item["file"]).is_file()]
+        missing = [item["file"] for item in items if not (PACKS_DIR / name / item["file"]).is_file()]
         if missing:
             problems.append(f"{name}: {len(missing)} 个 wav 文件不在（如 {missing[0]}）")
         # 覆盖度是**硬指标**，不是好看的数字：300 条只覆盖 2 个说话人的包，
@@ -813,8 +824,8 @@ def verify():
     print("切分卫生：")
     reg = regression_ids()
     for base in sorted({name.rsplit("-", 1)[0] for name in PACKS}):
-        dev = AUDIO_DIR / f"{base}-dev" / "manifest.jsonl"
-        hold = AUDIO_DIR / f"{base}-holdout" / "manifest.jsonl"
+        dev = PACKS_DIR / f"{base}-dev" / "manifest.jsonl"
+        hold = PACKS_DIR / f"{base}-holdout" / "manifest.jsonl"
         if not (dev.is_file() and hold.is_file()):
             print(f"  ⬜ {base}: dev 或保留集未切，跳过")
             continue
@@ -887,7 +898,7 @@ def main():
     if args.list or args.build is None:
         print("可切的测试包：")
         for name, spec in PACKS.items():
-            have = AUDIO_DIR / name / "manifest.jsonl"
+            have = PACKS_DIR / name / "manifest.jsonl"
             mark = "已存在" if have.is_file() else "未切"
             print(f"  {name:<20} {spec['count']:>4} 条  [{mark}]  {spec['note']}")
         print("")

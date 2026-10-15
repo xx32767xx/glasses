@@ -9,7 +9,7 @@
  * 下完之后：
  *   python scripts/fetch-coraa-sample.py --list
  *   python scripts/fetch-coraa-sample.py --per-accent 20
- *   node scripts/test-asr.mjs --set pt-coraa --compare --by-accent
+ *   node asr-eval/test-asr.mjs --set pt-coraa --compare --by-accent
  *
  * ── 为什么选 CORAA ────────────────────────────────────────────────────────
  *

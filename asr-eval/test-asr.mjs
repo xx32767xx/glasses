@@ -1,18 +1,25 @@
 /**
- * test-asr.mjs —— 指定模型跑 ASR 测试（你要的那个"可以直接调用的脚本"）
+ * test-asr.mjs —— 指定模型跑 ASR 测试（识别评测这一层的入口）
  * ============================================================================
  *
- *   node scripts/test-asr.mjs --list                          # 看有哪些测试集、哪些模型
- *   node scripts/test-asr.mjs --set pt-coraa                  # 用缺省模型（large-v3/GPU）跑
- *   node scripts/test-asr.mjs --set pt-coraa --model medium   # 指定模型
- *   node scripts/test-asr.mjs --set pt-coraa --compare        # 跑多个模型并排序
- *   node scripts/test-asr.mjs --set pt-eval --device cpu --compute-type int8
- *   node scripts/test-asr.mjs --set pt-coraa --by-accent      # 按口音分组出分
- *   node scripts/test-asr.mjs --set zh-eval --count 10        # 先跑一小批看趋势
+ *   node asr-eval/test-asr.mjs --list                          # 看有哪些测试集、哪些模型
+ *   node asr-eval/test-asr.mjs --set zh-speech-dev             # 用缺省模型（large-v3/GPU）跑
+ *   node asr-eval/test-asr.mjs --set pt-coraa --model medium   # 指定模型
+ *   node asr-eval/test-asr.mjs --set pt-coraa --compare        # 跑多个模型并排序
+ *   node asr-eval/test-asr.mjs --set pt-eval --device cpu --compute-type int8
+ *   node asr-eval/test-asr.mjs --set pt-coraa --by-accent      # 按口音分组出分
+ *   node asr-eval/test-asr.mjs --set zh-eval --count 10        # 先跑一小批看趋势
+ *
+ * 这一层的其余脚本（都在同一个目录里，见 asr-eval/README.md）：
+ *   asr_pack.py            切测试包 / 查切分卫生
+ *   asr_eval.py            真正跑模型并算错误率（本脚本调它）
+ *   asr_score.py           评分规则（冻结、版本化）
+ *   asr_error_analysis.py  把错按来源分类（"错在什么上"）
+ *   segment_eval.py        量切句（静音判定该设多久）
  *
  * ── 设计上的三个决定，都是为了别把事情搞砸 ─────────────────────────────────
  *
- * ① **指标计算不重写，调 bridge/asr_eval.py。**
+ * ① **指标计算不重写，调同目录的 asr_eval.py。**
  *    那个脚本已经把难的地方做对了：中文按**字**算 CER（按词算的话整句是一个 token，
  *    错一个字和整句全错得到同一个数字）、葡语按词算 WER、去标点但保留葡语重音、
  *    单独统计"输出成繁体"这个 Whisper 已知毛病、CUDA 预热（第一次推理十几秒，
@@ -20,10 +27,11 @@
  *    这个脚本只做**编排 + 汇总 + 结果留存**。
  *
  * ② **测试集自动发现，不用记路径。**
- *    凡是有 manifest.jsonl 的目录就是一个测试集（现在有 zh-eval / pt-eval / pt-coraa）。
- *    加新语料不用改这个脚本。
+ *    凡是在 var/asr-eval/packs/ 下有 manifest.jsonl 的目录就是一个测试集
+ *    （现在是四个"语种 × 语体"组合各带 dev 与保留集，外加三个历史回归集）。
+ *    加新语料不用改这个脚本；别处的包用 `--set-path <目录>` 直接指定。
  *
- * ③ **结果写到 var/logs/asr-eval/，跨次留存。**
+ * ③ **结果写到 var/asr-eval/results/，跨次留存。**
  *    这样 --compare 能拿历史结果拼一张对照表，而不是每次都要把模型全跑一遍
  *    （large-v3 在 CPU 上很慢，跑一轮是好几分钟）。
  *
@@ -36,16 +44,25 @@
 import { readFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { join, resolve, basename } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 // 路径从 lib/paths.mjs 取 —— 仓库的规矩是"凡是落盘的路径都从这里取"。
-// ⚠️ 第一版这里用 process.cwd() 自己拼了 var/audio 与 var/logs/asr-eval，
+// ⚠️ 第一版这里用 process.cwd() 自己拼了测试包与结果目录，
 //    等于在别处又写了一份路径字面量（正是 paths.mjs 文件头禁止的做法）。
 //    用常量之后，路径改一处就够，而且和 fetch-coraa 用的是同一份定义。
-import { AUDIO_DIR, ASR_EVAL_DIR, WHISPER_CACHE_DIR } from '../lib/paths.mjs'
+import { ASR_PACKS_DIR, ASR_RESULTS_DIR, WHISPER_CACHE_DIR } from '../lib/paths.mjs'
 
-const ROOT = process.cwd()
-const RESULT_DIR = ASR_EVAL_DIR
+/**
+ * 仓库根：**从本文件的位置推**，不用 `process.cwd()`。
+ *
+ * ⚠️ 原来这里是 `process.cwd()`。脚本还在 `scripts/` 里时看不出问题（大家总是
+ *    在仓库根跑它），搬到 `asr-eval/` 之后它变成一个真的陷阱：`cd asr-eval && node test-asr.mjs`
+ *    会去 `asr-eval/var/asr-eval/packs` 找测试集、并把错误的工作目录传给 python 子进程 ——
+ *    报错信息只会说"一个测试集都没有"，看不出真实原因。
+ *    从文件位置推就没有这个问题，而且和 lib/paths.mjs 的 ROOT 是同一种做法。
+ */
+const ROOT = fileURLToPath(new URL('..', import.meta.url))
+const RESULT_DIR = ASR_RESULTS_DIR
 
 /**
  * 给 Python 子进程准备环境变量。
@@ -134,9 +151,9 @@ function parseArgs(argv) {
     if (token === '--compare') { options.compare = true; continue }
     if (token === '--by-accent') { options.byAccent = true; continue }
     if (token === '--set') { options.set = argv[++index]; continue }
-    // --set-path：直接给**目录**（绝对或相对都行），不必非得放在 var/audio 下。
-    // 为什么要这条：别处切好的包（另一台机器、另一块盘、临时实验）不该被逼着先拷进 var/audio
-    // 才能测 —— 拷贝既费时间，又会让"测的到底是哪一份"变得说不清。
+    // --set-path：直接给**目录**（绝对或相对都行），不必非得放在 var/asr-eval/packs 下。
+    // 为什么要这条：别处切好的包（另一台机器、另一块盘、临时实验）不该被逼着先拷进
+    // var/asr-eval/packs —— 拷贝既费时间，又会让"测的到底是哪一份"变得说不清。
     if (token === '--set-path') { options.setPath = argv[++index]; continue }
     if (token === '--model') { options.model = argv[++index]; continue }
     if (token === '--device') { options.device = argv[++index]; continue }
@@ -151,13 +168,13 @@ function parseArgs(argv) {
 
 /** 凡是有 manifest.jsonl 的目录就是一个测试集 —— 加语料不用改这个脚本。 */
 function listSets() {
-  if (existsSync(AUDIO_DIR) === false) return []
-  return readdirSync(AUDIO_DIR)
-    .filter(name => existsSync(join(AUDIO_DIR, name, 'manifest.jsonl')))
-    .map(name => setFromDir(name, join(AUDIO_DIR, name)))
+  if (existsSync(ASR_PACKS_DIR) === false) return []
+  return readdirSync(ASR_PACKS_DIR)
+    .filter(name => existsSync(join(ASR_PACKS_DIR, name, 'manifest.jsonl')))
+    .map(name => setFromDir(name, join(ASR_PACKS_DIR, name)))
 }
 
-/** 从一个目录读出一个测试集 —— `--set`（var/audio 下的名字）和 `--set-path`（任意路径）共用。 */
+/** 从一个目录读出一个测试集 —— `--set`（var/asr-eval/packs 下的名字）和 `--set-path`（任意路径）共用。 */
 function setFromDir(name, dir) {
   const items = readManifest(dir)
   const wavs = readdirSync(dir).filter(file => file.endsWith('.wav'))
@@ -172,7 +189,7 @@ function setFromDir(name, dir) {
  * 从**任意路径**读出测试集（`--set-path`），没切过的目录返回 null。
  *
  * 结果文件名与打印出来的名字都用**目录名** —— 所以目录名要能认出是哪一包
- * （`zh-speech-dev` 而不是 `tmp1`），否则 `var/logs/asr-eval/` 里会堆一堆看不出是什么的 json。
+ * （`zh-speech-dev` 而不是 `tmp1`），否则 `var/asr-eval/results/` 里会堆一堆看不出是什么的 json。
  */
 function setFromPath(path) {
   const dir = resolve(path)
@@ -231,16 +248,29 @@ function checkAudio(dir, limit = 5) {
   return bad
 }
 
-function resultPath(setName, modelKey) {
-  return join(RESULT_DIR, `${setName}__${modelKey.replace(/[/@]/g, '_')}.json`)
+/**
+ * 结果文件名：`<测试集>__<模型>_<设备>_<精度>.json`。
+ *
+ * ⚠️ **小批运行（`--count N`）会带上 `-nN` 后缀** —— 这条是踩出来的：
+ *    我为了验证搬家把 `--set zh-speech-dev --count 2` 跑了一遍，
+ *    结果它**直接覆盖了那份 304 条跑出来的完整基线**（238 KB → 2.8 KB），
+ *    而文件名的看不出任何区别。所以现在：
+ *      · 完整跑（`--count 0`）→ `zh-speech-dev__large-v3_cuda_float16.json`（`--compare` 只读这种）
+ *      · 小批跑（`--count 2`）→ `zh-speech-dev-n2__large-v3_cuda_float16.json`
+ *    **一个样本量一个文件名**，跑小批就不可能再悄悄盖掉完整结果。
+ */
+export function resultPath(setName, modelKey, count = null) {
+  const suffix = (count !== null && count > 0) ? `-n${count}` : ''
+  return join(RESULT_DIR, `${setName}${suffix}__${modelKey.replace(/[/@]/g, '_')}.json`)
 }
 
-/** 调 bridge/asr_eval.py 跑一轮，把它的 JSON 结果读回来。 */
+/** 调同目录的 asr_eval.py 跑一轮，把它的 JSON 结果读回来。 */
 function runOne(set, model, options) {
   mkdirSync(RESULT_DIR, { recursive: true })
-  const outJson = resultPath(set.name, keyOf(model.name, model.device, model.compute))
+  const outJson = resultPath(set.name, keyOf(model.name, model.device, model.compute), options.count)
   const args = [
-    join(ROOT, 'bridge', 'asr_eval.py'),
+    // 与这个脚本同目录 —— 评测层的脚本互相调用，不跨层去 bridge/ 找。
+    join(ROOT, 'asr-eval', 'asr_eval.py'),
     '--set', set.dir,
     '--model', model.name,
     '--device', model.device,
@@ -297,15 +327,15 @@ function main() {
       console.log(`  ${set.name.padEnd(12)} ${String(set.items.length).padStart(3)} 条 / ${seconds.toFixed(0)} 秒   ${set.corpus}`
         + (set.accents.length > 0 ? '   口音：' + set.accents.join('、') : ''))
     }
-    if (sets.length === 0) console.log('  （一个都没有 —— 先准备语料，见 var/logs/fetch-coraa.mjs）')
+    if (sets.length === 0) console.log('  （一个都没有 —— 先准备语料，见 scripts/fetch-coraa.mjs）')
     console.log('')
     console.log('候选模型（顺序即推荐顺序）：')
     for (const model of MODELS) {
       console.log(`  ${keyOf(model.name, model.device, model.compute).padEnd(22)} ${model.note}`)
     }
     console.log('')
-    console.log('用法：node scripts/test-asr.mjs --set ' + (sets[0]?.name ?? 'zh-eval') + ' [--model large-v3] [--compare]')
-    console.log('      node scripts/test-asr.mjs --set-path <任意绝对/相对目录>（目录里要有 manifest.jsonl）')
+    console.log('用法：node asr-eval/test-asr.mjs --set ' + (sets[0]?.name ?? 'zh-eval') + ' [--model large-v3] [--compare]')
+    console.log('      node asr-eval/test-asr.mjs --set-path <任意绝对/相对目录>（目录里要有 manifest.jsonl）')
     return
   }
 
@@ -386,7 +416,8 @@ function main() {
     console.log(`  语种判定      ${JSON.stringify(result.detections)}`)
     console.log(`  音频/耗时     ${result.audioSeconds.toFixed(1)}s / ${result.usedSeconds.toFixed(1)}s`
       + `（RTF ${(result.usedSeconds / result.audioSeconds).toFixed(3)}，每句 ${(result.usedSeconds / result.rows.length).toFixed(2)}s）`)
-    console.log(`  结果已存      ${resultPath(set.name, keyOf(model.name, model.device, model.compute))}`)
+    console.log(`  结果已存      ${resultPath(set.name, keyOf(model.name, model.device, model.compute), options.count)}`
+      + (options.count > 0 ? `（小批运行，文件名带 -n${options.count}，不会覆盖完整结果）` : ''))
 
     if (options.byAccent && set.accents.length > 0) {
       console.log('')

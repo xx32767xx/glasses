@@ -200,7 +200,7 @@ def parse_args(argv=None):
     parser.add_argument("--silence-ms", type=int, default=500,
                         help="静音超过这么久就认为一句话结束（缺省 500）。"
                              "这个数**必须小于说话人句子之间真正停顿的时长**，否则句子会并成长段："
-                             "用带标准答案的中文语料量过（bridge/segment_eval.py，12 句）："
+                             "用带标准答案的中文语料量过（asr-eval/segment_eval.py，12 句）："
                              "句间停顿 500ms 时，判 500ms 的文字错误率 10.0%%、判 700ms 变成 23.9%%、"
                              "判 1000ms 变成 27.0%%；而句间停顿 1500ms 时，判 500ms 是 10.0%%、"
                              "判 700ms 是 7.9%%。"
@@ -440,7 +440,7 @@ class UtteranceSegmenter:
         # ⚠️ 这里原来是"直接 _take()"，也就是**在固定位置硬切**。后果实测过：
         #   句子被合并成长段时，断点正好落在第 15 秒那个样本上 —— 说话说到一半
         #   就被切断，两条字幕各拿半句。这正是"长对话被截断"的来源。
-        #   （用 bridge/segment_eval.py 量出来的：合并片段的最大时长**精确等于**上限 15.0s。）
+        #   （用 asr-eval/segment_eval.py 量出来的：合并片段的最大时长**精确等于**上限 15.0s。）
         # 现在改成：先找 buffer 里**最长的内部停顿**，在那里切；实在找不到停顿
         #   （真的连着说了 15 秒没换气）才退回硬切。
         if self.speaking and len(self.buffer) >= self.max_blocks:

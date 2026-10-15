@@ -15,6 +15,13 @@ python-suite.py —— 语音分段器与音频读入的验证套件
     结果字幕十几秒才出一次。这种 bug 光看日志很难发现，必须有测试钉住。
 
 本套件只依赖 numpy（不加载 Whisper 模型），所以跑得很快，适合放进全量验证。
+
+被验的代码分布在两处，都是有意的：
+    产线（bridge/）：分段器、音频读入、闸门、缺省参数
+    评测层（asr-eval/）：评分规则、测试包切分、错误来源分类、命令行解析
+两层的关系是**单向**的（评测层可以 import 产线，产线永远不 import 评测层），
+所以这里把两个目录都加进 sys.path —— 这条方向本身也有断言在查
+（tests/asr-pack-suite.mjs）。
 """
 
 import sys
@@ -28,7 +35,11 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
+# 产线那一半（分段器、音频读入、闸门）
 sys.path.insert(0, str(ROOT / "bridge"))
+# 识别评测那一半（评分规则、测试包切分、错误分类）—— 代码在 asr-eval/ 下，
+# 数据在 var/asr-eval/ 下，见 asr-eval/README.md
+sys.path.insert(0, str(ROOT / "asr-eval"))
 
 from whisper_stream import (   # noqa: E402
     IdleTracker, LANGUAGE_PROMPTS, PcmFollower, SPEECH_RMS_FLOOR, UtteranceSegmenter,
@@ -170,7 +181,7 @@ def main():
     #
     # 这条钉住的是真实发生过的故障：说话人被合并成长段后，断点正好落在第 15 秒
     # 那个样本上 —— 说话说到一半被切断，两条字幕各拿半句。用户报的就是
-    # "长对话被截断"。用 bridge/segment_eval.py 量到的现象是：合并片段的最大时长
+    # "长对话被截断"。用 asr-eval/segment_eval.py 量到的现象是：合并片段的最大时长
     # **精确等于**上限（15.0s），那就是硬切的指纹。
     #
     # 造一段"每 3 秒有一次短停顿"的连续说话：短停顿（0.3s）不足以触发正常收句

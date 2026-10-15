@@ -1,9 +1,9 @@
 /**
- * asr-pack-suite.mjs —— 识别测试包这一层的判据自检
+ * asr-pack-suite.mjs —— 识别评测这一层的结构自检（测试包、标签、路径、分层方向）
  * ============================================================================
  *   node tests/run-all.mjs（被全量验证调用）
  *
- * 为什么单独有这一节：`scripts/test-asr.mjs` 打印出来的"这是朗读还是真实口语"
+ * 为什么单独有这一节：`asr-eval/test-asr.mjs` 打印出来的"这是朗读还是真实口语"
  * 原来是**猜**的（`有 source 字段 = CORAA，否则 = FLEURS 朗读`）。于是新切的
  * MagicData 中文口语包会被标成「FLEURS（朗读）」—— 而"朗读还是口语"正是这些
  * 错误率数字最关键的限定条件（口语的错误率高得多）。标签错了比没标签更糟：
@@ -12,12 +12,25 @@
  * 改成从 manifest 里读之后，我**又**踩了一次：写成 `find(...)?.register`（漏了 `.tags`），
  * 结果每个包都算出 null，语体标签**全部消失** —— 不报错、不崩，只是悄悄没了。
  * 所以这里要钉住的不是"标签好看"，而是**"必须读得到"**这件事本身。
+ *
+ * 后来评测层从 bridge/ 与 scripts/ 搬到 asr-eval/（数据搬到 var/asr-eval/），
+ * 这一节又多了三件事要钉 —— 都是"搬家之后**只有靠自动检查才发现得了**"的那类：
+ *   · 完整跑与小批跑的结果文件名不能撞（撞了就会用 2 条的结果覆盖 304 条的基线，
+ *     我自己就这么干过一次）；
+ *   · Python 侧写的路径字面量必须与 `lib/paths.mjs` 指向同一个目录（两种语言各写一份，
+ *     没有编译器帮你对）；
+ *   · **分层方向**：bridge/（产线）不许 import asr-eval/（评测）。
  */
 
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { corpusLabel } from '../scripts/test-asr.mjs'
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import { ASR_PACKS_DIR, ASR_RESULTS_DIR } from '../lib/paths.mjs'
+import { corpusLabel, resultPath } from '../asr-eval/test-asr.mjs'
+
+const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
 
 /** 造一条最小 manifest 行（只保留判据用得到的字段）。 */
 function row(dataset, register) {
@@ -73,9 +86,9 @@ export async function runAsrPackSuite({ it, check }) {
   // 这一条是"标签又悄悄消失"的现场检查：只要包里有 tags.register，
   // 打印出来的标签里就必须带语体，否则说明读取代码又断了。
   await it('已切好的包：有 tags.register 的必须打出语体标签', () => {
-    const dir = join(process.cwd(), 'var', 'audio')
+    const dir = ASR_PACKS_DIR
     if (existsSync(dir) === false) {
-      check('没有 var/audio（没切过包）→ 跳过', true)
+      check('没有 var/asr-eval/packs（没切过包）→ 跳过', true)
       return
     }
     const problems = []
@@ -90,5 +103,71 @@ export async function runAsrPackSuite({ it, check }) {
       if (label.includes('（') === false) problems.push(`${name} → ${label}`)
     }
     check('每个带 register 的包都打出了语体', problems.length === 0, problems.join('、'))
+  })
+
+  // ── 4. 小批运行不许覆盖完整结果 ────────────────────────────────────────────
+  //
+  // 这条是**踩出来的**，不是想出来的：搬家之后我为了验证路径，跑了
+  // `--set zh-speech-dev --count 2`，结果它写到与完整基线**同一个文件名**上，
+  // 238 KB 的 304 条基线被 2.8 KB 的 2 条结果覆盖了，而文件名上没有任何区别。
+  // 现在一个样本量一个文件名，这条断言钉的就是这个性质。
+  await it('小批运行的结果文件名带样本量（不许盖掉完整基线）', () => {
+    const full = resultPath('zh-speech-dev', 'large-v3_cuda_float16', 0)
+    const partial = resultPath('zh-speech-dev', 'large-v3_cuda_float16', 2)
+    check('完整跑用标准文件名', full.endsWith('zh-speech-dev__large-v3_cuda_float16.json'), full)
+    check('小批跑带 -nN 后缀', partial.endsWith('zh-speech-dev-n2__large-v3_cuda_float16.json'), partial)
+    check('两者不是同一个文件（否则小批会覆盖完整结果）', full !== partial)
+    check('没传 count 时保持旧口径（--compare 读的就是它）',
+      resultPath('zh-speech-dev', 'large-v3_cuda_float16') === full)
+    check('结果目录就是 paths.mjs 里那一个（不另写路径）',
+      full.startsWith(ASR_RESULTS_DIR), full)
+    check('模型名里的 / 与 @ 会被替换掉（否则会写进子目录）',
+      resultPath('x', 'a/b@c').includes('a_b_c'), resultPath('x', 'a/b@c'))
+  })
+
+  // ── 5. Python 侧写的路径必须与 lib/paths.mjs 指向同一个目录 ────────────────
+  //
+  // Python 读不到 JS 常量，所以 `asr_pack.py` 里只能再写一份 `var/asr-eval/packs`。
+  // 两份字面量没有任何编译器帮你对齐 —— 所以这里**真的去问 python 要那个值**，
+  // 而不是在源码里搜字符串（搜字符串只能证明"写了什么"，证明不了"算出来是什么"）。
+  await it('Python 侧的数据目录与 lib/paths.mjs 一致（跨语言不许各写各的）', () => {
+    let printed = null
+    try {
+      printed = execFileSync('python', ['-c',
+        'import sys; sys.path.insert(0, r"' + join(ROOT, 'asr-eval') + '");'
+        + ' import asr_pack; print(asr_pack.PACKS_DIR)',
+      ], { encoding: 'utf8', cwd: ROOT }).trim()
+    } catch (error) {
+      check('没找到 python → 跳过这一节（装 python + numpy 后会跑起来）', true)
+      return
+    }
+    check('两边指向同一个目录', printed === ASR_PACKS_DIR, `python=${printed} js=${ASR_PACKS_DIR}`)
+    check('而且那个目录真的存在（路径对了但目录没有，也是错的）',
+      existsSync(ASR_PACKS_DIR) && statSync(ASR_PACKS_DIR).isDirectory(), ASR_PACKS_DIR)
+  })
+
+  // ── 6. 分层方向：产线不许依赖评测 ──────────────────────────────────────────
+  //
+  // 评测层 import 产线（whisper_stream / whisper_transcribe）是**有意**的：
+  // 它要量的是产线那个分段器本身，不是复制一份。但方向反过来就糟了 ——
+  // 那意味着产线跑起来要带着测量工具，改测试代码会影响产线行为。
+  // 这条只有靠自动检查才守得住（人不会每次都去读 5 个文件的 import）。
+  await it('依赖方向：bridge/（产线）不 import asr-eval/（评测）', () => {
+    const evalModules = ['asr_eval', 'asr_pack', 'asr_score', 'asr_error_analysis', 'segment_eval']
+    const offenders = []
+    for (const name of readdirSync(join(ROOT, 'bridge'))) {
+      if (name.endsWith('.py') === false) continue
+      const source = readFileSync(join(ROOT, 'bridge', name), 'utf8')
+      for (const module of evalModules) {
+        if (new RegExp(`^\\s*(from|import)\\s+${module}\\b`, 'm').test(source)) {
+          offenders.push(`bridge/${name} → ${module}`)
+        }
+      }
+    }
+    check('一个都没有', offenders.length === 0, offenders.join('、'))
+    // 反过来要确认"评测确实在用产线的类"（不然上面那条可能只是因为谁都没 import）
+    const segEval = readFileSync(join(ROOT, 'asr-eval', 'segment_eval.py'), 'utf8')
+    check('而且评测层确实在复用产线的分段器（不是复制一份）',
+      /from whisper_stream import .*UtteranceSegmenter/.test(segEval), '没找到 UtteranceSegmenter')
   })
 }

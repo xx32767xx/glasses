@@ -17,9 +17,10 @@
 
 ```powershell
 node scripts/generate.mjs        # 从核心逻辑生成 6 个产物（插件 3 个 + 技能文档 + 2 份文档/资源）
-node tests/run-all.mjs           # 299 项断言：新鲜度门禁 + 两个包装版本各跑一遍 + 一致性对比
-python tests/python-suite.py     # 另 174 项：语音分段器 + 音频尾随 + 语种转换 + 评分规则 + 测试包切分
-                                 # （不加载模型，很快）+ ASR 桥契约 + 局域网契约 + 真实 Cordis 组合
+node tests/run-all.mjs           # 302 个用例：新鲜度门禁 + 两个包装版本各跑一遍 + 一致性对比
+                                 #（JS 计入的是**用例数**：一个用例里可以有多条断言，失败即整条红）
+python tests/python-suite.py     # 另 174 条断言：分段器 + 音频尾随 + 语种 + 评分规则 + 测试包切分 + 错因分类
+                                 #（Python 计入的是**断言条数**，一节里的断言失败不会挡住后面的）
 
 # A) 不需要麦克风、不需要手机：重放一段中葡对照的剧本，看整条同传链路
 node bridge/asr-bridge.mjs --inbox var/demo/asr-inbox.jsonl `
@@ -72,13 +73,14 @@ node scripts/fake-phone.mjs --wav var/audio/zh/short-16k.wav --url http://127.0.
 | `bridge/whisper_stream.py` | 本地 Whisper 引擎（faster-whisper）：按音量切句 + 自适应门槛 + 防幻听 + 预热；`--follow` 尾随手机上传的裸 PCM ✅ 已实测，见 `docs/04` |
 | `bridge/whisper_transcribe.py` | 转写单个音频文件并测耗时/RTF（自带解码器，绕开 PyAV 版本坑） |
 | `bridge/make_long_wav.py` | 把短录音拼成长的测试音频（可加底噪），用来测真实延迟 |
-| `bridge/asr_eval.py` | **准确率基准**：用带参考文本的语料算错误率（中文按**字** CER、葡语按**词** WER），不靠肉眼。`--out-json` 另写结构化结果供汇总用 |
-| `bridge/asr_pack.py` | **切识别测试包 + 查切分卫生**：`--build` / `--verify` / `--keys`。确定性抽样、按录音整组、与历史回归集不相交、每场给名额（否则 300 条只覆盖 2 个说话人 —— 实测踩过）。规程见 `docs/14` |
-| `bridge/asr_score.py` | **评分规则唯一来源**（`asr-score-v1`）：归一化、整体错误率、S/D/I、关键内容命中、**逐项对齐 `align_ops`**（"错在哪些字上"靠它） |
-| `bridge/asr_error_analysis.py` | **把"错在什么上"分类**：删除/替换逐项归到"写法差异 / 语气词 / 口吃 / 真错"。中文朗读那 12.3% 里 77% 是计分假象、口语那 12.7~15.3% 是真的 —— 两次结论都是它给的（`docs/14` §6.3/§6.6） |
-| `scripts/test-asr.mjs` | **跑 ASR 测试**：`--set pt-coraa --model large-v3`。测试集自动发现（有 `manifest.jsonl` 的目录，也可 `--set-path <任意目录>`）、`--compare` 多模型排序、`--by-accent` 按口音分组、结果留存可复用。**只做编排，指标计算调 `bridge/asr_eval.py`**（避免两套口径漂移） |
-| `bridge/segment_eval.py` | **切句基准**：直接 import 生产那个分段器，量"静音判定该设多久"——切碎/合并各多少次、最长合并多久、错误率变好还是变坏。缺省 500ms 就是它量出来的，见 `docs/04` §13 |
 | `bridge/sample-transcript.txt` | 中葡对照的样例转写，用于无麦克风演示 |
+| `asr-eval/` | **识别评测这一层**（代码）：切测试包 / 跑评测 / 评分规则 / 错因分类 / 切句基准。数据在 `var/asr-eval/`，见 `asr-eval/README.md` |
+| `asr-eval/test-asr.mjs` | **跑 ASR 测试**：`--set zh-speech-dev --model large-v3`。测试集自动发现（有 `manifest.jsonl` 的目录，也可 `--set-path <任意目录>`）、`--compare` 多模型排序、`--by-accent` 按口音分组、结果留存可复用。**只做编排，指标计算调 `asr-eval/asr_eval.py`**（避免两套口径漂移） |
+| `asr-eval/asr_pack.py` | **切识别测试包 + 查切分卫生**：`--build` / `--verify` / `--keys`。确定性抽样、按录音整组、与历史回归集不相交、每场给名额（否则 300 条只覆盖 2 个说话人 —— 实测踩过）。规程见 `docs/14` |
+| `asr-eval/asr_eval.py` | **准确率基准**：用带参考文本的语料算错误率（中文按**字** CER、葡语按**词** WER），不靠肉眼。`--out-json` 另写结构化结果供汇总用 |
+| `asr-eval/asr_score.py` | **评分规则唯一来源**（`asr-score-v1`）：归一化、整体错误率、S/D/I、关键内容命中、**逐项对齐 `align_ops`**（"错在哪些字上"靠它） |
+| `asr-eval/asr_error_analysis.py` | **把"错在什么上"分类**：删除/替换逐项归到"写法差异 / 语气词 / 口吃 / 真错"。中文朗读那 12.3% 里 77% 是计分假象、口语那 12.7~15.3% 是真的 —— 两次结论都是它给的（`docs/14` §6.3/§6.6） |
+| `asr-eval/segment_eval.py` | **切句基准**：直接 import 生产那个分段器，量"静音判定该设多久"——切碎/合并各多少次、最长合并多久、错误率变好还是变坏。缺省 500ms 就是它量出来的，见 `docs/04` §13 |
 | `relay/lan-relay.mjs` | **局域网转发**：手机 ↔ 电脑，5 个端点 + 共享密钥（含 `POST /audio` 录音上传，见下） |
 | `scripts/harness-side.mjs` | 常驻的 harness 侧进程（真实组合 + 插件，文件模式） |
 | `scripts/start-all.mjs` | **一键启动**：一次起齐"转发 + 识别 + 大脑"，日志带前缀汇总、Ctrl-C 全停、先查端口有没有被旧进程占着 |
@@ -95,11 +97,11 @@ node scripts/fake-phone.mjs --wav var/audio/zh/short-16k.wav --url http://127.0.
 | `lib/paths.mjs` | **运行时路径与文件名的唯一来源**（数据不能乱删的分层就是它定的，见 `docs/05`） |
 | `lib/composition.mjs` · `lib/fs-node.mjs` · `lib/keepalive.mjs` | 组合生成与两个共用的小插件 |
 | `lib/real-tools.mjs` · `lib/loader-links.mjs` | 加载检出里真实的构建产物 / 建 loader junction |
-| `tests/` | 沙箱复刻 + 两个适配器 + 契约套件 + 桥套件 + 局域网套件 + 翻译后端接缝（216 项） |
-| `tests/python-suite.py` | **语音分段器与音频尾随**验证（106 项，不加载模型，含一条静默失败的回归测试） |
+| `tests/` | 沙箱复刻 + 两个适配器 + 契约套件 + 桥套件 + 局域网套件 + 识别评测结构检查（用例数见下） |
+| `tests/python-suite.py` | **产线分段器 + 评测判据**验证（174 条断言，不加载模型；含静默失败的回归、不变量、负对照） |
 | `tests/live/` | **真实 Cordis 组合**：真实 `ToolRuntime` + 真实执行流水线 + 真实 `timer` + 真实 `output.schema` 校验（组合现场生成，见该目录 README） |
 | `skills/leion-interpreter/SKILL.md` | **同传操作规范**：巴葡 vs 葡葡用词差异表、字幕长度纪律、调用顺序 |
-| `var/` | **运行时数据**（不进版本库）：`live/` 收件箱与字幕总线、`cache/` 模型缓存、`audio/` 测试音频、`logs/` |
+| `var/` | **运行时数据**（不进版本库）：`live/` 收件箱与字幕总线、`cache/` 模型缓存、`audio/` 测试音频、`asr-eval/` **识别评测的测试包与结果**、`logs/`。分层原则见 `lib/paths.mjs` |
 | `docs/README.md` | **文档索引**：按"我要找什么"跳（架构 / 加载 / 进度 / 实测 / 数据通路） |
 | `docs/01-架构与方案.md` | **给老师的方案**：分层、接缝论证、验证状态、真机/ASR 接入路径、路线图 |
 | `docs/02-创造模式加载指南.md` | 怎么把它挂起来（含可直接粘贴的提示词、真实报错对照表） |
@@ -192,16 +194,17 @@ node scripts/fake-phone.mjs --wav var/audio/zh/short-16k.wav --url http://127.0.
 | 事项 | 状态 |
 |---|---|
 | schema DSL / 参数校验 / 输出校验 | ✅ 用**真实** `defineTool` + `validateJsonSchemaValue` |
-| 7 个工具契约、排版、双向语向、节流、异常 | ✅ 152 项断言，两个版本各跑一遍，全绿 |
+| 7 个工具契约、排版、双向语向、节流、异常 | ✅ 契约套件（`tests/contract-suite.mjs`），两个版本各跑一遍，全绿 |
 | ASR 收件箱（半行/坏行/强制语种/stop-drain-reset） | ✅ 离线契约 + **真实 timer 端到端** |
-| **ASR 桥**（断句 / 停顿断句 / UTF-8 重音 / 协议不被破坏 / replay 端到端） | ✅ 19 项契约 + 实测 CLI |
-| **语音分段器**（切句 / 自适应门槛 / 防幻听 / 前导缓存 / 短响丢弃 / 到上限时按停顿断句 / **切句不随上传节奏变化**) | ✅ 106 项断言，`tests/python-suite.py`（含一条静默失败的回归、一条"交出多少语音"的不变量、一条"上传间隔不算句子结束"的回归 + 负对照） |
-| **音频尾随**（追加增量 / 文件截断重来 / 半帧对齐 / 采样率降级重采样） | ✅ 10 项断言，同上 |
+| **ASR 桥**（断句 / 停顿断句 / UTF-8 重音 / 协议不被破坏 / replay 端到端） | ✅ 桥套件（`tests/bridge-suite.mjs`）+ 实测 CLI |
+| **语音分段器**（切句 / 自适应门槛 / 防幻听 / 前导缓存 / 短响丢弃 / 到上限时按停顿断句 / **切句不随上传节奏变化**) | ✅ `tests/python-suite.py`（含一条静默失败的回归、一条"交出多少语音"的不变量、一条"上传间隔不算句子结束"的回归 + 负对照） |
+| **音频尾随**（追加增量 / 文件截断重来 / 半帧对齐 / 采样率降级重采样） | ✅ 同一份套件（`PcmFollower` 那一节） |
 | **录音上传整条路**（手机音频 → 继电器落盘 → 识别 → 收件箱） | ✅ 用真实中文录音跑通：`fake-phone.mjs` 逐块上传 → 收件箱出现 6 句正确中文 |
 | **安卓 App 的录音上传** | ✅ 真构建出 APK（35 KB），并核对 dex 里有 `MicUploader` / `&lang=`，**没有**任何 `SpeechRecognizer` 残留 |
 | **语种随音频下发**（切「听葡语/听中文」录音中即时生效） | ✅ 端到端验过：手机侧改语种 → `audio-in.lang` → 识别进程换语种，下一句生效 |
-| **调试窗口**（把"断在哪一环"变成结论） | ✅ 11 项断言：六种卡住形态各指向正确环节 + 真读文件（空目录/坏 JSON 都不崩） |
-| **帧序号复位**（转发进程重启后手机不再失聪） | ✅ relay 套件 2 项：客户端序号超前时明确回 reset，正常时不乱发帧 |
+| **调试窗口**（把"断在哪一环"变成结论） | ✅ 调试窗口套件（`tests/debug-suite.mjs`）：六种卡住形态各指向正确环节 + 真读文件（空目录/坏 JSON 都不崩） |
+| **帧序号复位**（转发进程重启后手机不再失聪） | ✅ relay 套件（帧复位那一节）：客户端序号超前时明确回 reset，正常时不乱发帧 |
+| **识别评测这一层的结构**（语体标签 / 结果不覆盖 / 跨语言路径一致 / 分层方向） | ✅ `tests/asr-pack-suite.mjs`：四条都是"搬家或改一行就可能悄悄坏掉"的东西 |
 | 两个版本一致性（含 schema 与 render） | ✅ 逐字段对比 |
 | **正式包装进真实 Cordis 组合** | ✅ 真实 `ToolRuntime` 注册 + 真实执行流水线 + 真实 `output.schema` 校验（`tests/live/`） |
 | **桥 → 收件箱 → 真实 timer → 真实流水线** 端到端 | ✅ `tests/live/` 里跑通（已处理 2 条、错误 0 条） |

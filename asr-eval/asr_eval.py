@@ -26,10 +26,10 @@ asr_eval.py —— 用带标准答案的葡语音频，测出"识别得准不准
 
 用法
     # 第一步：把 parquet 里的音频抽成一小批 wav + 参考文本（只做一次）
-    python bridge/asr_eval.py --parquet var/cache/fleurs/pt_br_validation.parquet --extract
+    python asr-eval/asr_eval.py --parquet var/cache/fleurs/pt_br_validation.parquet --extract
 
     # 第二步：拿抽出来的这批音频测某个模型
-    python bridge/asr_eval.py --set var/audio/pt-eval --model small --device cuda --compute-type float16
+    python asr-eval/asr_eval.py --set var/asr-eval/packs/pt-eval --model small --device cuda --compute-type float16
 """
 
 import argparse
@@ -45,8 +45,12 @@ from pathlib import Path
 
 import numpy as np
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+HERE = Path(__file__).resolve().parent          # 本文件在 asr-eval/ 下
+ROOT = HERE.parent                              # 仓库根
+sys.path.insert(0, str(HERE))                   # 同层的兄弟模块（asr_score …）
+# ⚠️ 依赖方向是**单向**的：评测层可以用 bridge/ 里的共享工具（whisper_transcribe 的
+#    解码器、whisper_stream 的语种解析），但 bridge/ **永远不许** import asr-eval/。
+sys.path.insert(0, str(ROOT / "bridge"))
 from whisper_transcribe import TARGET_RATE, decode_with_av   # noqa: E402
 from whisper_stream import parse_lang_candidates             # noqa: E402
 from asr_score import (                                       # noqa: E402
@@ -95,7 +99,7 @@ def parse_args(argv=None):
                         help="提示词（缺省不发，与生产链路一致）")
     parser.add_argument("--show", type=int, default=5, help="打印前几条对照（缺省 5）")
     parser.add_argument("--out-json", default=None,
-                        help="把结构化结果写到这里（供 scripts/test-asr.mjs 汇总用）。"
+                        help="把结构化结果写到这里（供 asr-eval/test-asr.mjs 汇总用）。"
                              "只增加输出，不改任何计算逻辑 —— 这样两边的口径永远一致")
     # 调参通道：faster-whisper 有 35 个可调参数，逐个加命令行开关既啰嗦、又永远加不全。
     # 给一个 JSON 通道，把任意参数透传进 transcribe()，并记进 provenance。
@@ -175,7 +179,7 @@ def detect_unit(reference_texts):
 
 
 # ⚠️ 评分相关的实现（normalize / count_traditional / error_rate / edit_distance）
-#    **已经搬到 bridge/asr_score.py**，理由写在那里：评分规则要冻结、带版本号、能被逐条测试。
+#    **已经搬到 asr-eval/asr_score.py**，理由写在那里：评分规则要冻结、带版本号、能被逐条测试。
 #    这里只从那边 import 再转出来 —— 以前 `asr_eval.error_rate` 是 3 元组，
 #    现在统一成 dict（多了替换/删除/插入），segment_eval.py 已跟着改。
 #    ⚠️ **绝对不要在本文件里重新定义这些函数**：定义了就会把 import 进来的**盖掉**，
@@ -465,7 +469,7 @@ def main():
     else:
         print(f"  关键内容专项  ⚠️ 本批样本没有人工确认的 key_terms，**这一项不可用**"
               f"（老师要求关键内容必须人工确认，脚本不猜；"
-              f"用 python bridge/asr_pack.py --keys 生成候选清单）")
+              f"用 python asr-eval/asr_pack.py --keys 生成候选清单）")
     print(f"  音频总时长    {audio_seconds:.1f}s")
     print(f"  识别总耗时    {used_seconds:.1f}s（RTF {used_seconds / audio_seconds:.3f}）")
     p50, p95 = percentile(latencies, 0.50), percentile(latencies, 0.95)
@@ -483,7 +487,7 @@ def main():
         print("")
     print("=" * 76)
 
-    # 结构化结果（供 scripts/test-asr.mjs 汇总）。刻意与上面打印的内容**同源**：
+    # 结构化结果（供 asr-eval/test-asr.mjs 汇总）。刻意与上面打印的内容**同源**：
     # 都从同一批 rows 算出来，所以不会出现"打印说 3.9%、JSON 说 4.1%"这种漂移。
     if args.out_json:
         summary = {

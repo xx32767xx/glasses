@@ -18,8 +18,8 @@ asr_error_analysis.py —— 把"错了多少"变成"错在什么上"
 而是让"错在什么上"这个判断**可以反复跑出来**，而不是某次手工看出来的印象。
 
 用法
-    python bridge/asr_error_analysis.py var/logs/asr-eval/zh-speech-dev__large-v3_cuda_float16.json
-    python bridge/asr_error_analysis.py <结果.json> --top 20
+    python asr-eval/asr_error_analysis.py var/asr-eval/results/zh-speech-dev__large-v3_cuda_float16.json
+    python asr-eval/asr_error_analysis.py <结果.json> --top 20
 
 ⚠️ 分类是**启发式**，而且**分语种**（中文按字与拉丁标注，葡语按词与口语缩写）。
    它回答的是"某个来源占多大比例"，不是给单条句子下判决。脚本里把这些桶叫什么、
@@ -33,9 +33,11 @@ import unicodedata
 from collections import Counter
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-ROOT = HERE.parent
-sys.path.insert(0, str(HERE))
+HERE = Path(__file__).resolve().parent          # 本文件在 asr-eval/ 下
+ROOT = HERE.parent                              # 仓库根
+sys.path.insert(0, str(HERE))                   # 同层的兄弟模块（asr_score …）
+# ⚠️ 依赖方向是**单向**的：评测层可以用 bridge/，但 bridge/ 永远不许 import asr-eval/。
+sys.path.insert(0, str(ROOT / "bridge"))
 
 from asr_score import TRADITIONAL_ONLY, align_ops, has_cjk, normalize    # noqa: E402
 from whisper_stream import force_utf8_stdio                           # noqa: E402

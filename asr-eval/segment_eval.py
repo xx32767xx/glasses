@@ -41,10 +41,10 @@ segment_eval.py —— 切句基准：把「停顿多久算说完一句」从拍
         这是整件事的关键数据：两个分布分不分得开，决定了"有没有一个好阈值"。
 
 用法
-    python bridge/segment_eval.py --set var/audio/zh-eval --count 12 --pauses
-    python bridge/segment_eval.py --set var/audio/zh-eval --silence-ms 500,700,1000,1500 `
+    python asr-eval/segment_eval.py --set var/asr-eval/packs/zh-eval --count 12 --pauses
+    python asr-eval/segment_eval.py --set var/asr-eval/packs/zh-eval --silence-ms 500,700,1000,1500 `
         --gap-ms 300,500,700,1200
-    python bridge/segment_eval.py --set var/audio/zh-eval --silence-ms 700,1500 --recognize
+    python asr-eval/segment_eval.py --set var/asr-eval/packs/zh-eval --silence-ms 700,1500 --recognize
 
 ⚠️ 写这个工具时踩到的三个坑（都是"量出来的数是假的"这类，记下来免得重犯）
     1. 直接拼 clip 做句间停顿扫描 → **五个 gap 值给出完全相同的表格**。
@@ -68,8 +68,13 @@ from pathlib import Path
 
 import numpy as np
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+HERE = Path(__file__).resolve().parent          # 本文件在 asr-eval/ 下
+ROOT = HERE.parent                              # 仓库根
+sys.path.insert(0, str(HERE))                   # 同层的兄弟模块（asr_eval …）
+# ⚠️ 这个脚本量的正是**产线那个分段器**（whisper_stream.UtteranceSegmenter）——
+#    所以它必须 import 产线的类，而不是复制一份。依赖方向仍然是单向的：
+#    评测层依赖 bridge/，bridge/ 永远不依赖评测层。
+sys.path.insert(0, str(ROOT / "bridge"))
 
 from asr_eval import detect_unit, error_rate, read_manifest, TRADITIONAL_ONLY   # noqa: E402
 from whisper_stream import UtteranceSegmenter, force_utf8_stdio                 # noqa: E402
