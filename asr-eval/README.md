@@ -11,8 +11,8 @@
 | `test-asr.mjs` | **入口**：选模型跑一轮、多模型对照、按口音分组、结果留存 | `node asr-eval/test-asr.mjs --list` |
 | `asr_pack.py` | **切测试包**：从公开语料切出固定、可复现、可审计的测试包；查切分卫生 | `python asr-eval/asr_pack.py --list` |
 | `asr_eval.py` | **跑一次评测**：加载模型、逐条识别、算错误率与延迟 | 一般由 `test-asr.mjs` 调；也可直接跑（参数更多） |
-| `asr_score.py` | **评分规则本身**（`asr-score-v1`）：归一化、S/D/I、整体错误率、逐项对齐 | 被 import，不单独跑 |
-| `asr_error_analysis.py` | **错在什么上**：把每一处删除/替换按来源分类 | `python asr-eval/asr_error_analysis.py <结果.json>` |
+| `asr_score.py` | **评分规则本身**：严格口径 `asr-score-v1` + 规范化口径 `asr-norm-v1` | 被 import，不单独跑 |
+| `asr_error_analysis.py` | **两套口径对照 + 错因归因 + 关键内容检查 + 抽查** | `python asr-eval/asr_error_analysis.py <结果.json>` / `--table` |
 | `segment_eval.py` | **切句基准**：量"停顿多久算说完一句"（用的是产线那个分段器） | `python asr-eval/segment_eval.py --set var/asr-eval/packs/zh-eval --pauses` |
 
 数据不在这个目录里（`var/` 整个不进版本库），对应关系是一一对应的：
@@ -72,11 +72,49 @@ python asr-eval/asr_pack.py --build all
 python asr-eval/asr_pack.py --verify        # 查切分卫生 + 覆盖率
 
 # ③ 跑一轮基线（产品场景是"口语"，调参也应该在口语包上做）
+#    这一跑会**同时**算出两套口径的分数：严格 asr-score-v1 与规范化 asr-norm-v1
 node asr-eval/test-asr.mjs --set zh-speech-dev --model large-v3 --language zh --count 0
 
 # ④ 看"错在什么上"（整体错误率只说错得多不多，说不出错在哪）
 python asr-eval/asr_error_analysis.py var/asr-eval/results/zh-speech-dev__large-v3_cuda_float16.json
+
+# ⑤ 把所有已存结果的两套口径排成一张表（不重跑模型，读结果文件重算）
+python asr-eval/asr_error_analysis.py --table
+
+# ⑥ 抽查"被归成写法差异"的差异，确认没有把关键错误掩盖掉
+python asr-eval/asr_error_analysis.py var/asr-eval/results/zh-speech-dev__large-v3_cuda_float16.json `
+  --samples 12 --bucket 拉丁
 ```
+
+### 两套评分口径（**必须并列读，不许相减**）
+
+| 口径 | 版本 | 规则 | 用途 |
+|---|---|---|---|
+| 严格 | `asr-score-v1` | 标点/大小写/空白归一，其余都算错 | **与历史结果可比** |
+| 规范化 | `asr-norm-v1` | 只统一"同一个东西的写法"：标点 + **成对**繁简 + **数值与单位等价**的数字写法 | 减少确定的写法差异干扰 |
+
+⚠️ **规范化分数是"换文本重新对齐算出来的"，不是"从严格分里扣掉几个分类桶"。**
+这一条是评审明确要求的，也是这个仓库返工过的地方：曾经输出过
+"真正要追的声学错误 ≈ 整体错误率 − 写法差异"，那个数**已撤**
+（它既不是严格分也不是规范分，却看起来像个分数）。
+`tests/python-suite.py` 里有断言钉住这个性质。
+
+⚠️ 两条口径的**分母可能不同**（规范化会把 `3 milhões` 并成一个单位），
+所以差值可能为负 —— 那不是"规范化更糟"，是单位数变了。`--table` 会把两边的单位数打出来。
+
+⚠️ 规范化里**默认不做**的事：不删「那个/就是/然后」、不把葡语 `é/sei/cê` 当无信息、
+不删感叹词（要开加 `--norm-interjections`）、不折叠重复（`看看/说说` 是正常词，
+要开加 `--norm-collapse-repeats`）、不动人名/型号/金额/否定词。
+
+### 归因是**线索**，不是分数
+
+`asr_error_analysis.py` 的错因桶（数字写法 / 繁简对应字 / 高频虚词 / 拉丁字母…）
+**只用来找线索**，脚本会把这句话打在每个报告末尾。每个桶都有**验证条件**：
+
+- 数字写法：必须**规范化后逐字相等**（`一→1` ✓、`一→9` ✗）
+- 繁简对应字：必须**两字在表里成对**（`后→後` ✓、`我→國` ✗）
+- 拉丁字母/数字的删除：标着「**需听音频**」—— 产品型号、金额可能真的被漏掉，
+  实测抽查就抓到 `S C P→SAC`、`四S店→4A` 这类真错
 
 别处切好的包（另一台机器、另一块盘、临时实验）不必拷进来：
 `node asr-eval/test-asr.mjs --set-path <目录>` 直接指定，结果文件名取目录名。

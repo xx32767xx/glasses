@@ -18,6 +18,10 @@ node_modules/
 
 # 编辑器 / 系统
 .vscode/
+# JetBrains 系（PyCharm / IDEA）：在哪个子目录打开就生成在哪个子目录下，
+# 所以按名字忽略**任意层级**的 .idea/ —— 不写死路径（`asr-eval/.idea/`），
+# 否则换个目录打开又会冒出来一份。
+.idea/
 .DS_Store
 Thumbs.db
 

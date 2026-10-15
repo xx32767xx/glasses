@@ -54,8 +54,9 @@ sys.path.insert(0, str(ROOT / "bridge"))
 from whisper_transcribe import TARGET_RATE, decode_with_av   # noqa: E402
 from whisper_stream import parse_lang_candidates             # noqa: E402
 from asr_score import (                                       # noqa: E402
-    SCORING_RULES_VERSION, TRADITIONAL_ONLY, count_traditional, error_rate,
-    key_term_hits, normalize, overall_rate, percentile,
+    NORMALIZED_RULES_VERSION, SCORING_RULES_VERSION, TRADITIONAL_ONLY, count_traditional,
+    error_rate, key_term_hits, negation_flags, normalize, normalized_error_rate,
+    numeric_report, overall_rate, percentile,
 )
 
 
@@ -98,6 +99,14 @@ def parse_args(argv=None):
     parser.add_argument("--initial-prompt", default=None,
                         help="提示词（缺省不发，与生产链路一致）")
     parser.add_argument("--show", type=int, default=5, help="打印前几条对照（缺省 5）")
+    # 规范化口径（asr-norm-v1）**始终**与严格口径一起算（两条一起报才有意义），
+    # 这两个开关只决定"要不要额外放宽"——默认都不开，因为两条规则都不安全：
+    #   · 删感叹词：`嗯/呃` 漏掉用户是听得出来的（字幕变硬），而且 `啊/呀/吧/呢/嘛` 带语气；
+    #   · 折叠重复：中文里 `看看` `说说` `慢慢` 是**正常词**，折叠会把真漏字盖掉。
+    parser.add_argument("--norm-interjections", action="store_true",
+                        help="规范化口径里顺带删掉纯感叹词（嗯/呃/哦…）—— **默认不删**")
+    parser.add_argument("--norm-collapse-repeats", action="store_true",
+                        help="规范化口径里折叠相邻重复 —— **默认不折叠**（「看看」是正常词）")
     parser.add_argument("--out-json", default=None,
                         help="把结构化结果写到这里（供 asr-eval/test-asr.mjs 汇总用）。"
                              "只增加输出，不改任何计算逻辑 —— 这样两边的口径永远一致")
@@ -274,6 +283,11 @@ def run_provenance(args, wavset, items, unit):
     return {
         "codeCommit": commit,
         "scoringRules": SCORING_RULES_VERSION,
+        # 两套口径都记下来：结果文件里同时有严格分与规范分，
+        # 所以"这一版是按哪套规则算的"永远说得清（老师要求规则绑定版本号）。
+        "normalizedRules": NORMALIZED_RULES_VERSION,
+        "normalizedOptions": {"dropInterjections": bool(args.norm_interjections),
+                              "collapseRepeats": bool(args.norm_collapse_repeats)},
         "model": args.model,
         "device": args.device,
         "computeType": args.compute_type,
@@ -373,6 +387,12 @@ def main():
             continue
         elapsed = time.perf_counter() - start
         score = error_rate(item["reference"], text, unit)
+        # 同一批识别输出上，规范化口径**重新对齐再算一遍**（不是从严格分里扣桶）。
+        # 两条口径都存进结果文件：这样"严格 vs 规范化"永远基于**同一次解码**，
+        # 差别只可能来自评分规则本身，不会混进模型随机性。
+        normalized = normalized_error_rate(item["reference"], text, unit,
+                                           drop_interjections=args.norm_interjections,
+                                           collapse_repeats=args.norm_collapse_repeats)
         rows.append({
             "file": item["file"],
             "seconds": item["seconds"],
@@ -385,6 +405,13 @@ def main():
             "substitutions": score["substitutions"],
             "deletions": score["deletions"],
             "insertions": score["insertions"],
+            # ── 规范化口径（asr-norm-v1）：同一段识别输出换文本重新对齐 ──
+            "normalized_rate": normalized["rate"],
+            "normalized_units": normalized["units"],
+            "normalized_distance": normalized["distance"],
+            "normalized_substitutions": normalized["substitutions"],
+            "normalized_deletions": normalized["deletions"],
+            "normalized_insertions": normalized["insertions"],
             "traditional": count_traditional(text),
             "seconds_used": elapsed,
             "detected": getattr(info, "language", "?"),
@@ -393,6 +420,10 @@ def main():
             # 分组标签从 manifest 带过来，报告才能按口音/语体分组
             "tags": item.get("tags") or {},
             "key_terms": key_term_hits(item["reference"], text, item.get("key_terms")),
+            # 关键内容检查：数字（值+单位）在不在、否定词在不在
+            "numbers": numeric_report(item["reference"], text, unit),
+            "negation_reference": sorted(negation_flags(item["reference"], unit)),
+            "negation_hypothesis": sorted(negation_flags(text, unit)),
         })
     print("")
 
@@ -400,6 +431,13 @@ def main():
     # 整体错误率 = 全部编辑错误 ÷ 全部参考单位（老师明确要求，不是每句百分比的平均）；
     # 同时把 S/D/I 拆开报出来。
     weighted, total_units, total_distance, (sum_s, sum_d, sum_i) = overall_rate(scored)
+    # 规范化口径在**同一批**样本上重算（单位数可能略有差别：数字写法统一后单位数会变）
+    normalized_rows = [{"units": r["normalized_units"], "distance": r["normalized_distance"],
+                        "substitutions": r["normalized_substitutions"],
+                        "deletions": r["normalized_deletions"],
+                        "insertions": r["normalized_insertions"]}
+                       for r in scored]
+    norm_weighted, norm_units, norm_distance, (norm_s, norm_d, norm_i) = overall_rate(normalized_rows)
     mean_per_sentence = (sum(r["rate"] for r in scored) / len(scored)) if scored else float("nan")
     audio_seconds = sum(r["seconds"] for r in rows)
     used_seconds = sum(r["seconds_used"] for r in rows)
@@ -453,6 +491,15 @@ def main():
           f"  ← 漏字/漏词，同传里最容易被忽略的一类")
     print(f"    其中插入    {sum_i} 次（{sum_i / max(1, total_units) * 100:.1f}%）"
           f"  ← 多字/重复")
+    print(f"  规范化错误率  {norm_weighted * 100:.1f}%   ← 同一批识别输出换文本**重新对齐**再算"
+          f"（{norm_distance}/{norm_units}）")
+    print(f"    其中替换    {norm_s} 次（{norm_s / max(1, norm_units) * 100:.1f}%）")
+    print(f"    其中删除    {norm_d} 次（{norm_d / max(1, norm_units) * 100:.1f}%）")
+    print(f"    其中插入    {norm_i} 次（{norm_i / max(1, norm_units) * 100:.1f}%）")
+    print(f"  两条口径差    {(weighted - norm_weighted) * 100:.1f} 个百分点"
+          f"（{NORMALIZED_RULES_VERSION}：只统一标点/成对繁简/数值与单位等价的数字写法）")
+    print("                ⚠️ 这个差**不是**「声学错误率」：它是换文本重算出来的，"
+          "不是从严格分里扣掉几个分类桶")
     print(f"  按句平均      {mean_per_sentence * 100:.1f}%（**仅供参考**：短句权重过大，"
           f"不作为主指标 —— 老师明确要求用上面的整体错误率）")
     good = sum(1 for r in scored if r["rate"] <= 0.10)
@@ -511,6 +558,14 @@ def main():
             "insertions": sum_i,
             "totalUnits": total_units,
             "totalDistance": total_distance,
+            # ── 规范化口径（asr-norm-v1）：同一批识别输出换文本重新对齐 ──
+            "normalizedRules": NORMALIZED_RULES_VERSION,
+            "normalizedRate": None if np.isnan(norm_weighted) else float(norm_weighted),
+            "normalizedSubstitutions": norm_s,
+            "normalizedDeletions": norm_d,
+            "normalizedInsertions": norm_i,
+            "normalizedUnits": norm_units,
+            "normalizedDistance": norm_distance,
             "meanRate": None if len(scored) == 0 else float(mean_per_sentence),
             "goodCount": good,
             "detections": detections,

@@ -55,7 +55,12 @@ import asr_error_analysis as analysis                                    # noqa:
 from asr_eval import (   # noqa: E402
     count_traditional, detect_unit, error_rate, looks_chinese,
 )
-from asr_score import align, align_ops                                 # noqa: E402
+from asr_score import (                                                  # noqa: E402
+    NORMALIZED_RULES_VERSION, SCORING_RULES_VERSION, VARIANT_TO_SIMPLIFIED, TRADITIONAL_ONLY,
+    align, align_ops, chinese_numeral_value, error_rate, is_variant_pair, negation_flags,
+    normalize, normalize_for_scoring, normalized_error_rate, numeric_report,
+    portuguese_number_value,
+)
 
 passed = 0
 failures = []
@@ -982,8 +987,8 @@ def main():
     check("她→他是「音频分不出来」（tā 同音，不是听错）",
           analysis.classify_substitution("她", "他", "char").startswith("同音异形"),
           analysis.classify_substitution("她", "他", "char"))
-    check("后→後 归到繁体字形（不是听错，但用户看得到）",
-          analysis.classify_substitution("后", "後", "char").startswith("繁体字形"),
+    check("后→後 归到繁简对应字（**已验证两字成对**，不是听错但用户看得到）",
+          analysis.classify_substitution("后", "後", "char").startswith("繁简对应字"),
           analysis.classify_substitution("后", "後", "char"))
     check("一→1 归到数字写法（念出来一样）",
           analysis.classify_substitution("一", "1", "char").startswith("数字写法"),
@@ -999,9 +1004,15 @@ def main():
     check("martelly→martelli 算真错（专名听错，不给它找理由）",
           analysis.classify_substitution("martelly", "martelli", "word") == "真错",
           analysis.classify_substitution("martelly", "martelli", "word"))
-    check("葡语删除只有**整段都是语气词**才算语气词（单个词不乱归类）",
-          analysis.classify_deletion(["é"], "word", False) == "语气词/填充词"
-          and analysis.classify_deletion(["para"], "word", False) == "内容词",
+    # ⚠️ 这条**改过一次口径**（评审意见）：原来断言"葡语 é/eh 被归成语气词"，
+    #    那是把一个词普遍当成无信息 —— 而 é 在句子里就是"是"、sei 是"知道"、cê 是"你"。
+    #    现在它们只作为**线索**单列，并注明"可能有实义，需看上下文"。
+    check("葡语虚词只作为线索单列（明确写着可能有实义，不当成无信息）",
+          "高频虚词" in analysis.classify_deletion(["é"], "word", False)
+          and "实义" in analysis.classify_deletion(["é"], "word", False),
+          analysis.classify_deletion(["é"], "word", False))
+    check("葡语实词老老实实算内容词",
+          analysis.classify_deletion(["para"], "word", False) == "内容词",
           analysis.classify_deletion(["para"], "word", False))
 
     # ⚠️ 位置判据：只认**相邻**的重复。放宽到"附近出现过"会把同句里任何一个相同的字
@@ -1034,6 +1045,150 @@ def main():
     check("分位数：空列表返回 None，不假装是 0", percentile([], 0.5) is None)
     check("葡语重音不被当成繁体字（那是两回事）",
           count_traditional("A reunião é às três") == 0)
+
+    # ── 规范化口径 asr-norm-v1（评审要求的"双评分"）──────────────────────────
+    #
+    # 评审指出的核心问题：原来的做法是"从严格错误率里扣掉几个分类桶，把剩下的叫
+    # 声学错误率"—— 那个数**既不是严格分也不是规范分**，却看起来像个分数。
+    # 正确做法是两套口径**各自重新对齐算一遍**。这一节钉的就是这件事：
+    #   ① 规范化只统一"同一个东西的写法"，且每类都必须**验证**等价；
+    #   ② 两边算分走的是同一个对齐函数（只是比较文本不同）；
+    #   ③ 不许出现"扣桶"式的第三条路径。
+    heading("规范化口径 · asr-norm-v1（与严格口径并列，不是替换）")
+    check("规范化有自己的版本号（规则变了历史才说得清）",
+          NORMALIZED_RULES_VERSION == "asr-norm-v1", NORMALIZED_RULES_VERSION)
+    check("严格口径的版本号没动（历史数字必须可比）",
+          SCORING_RULES_VERSION == "asr-score-v1", SCORING_RULES_VERSION)
+
+    # ① 数字：**必须验证数值+单位相等**（评审第 1 条：`一 → 9` 曾被当成写法差异）
+    check("一 → 1 等价（同一个值的两种写法）",
+          normalize_for_scoring("一", "char") == normalize_for_scoring("1", "char"))
+    check("一 → 9 **不等价**（值不同就是听错，不许算写法差异）",
+          normalize_for_scoring("一", "char") != normalize_for_scoring("9", "char"),
+          f"{normalize_for_scoring('一', 'char')} vs {normalize_for_scoring('9', 'char')}")
+    check("十 → 0 不等价（10 与 0 不是同一个值）",
+          normalize_for_scoring("十", "char") != normalize_for_scoring("0", "char"))
+    check("一百元 ↔ 100元 等价（值+单位都比过）",
+          normalize_for_scoring("一百元", "char") == normalize_for_scoring("100元", "char"))
+    check("三万元 ↔ 30000元 等价（乘数也算进去）",
+          normalize_for_scoring("三万元", "char") == normalize_for_scoring("30000元", "char"))
+    check("八楼 ↔ 8楼 等价", normalize_for_scoring("八楼", "char") == normalize_for_scoring("8楼", "char"))
+    check("八 ↔ 8楼 **不等价**（少了单位就是少了信息）",
+          normalize_for_scoring("八", "char") != normalize_for_scoring("8楼", "char"))
+    check("一四二四 ↔ 1424 等价（逐位念的数字，口径一致的两个人）",
+          normalize_for_scoring("一四二四", "char") == normalize_for_scoring("1424", "char"))
+    check("结构不合法的中文数字**不猜**（十十 → None，宁可不算也不猜）",
+          chinese_numeral_value("十十") is None and chinese_numeral_value("十五") == 15)
+    check("小数点在按字模式下不会被标点规则吃掉（3.5 ≠ 35）",
+          normalize_for_scoring("3.5", "char") != normalize_for_scoring("35", "char"))
+
+    # ② 繁简：**必须验证两字成对**（评审第 2 条：`我 → 國` 曾被当成字形差异）
+    check("后 → 後 是成对的繁简对应字（可统一）",
+          is_variant_pair("后", "後")
+          and normalize_for_scoring("后", "char") == normalize_for_scoring("後", "char"))
+    check("我 → 國 **不成对**（`我` 不是 `国` 的简体，这是听错）",
+          is_variant_pair("我", "國") is False
+          and normalize_for_scoring("我", "char") != normalize_for_scoring("國", "char"),
+          f"{normalize_for_scoring('我', 'char')} vs {normalize_for_scoring('國', 'char')}")
+    check("了 → 覺、些 → 點、五 → 無 都不成对（实测里这些全是听错）",
+          all(is_variant_pair(a, b) is False
+              for a, b in (("了", "覺"), ("些", "點"), ("五", "無"))))
+    check("繁简表里没有「自己映射到自己」的废条目",
+          all(key != value for key, value in VARIANT_TO_SIMPLIFIED.items()),
+          str([k for k, v in VARIANT_TO_SIMPLIFIED.items() if k == v]))
+
+    # ③ 葡语虚词**不再**被当成"无信息"（评审第 3 条）
+    from asr_error_analysis import classify_deletion as _del, classify_substitution as _sub
+    check("葡语 é / sei / cê 不再被归成「语气词」（它们可能是是/知道/你）",
+          all("高频虚词" in _del([word], "word", False)
+              for word in ("é", "sei", "cê")),
+          _del(["é"], "word", False))
+    check("葡语虚词那一格的说明里写明了「可能有实义」",
+          "实义" in _del(["sei"], "word", False))
+    check("中文语气词只剩纯感叹词（吧/呢/嘛/啊 都不算）",
+          "嗯" in _del(["嗯"], "char", False) and all(
+              "感叹词" not in _del([word], "char", False) for word in ("吧", "呢", "嘛", "啊")))
+
+    # ④ 拉丁字母/数字的删除**不许**默认"本来就没念"（评审第 4 条）
+    check("含拉丁字母的删除归到「需听音频」那一格（不再预设它没念）",
+          "需听音频" in _del(list("scp"), "char", False), _del(list("scp"), "char", False))
+    check("含数字的删除同样要人工确认",
+          "需听音频" in _del(list("4s店"), "char", False))
+
+    # ⑤ 重复判定的位置必须与对齐**用同一份归一化文本**（评审第 5 条）
+    check("reference_items 与对齐用的是同一套归一化（标点不参与下标）",
+          analysis.reference_items("他说：就就就这样。", "char")
+          == list(normalize("他说：就就就这样。", "char")),
+          str(analysis.reference_items("他说：就就就这样。", "char")))
+    check("因此标点不会把「附近」的位置算错",
+          analysis.reference_items("甲，乙。丙", "char") == ["甲", "乙", "丙"],
+          str(analysis.reference_items("甲，乙。丙", "char")))
+
+    # ⑥ 替换分类：验证式归类（这几条直接对应评审点出的两个 bug）
+    check("一 → 9 归到真错（不再进「数字写法」）",
+          _sub("一", "9", "char").startswith("真错"), _sub("一", "9", "char"))
+    check("一 → 1 才算数字写法", _sub("一", "1", "char").startswith("数字写法"), _sub("一", "1", "char"))
+    check("我 → 國 归到真错（繁体但不成对）",
+          "不成对" in _sub("我", "國", "char"), _sub("我", "國", "char"))
+    check("后 → 後 才算繁简对应字", "繁简对应字" in _sub("后", "後", "char"), _sub("后", "後", "char"))
+
+    # ⑦ 两套口径的关系：必须是"重新对齐算"而不是"扣桶"
+    strict = error_rate("他说了一百元", "他说了100元", "char")
+    normalized = normalized_error_rate("他说了一百元", "他说了100元", "char")
+    check("严格口径把 一百元/100元 算成错（历史可比）", strict["distance"] > 0, str(strict))
+    check("规范化口径把它们看成一样（重新对齐后距离为 0）",
+          normalized["distance"] == 0, str(normalized))
+    check("规范化**不是**扣桶：单位数也跟着变了（扣桶不会改变分母）",
+          strict["units"] != normalized["units"] or normalized["distance"] == 0,
+          f"严格 {strict['units']} 单位 / 规范化 {normalized['units']} 单位")
+    check("规范化不会把改值的数字洗掉（一 → 9 仍然算错）",
+          normalized_error_rate("一", "9", "char")["distance"] > 0)
+    check("规范化不会把否定词洗掉（不 → 无 仍算错）",
+          normalized_error_rate("这不是我的", "这是我的", "char")["distance"] > 0)
+
+    # ⑧ 关键内容检查：数字核对值+单位、否定只报出现性
+    report = numeric_report("从十二楼的802换到八楼", "从8楼的800换到12楼", "char")
+    check("数字核对能挑出被改值的那个（802 → 800）",
+          [item for item in report if item["ok"] is False]
+          and any(item["value"] == "802" and item["ok"] is False for item in report),
+          str(report))
+    check("数字核对认得出同义写法（八楼 ↔ 8楼 都算命中）",
+          all(item["ok"] for item in numeric_report("八楼的802", "8楼的802", "char")),
+          str(numeric_report("八楼的802", "8楼的802", "char")))
+    check("光秃秃的一位数不算关键数字（否则「一些/一死」会满屏误报）",
+          numeric_report("一些东西", "一些东西", "char") == []
+          and numeric_report("一个东西", "一个东西", "char") != [])
+    check("否定词只报出现性差异（不判极性）",
+          negation_flags("这不是我要的", "char") == {"不"}
+          and negation_flags("这是我想要的", "char") == set())
+
+    # ⑨ 葡语数字词 ↔ 阿拉伯数字（实测踩到：规范化一度**比严格更差**）
+    #
+    # 参考把数字写成词（`vinte anos`）、模型写成数字（`20 anos`），念出来一模一样。
+    # 不做这一步，规范化会把它们判成"替换+删除"，于是"规范化"反而更差 ——
+    # 那是规则的缺陷。这些断言把实测出现的那几种写法钉住。
+    check("vinte ↔ 20 等价", normalize_for_scoring("vinte anos", "word")
+          == normalize_for_scoring("20 anos", "word"))
+    check("quatorze ↔ 14 等价（巴西葡语两种拼法都要认）",
+          normalize_for_scoring("quatorze anos", "word") == normalize_for_scoring("14 anos", "word")
+          and normalize_for_scoring("catorze anos", "word") == normalize_for_scoring("14 anos", "word"))
+    check("合成数也对：trinta e cinco ↔ 35、cento e vinte ↔ 120、mil e quinhentos ↔ 1500",
+          all(normalize_for_scoring(words, "word") == str(value)
+              for words, value in (("trinta e cinco", 35), ("cento e vinte", 120),
+                                   ("mil e quinhentos", 1500), ("dois mil e vinte", 2020))))
+    check("five and six ≠ eleven：不合法的 `e` 连接**不许**猜成一个数",
+          portuguese_number_value(["cinco", "e", "seis"]) is None
+          and normalize_for_scoring("cinco e seis", "word")
+          != normalize_for_scoring("onze", "word"))
+    check("升档乘数：mil milhões = 10^9（不是 1000 + 10^6）",
+          portuguese_number_value(["mil", "milhões"]) == 10 ** 9,
+          str(portuguese_number_value(["mil", "milhões"])))
+    check("数字后面的单位仍然跟着数字（3 milhões ↔ 3milhões 等价）",
+          normalize_for_scoring("3 milhões", "word") == normalize_for_scoring("3milhões", "word"),
+          f"{normalize_for_scoring('3 milhões', 'word')!r}")
+    check("葡语小数与千分位在标点处理里不会被切碎（1.234,56 仍是同一个数）",
+          normalize_for_scoring("1.234,56 reais", "word") == normalize_for_scoring("1234,56 reais", "word"),
+          f"{normalize_for_scoring('1.234,56 reais', 'word')!r}")
 
     # ── 结果 ────────────────────────────────────────────────────────────────
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
