@@ -48,8 +48,9 @@ sys.path.insert(0, str(ROOT / "bridge"))
 
 from asr_score import (                                          # noqa: E402
     INTERJECTIONS_ZH, NORMALIZED_RULES_VERSION, SCORING_RULES_VERSION, TRADITIONAL_ONLY,
-    align_ops, canonicalize_numbers, error_rate, has_cjk, is_variant_pair, negation_flags,
-    normalize, normalize_for_scoring, normalized_error_rate, numeric_report, overall_rate,
+    align_ops, canonicalize_numbers, error_rate, format_problem_samples, has_cjk,
+    is_variant_pair, negation_flags, normalize, normalize_for_scoring, normalized_error_rate,
+    numeric_report, overall_rate, problem_samples,
 )
 from whisper_stream import force_utf8_stdio                      # noqa: E402
 
@@ -247,7 +248,8 @@ def deleted_runs(ops):
 
 
 def analyse(path, top=25, samples=0, bucket=None,
-            drop_interjections=False, collapse_repeats=False):
+            drop_interjections=False, collapse_repeats=False,
+            errors_above=None, errors_limit=0, errors_file=None):
     data, rows = load_rows(path)
     unit = data.get("unit", "word")
     unit_name = "字" if unit == "char" else "词"
@@ -411,6 +413,25 @@ def analyse(path, top=25, samples=0, bucket=None,
             print(f"    涉及  「{item['span']}」")
         if not pool:
             print("  （没有需要确认的）")
+
+    # ── ⑤ 问题样本清单（与 asr_eval.py 的 --errors-above 同源、同一套格式）──────
+    if errors_above is not None and errors_above <= 1.0:
+        problems = problem_samples(rows, threshold=errors_above, unit=unit, limit=errors_limit or None)
+        print("=" * 88)
+        print(f"【问题样本】严格口径错误率 > {errors_above * 100:.0f}%："
+              f"{len(problems)}/{len(rows)} 条，**最差的排最前**")
+        print("  筛法：Select-String ERROR（每条首行带这个前缀）")
+        print("=" * 88)
+        body = format_problem_samples(problems, pack_dir=data.get("set"))
+        print(body if body else "  （没有超过阈值的样本）")
+        if errors_file:
+            header = (f"# {data.get('set')} 的问题样本清单（严格口径 > {errors_above * 100:.0f}%）\n"
+                      f"# 由 asr-eval/asr_error_analysis.py 从**已存结果**生成（没有重跑模型）\n"
+                      f"# 按错误率从高到低排；`漏X`=漏字、`多X`=多字、`A→B`=听成 B；音频是完整路径\n\n")
+            target = Path(errors_file)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(header + body, encoding="utf-8")
+            print(f"  清单已写到    {target}")
     print("")
     return 0
 
@@ -487,6 +508,11 @@ def main():
     parser.add_argument("--samples", type=int, default=0,
                         help="列出 N 条需要人耳确认的差异（原文/识别/音频文件名）")
     parser.add_argument("--bucket", default=None, help="抽查时按类别关键字过滤（如 拉丁）")
+    parser.add_argument("--errors-above", type=float, default=None,
+                        help="列出错误率高于这个值的**全部**样本（最差的排最前，日志里带 ERROR 前缀）")
+    parser.add_argument("--errors-limit", type=int, default=0, help="上面那个最多列几条（0 = 不限）")
+    parser.add_argument("--errors-file", default=None,
+                        help="把问题样本清单写到哪个文件（缺省不写；建议写成 <包名>-errors.txt）")
     parser.add_argument("--interjections", action="store_true",
                         help="规范化口径里顺带删掉纯感叹词（**默认不删**）")
     parser.add_argument("--collapse-repeats", action="store_true",
@@ -498,7 +524,8 @@ def main():
     if path.is_file() is False:
         sys.exit(f"找不到结果文件：{path}")
     return analyse(path, args.top, args.samples, args.bucket,
-                   args.interjections, args.collapse_repeats)
+                   args.interjections, args.collapse_repeats,
+                   args.errors_above, args.errors_limit, args.errors_file)
 
 
 if __name__ == "__main__":

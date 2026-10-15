@@ -84,7 +84,29 @@ python asr-eval/asr_error_analysis.py --table
 # ⑥ 抽查"被归成写法差异"的差异，确认没有把关键错误掩盖掉
 python asr-eval/asr_error_analysis.py var/asr-eval/results/zh-speech-dev__large-v3_cuda_float16.json `
   --samples 12 --bucket 拉丁
+
+# ⑦ 只看有问题的那些（不重跑模型，从已存结果筛）：写成清单文件，照着音频听
+python asr-eval/asr_error_analysis.py var/asr-eval/results/zh-speech-dev__large-v3_cuda_float16.json `
+  --errors-above 0.10 --errors-file var/asr-eval/reports/zh-speech-dev-errors.txt
 ```
+
+### 问题样本清单（找"哪几条坏了"用这个，不要用"随机看"）
+
+跑 `test-asr.mjs` 时**默认就会给**（阈值 0.10，与"好的句子 ≤10%"同一判据）：
+
+- 日志里每条**首行以 `ERROR` 开头** → `Select-String ERROR` / `grep ^ERROR` 直接筛出来；
+- 同时写到 `<结果>.errors.txt`（与结果 json 同名），不用重跑就能看；
+- 每条带**音频完整路径**、时长、错误率、S/D/I、以及具体差异：
+  `漏X` = 漏字、`多X` = 多字、`A→B` = 听成 B；
+- **最差的排最前** —— 排查先看最坏的几条。
+
+```powershell
+# 只列错误率 > 20% 的；想全列就把它设成 0（默认 0.10）
+node asr-eval/test-asr.mjs --set zh-speech-dev --errors-above 0.2
+```
+
+> 原来的报告只有"随机看 N 条对照"—— **随机看对排查没有用**（多半是好的）。
+> 这个清单是用户提出来的，改法也按他要的来：日志里能一眼筛。
 
 ### 两套评分口径（**必须并列读，不许相减**）
 

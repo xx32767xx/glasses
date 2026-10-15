@@ -9,6 +9,11 @@
  *   node asr-eval/test-asr.mjs --set pt-eval --device cpu --compute-type int8
  *   node asr-eval/test-asr.mjs --set pt-coraa --by-accent      # 按口音分组出分
  *   node asr-eval/test-asr.mjs --set zh-eval --count 10        # 先跑一小批看趋势
+ *   node asr-eval/test-asr.mjs --set zh-speech-dev --errors-above 0.2   # 只列错误率 >20% 的
+ *
+ * 跑完会给出**问题样本清单**：日志里每条首行带 `ERROR` 前缀（`Select-String ERROR` 就能筛），
+ * 同时写到 `<结果>.errors.txt`。每条带音频完整路径、参考、识别、以及具体差异
+ * （`漏X`=漏字、`多X`=多字、`A→B`=听成 B），按错误率从高到低排 —— 直接照着听就行。
  *
  * 这一层的其余脚本（都在同一个目录里，见 asr-eval/README.md）：
  *   asr_pack.py            切测试包 / 查切分卫生
@@ -143,7 +148,8 @@ function resolveModel(options) {
 function parseArgs(argv) {
   const options = {
     set: null, setPath: null, model: null, device: null, compute: null, language: null,
-    count: null, compare: false, list: false, byAccent: false, show: 3, keep: false,
+    count: null, errorsAbove: 0.10, compare: false, list: false, byAccent: false,
+    show: 3, keep: false,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
@@ -160,6 +166,7 @@ function parseArgs(argv) {
     if (token === '--compute-type') { options.compute = argv[++index]; continue }
     if (token === '--language') { options.language = argv[++index]; continue }
     if (token === '--count') { options.count = Number(argv[++index]); continue }
+    if (token === '--errors-above') { options.errorsAbove = Number(argv[++index]); continue }
     if (token === '--show') { options.show = Number(argv[++index]); continue }
     throw new Error('看不懂的参数：' + token)
   }
@@ -279,6 +286,9 @@ function runOne(set, model, options) {
     // Python 侧也按 --show 打对照：不然它的总结里会留一句"随机看 0 条对照"，
     // 看起来像功能坏了，其实是没要求它打。
     '--show', String(options.show),
+    // 问题样本清单：每条日志行首带 ERROR，同时写到 <结果>.errors.txt。
+    // 这样一轮跑完不用去翻 JSON 就知道"哪几条坏了、音频在哪"。
+    '--errors-above', String(options.errorsAbove),
   ]
   if (options.language !== null) args.push('--language', options.language)
   if (options.count !== null) args.push('--count', String(options.count))
@@ -418,6 +428,14 @@ function main() {
       + `（RTF ${(result.usedSeconds / result.audioSeconds).toFixed(3)}，每句 ${(result.usedSeconds / result.rows.length).toFixed(2)}s）`)
     console.log(`  结果已存      ${resultPath(set.name, keyOf(model.name, model.device, model.compute), options.count)}`
       + (options.count > 0 ? `（小批运行，文件名带 -n${options.count}，不会覆盖完整结果）` : ''))
+    if (options.errorsAbove <= 1.0) {
+      const errorsFile = resultPath(set.name, keyOf(model.name, model.device, model.compute),
+                                    options.count).replace(/\.json$/, '.errors.txt')
+      const bad = result.rows.filter(row => row.rate > options.errorsAbove).length
+      console.log(`  问题样本      ${bad}/${result.rows.length} 条错误率 > ${(options.errorsAbove * 100).toFixed(0)}%`
+        + `（上面日志里带 ERROR 前缀）`)
+      console.log(`  清单文件      ${existsSync(errorsFile) ? errorsFile : '（没生成，见 --errors-above）'}`)
+    }
 
     if (options.byAccent && set.accents.length > 0) {
       console.log('')

@@ -36,6 +36,7 @@ asr_score.py —— 识别评分的**判据本身**（冻结、版本化、纯�
 """
 
 import re
+from pathlib import Path
 
 # ⚠️ 两个模式必须分开，别像我第一版那样合成一个带 `\s` 的类 ——
 #    那样空白会被保留，中文按字时每个空格都算一个字符，CER 直接失真。
@@ -240,6 +241,80 @@ def key_term_hits(reference, hypothesis, key_terms, unit="word"):
         got = normalize(hypothesis, "char" if has_cjk(term) else "word").replace(" ", "")
         hits.append({"term": term, "hit": wanted != "" and wanted in got})
     return hits
+
+
+def problem_samples(rows, threshold=0.10, unit="char", limit=None):
+    """挑出**有问题的样本**：错误率高于阈值的，按高到低排（最差的排最前）。
+
+    为什么要这个：原来报告里只有"随机看 3 条对照"—— 随机看对排查**没有用**，
+    要查"哪几条坏了"就得自己翻 JSON。这里给出的是可以直接照着听的清单：
+    每条带**音频文件名、时长、错误率、S/D/I、具体差异**（漏了哪些字、听成什么）。
+
+    ⚠️ 阈值缺省 0.10 与"好的句子 ≤10%"用的是同一个判据，所以"排在上面的"
+       正好就是那些**被算作不好**的样本 —— 两个口径下的同一个定义，不会打架。
+    """
+    picked = []
+    for row in rows:
+        rate = row.get("rate")
+        if rate is None or rate != rate:            # NaN
+            continue
+        if rate <= threshold:
+            continue
+        ops = align_ops(row["reference"], row["hypothesis"], unit)
+        diffs = []
+        for kind, ref, hyp in ops:
+            if kind == "S":
+                diffs.append(f"{ref}→{hyp}")
+            elif kind == "D":
+                diffs.append(f"漏{ref}")
+            elif kind == "I":
+                diffs.append(f"多{hyp}")
+        picked.append({
+            "file": row["file"],
+            "seconds": row.get("seconds"),
+            "rate": rate,
+            "units": row.get("units"),
+            "deletions": row.get("deletions"),
+            "substitutions": row.get("substitutions"),
+            "insertions": row.get("insertions"),
+            "reference": row["reference"],
+            "hypothesis": row["hypothesis"],
+            "diffs": diffs,
+            # 规范化口径那一套也带上：一眼能看出"这个错是不是写法差异造成的"
+            "normalized_rate": row.get("normalized_rate"),
+        })
+    picked.sort(key=lambda item: -item["rate"])
+    return picked[:limit] if limit else picked
+
+
+def format_problem_samples(samples, pack_dir=None, line_prefix="ERROR"):
+    """把问题样本排成人能看、也能 grep 的文本（每条的**首行以 ERROR 开头**）。
+
+    为什么要固定的行首前缀：用户要的正是"日志里能一眼筛出来"。
+    所以每条的第一行一定是 `ERROR <文件名> …` —— `Select-String ERROR` 就能全捞出来，
+    而参考/识别那几行保持原样（它们的内容里本来就可能含任何字，不适合加前缀）。
+    """
+    lines = []
+    for index, item in enumerate(samples, 1):
+        # 路径要用系统分隔符拼（拼成 `packs\zh-speech-dev/zh-….wav` 那种混的没法直接点开）
+        where = str(Path(pack_dir) / item["file"]) if pack_dir else item["file"]
+        normalized = item.get("normalized_rate")
+        extra = ""
+        if normalized is not None and normalized != item["rate"]:
+            extra = f"（规范化口径 {normalized * 100:.0f}%）"
+        lines.append(f"{line_prefix} #{index:<3} {item['file']}  "
+                     f"错误率 {item['rate'] * 100:.1f}%{extra}  "
+                     f"S{item['substitutions']} D{item['deletions']} I{item['insertions']}  "
+                     f"[{item['seconds']}s]")
+        lines.append(f"      音频  {where}")
+        lines.append(f"      参考  {item['reference']}")
+        lines.append(f"      识别  {item['hypothesis']}")
+        if item["diffs"]:
+            shown = "、".join(item["diffs"][:20])
+            more = "" if len(item["diffs"]) <= 20 else f" …共 {len(item['diffs'])} 处"
+            lines.append(f"      差异  {shown}{more}")
+        lines.append("")
+    return "\n".join(lines)
 
 
 def percentile(values, fraction):

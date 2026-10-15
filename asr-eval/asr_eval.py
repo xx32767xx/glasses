@@ -55,8 +55,8 @@ from whisper_transcribe import TARGET_RATE, decode_with_av   # noqa: E402
 from whisper_stream import parse_lang_candidates             # noqa: E402
 from asr_score import (                                       # noqa: E402
     NORMALIZED_RULES_VERSION, SCORING_RULES_VERSION, TRADITIONAL_ONLY, count_traditional,
-    error_rate, key_term_hits, negation_flags, normalize, normalized_error_rate,
-    numeric_report, overall_rate, percentile,
+    error_rate, format_problem_samples, key_term_hits, negation_flags, normalize,
+    normalized_error_rate, numeric_report, overall_rate, percentile, problem_samples,
 )
 
 
@@ -99,6 +99,15 @@ def parse_args(argv=None):
     parser.add_argument("--initial-prompt", default=None,
                         help="提示词（缺省不发，与生产链路一致）")
     parser.add_argument("--show", type=int, default=5, help="打印前几条对照（缺省 5）")
+    # ⚠️ `--show` 打的是**随机**几条 —— 随机看对排查没有用（它们多半是对的）。
+    #    要查"哪几条坏了"，用下面这两个：日志里每条首行以 `ERROR` 开头，能直接筛。
+    parser.add_argument("--errors-above", type=float, default=0.10,
+                        help="错误率高于这个值的样本全部列出（缺省 0.10，与「好的句子 ≤10%%」同一判据；"
+                             "给 1.1 = 关掉）")
+    parser.add_argument("--errors-limit", type=int, default=0,
+                        help="--errors-above 最多列几条（缺省 0 = 不限制，全列）")
+    parser.add_argument("--errors-file", default=None,
+                        help="问题样本清单写到哪（缺省：与 --out-json 同名的 .errors.txt）")
     # 规范化口径（asr-norm-v1）**始终**与严格口径一起算（两条一起报才有意义），
     # 这两个开关只决定"要不要额外放宽"——默认都不开，因为两条规则都不安全：
     #   · 删感叹词：`嗯/呃` 漏掉用户是听得出来的（字幕变硬），而且 `啊/呀/吧/呢/嘛` 带语气；
@@ -532,6 +541,33 @@ def main():
               f"  S{row['substitutions']} D{row['deletions']} I{row['insertions']}"
               f"  [{row['seconds']:.2f}s 音频 / {row['seconds_used']:.2f}s{extra}]")
         print("")
+
+    # ── 问题样本清单：每条首行以 ERROR 开头，日志里能直接筛 ────────────────────
+    # 为什么要有这个：上面那个"随机看 N 条"对排查**没有用**（随机多半是好的）。
+    # 查"哪几条坏了"要的是：全列出来、最差排最前、带音频文件名和具体差异。
+    errors_file = None
+    if args.errors_above is not None and args.errors_above <= 1.0:
+        problems = problem_samples(rows, threshold=args.errors_above, unit=unit,
+                                   limit=args.errors_limit or None)
+        print("=" * 76)
+        print(f"  问题样本（严格口径错误率 > {args.errors_above * 100:.0f}%）："
+              f"{len(problems)}/{len(rows)} 条，**最差的排最前**")
+        print(f"  筛法：Select-String ERROR（每条首行带这个前缀）")
+        print("=" * 76)
+        body = format_problem_samples(problems, pack_dir=str(wavset))
+        print(body if body else "  （没有超过阈值的样本）")
+        if args.errors_file:
+            errors_file = Path(args.errors_file)
+        elif args.out_json:
+            errors_file = Path(args.out_json).with_suffix(".errors.txt")
+        if errors_file is not None:
+            header = (f"# {wavset.name} 的问题样本清单（严格口径 > {args.errors_above * 100:.0f}%）\n"
+                      f"# 由 asr-eval/asr_eval.py 生成；按错误率从高到低排；"
+                      f"参考/识别都是原文，差异里的 `漏X`=漏字、`多X`=多字、`A→B`=听成 B\n"
+                      f"# 音频路径是完整的，可以直接播放对照\n\n")
+            errors_file.parent.mkdir(parents=True, exist_ok=True)
+            errors_file.write_text(header + body, encoding="utf-8")
+            print(f"  清单已写到    {errors_file}")
     print("=" * 76)
 
     # 结构化结果（供 asr-eval/test-asr.mjs 汇总）。刻意与上面打印的内容**同源**：

@@ -57,9 +57,9 @@ from asr_eval import (   # noqa: E402
 )
 from asr_score import (                                                  # noqa: E402
     NORMALIZED_RULES_VERSION, SCORING_RULES_VERSION, VARIANT_TO_SIMPLIFIED, TRADITIONAL_ONLY,
-    align, align_ops, chinese_numeral_value, error_rate, is_variant_pair, negation_flags,
-    normalize, normalize_for_scoring, normalized_error_rate, numeric_report,
-    portuguese_number_value,
+    align, align_ops, chinese_numeral_value, error_rate, format_problem_samples,
+    is_variant_pair, negation_flags, normalize, normalize_for_scoring, normalized_error_rate,
+    numeric_report, portuguese_number_value, problem_samples,
 )
 
 passed = 0
@@ -1189,6 +1189,42 @@ def main():
     check("葡语小数与千分位在标点处理里不会被切碎（1.234,56 仍是同一个数）",
           normalize_for_scoring("1.234,56 reais", "word") == normalize_for_scoring("1234,56 reais", "word"),
           f"{normalize_for_scoring('1.234,56 reais', 'word')!r}")
+
+    # ⑩ 问题样本清单（用户要的"日志里带 ERROR，方便筛"）
+    #
+    # 原来的报告只有"随机看 N 条对照"—— 随机看对排查**没有用**（多半是好的）。
+    # 现在给出的是"全部有问题、最差排最前、带音频路径与具体差异"的清单，
+    # 每条首行以 ERROR 开头，所以 `Select-String ERROR` 就能捞出来。
+    heading("问题样本清单 · 日志里带 ERROR 前缀")
+    sample_rows = [
+        {"file": "a.wav", "seconds": 3.0, "rate": 0.05, "units": 100, "substitutions": 3,
+         "deletions": 2, "insertions": 0, "reference": "这是一条好句", "hypothesis": "这是一条好句"},
+        {"file": "b.wav", "seconds": 2.0, "rate": 0.50, "units": 10, "substitutions": 4,
+         "deletions": 1, "insertions": 0, "reference": "从十二楼换到八楼", "hypothesis": "从八楼换到十二楼"},
+        {"file": "c.wav", "seconds": 4.0, "rate": 1.00, "units": 8, "substitutions": 8,
+         "deletions": 0, "insertions": 0, "reference": "小李飞刀听说过呀", "hypothesis": "夏立福的聽說過耶"},
+    ]
+    picked = problem_samples(sample_rows, threshold=0.10, unit="char")
+    check("只挑出超过阈值的（好的那条不进来）",
+          [item["file"] for item in picked] == ["c.wav", "b.wav"], str([i["file"] for i in picked]))
+    check("最差的排最前（排查要先看最坏的）",
+          picked[0]["rate"] >= picked[-1]["rate"])
+    check("阈值给足 1.1 就什么都不报（可以一键关掉）",
+          problem_samples(sample_rows, threshold=1.1, unit="char") == [])
+    check("count/limit 能限制条数",
+          len(problem_samples(sample_rows, threshold=0.10, unit="char", limit=1)) == 1)
+    body = format_problem_samples(picked, pack_dir="var/asr-eval/packs/zh-speech-dev")
+    error_lines = [line for line in body.splitlines() if line.startswith("ERROR")]
+    check("每条首行都以 ERROR 开头（日志里能直接筛）",
+          len(error_lines) == len(picked) and all("c.wav" in error_lines[0] for _ in [0]),
+          str(error_lines[:2]))
+    check("清单里带音频**完整路径**（照着就能打开听）",
+          "var" in body and "zh-speech-dev" in body and ".wav" in body,
+          body.splitlines()[1])
+    check("清单里带具体差异（漏了哪个字、听成什么）",
+          "漏" in body and "→" in body, body.splitlines()[4])
+    check("差异用「漏X / 多X / A→B」三种写法，不用看懂日志格式",
+          all(marker in body for marker in ("漏", "→")))
 
     # ── 结果 ────────────────────────────────────────────────────────────────
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
