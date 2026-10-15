@@ -1412,6 +1412,36 @@ def main():
           and all(mode in ov.MODE_LABELS for mode in ov.MODES),
           str(ov.MODES))
 
+    # ⑬ 葡语那个**代理**实验的标注与回显核对
+    #
+    # 它是代理这件事必须是**机器也能看见**的：既写在输出里，也写进 JSON。
+    # 另外钉住"巧合 vs 真回显"的判据 —— 实测踩到过：前后两条参考都只是 `aham`，
+    # 模型两次都写 `Uhum.`，闸就报了回显，而它其实跟提示词无关。
+    import pt_context_proxy as proxy
+
+    heading("葡语代理实验 · 标注与回显核对")
+    check("脚本输出里明确写了「这是代理、不能与中文表并列」",
+          "代理" in proxy.__doc__ and "不要和中文那张表并排放" in proxy.__doc__,
+          (proxy.__doc__ or "")[:60])
+    check("代理的三条限制都写在文件头（缺一条就会被误读）",
+          all(word in proxy.__doc__ for word in
+              ("没有时间戳、没有场次编号", "下界", "真实葡语连续录音")))
+    check("喂法就是中文那三种，标签带说明（C1 ＝产线现状）",
+          proxy.MODES == ("C1", "T1", "T2") and "现状" in proxy.LABELS["C1"],
+          str(proxy.MODES))
+    detail = proxy.echo_detail("Uhum.", "Uhum.", "aham")
+    check("撞上的片段会打印出来，并说明参考里有没有",
+          detail["overlap"] == "uhum" and detail["backedByReference"] is False,
+          str(detail))
+    check("参考里本来就有的重合 → 判成「不是回显」",
+          proxy.echo_detail("是的我知道", "是的", "是的我知道")["backedByReference"] is True)
+    check("标点/大小写不影响比对（`Uhum.` 与 `uhum` 是同一段）",
+          proxy._plain("Uhum.") == proxy._plain("uhum") == "uhum",
+          proxy._plain("Uhum."))
+    check("没东西可比时返回 None（不能凭空空报）",
+          proxy.echo_detail("", "tchau", "bom dia") is None
+          and proxy.echo_detail("bom dia", "", "bom dia") is None)
+
     # ── 结果 ────────────────────────────────────────────────────────────────
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
     if failures:

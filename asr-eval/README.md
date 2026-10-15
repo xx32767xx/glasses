@@ -38,6 +38,19 @@ node asr-eval/test-asr.mjs --context
 `--context` 若不给 `--spans-file`，会自动用 `var/asr-eval/spans/` 里**最新**的那一份
 （报告里记指纹，所以"用了哪一批段"永远不含糊）。
 
+### ⚠️ 为什么葡语那个实验**不**在这个入口里，而且只能叫"代理"
+
+`--cut` / `--context` 都要求**一段连续录音 + 官方逐句时间戳**（否则参考文本盖不住音频，
+公平性前提就破了）。中文有（MagicData 留了原始 31 分钟录音）；**葡语没有**：
+CORAA 只有一句一条的片段（中位 3.04s），元数据没有时间戳、没有场次编号，编号还不连续 ——
+**连哪几句属于同一场对话都查不出来**。所以中葡两边的样本来源根本不同，
+放进同一个入口只会让人误以为"同一个实验做了两种语言"。
+
+`pt_context_proxy.py` 因此单独放，并且**在输出里、在 JSON 里、在报告里都标 `proxy: True`**：
+它把编号相邻的 8 条（其实是**不同人**的话）当成一段上文，只回答
+"提示词续传这个机制有没有用"，给的是**下界**。**它的数字不许和中文那张表并排放**，
+也不许用来讲葡语的切句代价 —— 那需要一段真实葡语连续录音（`docs/13` §5 第 1 项）。
+
 ## 这一层里有什么
 
 | 文件 | 干什么 | 怎么跑 |
@@ -50,6 +63,7 @@ node asr-eval/test-asr.mjs --context
 | `segment_eval.py` | **切句基准**：量"停顿多久算说完一句"（用的是产线那个分段器） | `python asr-eval/segment_eval.py --set var/asr-eval/packs/zh-eval --pauses` |
 | `context_eval.py` | **切句代价引擎**：整段 / 逐句切 / 产线切句参数扫描 | 由 `test-asr.mjs --cut` 调 |
 | `context_overlap.py` | **上下文引擎**：提示词续传 vs 左邻/右邻重叠，逐段配对 + 拼接分歧 | 由 `test-asr.mjs --context` 调 |
+| `pt_context_proxy.py` | **葡语代理实验**（⚠️ 是代理，不是等价实验）：只测"提示词续传在葡语短片段上有没有用" | `python asr-eval/pt_context_proxy.py --groups 10` |
 
 数据不在这个目录里（`var/` 整个不进版本库），对应关系是一一对应的：
 
