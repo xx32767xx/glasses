@@ -167,16 +167,22 @@ def slice_audio(audio, rate, start, end):
     return audio[int(start * rate):int(end * rate)]
 
 
-def production_segments(audio, rate):
-    """用**产线那个分段器**切（直接 import 生产类，不复制一份逻辑）。"""
+def production_segments(audio, rate, config=None):
+    """用**产线那个分段器**切（直接 import 生产类，不复制一份逻辑）。
+
+    `config` 用来做参数扫描：只覆盖其中几项，其余取产线缺省 —— 这样扫出来的
+    每一个点都是"同一套产线切句逻辑 + 一个参数不同"，不是两套实现。
+    """
+    settings = dict(PRODUCTION_SEGMENTER)
+    settings.update(config or {})
     segmenter = UtteranceSegmenter(
-        rate, PRODUCTION_SEGMENTER["block_ms"], PRODUCTION_SEGMENTER["silence_ms"],
-        PRODUCTION_SEGMENTER["min_speech_ms"], PRODUCTION_SEGMENTER["max_speech_ms"],
-        PRODUCTION_SEGMENTER["rms_threshold"], PRODUCTION_SEGMENTER["preroll_ms"], np,
-        adaptive=PRODUCTION_SEGMENTER["adaptive"],
-        short_utterance_ms=PRODUCTION_SEGMENTER["short_utterance_ms"],
-        short_silence_ms=PRODUCTION_SEGMENTER["short_silence_ms"],
-        cut_pause_ms=PRODUCTION_SEGMENTER["cut_pause_ms"],
+        rate, settings["block_ms"], settings["silence_ms"],
+        settings["min_speech_ms"], settings["max_speech_ms"],
+        settings["rms_threshold"], settings["preroll_ms"], np,
+        adaptive=settings["adaptive"],
+        short_utterance_ms=settings["short_utterance_ms"],
+        short_silence_ms=settings["short_silence_ms"],
+        cut_pause_ms=settings["cut_pause_ms"],
     )
     found = []
     for index in range(0, len(audio), segmenter.block):
@@ -185,6 +191,27 @@ def production_segments(audio, rate):
     if last is not None:
         found.append(last)
     return found
+
+
+def parse_sweep(text):
+    """解析参数扫描写法：`500,800,1200,2000` 或带上限 `500/15000,800/30000`。
+
+    返回 [{label, silence_ms, max_speech_ms}]。**参数写在命令行里**，
+    所以"这一行数字是怎么跑出来的"永远能从命令本身看回来。
+    """
+    configs = []
+    for part in str(text).split(","):
+        part = part.strip()
+        if part == "":
+            continue
+        if "/" in part:
+            silence, maximum = part.split("/", 1)
+        else:
+            silence, maximum = part, str(PRODUCTION_SEGMENTER["max_speech_ms"])
+        config = {"silence_ms": int(silence), "max_speech_ms": int(maximum)}
+        config["label"] = f"C silence {config['silence_ms']} / 上限 {config['max_speech_ms'] // 1000}s"
+        configs.append(config)
+    return configs
 
 
 def transcribe_one(model, audio, args, language):
@@ -215,9 +242,46 @@ def score(reference, hypothesis, unit):
     return strict, norm
 
 
+# ── 段清单的**固化**：同一批段要能被反复使用（否则两次跑的数字不可比）──────────
+#
+# ⚠️ 为什么必须固化：选段是按"连续且干净"算出来的，改一次脚本、改一个默认值，
+#    选出来的段就可能变（甚至只是顺序变）。而参数扫描要比较的是**同一个参考上的
+#    不同切法** —— 段一变，比较就不成立了。所以：第一次跑把段写成 json，
+#    之后每跑一次都从那个 json 读，并检查"用的还是不是同一批"。
+
+def save_spans(path, spans):
+    # ⚠️ `pick_spans` 只负责"挑哪几句"，`recording` 是调用方补上的（它得知道是哪场录音）。
+    #    缺了就直接报错，不要写成空串 —— 段清单是"可重复执行"的地基，
+    #    里面少一个字段会让下次跑出来的是**另一批段**，而且看不出来。
+    for span in spans:
+        if "recording" not in span:
+            raise ValueError("段清单里每条都要有 recording（pick_spans 不产出这个字段，调用方补上）")
+    payload = [{"recording": s["recording"], "start": s["start"], "end": s["end"],
+                "duration": s["duration"],
+                "utterances": [{"start": u["start"], "end": u["end"], "speaker": u["speaker"],
+                                "text": u["text"]} for u in s["utterances"]]}
+               for s in spans]
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return target
+
+
+def load_spans(path):
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def spans_digest(spans):
+    """段清单的指纹 —— 用来一眼看出"这次跑的参考文本和上次是不是同一批"。"""
+    import hashlib
+    text = "|".join(f"{s['recording']}:{s['start']:.2f}-{s['end']:.2f}:" +
+                    ";".join(u["text"] for u in s["utterances"]) for s in spans)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="切短/边界/丢上下文造成的额外损失：整段 vs 官方句边界 vs 产线切句")
+        description="切短/边界/丢上下文造成的额外损失：整段 vs 官方句边界 vs 产线切句（可做参数扫描）")
     parser.add_argument("--magicdata-dir", default=str(MAGICDATA_DEFAULT))
     parser.add_argument("--split", default="dev", choices=["dev", "test"],
                         help="用哪份原始录音（缺省 dev：调参只看 dev）")
@@ -234,11 +298,24 @@ def main():
     parser.add_argument("--beam-size", type=int, default=5)
     parser.add_argument("--language", default="zh")
     parser.add_argument("--vad-filter", dest="vad_filter", action="store_true", default=True,
-                        help="三种喂法都用这个设置（缺省开，与评测口径一致）")
+                        help="所有喂法都用这个设置（缺省开，与评测口径一致）")
     parser.add_argument("--no-vad-filter", dest="vad_filter", action="store_false",
-                        help="关掉内置 VAD（与产线一致）—— 三种喂法仍然一致")
-    parser.add_argument("--show", type=int, default=3, help="打印几段的详细对照")
+                        help="关掉内置 VAD（与产线一致）—— 所有喂法仍然一致")
+    # 参数扫描：一个值一个点，跑在同一批段、同一个参考上。
+    # 写法 `500,800,1200,2000`，或 `500/15000,800/30000`（斜杠后面是句子上限 ms）。
+    parser.add_argument("--sweep", default=None,
+                        help="产线切句参数扫描，例：500/15000,800/30000,1200/30000,2000/30000")
+    parser.add_argument("--skip-b", action="store_true",
+                        help="跳过 B（官方句边界）—— 它与参数无关，扫第二轮时可以省时间")
+    # 段清单固化：同一批段能被反复使用（见 save_spans 上面的说明）
+    parser.add_argument("--spans-file", default=None,
+                        help="段清单 json（缺省 var/asr-eval/spans/context-<split>-<count>.json；"
+                             "存在就读它，不存在就挑好之后写下来）")
+    parser.add_argument("--refresh-spans", action="store_true",
+                        help="忽略已有段清单，重新挑（会覆盖）")
+    parser.add_argument("--show", type=int, default=2, help="打印几段的详细对照")
     parser.add_argument("--out-json", default=None, help="结构化结果写到这里")
+    parser.add_argument("--out-md", default=None, help="人读的报告写到这里（Markdown）")
     parser.add_argument("--allow-download", action="store_true",
                         help="允许联网下载模型（**默认不联网**，只用 var/cache/hf 里的）")
     args = parser.parse_args()
@@ -255,42 +332,61 @@ def main():
     recordings = sorted({Path(line.split("\t")[0].strip()).name
                          for line in partition.read_text(encoding="utf-8").splitlines()
                          if line.split("\t")[0].strip().endswith(".wav")})
-    print("=" * 92)
-    print(f"切短/边界/丢上下文的影响：整段(A) vs 官方句边界(B) vs 产线切句(C)")
+
+    # 要跑哪些"喂法"：A 整段、B 逐句切，以及 C 的若干组产线切句参数
+    configs = parse_sweep(args.sweep) if args.sweep else [
+        dict(PRODUCTION_SEGMENTER, label=f"C 产线切句（silence {PRODUCTION_SEGMENTER['silence_ms']}ms）")]
+    modes = [{"key": "A", "label": "A 整段（留全部上下文）", "kind": "whole", "config": None}]
+    if not args.skip_b:
+        modes.append({"key": "B", "label": "B 官方句边界（逐句切）", "kind": "utterance",
+                      "config": None})
+    for index, config in enumerate(configs, 1):
+        modes.append({"key": f"C{index}", "label": config["label"], "kind": "segmenter",
+                      "config": config})
+
+    print("=" * 96)
+    print("切短/边界/丢上下文的影响：同一段音频、同一个参考，只改「怎么切」")
     print(f"  语料 MagicData-RAMC {args.split} 划分 · {len(recordings)} 场原始录音")
-    print(f"  取 {args.count} 段，每段目标 {args.target_seconds:.0f} 秒、至少 {args.min_utterances} 句，"
-          f"段内转写必须**全部干净**（无重叠/听不清/笑声）")
     print(f"  模型 {args.model} / {args.device} / {args.compute_type} / beam {args.beam_size}"
           f" / vad_filter={args.vad_filter} / 语种 {args.language}")
-    print(f"  产线切句参数：silence {PRODUCTION_SEGMENTER['silence_ms']}ms、"
-          f"丢弃 <{PRODUCTION_SEGMENTER['min_speech_ms']}ms 的碎片、上限 "
-          f"{PRODUCTION_SEGMENTER['max_speech_ms']}ms")
-    print("=" * 92)
+    print(f"  丢弃 <{PRODUCTION_SEGMENTER['min_speech_ms']}ms 的碎片（产线设置，所有 C 相同）")
+    print("  喂法：")
+    for mode in modes:
+        print(f"    {mode['key']:<4} {mode['label']}")
+    print("=" * 96)
 
-    # ── 挑段 ────────────────────────────────────────────────────────────────
-    spans = []
-    for recording in recordings:
-        transcript = txt_dir / (Path(recording).stem + ".txt")
-        audio_path = wav_dir / recording
-        if transcript.is_file() is False or audio_path.is_file() is False:
-            continue
-        rows = parse_transcript(transcript)
-        picked = pick_spans(rows, target_seconds=args.target_seconds,
-                            min_seconds=args.min_seconds,
-                            min_utterances=args.min_utterances, max_gap=args.max_gap,
-                            count=args.count - len(spans), seed=0)
-        for span in picked:
-            span["recording"] = recording
-            spans.append(span)
-        if len(spans) >= args.count:
-            break
-    if not spans:
-        sys.exit("一段都没挑出来（把 --min-seconds / --min-utterances 放宽试试）")
-    print(f"\n挑出 {len(spans)} 段：")
-    for index, span in enumerate(spans, 1):
-        print(f"  #{index:<3} {span['recording']}  "
-              f"{span['start']:.1f}–{span['end']:.1f}s（{span['duration']:.1f}s，"
-              f"{len(span['utterances'])} 句）")
+    # ── 段清单：存在就用同一批（参数扫描必须如此），不存在就挑好写下来 ─────────
+    spans_file = Path(args.spans_file) if args.spans_file else (
+        ROOT / "var" / "asr-eval" / "spans" / f"context-{args.split}-{args.count}.json")
+    if spans_file.is_file() and not args.refresh_spans:
+        spans = load_spans(spans_file)
+        print(f"\n段清单：**复用** {spans_file}")
+        print(f"  {len(spans)} 段，指纹 {spans_digest(spans)}"
+              f"（换一批段会让两次结果不可比，所以这里默认复用）")
+    else:
+        spans = []
+        for recording in recordings:
+            transcript = txt_dir / (Path(recording).stem + ".txt")
+            if transcript.is_file() is False or (wav_dir / recording).is_file() is False:
+                continue
+            picked = pick_spans(parse_transcript(transcript),
+                                target_seconds=args.target_seconds,
+                                min_seconds=args.min_seconds,
+                                min_utterances=args.min_utterances, max_gap=args.max_gap,
+                                count=args.count - len(spans), seed=0)
+            for span in picked:
+                span["recording"] = recording
+                spans.append(span)
+            if len(spans) >= args.count:
+                break
+        if not spans:
+            sys.exit("一段都没挑出来（把 --min-seconds / --min-utterances 放宽试试）")
+        save_spans(spans_file, spans)
+        print(f"\n段清单：**新挑**并写到 {spans_file}")
+        print(f"  {len(spans)} 段，指纹 {spans_digest(spans)}（下次跑会复用这一批）")
+    total_seconds = sum(span["duration"] for span in spans)
+    print(f"  合计 {total_seconds:.1f} 秒音频、"
+          f"{sum(len(s['utterances']) for s in spans)} 句参考")
 
     # ── 载入模型 ────────────────────────────────────────────────────────────
     from faster_whisper import WhisperModel
@@ -306,127 +402,241 @@ def main():
     transcribe_one(model, warmup, args, args.language)      # 预热：第一次推理十几秒
     print("预热完成\n")
 
-    # ── 三种喂法，逐段跑 ────────────────────────────────────────────────────
+    # ── 逐段 × 逐喂法 ───────────────────────────────────────────────────────
     records = []
     for index, span in enumerate(spans, 1):
-        audio_path = wav_dir / span["recording"]
-        audio, rate = read_slice(audio_path, span["start"], span["end"])
-        reference = "".join(row["text"] for row in span["utterances"])
+        audio, rate = read_slice(wav_dir / span["recording"], span["start"], span["end"])
+        reference = join_texts([row["text"] for row in span["utterances"]], "char")
         unit = "char"
+        entry = {"recording": span["recording"], "start": span["start"], "end": span["end"],
+                 "duration": span["duration"], "utterances": len(span["utterances"]),
+                 "reference": reference}
 
-        # A 整段
-        text_a, time_a = transcribe_one(model, audio, args, args.language)
-
-        # B 官方句边界（逐句切）
-        pieces_b, moves_b = [], []
-        for row in span["utterances"]:
-            piece = slice_audio(audio, rate, row["start"] - span["start"], row["end"] - span["start"])
-            text, used = transcribe_one(model, piece, args, args.language)
-            pieces_b.append(text)
-            moves_b.append({"seconds": len(piece) / rate, "text": text, "used": used})
-        text_b = join_texts(pieces_b, unit)
-
-        # C 产线切句
-        segments = production_segments(audio, rate)
-        pieces_c = []
-        covered = 0.0
-        for piece in segments:
-            text, used = transcribe_one(model, piece, args, args.language)
-            pieces_c.append(text)
-            covered += len(piece) / rate
-        text_c = join_texts(pieces_c, unit)
-
-        strict_a, norm_a = score(reference, text_a, unit)
-        strict_b, norm_b = score(reference, text_b, unit)
-        strict_c, norm_c = score(reference, text_c, unit)
-        records.append({
-            "recording": span["recording"], "start": span["start"], "end": span["end"],
-            "duration": span["duration"], "utterances": len(span["utterances"]),
-            "reference": reference,
-            "A": {"text": text_a, "segments": 1, "used": time_a, **strict_a, "normalized": norm_a},
-            "B": {"text": text_b, "segments": len(pieces_b),
-                  "used": sum(p["used"] for p in moves_b), **strict_b, "normalized": norm_b,
-                  "pieces": moves_b},
-            "C": {"text": text_c, "segments": len(pieces_c), "used": None,
-                  "covered": covered, **strict_c, "normalized": norm_c,
-                  "pieces": [{"seconds": len(p) / rate, "text": t}
-                             for p, t in zip(segments, pieces_c)]},
-        })
-        print(f"  #{index:<3} {span['recording'][:34]:<34} "
-              f"A {strict_a['rate'] * 100:5.1f}%  B {strict_b['rate'] * 100:5.1f}%  "
-              f"C {strict_c['rate'] * 100:5.1f}%   "
-              f"（段数 B{len(pieces_b)} C{len(pieces_c)}，产线覆盖 {covered:.1f}s/{span['duration']:.1f}s）")
+        for mode in modes:
+            if mode["kind"] == "whole":
+                text, used = transcribe_one(model, audio, args, args.language)
+                pieces = [{"seconds": len(audio) / rate, "text": text, "used": used}]
+            elif mode["kind"] == "utterance":
+                pieces = []
+                for row in span["utterances"]:
+                    piece = slice_audio(audio, rate, row["start"] - span["start"],
+                                        row["end"] - span["start"])
+                    piece_text, piece_used = transcribe_one(model, piece, args, args.language)
+                    pieces.append({"seconds": len(piece) / rate, "text": piece_text,
+                                   "used": piece_used})
+                text = join_texts([p["text"] for p in pieces], unit)
+                used = sum(p["used"] for p in pieces)
+            else:
+                segments = production_segments(audio, rate, mode["config"])
+                pieces = []
+                for piece in segments:
+                    piece_text, piece_used = transcribe_one(model, piece, args, args.language)
+                    pieces.append({"seconds": len(piece) / rate, "text": piece_text,
+                                   "used": piece_used})
+                text = join_texts([p["text"] for p in pieces], unit)
+                used = sum(p["used"] for p in pieces)
+            strict, norm = score(reference, text, unit)
+            entry[mode["key"]] = {
+                "text": text, "segments": len(pieces), "used": used,
+                "covered": sum(p["seconds"] for p in pieces),
+                "meanSeconds": sum(p["seconds"] for p in pieces) / len(pieces) if pieces else 0.0,
+                "meanUsed": used / len(pieces) if pieces else 0.0,
+                **strict, "normalized": norm,
+            }
+        records.append(entry)
+        preview = "  ".join(f"{m['key']} {entry[m['key']]['rate'] * 100:5.1f}%"
+                            + (f"({entry[m['key']]['segments']}段)"
+                               if m["kind"] == "segmenter" else "")
+                            for m in modes)
+        print(f"  #{index:<3} {span['recording'][:30]:<30} {preview}")
 
     # ── 汇总 ────────────────────────────────────────────────────────────────
-    def overall(mode, key="rate"):
-        rows = [{"units": r[mode]["units"], "distance": r[mode]["distance"],
-                 "substitutions": r[mode]["substitutions"], "deletions": r[mode]["deletions"],
-                 "insertions": r[mode]["insertions"]} for r in records]
-        return overall_rate(rows)
+    def summarize(mode):
+        rows = [{"units": r[mode["key"]]["units"], "distance": r[mode["key"]]["distance"],
+                 "substitutions": r[mode["key"]]["substitutions"],
+                 "deletions": r[mode["key"]]["deletions"],
+                 "insertions": r[mode["key"]]["insertions"]} for r in records]
+        rate, units, distance, sdi = overall_rate(rows)
+        norm_rate, _nu, _nd, _nsdi = overall_rate([r[mode["key"]]["normalized"] for r in records])
+        segments = sum(r[mode["key"]]["segments"] for r in records)
+        covered = sum(r[mode["key"]]["covered"] for r in records)
+        mean_used = (sum(r[mode["key"]]["used"] for r in records) / segments) if segments else 0.0
+        silence_ms = (mode["config"] or {}).get("silence_ms")
+        return {
+            "key": mode["key"], "label": mode["label"], "rate": rate, "normalized": norm_rate,
+            "units": units, "distance": distance, "sdi": sdi, "segments": segments,
+            "meanSegmentsPerSpan": segments / len(records),
+            "meanSegmentSeconds": covered / segments if segments else 0.0,
+            "coverage": covered / total_seconds if total_seconds else 0.0,
+            "meanUsedPerSegment": mean_used,
+            # 等待时间**估算**：说话人停下 → 等 silence_ms 判定句子结束 → 识别这一段。
+            # A/B 不是产线能用的喂法，所以不报等待（None）。
+            "waitSeconds": ((silence_ms / 1000.0) + mean_used) if silence_ms else None,
+        }
 
-    print("\n" + "=" * 92)
-    print("汇总（同一批音频、同一个参考，只改「怎么切」）")
-    print("=" * 92)
-    print(f"{'喂法':<28}{'严格错误率':>10}{'规范化':>9}{'S':>6}{'D':>6}{'I':>6}{'总段数':>8}")
-    summary = {}
-    for mode, label in (("A", "A 整段（留全部上下文）"), ("B", "B 官方句边界（逐句切）"),
-                        ("C", "C 产线切句（silence 500ms）")):
-        rate, units, distance, sdi = overall(mode)
-        norm_rows = [r[mode]["normalized"] for r in records]
-        norm_rate, _nu, _nd, _nsdi = overall_rate(norm_rows)
-        segments = sum(r[mode]["segments"] for r in records)
-        summary[mode] = {"rate": rate, "normalized": norm_rate, "units": units,
-                         "distance": distance, "sdi": sdi, "segments": segments}
-        print(f"{label:<28}{rate * 100:>9.1f}%{norm_rate * 100:>8.1f}%"
-              f"{sdi[0]:>6}{sdi[1]:>6}{sdi[2]:>6}{segments:>8}")
-    print("")
-    loss_b = (summary["B"]["rate"] - summary["A"]["rate"]) * 100
-    loss_c = (summary["C"]["rate"] - summary["A"]["rate"]) * 100
-    print(f"  A−B：**切短 + 边界 + 丢上下文**的代价 = {loss_b:+.1f} 个百分点"
-          f"（{summary['A']['rate'] * 100:.1f}% → {summary['B']['rate'] * 100:.1f}%）")
-    print(f"  A−C：上面这些 + **产线切句自己的毛病** = {loss_c:+.1f} 个百分点"
-          f"（{summary['A']['rate'] * 100:.1f}% → {summary['C']['rate'] * 100:.1f}%）")
-    print(f"  B−C：产线切句比「按句切」多损失的 = {loss_c - loss_b:+.1f} 个百分点")
-    coverage = sum(r["C"]["covered"] for r in records) / sum(r["duration"] for r in records)
-    print(f"  产线切句覆盖了 {coverage * 100:.1f}% 的音频"
-          f"（丢掉的部分主要是 <{PRODUCTION_SEGMENTER['min_speech_ms']}ms 的碎片 —— 那是设计如此）")
-    print("")
-    print("  ⚠️ 这个对照量的是「切句造成的额外损失」，不是「哪个模型更好」：")
-    print("     三种喂法用的是**同一个模型、同一套解码参数**，只有「音频怎么切」不同。")
+    summary = [summarize(mode) for mode in modes]
+    baseline = next((s for s in summary if s["key"] == "A"), summary[0])
+    # ⚠️ 基准是**最碎的那一档**（silence 最小），不是列表里最后一行 ——
+    #    第一版写成"最后一行"，于是"比最碎好"和"多等"两列的符号全反了（smoke test 抓到）。
+    c_modes = [s for s in summary if s["key"].startswith("C")]
+    terse = min(c_modes, key=lambda s: (s["key"] != "C1", s["key"])) if c_modes else None
+
+    print("\n" + "=" * 96)
+    print("汇总（同一批音频、同一个参考、同一套解码参数，只改「怎么切」）")
+    print("=" * 96)
+    header = (f"{'喂法':<34}{'严格':>8}{'规范化':>8}{'S':>6}{'D':>6}{'I':>6}"
+              f"{'段数':>6}{'平均段长':>9}{'覆盖':>7}{'等待*':>8}{'vs A':>8}")
+    print(header)
+    print("-" * len(header))
+    for item in summary:
+        delta = (item["rate"] - baseline["rate"]) * 100
+        wait = f"{item['waitSeconds']:.2f}s" if item["waitSeconds"] else "—"
+        print(f"{item['label']:<34}{item['rate'] * 100:>7.1f}%{item['normalized'] * 100:>7.1f}%"
+              f"{item['sdi'][0]:>6}{item['sdi'][1]:>6}{item['sdi'][2]:>6}"
+              f"{item['segments']:>6}{item['meanSegmentSeconds']:>8.1f}s"
+              f"{item['coverage'] * 100:>6.1f}%{wait:>8}{delta:>+7.1f}p")
+    print("-" * len(header))
+    print("  * 等待 = silence_ms（判定句子结束要等的时间）+ 平均识别耗时/段 —— **估算**，不是端到端实测。")
+    print("  ⚠️ A/B 不是产线能用的喂法（流式必须切），它们只用来给 C 当参照。")
+
+    if terse and len(c_modes) > 1:
+        print(f"\n「少切一点」的取舍（以最碎的那一档为基准：{terse['label']}）")
+        print(f"  {'配置':<34}{'错误率':>9}{'比最碎好':>10}{'等待':>9}{'多等':>8}  值不值")
+        for item in c_modes:
+            gain = (terse["rate"] - item["rate"]) * 100
+            extra = (item["waitSeconds"] or 0.0) - (terse["waitSeconds"] or 0.0)
+            verdict = ("**划算**" if gain > 0.5 and extra <= 0.5
+                       else "要权衡" if gain > 0.5
+                       else "更差" if gain < -0.5 else "持平")
+            print(f"  {item['label']:<34}{item['rate'] * 100:>8.1f}%{gain:>+9.1f}p"
+                  f"{item['waitSeconds'] or 0.0:>8.2f}s{extra:>+7.2f}s  {verdict}")
 
     if args.show:
-        print("\n" + "=" * 92)
+        print("\n" + "=" * 96)
         print(f"逐段对照（前 {min(args.show, len(records))} 段）")
-        print("=" * 92)
+        print("=" * 96)
         for record in records[:args.show]:
             print(f"\n{record['recording']}  {record['start']:.1f}–{record['end']:.1f}s"
                   f"（{record['duration']:.1f}s / {record['utterances']} 句）")
-            print(f"  参考  {record['reference']}")
-            print(f"  A 整段 {record['A']['text']}")
-            print(f"  B 逐句 {record['B']['text']}")
-            print(f"  C 产线 {record['C']['text']}")
+            print(f"  参考 {record['reference']}")
+            for mode in modes:
+                print(f"  {mode['key']:<4} {record[mode['key']]['text']}")
 
+    # ── 落盘：结构化 + 人读 ─────────────────────────────────────────────────
+    payload = {
+        "config": {
+            "split": args.split, "spansFile": str(spans_file), "spansDigest": spans_digest(spans),
+            "spans": len(spans), "totalSeconds": total_seconds, "model": args.model,
+            "device": args.device, "computeType": args.compute_type,
+            "beamSize": args.beam_size, "language": args.language, "vadFilter": args.vad_filter,
+            "scoringRules": SCORING_RULES_VERSION, "normalizedRules": NORMALIZED_RULES_VERSION,
+            "segmenterBase": PRODUCTION_SEGMENTER,
+            "modes": [{k: m[k] for k in ("key", "label", "kind", "config")} for m in modes],
+            "rerun": "python asr-eval/context_eval.py --spans-file " + str(spans_file)
+                     + (f" --sweep {args.sweep}" if args.sweep else "")
+                     + f" --model {args.model} --device {args.device}"
+                     + f" --compute-type {args.compute_type}",
+        },
+        "summary": summary,
+        "records": records,
+    }
     if args.out_json:
-        payload = {
-            "config": {
-                "split": args.split, "count": len(records), "model": args.model,
-                "device": args.device, "computeType": args.compute_type,
-                "beamSize": args.beam_size, "language": args.language,
-                "vadFilter": args.vad_filter, "scoringRules": SCORING_RULES_VERSION,
-                "normalizedRules": NORMALIZED_RULES_VERSION,
-                "segmenter": PRODUCTION_SEGMENTER,
-            },
-            "summary": summary,
-            "delta": {"A_minus_B_pp": loss_b, "A_minus_C_pp": loss_c, "B_minus_C_pp": loss_c - loss_b},
-            "coverage": coverage,
-            "records": records,
-        }
         target = Path(args.out_json)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"\n结构化结果已写到 {target}")
+    if args.out_md:
+        target = Path(args.out_md)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(render_report(payload), encoding="utf-8")
+        print(f"人读报告已写到   {target}")
     return 0
 
+
+def render_report(payload):
+    """生成**能直接看的** Markdown 报告：结论、取舍表、逐段明细、怎么重跑。"""
+    config, summary, records = payload["config"], payload["summary"], payload["records"]
+    baseline = next((s for s in summary if s["key"] == "A"), summary[0])
+    c_modes = [s for s in summary if s["key"].startswith("C")]
+    b_mode = next((s for s in summary if s["key"] == "B"), None)
+    lines = []
+    lines.append("# 切句代价实验（整段 / 逐句切 / 产线切句参数扫描）\n")
+    lines.append(f"- 语料：MagicData-RAMC **{config['split']}** 划分，{config['spans']} 段"
+                 f"（{config['totalSeconds']:.0f} 秒）")
+    lines.append(f"- 模型：{config['model']} / {config['device']} / {config['computeType']}"
+                 f" / beam {config['beamSize']} / vad_filter={config['vadFilter']}"
+                 f" / 语种 {config['language']}")
+    lines.append(f"- 段清单：`{config['spansFile']}`（指纹 `{config['spansDigest']}`）"
+                 f"—— **同一批段**，所以两次跑的数字可比")
+    lines.append(f"- 评分：严格 `{config['scoringRules']}` + 规范化 `{config['normalizedRules']}`")
+    lines.append(f"- 重跑命令：`{config['rerun']}`\n")
+    lines.append("## 汇总\n")
+    lines.append("| 喂法 | 严格 | 规范化 | S | D | I | 段数 | 平均段长 | 覆盖 | 等待* | vs A |")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
+    for item in summary:
+        wait = f"{item['waitSeconds']:.2f}s" if item["waitSeconds"] else "—"
+        delta = f"{(item['rate'] - baseline['rate']) * 100:+.1f}p"
+        lines.append(f"| {item['label']} | **{item['rate'] * 100:.1f}%** | "
+                     f"{item['normalized'] * 100:.1f}% | {item['sdi'][0]} | {item['sdi'][1]} | "
+                     f"{item['sdi'][2]} | {item['segments']} | "
+                     f"{item['meanSegmentSeconds']:.1f}s | {item['coverage'] * 100:.1f}% | "
+                     f"{wait} | {delta} |")
+    lines.append("\n\\* 等待 = silence_ms（判定句子结束要等的时间）+ 平均识别耗时/段 —— "
+                 "**估算**，不是端到端实测。A/B 不是产线能用的喂法，所以不报等待。\n")
+    if len(c_modes) > 1:
+        lines.append("## 「少切一点」的取舍\n")
+        terse = c_modes[0]
+        lines.append(f"以最碎的那一档（{terse['label']}）为基准：\n")
+        lines.append("| 配置 | 严格错误率 | 比最碎好 | 等待 | 多等 | 值不值 |")
+        lines.append("|---|---|---|---|---|---|")
+        for item in c_modes:
+            gain = (terse["rate"] - item["rate"]) * 100
+            wait_now = item["waitSeconds"] or 0.0
+            wait_base = terse["waitSeconds"] or 0.0
+            extra = wait_now - wait_base
+            verdict = "持平"
+            if gain > 0.5 and extra <= 0.5:
+                verdict = "**划算**"
+            elif gain > 0.5:
+                verdict = "要权衡"
+            elif gain < -0.5:
+                verdict = "更差"
+            lines.append(f"| {item['label']} | {item['rate'] * 100:.1f}% | {gain:+.1f}p | "
+                         f"{wait_now:.2f}s | {extra:+.2f}s | {verdict} |")
+        lines.append("")
+    if b_mode:
+        lines.append("## 两个参照点\n")
+        lines.append(f"- **A 整段 {baseline['rate'] * 100:.1f}%**：不切的**上界**（产线做不到，流式必须切）")
+        lines.append(f"- **B 逐句切 {b_mode['rate'] * 100:.1f}%**：按官方句边界切，"
+                     f"代表「切得最符合语言单位」的那种切法")
+        lines.append("")
+    lines.append("## 逐段明细\n")
+    keys = [item["key"] for item in summary]
+    lines.append("| 录音 | 时间 | 秒 | 句 | 参考字 | " + " | ".join(keys) + " |")
+    lines.append("|---|---|---|---|---|" + "---|" * len(keys))
+    for record in records:
+        cells = " | ".join(f"{record[key]['rate'] * 100:.0f}%" for key in keys)
+        lines.append(f"| {record['recording']} | {record['start']:.0f}–{record['end']:.0f}s | "
+                     f"{record['duration']:.0f} | {record['utterances']} | "
+                     f"{len(record['reference'])} | {cells} |")
+    lines.append("\n## 样本（每段原文与各喂法输出）\n")
+    for index, record in enumerate(records, 1):
+        lines.append(f"### {index}. {record['recording']} {record['start']:.0f}–{record['end']:.0f}s"
+                     f"（{record['duration']:.1f}s）\n")
+        lines.append(f"- 参考　{record['reference']}")
+        for item in summary:
+            lines.append(f"- {item['key']}　{record[item['key']]['text']}")
+        lines.append("")
+    lines.append("## 边界（读这些数字前必须知道）\n")
+    lines.append("1. 三种喂法用的是**同一个模型、同一套解码参数**，只改「音频怎么切」——"
+                 "量的是切句代价，不是模型好坏。")
+    lines.append("2. **A 不是产线能做到的**（流式必须切），它只是「不切能有多好」的上界；"
+                 "Whisper 感受野本来就是 30 秒窗，所以 A 与 B/C 的差别是"
+                 "「一段话 vs 一句一句」，不是「无限上下文」。")
+    lines.append("3. **等待是估算**：`silence_ms` + 平均识别耗时/段，不含网络与翻译。"
+                 "端到端延迟要另测（见 docs/14 §5.2 对「这批属于哪种模式」的说明）。")
+    lines.append("4. 样本量有限（见上），逐段方差大，所以只看**量级与方向**，别当精确值。")
+    return "\n".join(lines) + "\n"
 
 if __name__ == "__main__":
     sys.exit(main())

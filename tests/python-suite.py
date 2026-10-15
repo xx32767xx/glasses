@@ -1284,6 +1284,92 @@ def main():
     check("带 [ + ] 的那句会被判成不干净（重叠语音不能当参考）",
           ctx.is_clean(parsed[1]) is False)
 
+    # 参数扫描 + 段清单固化 + 报告（用户要求"我能重复执行、也要能读"）
+    heading("切句代价实验 · 参数扫描与可复现")
+
+    def _spans_error(good_spans):
+        """缺 recording 时应当抛错 —— 返回 True 表示**没有**报错（＝测试失败）。"""
+        import tempfile
+        target = ROOT / "var" / "test" / "python-suite" / "ctx-spans-bad.json"
+        try:
+            ctx.save_spans(target, [{"start": 0.0, "end": 1.0, "utterances": []}])
+            return True
+        except ValueError:
+            return False
+        finally:
+            target.unlink(missing_ok=True)
+
+    check("扫描写法解析得对（500,800 → 用缺省上限）",
+          [(c["silence_ms"], c["max_speech_ms"]) for c in ctx.parse_sweep("500,800")]
+          == [(500, ctx.PRODUCTION_SEGMENTER["max_speech_ms"]), (800, ctx.PRODUCTION_SEGMENTER["max_speech_ms"])],
+          str(ctx.parse_sweep("500,800")))
+    check("带句子上限的写法也对（800/30000）",
+          [(c["silence_ms"], c["max_speech_ms"]) for c in ctx.parse_sweep("800/30000")]
+          == [(800, 30000)])
+    check("每一档都带得出人能读的标签（报告里要打出来）",
+          all(c["label"].startswith("C silence") for c in ctx.parse_sweep("500/15000,2000/30000")),
+          str([c["label"] for c in ctx.parse_sweep("500/15000,2000/30000")]))
+
+    spans_file = ROOT / "var" / "test" / "python-suite" / "ctx-spans.json"
+    spans_file.parent.mkdir(parents=True, exist_ok=True)
+    # `pick_spans` 只管挑哪几句，`recording` 由调用方补（真跑时是 main() 补的）
+    named_spans = [dict(span, recording="CTS-TEST-0001.wav") for span in spans]
+    ctx.save_spans(spans_file, named_spans)
+    reloaded = ctx.load_spans(spans_file)
+    check("段清单能存能读（同一批段才能反复比较）",
+          len(reloaded) == len(named_spans)
+          and reloaded[0]["recording"] == named_spans[0]["recording"]
+          and len(reloaded[0]["utterances"]) == len(named_spans[0]["utterances"]),
+          f"{len(reloaded)} vs {len(named_spans)}")
+    check("段清单里缺 recording 会**明确报错**（不许静默写成空串）",
+          _spans_error(named_spans) is False,
+          "缺字段时没有报错")
+    check("段清单带指纹（一眼看出两次跑的是不是同一批）",
+          ctx.spans_digest(reloaded) == ctx.spans_digest(named_spans)
+          and len(ctx.spans_digest(named_spans)) == 16,
+          ctx.spans_digest(named_spans))
+    check("换了参考文本，指纹就变（不是恒定值）",
+          ctx.spans_digest([{"recording": "a", "start": 0.0, "end": 1.0,
+                             "utterances": [{"text": "甲"}]}])
+          != ctx.spans_digest([{"recording": "a", "start": 0.0, "end": 1.0,
+                                "utterances": [{"text": "乙"}]}]))
+
+    fake_payload = {
+        "config": {"split": "dev", "spansFile": str(spans_file), "spansDigest": "abcd1234",
+                   "spans": 2, "totalSeconds": 50.0, "model": "large-v3", "device": "cuda",
+                   "computeType": "float16", "beamSize": 5, "language": "zh", "vadFilter": True,
+                   "scoringRules": SCORING_RULES_VERSION,
+                   "normalizedRules": NORMALIZED_RULES_VERSION,
+                   "segmenterBase": ctx.PRODUCTION_SEGMENTER,
+                   "modes": [{"key": "A", "label": "A 整段（留全部上下文）", "kind": "whole",
+                              "config": None},
+                             {"key": "C1", "label": "C silence 500 / 上限 15s",
+                              "kind": "segmenter", "config": {"silence_ms": 500}}],
+                   "rerun": "python asr-eval/context_eval.py --spans-file x.json"},
+        "summary": [
+            {"key": "A", "label": "A 整段（留全部上下文）", "rate": 0.12, "normalized": 0.10,
+             "units": 100, "distance": 12, "sdi": (5, 6, 1), "segments": 2,
+             "meanSegmentsPerSpan": 1.0, "meanSegmentSeconds": 25.0, "coverage": 1.0,
+             "meanUsedPerSegment": 5.0, "waitSeconds": None},
+            {"key": "C1", "label": "C silence 500 / 上限 15s", "rate": 0.17, "normalized": 0.15,
+             "units": 100, "distance": 17, "sdi": (8, 8, 1), "segments": 12,
+             "meanSegmentsPerSpan": 6.0, "meanSegmentSeconds": 3.3, "coverage": 0.8,
+             "meanUsedPerSegment": 1.2, "waitSeconds": 1.7},
+        ],
+        "records": [{"recording": "r.wav", "start": 1.0, "end": 26.0, "duration": 25.0,
+                     "utterances": 6, "reference": "甲乙丙丁",
+                     "A": {"rate": 0.12, "text": "甲乙丙丁", "segments": 1},
+                     "C1": {"rate": 0.17, "text": "甲乙丁", "segments": 6}}],
+    }
+    report = ctx.render_report(fake_payload)
+    check("报告里有汇总表", "## 汇总" in report and "| 喂法 |" in report, report[:80])
+    check("报告里有**怎么重跑**（用户要的可重复执行）",
+          "重跑命令" in report and "--spans-file" in report)
+    check("报告里写明用的是哪一批段（含指纹）", "abcd1234" in report)
+    check("报告里有逐段明细与样本原文", "## 逐段明细" in report and "甲乙丙丁" in report)
+    check("报告里写明等待是**估算**、不是端到端实测",
+          "估算" in report and "端到端" in report)
+
     # ── 结果 ────────────────────────────────────────────────────────────────
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
     if failures:

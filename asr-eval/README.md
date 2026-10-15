@@ -14,7 +14,7 @@
 | `asr_score.py` | **评分规则本身**：严格口径 `asr-score-v1` + 规范化口径 `asr-norm-v1` | 被 import，不单独跑 |
 | `asr_error_analysis.py` | **两套口径对照 + 错因归因 + 关键内容检查 + 抽查** | `python asr-eval/asr_error_analysis.py <结果.json>` / `--table` |
 | `segment_eval.py` | **切句基准**：量"停顿多久算说完一句"（用的是产线那个分段器） | `python asr-eval/segment_eval.py --set var/asr-eval/packs/zh-eval --pauses` |
-| `context_eval.py` | **切句代价**：同一段音频「整段 / 逐句切 / 产线切句」三种喂法对照，量"切碎+丢上下文"值多少 | `python asr-eval/context_eval.py --count 20 --model large-v3` |
+| `context_eval.py` | **切句代价**：同一段音频「整段 / 逐句切 / 产线切句」三种喂法对照；带 **`--sweep` 参数扫描** | `python asr-eval/context_eval.py --count 20 --model large-v3 --sweep 500/15000,800/30000,1200/30000,2000/30000 --out-md var/asr-eval/reports/context-eval-sweep-dev.md` |
 
 数据不在这个目录里（`var/` 整个不进版本库），对应关系是一一对应的：
 
@@ -89,7 +89,25 @@ python asr-eval/asr_error_analysis.py var/asr-eval/results/zh-speech-dev__large-
 # ⑦ 只看有问题的那些（不重跑模型，从已存结果筛）：写成清单文件，照着音频听
 python asr-eval/asr_error_analysis.py var/asr-eval/results/zh-speech-dev__large-v3_cuda_float16.json `
   --errors-above 0.10 --errors-file var/asr-eval/reports/zh-speech-dev-errors.txt
+
+# ⑧ 切句代价 + 切句参数扫描（同一批段、同一个参考，只改「怎么切」）
+#    段清单会固化到 var/asr-eval/spans/，下次跑**复用同一批**（否则两次数字不可比）
+python asr-eval/context_eval.py --count 20 --model large-v3 --device cuda `
+  --sweep 500/15000,800/30000,1200/30000,2000/30000 `
+  --spans-file var/asr-eval/spans/context-dev-20.json `
+  --out-json var/asr-eval/results/context_eval_sweep__dev__large-v3.json `
+  --out-md   var/asr-eval/reports/context-eval-sweep-dev.md
 ```
+
+### 切句代价实验：可重复 + 可读
+
+`context_eval.py` 的产物都是**留着给人看的**，不是只打屏：
+
+| 产物 | 是什么 |
+|---|---|
+| `var/asr-eval/spans/context-<split>-<count>.json` | **固化的段清单**（含每句时间戳与文本）。存在就复用，指纹会打进报告 —— 参数扫描必须同一批段，否则数字不可比 |
+| `var/asr-eval/results/context_eval_sweep__*.json` | 结构化结果：每个喂法每段的文本、S/D/I、段数、覆盖、耗时 |
+| `var/asr-eval/reports/context-eval-sweep-*.md` | **人读报告**：汇总表 + 取舍表 + 逐段明细 + 每段原文与各喂法输出 + **重跑命令**
 
 ### 问题样本清单（找"哪几条坏了"用这个，不要用"随机看"）
 
