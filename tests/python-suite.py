@@ -1226,6 +1226,64 @@ def main():
     check("差异用「漏X / 多X / A→B」三种写法，不用看懂日志格式",
           all(marker in body for marker in ("漏", "→")))
 
+    # ⑪ 切句代价实验（context_eval：整段 vs 逐句切 vs 产线切）
+    #
+    # 这一节钉的是**实验的公平性前提** —— 前提不成立，量出来的差值就没有意义。
+    # 三条前提都在文件头写明了，这里把它们变成断言：
+    #   ① 参考必须覆盖整段音频（所以段内转写必须全部"干净"）
+    #   ② 三种喂法用同一套解码参数（脚本层面结构上保证，不在这一节测）
+    #   ③ 拼接不加分隔符（加了会让切过的凭空多出单位、显得更准）
+    import context_eval as ctx
+
+    heading("切句代价实验 · 挑段的公平性前提")
+    rows = [
+        {"start": 0.0, "end": 2.0, "speaker": "A", "text": "第一句话"},
+        {"start": 2.1, "end": 4.0, "speaker": "B", "text": "第二句话"},
+        {"start": 10.0, "end": 12.0, "speaker": "A", "text": "隔了很久的一句"},   # 中间空了 6 秒
+        {"start": 12.1, "end": 14.0, "speaker": "A", "text": "这里[+]有重叠"},
+        {"start": 14.1, "end": 16.0, "speaker": "A", "text": "正常的一句"},
+    ]
+    check("带事件标记（重叠/听不清/笑声）的转写不算「干净」",
+          ctx.is_clean(rows[0]) and ctx.is_clean(rows[3]) is False,
+          f"{ctx.is_clean(rows[0])} / {ctx.is_clean(rows[3])}")
+
+    spans = ctx.pick_spans(rows, target_seconds=30.0, min_seconds=3.0,
+                           min_utterances=2, max_gap=2.0, count=5, seed=0)
+    check("挑出来的段**不跨事件标记**（否则参考盖不住音频）",
+          all(all(ctx.is_clean(row) for row in span["utterances"]) for span in spans) and spans)
+    check("挑出来的段**不跨长时间空档**（停顿 > max_gap 就断开）",
+          all(span["end"] - span["start"] <= 30.0 for span in spans))
+    check("段内句数与时长都满足下限（否则样本太短、量不准）",
+          all(len(span["utterances"]) >= 2 and span["duration"] >= 3.0 for span in spans))
+    check("前两句会被挑成一段（它们是连续且干净的）",
+          spans and len(spans[0]["utterances"]) == 2, str([len(s["utterances"]) for s in spans]))
+    tight = ctx.pick_spans(rows, target_seconds=30.0, min_seconds=3.0,
+                           min_utterances=2, max_gap=2.0, count=5, seed=0)
+    check("同一输入 → 同一输出（实验可复现）",
+          [s["utterances"] for s in tight] == [s["utterances"] for s in spans])
+
+    check("拼接**不加分隔符**（中文按字算，加空格会凭空多出单位）",
+          ctx.join_texts(["你好", "世界"], "char") == "你好世界",
+          ctx.join_texts(["你好", "世界"], "char"))
+    check("葡语按词拼接才加空格（不然词会粘成一个）",
+          ctx.join_texts(["bom dia", "tudo bem"], "word") == "bom dia tudo bem")
+    # 逐句转写解析：真写一个文件让它读（而不是查"函数有没有文档"这种假断言）
+    transcript = ROOT / "var" / "test" / "python-suite" / "ctx-transcript.txt"
+    transcript.parent.mkdir(parents=True, exist_ok=True)
+    transcript.write_text(
+        "[0.811,6.057]\tG00000168\t男,普通话\t第一句话\n"
+        "坏行（没有时间戳，应当被跳过）\n"
+        "[6.100,8.200]\tG00000000\t女,普通话\t第二句[+]重叠\n",
+        encoding="utf-8")
+    parsed = ctx.parse_transcript(transcript)
+    check("逐句转写解析得对（时间戳/说话人/文本）",
+          len(parsed) == 2 and parsed[0]["speaker"] == "G00000168"
+          and abs(parsed[0]["start"] - 0.811) < 1e-6 and parsed[0]["text"] == "第一句话",
+          str(parsed))
+    check("坏行被跳过，不炸（真实语料里什么行都有）", len(parsed) == 2, str(len(parsed)))
+    check("带 [ + ] 的那句会被判成不干净（重叠语音不能当参考）",
+          ctx.is_clean(parsed[1]) is False)
+
     # ── 结果 ────────────────────────────────────────────────────────────────
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
     if failures:

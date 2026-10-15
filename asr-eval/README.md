@@ -14,6 +14,7 @@
 | `asr_score.py` | **评分规则本身**：严格口径 `asr-score-v1` + 规范化口径 `asr-norm-v1` | 被 import，不单独跑 |
 | `asr_error_analysis.py` | **两套口径对照 + 错因归因 + 关键内容检查 + 抽查** | `python asr-eval/asr_error_analysis.py <结果.json>` / `--table` |
 | `segment_eval.py` | **切句基准**：量"停顿多久算说完一句"（用的是产线那个分段器） | `python asr-eval/segment_eval.py --set var/asr-eval/packs/zh-eval --pauses` |
+| `context_eval.py` | **切句代价**：同一段音频「整段 / 逐句切 / 产线切句」三种喂法对照，量"切碎+丢上下文"值多少 | `python asr-eval/context_eval.py --count 20 --model large-v3` |
 
 数据不在这个目录里（`var/` 整个不进版本库），对应关系是一一对应的：
 
