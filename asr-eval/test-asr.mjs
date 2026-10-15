@@ -19,8 +19,27 @@
  *   asr_pack.py            切测试包 / 查切分卫生
  *   asr_eval.py            真正跑模型并算错误率（本脚本调它）
  *   asr_score.py           评分规则（冻结、版本化）
- *   asr_error_analysis.py  把错按来源分类（"错在什么上"）
+ *   asr_error_analysis.py  两套口径对照 + 错因归因 + 关键信息检查
  *   segment_eval.py        量切句（静音判定该设多久）
+ *   context_eval.py        **切句方式**实验（--cut 调它）
+ *   context_overlap.py     **上下文方式**实验（--context 调它）
+ *
+ * ── 一个入口，三种用法（`--cut` / `--context` 是后加的实验；不带它们时行为与原来一致）──
+ *
+ *   node asr-eval/test-asr.mjs --set zh-speech-dev --model large-v3 --language zh --count 0
+ *       模型横评：跑一个**冻结的包**（一条条独立片段），出错误率与延迟。
+ *
+ *   node asr-eval/test-asr.mjs --cut --count 20 --sweep 500/15000,800/30000,1200/30000
+ *       切句实验：从**原始录音**取连续段，同一段音频按不同切法各识别一遍，
+ *       量"切碎吃掉多少""少切一点值不值"（结论见 docs/14 §6.7）。
+ *
+ *   node asr-eval/test-asr.mjs --context [--spans-file …]
+ *       上下文实验：同一批段上比"提示词续传 / 左邻重叠 / 右邻重叠"（docs/14 §6.7.2）。
+ *
+ * ⚠️ **为什么不把两个实验的逻辑也搬进这个脚本**：它们的样本来源与比较基准都不一样 ——
+ *    包 = 一条条**互不相邻**的片段（每场录音只抽十几条），实验 = 原始录音里的**连续段**。
+ *    把连续段的选取塞进包的流程里，"整段"那一路的音频会混进参考没覆盖的别人的话，
+ *    对照就不公平了。所以这里只**拼命令 + 统一产物路径**，判据留在各引擎里。
  *
  * ── 设计上的三个决定，都是为了别把事情搞砸 ─────────────────────────────────
  *
@@ -46,16 +65,16 @@
  *    不是 16 kHz 就明确报警。
  */
 
-import { readFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs'
+import { readFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
-import { join, resolve, basename } from 'node:path'
+import { join, resolve, basename, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 // 路径从 lib/paths.mjs 取 —— 仓库的规矩是"凡是落盘的路径都从这里取"。
 // ⚠️ 第一版这里用 process.cwd() 自己拼了测试包与结果目录，
 //    等于在别处又写了一份路径字面量（正是 paths.mjs 文件头禁止的做法）。
 //    用常量之后，路径改一处就够，而且和 fetch-coraa 用的是同一份定义。
-import { ASR_PACKS_DIR, ASR_RESULTS_DIR, WHISPER_CACHE_DIR } from '../lib/paths.mjs'
+import { ASR_DIR, ASR_PACKS_DIR, ASR_RESULTS_DIR, WHISPER_CACHE_DIR } from '../lib/paths.mjs'
 
 /**
  * 仓库根：**从本文件的位置推**，不用 `process.cwd()`。
@@ -68,6 +87,10 @@ import { ASR_PACKS_DIR, ASR_RESULTS_DIR, WHISPER_CACHE_DIR } from '../lib/paths.
  */
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const RESULT_DIR = ASR_RESULTS_DIR
+/** 报告目录：写成人读的 Markdown（与 results 分开，别跟机器读的混在一处） */
+const REPORT_DIR = join(ASR_RESULTS_DIR, '..', 'reports')
+/** 固化的段清单（切句/上下文实验的输入，见 asr-eval/context_eval.py 的 save_spans） */
+const SPANS_DIR = join(ASR_DIR, 'spans')
 
 /**
  * 给 Python 子进程准备环境变量。
@@ -150,6 +173,11 @@ function parseArgs(argv) {
     set: null, setPath: null, model: null, device: null, compute: null, language: null,
     count: null, errorsAbove: 0.10, compare: false, list: false, byAccent: false,
     show: 3, keep: false,
+    // ── 两个"实验"模式（见文件头的说明：入口统一，引擎分开）────────────────
+    cut: false,            // 切句方式（context_eval.py）
+    context: false,        // 上下文方式：提示词续传 / 声学重叠（context_overlap.py）
+    spansFile: null, sweep: null, limit: null, skipB: false,
+    outJson: null, outMd: null,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
@@ -168,9 +196,85 @@ function parseArgs(argv) {
     if (token === '--count') { options.count = Number(argv[++index]); continue }
     if (token === '--errors-above') { options.errorsAbove = Number(argv[++index]); continue }
     if (token === '--show') { options.show = Number(argv[++index]); continue }
+    if (token === '--cut') { options.cut = true; continue }
+    if (token === '--context') { options.context = true; continue }
+    if (token === '--spans-file') { options.spansFile = argv[++index]; continue }
+    if (token === '--sweep') { options.sweep = argv[++index]; continue }
+    if (token === '--limit') { options.limit = Number(argv[++index]); continue }
+    if (token === '--skip-b') { options.skipB = true; continue }
+    if (token === '--out-json') { options.outJson = argv[++index]; continue }
+    if (token === '--out-md') { options.outMd = argv[++index]; continue }
     throw new Error('看不懂的参数：' + token)
   }
+  if (options.cut && options.context) {
+    throw new Error('--cut 与 --context 是两个不同的实验，一次只能跑一个')
+  }
   return options
+}
+
+/**
+ * 段清单：`--spans-file` 给了就用它；没给就挑 `var/asr-eval/spans/` 里**最新的**一份。
+ *
+ * 为什么允许"自动挑最新的"：段清单是**固化**的（见 context_eval.py 的 save_spans），
+ * 而实验报告里会记它的**指纹** —— 所以"用了哪一批段"永远不会含糊。
+ * 这样 `--context` 就不必先手工去查文件名。
+ */
+export function resolveSpansFile(options, spansDir = SPANS_DIR) {
+  if (options.spansFile) return options.spansFile
+  if (existsSync(spansDir) === false) return null
+  const files = readdirSync(spansDir).filter(name => name.endsWith('.json'))
+    .map(name => join(spansDir, name))
+  if (files.length === 0) return null
+  files.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)
+  return files[0]
+}
+
+/** 结果/报告文件名：`<实验>__<段清单名>__<模型>.json` / `.md`（两类产物同名，好对上）。 */
+export function experimentPaths(options, modelKey, spansName) {
+  const engine = options.context ? 'context_overlap' : 'context_eval'
+  const stem = `${engine}__${spansName}__${modelKey.replace(/[/@]/g, '_')}`
+  return {
+    engine,
+    json: options.outJson ?? join(ASR_RESULTS_DIR, `${stem}.json`),
+    md: options.outMd ?? join(ASR_RESULTS_DIR, '..', 'reports', `${stem}.md`),
+  }
+}
+
+/**
+ * 把命令行拼成"要跑哪个引擎 + 给它什么参数"。**纯函数**：不碰文件系统、不起进程，
+ * 所以能被测试直接断言（这一节的价值全在"拼得对不对"）。
+ *
+ * ⚠️ 三个引擎各有自己的数据模型，入口只负责**转交**，不替它们做决定：
+ *    · `asr_eval.py`      —— 冻结的包（一条条独立片段），模型横评
+ *    · `context_eval.py`  —— 原始录音里的**连续段**，比"怎么切"
+ *    · `context_overlap.py` —— 同样的连续段，比"给多少上下文"
+ *    它们**不能共用 `--set`**：包里的片段不连续，当"整段"喂进去时音频里会混进
+ *    参考没覆盖的别人的话，那个对照就不公平了（详见 docs/14 §6.7）。
+ */
+export function experimentCommand(options, model, spansFile) {
+  const common = ['--model', model.name, '--device', model.device,
+    '--compute-type', model.compute, '--language', options.language ?? 'zh',
+    '--show', String(options.show)]
+  if (options.cut) {
+    const args = [join(ROOT, 'asr-eval', 'context_eval.py'), ...common]
+    // ⚠️ 段清单与 `--count` 的关系要说清（第一版这里会踩坑）：
+    //    · 显式给了 `--spans-file` → 就用它（复用同一批段）
+    //    · 否则给了 `--count N` → 让引擎去**挑 N 段并固化**（它会写到
+    //      var/asr-eval/spans/context-<split>-<N>.json；已存在同名的就复用它）
+    //    · 两者都没有 → 复用`spans/` 里最新的那一份
+    //    不能"有 spans 文件就无条件复用"，否则 `--cut --count 30` 会悄悄只跑 20 段。
+    if (options.spansFile) args.push('--spans-file', options.spansFile)
+    else if (options.count !== null) args.push('--count', String(options.count))
+    else if (spansFile) args.push('--spans-file', spansFile)
+    if (options.sweep) args.push('--sweep', options.sweep)
+    if (options.skipB) args.push('--skip-b')
+    if (options.limit !== null) args.push('--limit', String(options.limit))
+    return args
+  }
+  const args = [join(ROOT, 'asr-eval', 'context_overlap.py'),
+    '--spans-file', spansFile, ...common]
+  if (options.limit !== null) args.push('--limit', String(options.limit))
+  return args
 }
 
 /** 凡是有 manifest.jsonl 的目录就是一个测试集 —— 加语料不用改这个脚本。 */
@@ -305,6 +409,60 @@ function runOne(set, model, options) {
 
 const percent = value => (value === null || value === undefined) ? '—' : (value * 100).toFixed(1) + '%'
 
+/**
+ * 跑"切句方式"或"上下文方式"两个实验。
+ *
+ * ⚠️ 为什么入口统一、引擎分开（而不是把两个实验的逻辑搬进这个脚本）：
+ *    它们的**数据模型不同** —— 实验要的是"原始录音里的连续段"（带官方逐句时间戳），
+ *    而 `--set` 那个"包"里是一条条**独立片段**（每场录音只抽十几条，彼此不连续）。
+ *    把连续段的选取逻辑塞进包的那套流程里，会让"整段"那一路的音频混进参考没覆盖的话，
+ *    对照就不公平了。所以这里只做三件事：**拼命令、统一产物路径、把产物指给用户**。
+ *    三个引擎各自的判据与参数说明留在它们自己的 `--help` 里。
+ */
+function runExperiment(options) {
+  const model = resolveModel(options)
+  if (model === null) return
+
+  const spansFile = resolveSpansFile(options)
+  if (options.context && spansFile === null) {
+    console.log('缺段清单：上下文实验**必须先有一批固化的段**（它要在同一批段上比不同喂法）。')
+    console.log('  先挑一批（会固化下来，之后复用）：')
+    console.log('    node asr-eval/test-asr.mjs --cut --count 20')
+    return
+  }
+  const spansName = spansFile ? basename(spansFile).replace(/\.json$/, '') : 'new'
+  const paths = experimentPaths(options, keyOf(model.name, model.device, model.compute), spansName)
+  const args = [...experimentCommand(options, model, spansFile), '--out-json', paths.json, '--out-md', paths.md]
+
+  console.log('='.repeat(96))
+  console.log(options.cut ? '实验 · 切句方式（整段 / 逐句切 / 产线切句参数扫描）'
+    : '实验 · 上下文方式（提示词续传 / 左邻重叠 / 右邻重叠）')
+  console.log('='.repeat(96))
+  console.log(`  模型        ${keyOf(model.name, model.device, model.compute)}（${model.note}）`)
+  console.log(`  段清单      ${spansFile ?? '（这次新挑一批，会写到 var/asr-eval/spans/）'}`)
+  if (options.sweep) console.log(`  扫描        ${options.sweep}`)
+  console.log(`  结果        ${paths.json}`)
+  console.log(`  报告        ${paths.md}`)
+  console.log(`  说明        这两个实验的样本来源是**原始录音里的连续段**，不是 --set 那个包 ——`)
+  console.log(`              包里是一条条独立片段，当"整段"喂会混进参考没覆盖的话（见 docs/14 §6.7）`)
+  console.log('')
+  mkdirSync(dirname(paths.json), { recursive: true })
+  mkdirSync(dirname(paths.md), { recursive: true })
+  try {
+    execFileSync('python', args, { stdio: 'inherit', cwd: ROOT, env: childEnv() })
+  } catch (error) {
+    console.log(`\n✗ 实验失败：${String(error && error.message ? error.message : error)}`)
+    return
+  }
+  console.log('')
+  console.log('─'.repeat(96))
+  console.log('产物（都可反复使用）：')
+  console.log(`  结构化结果  ${paths.json}`)
+  console.log(`  人读报告    ${paths.md}${existsSync(paths.md) ? '' : '（引擎没有写出来？）'}`)
+  console.log(`  段清单      ${spansFile ?? '见报告里的 spansFile 字段'}`)
+  console.log('  重跑        报告里有本次的完整重跑命令（含段清单路径与指纹）')
+}
+
 /** 把结果按口音分组 —— CORAA 独有（带 accent 标注）。 */
 function byAccent(set, result) {
   const groups = new Map()
@@ -343,10 +501,31 @@ function main() {
     for (const model of MODELS) {
       console.log(`  ${keyOf(model.name, model.device, model.compute).padEnd(22)} ${model.note}`)
     }
+    // 两个实验的输入（固化的段清单）也在这里列出来 —— 它们不是"包"，
+    // 是**原始录音里的连续段**，见 context_eval.py 的说明。
+    const spanFiles = existsSync(SPANS_DIR)
+      ? readdirSync(SPANS_DIR).filter(name => name.endsWith('.json'))
+      : []
+    console.log('')
+    console.log('段清单（切句/上下文实验的输入；不是测试包）：')
+    if (spanFiles.length === 0) {
+      console.log('  （还没有 —— 用 --cut --count 20 挑一批并固化下来）')
+    } else {
+      for (const name of spanFiles) {
+        console.log(`  var/asr-eval/spans/${name}`)
+      }
+    }
     console.log('')
     console.log('用法：node asr-eval/test-asr.mjs --set ' + (sets[0]?.name ?? 'zh-eval') + ' [--model large-v3] [--compare]')
     console.log('      node asr-eval/test-asr.mjs --set-path <任意绝对/相对目录>（目录里要有 manifest.jsonl）')
+    console.log('      node asr-eval/test-asr.mjs --cut [--count 20] [--sweep 500/15000,800/30000,…]')
+    console.log('      node asr-eval/test-asr.mjs --context [--spans-file var/asr-eval/spans/xxx.json]')
     return
+  }
+
+  // ── 两个实验模式：入口在这里，引擎还是各自的脚本（见 experimentCommand 的说明）──
+  if (options.cut || options.context) {
+    return runExperiment(options)
   }
 
   if (options.set === null && options.setPath === null) {

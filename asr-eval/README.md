@@ -4,18 +4,52 @@
 > 与"跑起来能不能用"（`bridge/` 产线、`scripts/start-all.mjs`）是两件不同的事，
 > 所以代码与数据都单独放，不和产线混在一起。
 
+## 一个入口，三种用法
+
+```powershell
+node asr-eval/test-asr.mjs --list                    # 看有哪些包、哪些模型、哪些段清单
+node asr-eval/test-asr.mjs --set zh-speech-dev --model large-v3 --language zh --count 0
+node asr-eval/test-asr.mjs --cut --count 20 --sweep 500/15000,800/30000,1200/30000
+node asr-eval/test-asr.mjs --context
+```
+
+| 用法 | 回答什么问题 | 样本来源 |
+|---|---|---|
+| `--set <包>` | **这个模型在这个包上多准**（模型横评、`--compare`、`--by-accent`） | 冻结的测试包（一条条独立片段） |
+| `--cut` | **切句本身吃掉多少准确率**；`--sweep` 扫 `silence_ms` 看"少切一点"值不值 | 原始录音里的**连续段**（固化的段清单） |
+| `--context` | **上下文能不能白拿**：提示词续传 vs 左邻/右邻声学重叠 | 同上 |
+
+⚠️ **为什么入口统一、引擎分开**（不是把三个逻辑塞进一个脚本）：
+`--set` 那个包**不能**给两个实验用 —— 包里是一条条互不相邻的片段（每场录音只抽十几条），
+把它们当"整段"喂进去时，音频里会混进参考文本**没覆盖**的别人的话，
+§6.7 那个对照的公平性前提就破了。所以两边**样本来源不同**、**比较基准也不同**
+（包比的是不同模型；实验比的是同一段音频的不同切法/喂法）。
+入口只做三件事：**拼命令、统一产物路径、把产物指给你**；判据与参数说明在各引擎的 `--help` 里。
+
+**两个实验的产物（都可反复使用）：**
+
+| 产物 | 位置 |
+|---|---|
+| 固化的段清单 | `var/asr-eval/spans/context-<split>-<N>.json`（含逐句时间戳与文本 + 指纹） |
+| 结构化结果 | `var/asr-eval/results/<实验>__<段清单名>__<模型>.json` |
+| 人读报告 | `var/asr-eval/reports/<实验>__<段清单名>__<模型>.md`（含**完整重跑命令**） |
+
+`--cut` 会给 `--out-json` / `--out-md` 填默认路径，也可以自己指定。
+`--context` 若不给 `--spans-file`，会自动用 `var/asr-eval/spans/` 里**最新**的那一份
+（报告里记指纹，所以"用了哪一批段"永远不含糊）。
+
 ## 这一层里有什么
 
 | 文件 | 干什么 | 怎么跑 |
 |---|---|---|
-| `test-asr.mjs` | **入口**：选模型跑一轮、多模型对照、按口音分组、结果留存 | `node asr-eval/test-asr.mjs --list` |
+| `test-asr.mjs` | **入口**：模型横评 / 切句实验 / 上下文实验（见上表） | `node asr-eval/test-asr.mjs --list` |
 | `asr_pack.py` | **切测试包**：从公开语料切出固定、可复现、可审计的测试包；查切分卫生 | `python asr-eval/asr_pack.py --list` |
-| `asr_eval.py` | **跑一次评测**：加载模型、逐条识别、算错误率与延迟 | 一般由 `test-asr.mjs` 调；也可直接跑（参数更多） |
+| `asr_eval.py` | **跑一次评测**：加载模型、逐条识别、算错误率与延迟 | 由 `test-asr.mjs --set` 调；也可直接跑（参数更多） |
 | `asr_score.py` | **评分规则本身**：严格口径 `asr-score-v1` + 规范化口径 `asr-norm-v1` | 被 import，不单独跑 |
 | `asr_error_analysis.py` | **两套口径对照 + 错因归因 + 关键内容检查 + 抽查** | `python asr-eval/asr_error_analysis.py <结果.json>` / `--table` |
 | `segment_eval.py` | **切句基准**：量"停顿多久算说完一句"（用的是产线那个分段器） | `python asr-eval/segment_eval.py --set var/asr-eval/packs/zh-eval --pauses` |
-| `context_eval.py` | **切句代价**：同一段音频「整段 / 逐句切 / 产线切句」三种喂法对照；带 **`--sweep` 参数扫描** | `python asr-eval/context_eval.py --count 20 --model large-v3 --sweep 500/15000,800/30000,1200/30000,2000/30000 --out-md var/asr-eval/reports/context-eval-sweep-dev.md` |
-| `context_overlap.py` | **上下文能不能白拿**：文本续传（提示词）vs 声学重叠（前后邻窗口），逐段配对比较 + 拼接分歧 + 提示词借用量 | `python asr-eval/context_overlap.py --spans-file var/asr-eval/spans/context-dev-20.json --model large-v3 --out-md var/asr-eval/reports/context-overlap-dev.md` |
+| `context_eval.py` | **切句代价引擎**：整段 / 逐句切 / 产线切句参数扫描 | 由 `test-asr.mjs --cut` 调 |
+| `context_overlap.py` | **上下文引擎**：提示词续传 vs 左邻/右邻重叠，逐段配对 + 拼接分歧 | 由 `test-asr.mjs --context` 调 |
 
 数据不在这个目录里（`var/` 整个不进版本库），对应关系是一一对应的：
 

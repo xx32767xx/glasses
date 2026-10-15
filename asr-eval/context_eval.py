@@ -313,6 +313,8 @@ def main():
                              "存在就读它，不存在就挑好之后写下来）")
     parser.add_argument("--refresh-spans", action="store_true",
                         help="忽略已有段清单，重新挑（会覆盖）")
+    parser.add_argument("--limit", type=int, default=0,
+                        help="只跑前 N 段（冒烟测试用；**段清单本身不动**）")
     parser.add_argument("--show", type=int, default=2, help="打印几段的详细对照")
     parser.add_argument("--out-json", default=None, help="结构化结果写到这里")
     parser.add_argument("--out-md", default=None, help="人读的报告写到这里（Markdown）")
@@ -384,6 +386,16 @@ def main():
         save_spans(spans_file, spans)
         print(f"\n段清单：**新挑**并写到 {spans_file}")
         print(f"  {len(spans)} 段，指纹 {spans_digest(spans)}（下次跑会复用这一批）")
+    # `--limit` 只截取"这次跑几段"，**不改段清单文件** —— 冒烟测试不该污染固化的输入。
+    if args.limit:
+        spans = spans[:args.limit]
+    # ⚠️ 指纹要报**实际跑的那几段**的：它就是"这批数字对应哪一批样本"的唯一凭据。
+    #    （第一版这里报的是文件本身的指纹，而报告里存的是实际跑的那几段 —— 两处对不上。）
+    digest = spans_digest(spans)
+    if args.limit:
+        print(f"  ⚠️ --limit {args.limit}：这次只跑前 {len(spans)} 段"
+              f"（段清单文件没动；下面的指纹与报告里记的都是**实际跑的这几段**）")
+    print(f"  本次跑 {len(spans)} 段，指纹 {digest}")
     total_seconds = sum(span["duration"] for span in spans)
     print(f"  合计 {total_seconds:.1f} 秒音频、"
           f"{sum(len(s['utterances']) for s in spans)} 句参考")

@@ -28,7 +28,7 @@ import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { ASR_PACKS_DIR, ASR_RESULTS_DIR } from '../lib/paths.mjs'
-import { corpusLabel, resultPath } from '../asr-eval/test-asr.mjs'
+import { corpusLabel, resultPath, experimentCommand, experimentPaths, resolveSpansFile } from '../asr-eval/test-asr.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
 
@@ -105,8 +105,7 @@ export async function runAsrPackSuite({ it, check }) {
     check('每个带 register 的包都打出了语体', problems.length === 0, problems.join('、'))
   })
 
-  // ── 4. 小批运行不许覆盖完整结果 ────────────────────────────────────────────
-  //
+  // ── 4. 小批运行不许覆盖完整结果 ────────────────────────────────────────────  //
   // 这条是**踩出来的**，不是想出来的：搬家之后我为了验证路径，跑了
   // `--set zh-speech-dev --count 2`，结果它写到与完整基线**同一个文件名**上，
   // 238 KB 的 304 条基线被 2.8 KB 的 2 条结果覆盖了，而文件名上没有任何区别。
@@ -123,6 +122,68 @@ export async function runAsrPackSuite({ it, check }) {
       full.startsWith(ASR_RESULTS_DIR), full)
     check('模型名里的 / 与 @ 会被替换掉（否则会写进子目录）',
       resultPath('x', 'a/b@c').includes('a_b_c'), resultPath('x', 'a/b@c'))
+  })
+
+  // ── 4b. 两个实验的命令拼装（入口统一、引擎分开）────────────────────────────
+  //
+  // 这三块的数据模型不同（包=独立片段 / 实验=连续段），所以入口只**拼命令**、
+  // 不搬逻辑。这里钉的就是"拼得对不对"——拼错了会跑到另一个引擎上，
+  // 或者悄悄丢掉一个参数（比如 --sweep），而结果看起来仍然像一份正常报告。
+  await it('实验模式：切句走 context_eval，上下文走 context_overlap', () => {
+    const model = { name: 'large-v3', device: 'cuda', compute: 'float16' }
+    const cut = experimentCommand({ cut: true, context: false, sweep: '500/15000,1200/30000',
+      show: 2, language: 'zh', spansFile: null, count: null, limit: null, skipB: true }, model, 'x.json')
+    check('切句那一路调的是 context_eval.py', cut[0].endsWith('context_eval.py'), cut[0])
+    check('扫描参数被原样带过去（丢了它就跑成单配置）',
+      cut.includes('--sweep') && cut[cut.indexOf('--sweep') + 1] === '500/15000,1200/30000')
+    check('--skip-b 只影响切句那一路', cut.includes('--skip-b'))
+    check('模型/设备/精度/语种都带上了',
+      cut.includes('large-v3') && cut.includes('cuda') && cut.includes('float16') && cut.includes('zh'))
+
+    const ctx = experimentCommand({ cut: false, context: true, show: 3, language: 'zh',
+      spansFile: 'spans/a.json', count: null, limit: 4, skipB: false }, model, 'spans/a.json')
+    check('上下文那一路调的是 context_overlap.py', ctx[0].endsWith('context_overlap.py'), ctx[0])
+    check('上下文那一路必须带段清单（它要在同一批段上比）',
+      ctx.includes('--spans-file') && ctx[ctx.indexOf('--spans-file') + 1] === 'spans/a.json')
+    check('--limit 带过去了（冒烟测试用）', ctx.includes('--limit') && ctx.includes('4'))
+    check('上下文那一路**不该**收到 --sweep（它没有这个参数，传了会直接报错）',
+      ctx.includes('--sweep') === false, ctx.join(' '))
+  })
+
+  await it('实验模式：段清单与 --count 的关系（不许悄悄只跑旧的那一批）', () => {
+    const model = { name: 'large-v3', device: 'cuda', compute: 'float16' }
+    const base = { cut: true, context: false, show: 2, language: 'zh', limit: null, skipB: false }
+    const explicit = experimentCommand({ ...base, spansFile: 's.json', count: 30 }, model, 's.json')
+    check('显式给了 --spans-file 就听它的', explicit[explicit.indexOf('--spans-file') + 1] === 's.json')
+    const byCount = experimentCommand({ ...base, spansFile: null, count: 30 }, model, 'old.json')
+    check('只给 --count 时交给引擎去挑（否则 --count 30 会悄悄跑成旧的 20 段）',
+      byCount.includes('--count') && byCount.includes('30') && byCount.includes('--spans-file') === false,
+      byCount.join(' '))
+    const reuse = experimentCommand({ ...base, spansFile: null, count: null }, model, 'newest.json')
+    check('两个都没给就复用最新的那一份', reuse[reuse.indexOf('--spans-file') + 1] === 'newest.json')
+  })
+
+  await it('实验模式的产物路径：结果与报告同名、都在 var/asr-eval 下', () => {
+    const paths = experimentPaths({ context: true, outJson: null, outMd: null },
+      'large-v3_cuda_float16', 'context-dev-20')
+    check('文件名里带实验名、段清单名、模型（一眼看出是哪一批）',
+      paths.json.endsWith('context_overlap__context-dev-20__large-v3_cuda_float16.json'), paths.json)
+    check('报告与结果同名（好对上）', paths.md.endsWith('.md')
+      && paths.md.replace(/\.md$/, '.json').endsWith(paths.json.split(/[\\/]/).pop()), paths.md)
+    check('结果在 results/ 下', paths.json.includes('results'), paths.json)
+    check('报告在 reports/ 下（人读的与机器读的分开）', paths.md.includes('reports'), paths.md)
+    check('显式指定就听指定的', experimentPaths({ context: true, outJson: 'a.json', outMd: 'b.md' },
+      'm', 's').json === 'a.json')
+    const cutPaths = experimentPaths({ cut: true, context: false }, 'm', 's')
+    check('切句那一路的文件名带 context_eval（不用 context_overlap）',
+      cutPaths.json.includes('context_eval__'), cutPaths.json)
+  })
+
+  await it('段清单自动解析：没有 spans 目录/空目录都要如实返回 null', () => {
+    check('不给 --spans-file 且目录不存在 → null', resolveSpansFile({ spansFile: null },
+      join(ROOT, 'var', 'test', 'no-such-span-dir')) === null)
+    check('显式给的那份直接返回（不做存在性检查，交给引擎报错）',
+      resolveSpansFile({ spansFile: 'whatever.json' }) === 'whatever.json')
   })
 
   // ── 5. Python 侧写的路径必须与 lib/paths.mjs 指向同一个目录 ────────────────
