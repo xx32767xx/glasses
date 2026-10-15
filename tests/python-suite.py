@@ -1370,6 +1370,48 @@ def main():
     check("报告里写明等待是**估算**、不是端到端实测",
           "估算" in report and "端到端" in report)
 
+    # ⑫ 重叠解码的拼接逻辑（这一步错了，整个实验的结论就是错的）
+    #
+    # 重叠方案最贵的地方不是算力，而是**拼接**：窗口 AB 的输出要切成"A 的部分 + B 的部分"。
+    # 所以这里的判据必须钉死：按**词的中点**归属，边界上那个词只归一边，不重不漏。
+    import context_overlap as ov
+
+    heading("上下文实验 · 重叠窗口的拼接判据")
+    words = [  # 窗口里三个词：前两个属于上一段，第三个属于本段（边界在 2.0s）
+        {"start": 0.0, "end": 1.0, "text": "上"},
+        {"start": 1.0, "end": 1.9, "text": "段"},
+        {"start": 2.1, "end": 3.0, "text": "本"},
+    ]
+    kept, dropped, ok = ov.slice_by_boundary(words, 2.0, "after")
+    check("左邻窗口：只取边界之后的词（本段）",
+          ok and [w["text"] for w in kept] == ["本"] and [w["text"] for w in dropped] == ["上", "段"],
+          f"{[w['text'] for w in kept]} / {[w['text'] for w in dropped]}")
+    kept, dropped, ok = ov.slice_by_boundary(words, 2.0, "before")
+    check("右邻窗口：只取边界之前的词（本段）",
+          ok and [w["text"] for w in kept] == ["上", "段"] and [w["text"] for w in dropped] == ["本"],
+          f"{[w['text'] for w in kept]}")
+    check("跨在边界上的词按**中点**归属（只归一边，不重不漏）",
+          [w["text"] for w in ov.slice_by_boundary(
+              [{"start": 1.8, "end": 2.6, "text": "跨"}], 2.0, "after")[0]] == ["跨"]
+          and [w["text"] for w in ov.slice_by_boundary(
+              [{"start": 1.4, "end": 2.2, "text": "跨"}], 2.0, "after")[0]] == [],
+          "中点在边界右侧应归本段，左侧应归上一段")
+    check("中点**正好落在边界**时归本段（`>=`，规则要确定、不能两边都拿）",
+          [w["text"] for w in ov.slice_by_boundary(
+              [{"start": 1.6, "end": 2.4, "text": "跨"}], 2.0, "after")[0]] == ["跨"]
+          and [w["text"] for w in ov.slice_by_boundary(
+              [{"start": 1.6, "end": 2.4, "text": "跨"}], 2.0, "before")[0]] == [],
+          "中点落在边界时应只归一边")
+    check("没有时间戳时明确报告（调用方要如实记成「兜底」）",
+          ov.slice_by_boundary([], 2.0, "after")[2] is False)
+    check("词拼回来时不加空格（中文按字算）",
+          ov.join_words([{"text": "你"}, {"text": "好"}]) == "你好",
+          ov.join_words([{"text": "你"}, {"text": "好"}]))
+    check("五种喂法的名字与标签都在（报告要按它们打表）",
+          ov.MODES == ("C1", "T1", "T2", "L", "R")
+          and all(mode in ov.MODE_LABELS for mode in ov.MODES),
+          str(ov.MODES))
+
     # ── 结果 ────────────────────────────────────────────────────────────────
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
     if failures:

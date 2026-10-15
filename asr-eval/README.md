@@ -15,6 +15,7 @@
 | `asr_error_analysis.py` | **两套口径对照 + 错因归因 + 关键内容检查 + 抽查** | `python asr-eval/asr_error_analysis.py <结果.json>` / `--table` |
 | `segment_eval.py` | **切句基准**：量"停顿多久算说完一句"（用的是产线那个分段器） | `python asr-eval/segment_eval.py --set var/asr-eval/packs/zh-eval --pauses` |
 | `context_eval.py` | **切句代价**：同一段音频「整段 / 逐句切 / 产线切句」三种喂法对照；带 **`--sweep` 参数扫描** | `python asr-eval/context_eval.py --count 20 --model large-v3 --sweep 500/15000,800/30000,1200/30000,2000/30000 --out-md var/asr-eval/reports/context-eval-sweep-dev.md` |
+| `context_overlap.py` | **上下文能不能白拿**：文本续传（提示词）vs 声学重叠（前后邻窗口），逐段配对比较 + 拼接分歧 + 提示词借用量 | `python asr-eval/context_overlap.py --spans-file var/asr-eval/spans/context-dev-20.json --model large-v3 --out-md var/asr-eval/reports/context-overlap-dev.md` |
 
 数据不在这个目录里（`var/` 整个不进版本库），对应关系是一一对应的：
 
