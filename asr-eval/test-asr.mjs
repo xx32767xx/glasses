@@ -176,7 +176,7 @@ function parseArgs(argv) {
     // ── 两个"实验"模式（见文件头的说明：入口统一，引擎分开）────────────────
     cut: false,            // 切句方式（context_eval.py）
     context: false,        // 上下文方式：提示词续传 / 声学重叠（context_overlap.py）
-    spansFile: null, sweep: null, limit: null, skipB: false,
+    spansFile: null, sweep: null, limit: null, skipB: false, promptDepth: null,
     outJson: null, outMd: null,
   }
   for (let index = 0; index < argv.length; index += 1) {
@@ -202,6 +202,7 @@ function parseArgs(argv) {
     if (token === '--sweep') { options.sweep = argv[++index]; continue }
     if (token === '--limit') { options.limit = Number(argv[++index]); continue }
     if (token === '--skip-b') { options.skipB = true; continue }
+    if (token === '--prompt-depth') { options.promptDepth = Number(argv[++index]); continue }
     if (token === '--out-json') { options.outJson = argv[++index]; continue }
     if (token === '--out-md') { options.outMd = argv[++index]; continue }
     throw new Error('看不懂的参数：' + token)
@@ -267,6 +268,8 @@ export function experimentCommand(options, model, spansFile) {
     else if (options.count !== null) args.push('--count', String(options.count))
     else if (spansFile) args.push('--spans-file', spansFile)
     if (options.sweep) args.push('--sweep', options.sweep)
+    // 第二个旋钮：把前 N 段的文本当提示词续传（与"切多长"是两笔独立的账）
+    if (options.promptDepth !== null) args.push('--prompt-depth', String(options.promptDepth))
     if (options.skipB) args.push('--skip-b')
     if (options.limit !== null) args.push('--limit', String(options.limit))
     return args

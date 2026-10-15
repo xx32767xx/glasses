@@ -67,7 +67,9 @@ from asr_score import (                                                       # 
     NORMALIZED_RULES_VERSION, SCORING_RULES_VERSION, error_rate, normalize,
     normalized_error_rate, overall_rate,
 )
-from whisper_stream import UtteranceSegmenter, force_utf8_stdio               # noqa: E402
+from whisper_stream import (                                                  # noqa: E402
+    UtteranceSegmenter, force_utf8_stdio, looks_like_prompt_echo,
+)
 from whisper_transcribe import TARGET_RATE                                    # noqa: E402
 
 force_utf8_stdio()
@@ -214,14 +216,19 @@ def parse_sweep(text):
     return configs
 
 
-def transcribe_one(model, audio, args, language):
-    """识别一段音频；返回 (文本, 耗时)。参数在三种喂法之间**完全一致**。"""
+def transcribe_one(model, audio, args, language, prompt=None):
+    """识别一段音频；返回 (文本, 耗时)。
+
+    ⚠️ `prompt` 是**唯一允许**在"同一批段的不同喂法"之间变化的东西（上下文续传实验）：
+       其余解码参数一律不动，否则量到的是参数差异，不是"补语境"的效果。
+       按字算的口径下这个函数也被 `context_overlap.py` 复用（那边自己传 prompt）。
+    """
     decode = {
         "language": language,
         "beam_size": args.beam_size,
         "vad_filter": args.vad_filter,
         "condition_on_previous_text": False,
-        "initial_prompt": None,
+        "initial_prompt": prompt,
     }
     start = time.perf_counter()
     segments, _info = model.transcribe(audio, **decode)
@@ -305,6 +312,11 @@ def main():
     # 写法 `500,800,1200,2000`，或 `500/15000,800/30000`（斜杠后面是句子上限 ms）。
     parser.add_argument("--sweep", default=None,
                         help="产线切句参数扫描，例：500/15000,800/30000,1200/30000,2000/30000")
+    # 第二个旋钮：**上下文续传**（把前 N 段的最终文本当提示词喂回去）。
+    # 它的收益与"少切一点"是两笔独立的账，所以这里做成"每一档切法再各配一份带提示词的"，
+    # 一次跑完就能看出两个旋钮各自值多少、以及叠加是不是真能相加。
+    parser.add_argument("--prompt-depth", type=int, default=0,
+                        help="把前 N 段的最终文本当提示词（0 = 关，缺省；2 = 前两段）")
     parser.add_argument("--skip-b", action="store_true",
                         help="跳过 B（官方句边界）—— 它与参数无关，扫第二轮时可以省时间")
     # 段清单固化：同一批段能被反复使用（见 save_spans 上面的说明）
@@ -345,6 +357,11 @@ def main():
     for index, config in enumerate(configs, 1):
         modes.append({"key": f"C{index}", "label": config["label"], "kind": "segmenter",
                       "config": config})
+        if args.prompt_depth > 0:
+            # 同一档切法再配一份"带提示词续传"的 —— 两个旋钮各自独立，必须能分开看
+            modes.append({"key": f"C{index}P", "kind": "segmenter", "config": config,
+                          "promptDepth": args.prompt_depth,
+                          "label": config["label"] + f" +提示词(前{args.prompt_depth}段)"})
 
     print("=" * 96)
     print("切短/边界/丢上下文的影响：同一段音频、同一个参考，只改「怎么切」")
@@ -441,8 +458,17 @@ def main():
             else:
                 segments = production_segments(audio, rate, mode["config"])
                 pieces = []
+                history = []                       # 这一档自己的历史（**不跨档借用**）
                 for piece in segments:
-                    piece_text, piece_used = transcribe_one(model, piece, args, args.language)
+                    prompt = None
+                    if mode.get("promptDepth"):
+                        prompt = "".join(history[-mode["promptDepth"]:]) or None
+                    piece_text, piece_used = transcribe_one(model, piece, args, args.language,
+                                                            prompt=prompt)
+                    if prompt and looks_like_prompt_echo(piece_text, prompt):
+                        entry.setdefault("promptEcho", {})
+                        entry["promptEcho"][mode["key"]] = entry["promptEcho"].get(mode["key"], 0) + 1
+                    history.append(piece_text)
                     pieces.append({"seconds": len(piece) / rate, "text": piece_text,
                                    "used": piece_used})
                 text = join_texts([p["text"] for p in pieces], unit)
@@ -513,15 +539,55 @@ def main():
 
     if terse and len(c_modes) > 1:
         print(f"\n「少切一点」的取舍（以最碎的那一档为基准：{terse['label']}）")
-        print(f"  {'配置':<34}{'错误率':>9}{'比最碎好':>10}{'等待':>9}{'多等':>8}  值不值")
+        print(f"  {'配置':<40}{'错误率':>9}{'比最碎好':>10}{'等待':>9}{'多等':>8}  值不值")
         for item in c_modes:
             gain = (terse["rate"] - item["rate"]) * 100
             extra = (item["waitSeconds"] or 0.0) - (terse["waitSeconds"] or 0.0)
             verdict = ("**划算**" if gain > 0.5 and extra <= 0.5
                        else "要权衡" if gain > 0.5
                        else "更差" if gain < -0.5 else "持平")
-            print(f"  {item['label']:<34}{item['rate'] * 100:>8.1f}%{gain:>+9.1f}p"
+            print(f"  {item['label']:<40}{item['rate'] * 100:>8.1f}%{gain:>+9.1f}p"
                   f"{item['waitSeconds'] or 0.0:>8.2f}s{extra:>+7.2f}s  {verdict}")
+
+    # ── 两个旋钮各自的账（有提示词档时才打）───────────────────────────────────
+    # 为什么单独打这一块：**"少切一点"（切得多长）与"提示词续传"（给不给上下文）是两笔
+    # 独立的账**，混在一张按 label 排序的表里看不出"叠加到底是不是真能相加"。
+    plain = next((s for s in c_modes if s["key"] == "C1"), None)
+    prompted = {s["key"]: s for s in c_modes if s["key"].endswith("P")}
+    if plain and prompted:
+        print("\n两个旋钮各自的账（都是相对**现状** C1：逐段独立、无提示词）")
+        print(f"  {'改动':<44}{'错误率':>9}{'收益':>9}{'等待':>9}")
+        rows = [("（现状）", plain["rate"], 0.0, plain["waitSeconds"])]
+        for key, item in prompted.items():
+            if key[:-1] == "C1":
+                rows.append((f"只加提示词（前 {args.prompt_depth} 段）", item["rate"],
+                             (plain["rate"] - item["rate"]) * 100, item["waitSeconds"]))
+        for item in c_modes:
+            if item["key"].endswith("P") or item["key"] == "C1":
+                continue
+            rows.append((f"只少切（{item['label']}）", item["rate"],
+                         (plain["rate"] - item["rate"]) * 100, item["waitSeconds"]))
+        both = prompted.get("C2P")
+        if both:
+            rows.append(("两个都上（少切 + 提示词）", both["rate"],
+                         (plain["rate"] - both["rate"]) * 100, both["waitSeconds"]))
+        for label, rate, gain, wait in rows:
+            print(f"  {label:<44}{rate * 100:>8.1f}%{gain:>+8.1f}p{wait or 0.0:>8.2f}s")
+        # 是否可加：两笔账相加 vs 实际叠加
+        only_prompt = next(((p["rate"] - plain["rate"]) * 100 for k, p in prompted.items()
+                            if k[:-1] == "C1"), None)
+        only_cut = next(((i["rate"] - plain["rate"]) * 100 for i in c_modes
+                         if i["key"] == "C2"), None)
+        if only_prompt is not None and only_cut is not None and both:
+            actual = (both["rate"] - plain["rate"]) * 100
+            print(f"  → 两笔账相加 = {only_prompt + only_cut:+.1f}p，"
+                  f"实际叠加 = {actual:+.1f}p，"
+                  f"{'基本可加' if abs(actual - (only_prompt + only_cut)) < 1.0 else '**不可加**（有重叠）'}")
+        echoes = sum(r.get("promptEcho", {}).get(key, 0) for r in records for key in prompted)
+        print(f"  ⚠️ 提示词回显（产线那道闸判定）: {echoes} 次"
+              f"（闸的阈值是按 17 字短提示词调的，提示词变长它会变松 —— 见 docs/14 §6.7.2）")
+        print(f"    提示词内容量：每段多喂前 {args.prompt_depth} 段的文本，"
+              f"**不增加音频量、不增加等待**")
 
     if args.show:
         print("\n" + "=" * 96)
