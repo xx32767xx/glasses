@@ -13,10 +13,13 @@ context_eval.py —— 切短、边界、丢上下文到底让口语识别多损
 
       A 整段        整段一次识别（保留全部上下文，边界由录音本身给）
       B 官方句边界  按官方逐句时间戳切成一句一句，各自识别后**拼接**
-      C 产线切句    用产线上那个 UtteranceSegmenter（静音判定 500ms）切，各自识别后拼接
+      C 产线切句    用产线上那个 UtteranceSegmenter（**基线档**静音判定 500ms）切，各自识别后拼接
 
     A−B = 「切短 + 边界 + 丢上下文」的代价
     A−C = 上面这些 + 「产线切句自己的毛病（丢碎片、合并、切错位置）」的代价
+
+⚠️ C 的"基线档"是**改造前的产线参数**（500ms），不是今天的产线（800ms + 上下文续传）——
+   它被冻在这里当历史对照的基准，理由见下面 PRODUCTION_SEGMENTER 的注释。
 
 ⚠️ 三个必须说清楚的公平性前提（不满足的话这个对照就不成立）：
 
@@ -80,7 +83,12 @@ def hint_prompt(language):
     return LANGUAGE_PROMPTS.get(language or "", "") or ""
 
 
-# 产线切句的缺省参数（与 whisper_stream.py 的 argparse 缺省一致；改这里等于改实验条件）
+# ⚠️ **这是"实验基线"，不是当前产线缺省**，两者现在**不一样**，别搞混：
+#    · 这里的 500/15000 是**改造前的产线参数**，也是所有已发布对照表里 "C1/现状" 那一列的基准。
+#      改它 = 把历史结果全部作废（同一批段、同一个参考的比较就不成立了），所以**故意冻在这里**。
+#    · 当前产线是 `--silence-ms 800 --max-speech-ms 30000 --context-depth 2`、
+#      中文**不发**语种提示词（见 docs/06 §2 与 docs/14 §6.7.5）。
+#    想量"新产线 vs 老产线"就用 `--sweep 800/30000 --prompt-depth 2`（不要带动这个常量）。
 PRODUCTION_SEGMENTER = {
     "block_ms": 100,
     "silence_ms": 500,
@@ -362,7 +370,8 @@ def main():
 
     # 要跑哪些"喂法"：A 整段、B 逐句切，以及 C 的若干组产线切句参数
     configs = parse_sweep(args.sweep) if args.sweep else [
-        dict(PRODUCTION_SEGMENTER, label=f"C 产线切句（silence {PRODUCTION_SEGMENTER['silence_ms']}ms）")]
+        dict(PRODUCTION_SEGMENTER,
+             label=f"C 产线切句（基线档 silence {PRODUCTION_SEGMENTER['silence_ms']}ms）")]
     modes = [{"key": "A", "label": "A 整段（留全部上下文）", "kind": "whole", "config": None}]
     if not args.skip_b:
         modes.append({"key": "B", "label": "B 官方句边界（逐句切）", "kind": "utterance",
