@@ -64,7 +64,9 @@ from context_eval import (                                                    # 
     PRODUCTION_SEGMENTER, join_texts, load_spans, production_segments, read_slice,
     spans_digest,
 )
-from whisper_stream import force_utf8_stdio, looks_like_prompt_echo            # noqa: E402
+from whisper_stream import (                                                  # noqa: E402
+    LANGUAGE_PROMPTS, force_utf8_stdio, looks_like_prompt_echo,
+)
 
 force_utf8_stdio()
 
@@ -83,6 +85,17 @@ MODE_LABELS = {
     "L": "L 左邻重叠（窗口=上段+本段，取本段）",
     "R": "R 右邻重叠（窗口=本段+下段，取本段）",
 }
+
+
+def hint_prompt(language):
+    """产线那句语种提示词（**从产线代码取，不在这里另抄一份**）。
+
+    为什么要这个开关：产线解码时**总是**先发一句语种提示词
+    （中文「以下是普通话的句子，请用简体中文输出。」），而本实验原来的五种喂法
+    都**不带**它。于是"实验里的 T2 收益"与"产线上真能拿到的收益"之间隔着一个
+    没量过的组合：提示词 + 续传文本同时存在。`--prod-hint` 就是把这一格补上。
+    """
+    return LANGUAGE_PROMPTS.get(language or "", "") or ""
 
 
 def parse_modes(text):
@@ -126,7 +139,13 @@ def decode(model, audio, args, prompt=None, words=False):
 
     ⚠️ 五种喂法**只允许**在 prompt / 音频窗口上不同 —— 其余解码参数完全一致，
        否则量到的是参数差异，不是"补语境"的效果。
+    ⚠️ `--prod-hint` 打开时，**每一种**喂法都先缀上产线那句语种提示词
+       （C1 只有提示词、T1/T2 是提示词 + 续传文本）—— 这样两件事同时成立：
+       组间只差"有没有续传"，而两条都**与产线的解码条件一致**。
+       顺序与产线实现一致：**提示词在前、续传文本在后**。
     """
+    if args.prod_hint:
+        prompt = hint_prompt(args.language) + (prompt or "")
     kwargs = {
         "language": args.language,
         "beam_size": args.beam_size,
@@ -294,6 +313,10 @@ def main():
     parser.add_argument("--language", default="zh")
     parser.add_argument("--vad-filter", dest="vad_filter", action="store_true", default=True)
     parser.add_argument("--no-vad-filter", dest="vad_filter", action="store_false")
+    # 产线解码条件：vad_filter=False（产线自己按能量切好了）+ 每种喂法都先缀语种提示词。
+    parser.add_argument("--prod-hint", action="store_true",
+                        help="每种喂法都先缀上产线那句语种提示词（中文压繁体、葡语稳巴葡），"
+                             "配合 --no-vad-filter 就等于**产线的解码条件**")
     parser.add_argument("--magicdata-dir", default=r"E:\MagicData")
     parser.add_argument("--show", type=int, default=2, help="打印几段的详细对照")
     parser.add_argument("--out-json", default=None)
@@ -488,6 +511,8 @@ def main():
                    "device": args.device, "computeType": args.compute_type,
                    "beamSize": args.beam_size, "language": args.language,
                    "vadFilter": args.vad_filter, "segmenter": PRODUCTION_SEGMENTER,
+                   "prodHint": args.prod_hint,
+                   "hintPrompt": hint_prompt(args.language) if args.prod_hint else None,
                    "scoringRules": SCORING_RULES_VERSION,
                    "normalizedRules": NORMALIZED_RULES_VERSION,
                    # ⚠️ 跑了哪几种、没跑哪几种必须**进 JSON**：一份只有 C1,T2 的结果
@@ -497,6 +522,7 @@ def main():
                    "modeLabels": MODE_LABELS, "limit": args.limit,
                    "rerun": (f"python asr-eval/context_overlap.py --spans-file {args.spans_file}"
                              f" --modes {'all' if not skipped else ','.join(modes)}"
+                             f"{' --no-vad-filter --prod-hint' if args.prod_hint else ''}"
                              f" --model {args.model} --device {args.device}"
                              f" --compute-type {args.compute_type}")},
         "summary": summary, "paired": paired, "verdict": verdict, "records": records,
@@ -523,6 +549,8 @@ def render_report(payload):
                  f"· {config['spans']} 段 / {config['totalSeconds']:.0f} 秒")
     lines.append(f"- 模型：{config['model']} / {config['device']} / {config['computeType']}"
                  f" / beam {config['beamSize']} / vad_filter={config['vadFilter']}")
+    if config.get("prodHint"):
+        lines.append(f"- 产线解码条件：**开**（每种喂法都先缀 `{config.get('hintPrompt')}`）")
     lines.append(f"- 评分：严格 `{config['scoringRules']}` + 规范化 `{config['normalizedRules']}`")
     # ⚠️ 这三行是**给读报告的人打预防针**：一份只跑了 C1,T2 的报告不能读成"完整对照"。
     lines.append(f"- 本次跑了几种：**{'、'.join(modes)}**"

@@ -36,6 +36,7 @@ import argparse
 import hashlib
 import io
 import json
+import os
 import re
 import subprocess
 import sys
@@ -47,6 +48,11 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent          # 本文件在 asr-eval/ 下
 ROOT = HERE.parent                              # 仓库根
+# ⚠️ 直接跑这个脚本时也要指到仓库里的模型缓存 —— 走 test-asr.mjs 时是那个入口设的，
+#    手动跑没设就会去 ~/.cache/huggingface 找、然后报一个**和真实原因无关**的 401
+#    （"Repository Not Found"）。同目录其它脚本早就有这两行，就这里漏了。
+os.environ.setdefault("HF_HOME", str(ROOT / "var" / "cache" / "hf"))
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 sys.path.insert(0, str(HERE))                   # 同层的兄弟模块（asr_score …）
 # ⚠️ 依赖方向是**单向**的：评测层可以用 bridge/ 里的共享工具（whisper_transcribe 的
 #    解码器、whisper_stream 的语种解析），但 bridge/ **永远不许** import asr-eval/。

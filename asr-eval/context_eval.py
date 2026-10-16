@@ -68,11 +68,17 @@ from asr_score import (                                                       # 
     normalized_error_rate, overall_rate,
 )
 from whisper_stream import (                                                  # noqa: E402
-    UtteranceSegmenter, force_utf8_stdio, looks_like_prompt_echo,
+    LANGUAGE_PROMPTS, UtteranceSegmenter, force_utf8_stdio, looks_like_prompt_echo,
 )
 from whisper_transcribe import TARGET_RATE                                    # noqa: E402
 
 force_utf8_stdio()
+
+
+def hint_prompt(language):
+    """产线那句语种提示词（**从产线代码取，不另抄一份**）—— 见 `--prod-hint`。"""
+    return LANGUAGE_PROMPTS.get(language or "", "") or ""
+
 
 # 产线切句的缺省参数（与 whisper_stream.py 的 argparse 缺省一致；改这里等于改实验条件）
 PRODUCTION_SEGMENTER = {
@@ -222,7 +228,11 @@ def transcribe_one(model, audio, args, language, prompt=None):
     ⚠️ `prompt` 是**唯一允许**在"同一批段的不同喂法"之间变化的东西（上下文续传实验）：
        其余解码参数一律不动，否则量到的是参数差异，不是"补语境"的效果。
        按字算的口径下这个函数也被 `context_overlap.py` 复用（那边自己传 prompt）。
+    ⚠️ `--prod-hint` 打开时，**每一种**喂法都先缀上产线那句语种提示词
+       （顺序与产线一致：提示词在前、续传文本在后）。
     """
+    if getattr(args, "prod_hint", False):
+        prompt = hint_prompt(language) + (prompt or "")
     decode = {
         "language": language,
         "beam_size": args.beam_size,
@@ -308,6 +318,9 @@ def main():
                         help="所有喂法都用这个设置（缺省开，与评测口径一致）")
     parser.add_argument("--no-vad-filter", dest="vad_filter", action="store_false",
                         help="关掉内置 VAD（与产线一致）—— 所有喂法仍然一致")
+    parser.add_argument("--prod-hint", action="store_true",
+                        help="每种喂法都先缀上产线那句语种提示词（配合 --no-vad-filter "
+                             "就等于**产线的解码条件**）")
     # 参数扫描：一个值一个点，跑在同一批段、同一个参考上。
     # 写法 `500,800,1200,2000`，或 `500/15000,800/30000`（斜杠后面是句子上限 ms）。
     parser.add_argument("--sweep", default=None,
@@ -607,11 +620,17 @@ def main():
             "spans": len(spans), "totalSeconds": total_seconds, "model": args.model,
             "device": args.device, "computeType": args.compute_type,
             "beamSize": args.beam_size, "language": args.language, "vadFilter": args.vad_filter,
+            "prodHint": bool(getattr(args, "prod_hint", False)),
+            "hintPrompt": (hint_prompt(args.language)
+                           if getattr(args, "prod_hint", False) else None),
+            "promptDepth": args.prompt_depth,
             "scoringRules": SCORING_RULES_VERSION, "normalizedRules": NORMALIZED_RULES_VERSION,
             "segmenterBase": PRODUCTION_SEGMENTER,
             "modes": [{k: m[k] for k in ("key", "label", "kind", "config")} for m in modes],
             "rerun": "python asr-eval/context_eval.py --spans-file " + str(spans_file)
                      + (f" --sweep {args.sweep}" if args.sweep else "")
+                     + (f" --prompt-depth {args.prompt_depth}" if args.prompt_depth else "")
+                     + (" --no-vad-filter --prod-hint" if getattr(args, "prod_hint", False) else "")
                      + f" --model {args.model} --device {args.device}"
                      + f" --compute-type {args.compute_type}",
         },
