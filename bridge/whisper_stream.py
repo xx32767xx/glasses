@@ -207,21 +207,22 @@ def parse_args(argv=None):
     parser.add_argument("--stats", action="store_true", help="退出时打印统计（延迟、RTF）")
     parser.add_argument("--samplerate", type=int, default=16000, help="采样率（Whisper 要 16000）")
     parser.add_argument("--block-ms", type=int, default=100, help="每次读取的音频块长度")
-    parser.add_argument("--silence-ms", type=int, default=1200,
-                        help="静音超过这么久就认为一句话结束（缺省 1200）。"
-                             "⚠️ 这个数**改过两次**，两次都有实测支撑，理由不同："
+    parser.add_argument("--silence-ms", type=int, default=800,
+                        help="静音超过这么久就认为一句话结束（缺省 800）。"
+                             "⚠️ 这个数**改过几次**，每次都有实测支撑，理由不同："
                              "① 起初 700：读到「句间停顿 500ms 时判 1000ms → 错字率 27.0%%」就调快，"
                              "于是改成 500（那是**朗读**语料 + 合成停顿的测法）。"
-                             "② 现在 1200：用带官方逐句时间戳的**原始口语录音**"
-                             "（31 分钟，取 20 个连续段，同一个参考、同一套切句器做受控对照）"
-                             "量出来——silence 500 → 16.8%%，1200 → 13.3%%，2000 → 12.2%%。"
+                             "② 2025 又用**真实口语**重量了一遍（带官方逐句时间戳的原始录音，"
+                             "取 20 个连续段，同一个参考、同一套切句器做受控对照）："
+                             "silence 500 → 16.8%%，800 → 15.5%%，1200 → 13.3%%，2000 → 12.2%%。"
                              "机制是：段太碎时 min_speech_ms 会**丢弃**一些碎片（500ms 那档只覆盖了 "
-                             "79.1%% 的音频，1200 档覆盖 88.9%%），而且缺上文的短段更容易听错。"
-                             "⚠️ **代价是字幕更晚**：从这一句话开头到字幕出现的平均延迟"
-                             "从 2.7 秒变成 6.2 秒（P95 4.7 → 11.8 秒）——"
-                             "因为一句话要先攒成一整段才会被送进识别。"
-                             "不能接受这个延迟就 `--silence-ms 800`（15.5%%，平均延迟 3.8 秒）"
-                             "或退回 500。完整数据见 docs/14 §6.7 / docs/06 §3.2")
+                             "79.1%% 的音频，800 档 82.8%%，1200 档 88.9%%），而且缺上文的短段更容易听错。"
+                             "⚠️ **缺省取 800 而不是最准的 1200，是产品取舍**：越准就越晚，"
+                             "而「晚」这件事以前被算漏过一次 —— 字幕是**整段**识别完才发的，"
+                             "所以从这一句话开头到字幕出现，要加上**这一段本身有多长**："
+                             "500 档平均 2.7 秒、800 档 3.8 秒、1200 档 **6.2 秒**（P95 11.8 秒）。"
+                             "800 是「拿一半延迟换一半准确率」的折中档；"
+                             "要更准用 1200，要和以前完全一样用 500。完整数据见 docs/14 §6.7 / docs/06 §3.2")
     parser.add_argument("--min-speech-ms", type=int, default=500,
                         help="短于这么久的语音段丢弃（多半是噪声/气声）。缺省 500 —— "
                              "实测 0.03~0.27 秒的碎片送进识别只会产出胡话（「你以後」这种）")
@@ -229,7 +230,7 @@ def parse_args(argv=None):
                         help="单句最长时长，超过就强制断句（防止一直不说停）。"
                              "断句点会优先选内部停顿（见 --cut-pause-ms），"
                              "找不到停顿才在这个长度上硬切。"
-                             "缺省 30000 是跟着 `--silence-ms 1200` 一起定的：静音判定放宽以后，"
+                             "缺省 30000 是跟着 `--silence-ms` 一起定的：静音判定放宽以后，"
                              "一段里会装进更多话，上限留在 15000 会把长段**硬切**掉，"
                              "那量到的就不是「少切一点」而是「被截断」（实测口径见 docs/14 §6.7.1）")
     parser.add_argument("--cut-pause-ms", type=int, default=200,
@@ -747,32 +748,29 @@ def strip_punctuation(text):
     return text
 
 
-def looks_like_context_echo(text, context, min_chars=4, min_share=0.8, min_total=8):
+def looks_like_context_echo(text, context, min_share=0.8, min_total=8):
     """这段识别结果是不是在**照抄上文**（续传进去的前几段文本）？
 
     与回显闸的区别：回显闸防的是"把提示词当正文抄"（提示词是一句固定指令），
-    这里防的是"把**上一两句说过的话**又输出一遍"。判据只认两种硬情形：
-      1. 输出里某一个 ≥4 字的小句，与上文里某一句**完全相同**（整句照抄）；
-      2. 输出里 ≥80% 的字都由上文的小句拼成，且总长 ≥8 字（模型整段都在复读上文）。
+    这里防的是"把**上一两句说过的话**又输出一遍"。判据只有一条，而且刻意为难触发：
 
-    ⚠️ 为什么**不**用"与上文有几字重合"这种宽松判据：
-       上文是用户自己刚说过的话，重复用词是常态（「这个方案不行」说两遍）；
-       宽松判据会把**用户真的重复说的那句**静默吃掉。宁可漏掉一次复读，
-       也不能把正常字幕丢了 —— 漏掉的复读顶多多一条重复字幕，丢掉的字幕是内容消失。
+      · 输出里 **≥80% 的字**都能在上文里找到（整句照抄就是 100%），且总长 ≥8 字。
+
+    ⚠️ 为什么只留这一条、而且不要"某一句与上文完全相同"这种看似更准的判据：
+       人是**接着说**的，很自然会重复上一句的一部分再往下说 ——
+       「（上文）这个盒子放的东西很重要」＋「（本句）这个盒子放的东西很重要，只有第二级才严重」。
+       如果"有一个小句与上文相同"就判复读，那么后半句**真正的新内容会被整句丢掉**。
+       所以判据必须是"**整段几乎全是上文**"，不是"碰到了上文"。
+    ⚠️ 这条闸还有意留着**漏网的余地**：用户真的把同一句重复两遍时也会被丢掉，
+       但那只是少一条重复字幕（内容上一句已经上过屏），比吃掉新内容轻得多。
     """
     if not text or not context:
         return False
-    clauses = split_clauses(text)
-    if not clauses:
-        return False
-    context_clauses = [piece for piece in split_clauses(context) if piece]
+    clauses = [piece for piece in split_clauses(text) if piece]
     context_flat = strip_punctuation(context)
-    if not context_flat:
+    if not clauses or not context_flat:
         return False
-    for clause in clauses:
-        if len(clause) >= min_chars and clause in context_clauses:
-            return True
-    covered = sum(len(clause) for clause in clauses if clause and clause in context_flat)
+    covered = sum(len(clause) for clause in clauses if clause in context_flat)
     total = sum(len(clause) for clause in clauses)
     return total >= min_total and covered >= min_share * total
 
@@ -919,9 +917,31 @@ def pick_language(all_probs, candidates):
 
 def transcribe(model, audio, language, min_logprob, no_speech_prob,
                beam_size=1, initial_prompt=None, do_normalize=True,
-               speech_floor=SPEECH_RMS_FLOOR, candidates=None, context_text=None):
-    """返回 (文字, 是否被丢弃, 丢弃原因, 是否用"电平证据"压过了 no_speech_prob, 丢弃类别)。"""
+               speech_floor=SPEECH_RMS_FLOOR, candidates=None, context_text=None,
+               hint_text=None):
+    """把一段音频识别成文字，并过四道闸。
+
+    返回 `(文字, 是否被丢弃, 丢弃原因, 是否用"电平证据"压过了 no_speech_prob, 丢弃类别)`。
+
+    ⚠️ **两道"抄"的闸必须分开判，判据强度也不一样**（这一条是踩出来的）：
+
+      | 送进模型的东西 | 谁来判 | 判据 |
+      |---|---|---|
+      | `hint_text`：那句**固定指令**（语种/字形提示） | `looks_like_prompt_echo` | 可以严：指令里的字不可能是用户真说的话 |
+      | `context_text`：**上文**（＝用户自己刚说过的话） | `looks_like_context_echo` | **必须松**：用户重复自己刚说的词是常态 |
+
+    一开始我把两者拼成一个 `initial_prompt` 一起判，结果是**用严的判据去判用户自己的话** ——
+    实测就抓到一次误判：800ms 那一轮实验的回显计数器报了 1 次，而那一整段的输出里
+    **根本没有任何重复片段**，报的就是"用户自己重复用了几个字"。
+    那在产线上就是**把一句真字幕吃掉**，而且日志上看不出原因。
+    """
     data = normalize_peak(audio) if do_normalize else audio
+    # 拼给模型的提示词：指令在前、上文在后（顺序与实验一致）。
+    # `initial_prompt` 显式给了就用它（那是调用方直接指定的指令），否则由两段拼出来。
+    prompt = initial_prompt if initial_prompt is not None else (
+        (hint_text or "") + (context_text or ""))
+    # 严判据只对"指令"那一段生效：显式 initial_prompt 也算指令。
+    guard_hint = hint_text if hint_text is not None else initial_prompt
     if language is None and candidates:
         # ── 限定候选语种 ────────────────────────────────────────────────────
         #
@@ -965,7 +985,7 @@ def transcribe(model, audio, language, min_logprob, no_speech_prob,
         beam_size=beam_size,
         vad_filter=False,       # 我们已经按能量切好了，不需要再切
         condition_on_previous_text=False,   # 句间独立，避免上一句的错误污染下一句
-        initial_prompt=initial_prompt,
+        initial_prompt=prompt,
     )
     # 先算一次电平（在**归一化之前**算，那才是真实录音的电平）
     level = rms_of(audio)
@@ -997,7 +1017,7 @@ def transcribe(model, audio, language, min_logprob, no_speech_prob,
             dropped = f"命中幻听惯用语｜文字：{preview(text)}"
             kind = "hallucination"
             continue
-        if looks_like_prompt_echo(text, initial_prompt):
+        if looks_like_prompt_echo(text, guard_hint):
             # 回显出来的是一句"看起来完全正常的字幕"，但它跟用户说的话毫无关系。
             # 这比没有字幕糟得多 —— 用户会以为眼镜在乱翻译。
             dropped = f"回显了提示词（initial_prompt 的经典副作用）｜文字：{preview(text)}"
@@ -1335,18 +1355,18 @@ def main():
         start = time.perf_counter()
         now = time.monotonic()
         language = active["language"]
-        # 提示词 = 语种提示词 + 续传文本（顺序与实验一致：**指令在前、上文在后**）
+        # 提示词 = 语种提示词 + 续传文本（顺序与实验一致：**指令在前、上文在后**）；
+        # ⚠️ 但两段**分开传给 transcribe**：它们的闸判据强度不一样（见 transcribe 的说明）。
         hint = None if args.no_prompt else prompt_for(language, args.initial_prompt)
         carried = carry.prompt(language, now)
         text, empty, reason, overrode, kind = transcribe(
             model, utterance, language,
             args.min_logprob, args.no_speech_prob,
             beam_size=args.beam_size,
-            initial_prompt=((hint or "") + carried) or None,
+            hint_text=hint, context_text=carried or None,
             do_normalize=not args.no_normalize,
             # 只有在**没指定语种**时才用得上（指定了就不检测）。见 transcribe 里的说明。
             candidates=args.lang_candidates,
-            context_text=carried or None,
         )
         elapsed = time.perf_counter() - start
         stats.add(seconds, elapsed, empty)   # 每段都记：短段的固定开销正是同传的敌人

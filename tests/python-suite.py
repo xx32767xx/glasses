@@ -29,6 +29,7 @@ import os
 import subprocess
 import wave
 import contextlib
+import inspect
 import io
 from pathlib import Path
 
@@ -45,7 +46,7 @@ from whisper_stream import (   # noqa: E402
     LANGUAGE_PROMPTS, SPEECH_RMS_FLOOR, ContextCarry, IdleTracker, PcmFollower, Stats,
     UtteranceSegmenter, decide_no_speech, looks_like_context_echo,
     looks_like_hallucination, looks_like_prompt_echo, normalize_peak, parse_args,
-    pick_language, prompt_for, rms_of, whisper_language_of,
+    pick_language, prompt_for, rms_of, transcribe, whisper_language_of,
 )
 from whisper_transcribe import TARGET_RATE, load_audio                    # noqa: E402
 import asr_pack                                                          # noqa: E402
@@ -843,12 +844,13 @@ def main():
 
     heading("上下文续传 · 复读上文的闸（宁可漏拦，也不能吃掉正常字幕）")
     context = "我们今天讨论三个问题。第一个是预算。"
-    check("整句照抄上文被认出来",
-          looks_like_context_echo("第一个是预算", context),
-          "模型把上一句又说了一遍，字幕会重复")
-    check("整段都在复读上文也被认出来",
-          looks_like_context_echo("我们今天讨论三个问题。第一个是预算。", context))
-    check("**正常的新句子不会被误判**（这是这条闸最重要的性质）",
+    check("整段几乎全是上文时判为复读",
+          looks_like_context_echo("我们今天讨论三个问题。第一个是预算。", context),
+          "模型把上一句整句又说了一遍，字幕会重复")
+    check("**接着往下说**不算复读（这是这条闸最重要的性质）",
+          not looks_like_context_echo("第一个是预算，第二个是排期。", context),
+          "重复了上文的一句、后面还有新内容 —— 后半句的新内容不能跟着一起丢")
+    check("正常的新句子不会被误判",
           not looks_like_context_echo("第二个是排期，下周一之前定下来。", context))
     check("只是**用词重合**不算复读（用户真的重复说一句时不能吃掉字幕）",
           not looks_like_context_echo("我觉得这个方案不行，我们先看预算。", context))
@@ -856,6 +858,25 @@ def main():
           not looks_like_context_echo("第一个是预算", ""))
     check("短句不判（宁可放过，也不冒吃字幕的险）",
           not looks_like_context_echo("预算", context))
+
+    # ⚠️ 两道"抄"的闸必须**分开用**：指令用严判据、上文用松判据。
+    #    实测踩到过：把"指令 + 上文"拼成一个 initial_prompt 一起过严判据之后，
+    #    800ms 那一轮实验回显计数器报了 1 次，而那一整段输出里**没有任何重复片段** ——
+    #    它报的只是"用户自己重复用了几个字/一句话"。在产线上那就是真字幕被吃掉。
+    heading("两道闸分开用：指令严判、上文松判")
+    carried = "这个盒子里边放的东西很重要。"
+    continued = "这个盒子里边放的东西很重要，只有第二级才真的严重。"
+    check("严判据**确实会**把「含有上文」当成回显（所以它不能用来判上文）",
+          looks_like_prompt_echo(continued, carried),
+          "这条断言是在记录「为什么必须分开」：严判据对上文必然误杀")
+    check("松判据放行「重复上文 + 新内容」（真字幕不能被吃掉）",
+          not looks_like_context_echo(continued, carried))
+    check("transcribe 的签名把两段分开收（hint_text / context_text）",
+          {"hint_text", "context_text"} <= set(inspect.signature(transcribe).parameters),
+          str(list(inspect.signature(transcribe).parameters)))
+    check("handle 传的是 hint_text=hint / context_text=carried（不是拼在一起）",
+          "hint_text=hint, context_text=carried or None"
+          in (ROOT / "bridge" / "whisper_stream.py").read_text(encoding="utf-8"))
 
     # 统计口径：延迟必须把"一段本身有多长"算进去 —— 这条口径错过很久，
     # 报告里把 1200ms 那档说成"只多等 2.3 秒"，实际是 6.2 秒（一句话要先攒成一整段）。
@@ -945,12 +966,13 @@ def main():
     # 静音判定的缺省值是**量出来改过两次**的，两次都记在这里，免得下次又有人凭直觉改回去：
     #   ① 起初 700 → 500：在"朗读语料 + 合成停顿"上，判 1000ms 会把句子并成 12~14 秒的长段，
     #      错误率 23.9%；判 500ms 是 10.0%。
-    #   ② 500 → 1200（现在）：在**真实口语**（31 分钟原始录音取 20 个连续段、同一个参考、
+    #   ② 500 → 800（现在）：在**真实口语**（31 分钟原始录音取 20 个连续段、同一个参考、
     #      同一套切句器）上做受控对照：500 → 16.8%、800 → 15.5%、1200 → 13.3%、2000 → 12.2%。
-    #      机制：段太碎时 min_speech_ms 会丢碎片（500ms 档只覆盖 79.1% 的音频，1200 档 88.9%）。
-    #      ⚠️ 代价是字幕延迟（平均 2.7s → 6.2s），所以这个值**可以被命令行覆盖**。
-    check("缺省静音判定 1200ms（口语受控实测：500 是 16.8%，1200 是 13.3%）",
-          args.silence_ms == 1200, str(args.silence_ms))
+    #      机制：段太碎时 min_speech_ms 会丢碎片（500ms 档只覆盖 79.1% 的音频，800 档 82.8%）。
+    #      ⚠️ **没取最准的 1200，是产品取舍**：字幕延迟（含"段内等待"）500 档 2.7 秒、
+    #      800 档 3.8 秒、1200 档 6.2 秒 —— 800 是拿一半延迟换一半准确率的折中档。
+    check("缺省静音判定 800ms（口语受控实测：500 是 16.8%，800 是 15.5%，1200 是 13.3%）",
+          args.silence_ms == 800, str(args.silence_ms))
     check("静音判定放宽了，句子上限也要跟着放宽（否则长段会被硬切）",
           args.max_speech_ms == 30000, str(args.max_speech_ms))
     check("缺省会在上限处优先找停顿断句（不是硬切）",
