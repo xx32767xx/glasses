@@ -28,7 +28,10 @@ import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { ASR_PACKS_DIR, ASR_RESULTS_DIR } from '../lib/paths.mjs'
-import { corpusLabel, resultPath, experimentCommand, experimentPaths, resolveSpansFile } from '../asr-eval/test-asr.mjs'
+import {
+  DEFAULT_CONTEXT_MODES, corpusLabel, experimentCommand, experimentPaths, modesSuffix,
+  parseArgs, resolveSpansFile, resultPath,
+} from '../asr-eval/test-asr.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
 
@@ -163,8 +166,67 @@ export async function runAsrPackSuite({ it, check }) {
     check('两个都没给就复用最新的那一份', reuse[reuse.indexOf('--spans-file') + 1] === 'newest.json')
   })
 
+  // ── 上下文实验的 `--modes`：跑哪几种喂法 ────────────────────────────────
+  //
+  // 为什么这条要单独钉：缺省从"五种全跑"改成"C1,T2"之后，**"只跑了一部分"这件事
+  // 必须同时出现在命令行、产物名、报告和 JSON 里** —— 否则一份缺了三种喂法的报告
+  // 长得和完整对照一模一样。同一种错法这个仓库已经吃过一次（`--count 2` 覆盖全量基线）。
+  await it('上下文实验的 --modes：缺省、全部、文件名后缀、与 Python 侧一致', () => {
+    const model = { name: 'large-v3', device: 'cuda', compute: 'float16' }
+    const base = { cut: false, context: true, show: 2, language: 'zh',
+      spansFile: 'spans/a.json', count: null, limit: null, skipB: false, promptDepth: null }
+
+    check('缺省不是"全部五种"（已否掉的方案不该每次复核都付一遍算力）',
+      DEFAULT_CONTEXT_MODES === 'C1,T2', DEFAULT_CONTEXT_MODES)
+    check('缺省时也**显式**把 --modes 传给引擎（两边各有一个缺省迟早会漂）',
+      experimentCommand({ ...base, modes: null }, model, 'spans/a.json')
+        .join(' ').includes('--modes C1,T2'))
+
+    const all = parseArgs(['--context', '--modes', 'all'])
+    check('--modes all → 五种全跑', all.modes === 'all', String(all.modes))
+    check('--context 后面可以**直接**跟代号（省得写两遍）',
+      parseArgs(['--context', 'T1,T2']).modes === 'T1,T2')
+    check('--context 后面不是代号就不吃它（`--context --limit 4` 不能被当成代号）',
+      parseArgs(['--context', '--limit', '4']).modes === null)
+    let message = ''
+    try { parseArgs(['--context', '--modes', 'T9']) } catch (error) { message = String(error.message) }
+    check('代号写错必须当场报错，不许悄悄跑成缺省那两种', message.includes('--modes 写错了'), message)
+    message = ''
+    try { parseArgs(['--cut', '--modes', 'all']) } catch (error) { message = String(error.message) }
+    check('--modes 配 --cut 要报错（那个引擎没有这个参数）', message.includes('只对 --context 有意义'), message)
+
+    check('跑全部五种时产物名**不带**后缀（保住原来的完整对照文件名）',
+      modesSuffix('all') === '' && modesSuffix(DEFAULT_CONTEXT_MODES) === '-C1T2',
+      `${modesSuffix('all')} / ${modesSuffix(DEFAULT_CONTEXT_MODES)}`)
+    check('只跑一部分时后缀按**固定顺序**（C1,T2 与 T2,C1 得到同一个名字）',
+      modesSuffix('T2,C1') === modesSuffix('C1,T2'))
+    check('没选 C1 时后缀补上 C1（引擎会自动加它，名字要跟实际跑的一致）',
+      modesSuffix('T2') === '-C1T2', modesSuffix('T2'))
+    const subset = experimentPaths({ context: true, outJson: null, outMd: null, modes: 'C1,T2' },
+      'large-v3_cuda_float16', 'context-dev-20')
+    check('只跑一部分 → 文件名带 -C1T2（不会被当成完整对照）',
+      subset.json.endsWith('context_overlap-C1T2__context-dev-20__large-v3_cuda_float16.json'),
+      subset.json)
+    const full = experimentPaths({ context: true, outJson: null, outMd: null, modes: 'all' },
+      'large-v3_cuda_float16', 'context-dev-20')
+    check('跑全部 → 与原来的完整结果**同名**（历史结果还能对上）',
+      full.json.endsWith('context_overlap__context-dev-20__large-v3_cuda_float16.json'), full.json)
+
+    // ⚠️ 两处字面量（JS 的 DEFAULT_CONTEXT_MODES 与 py 的 DEFAULT_MODES）没有编译器对齐，
+    //    所以这里**真的去读那个 py 文件**，而不是靠人记得同步改。
+    const python = readFileSync(join(ROOT, 'asr-eval', 'context_overlap.py'), 'utf8')
+    const declared = /DEFAULT_MODES\s*=\s*\(([^)]*)\)/.exec(python)
+    const parsed = declared === null ? null
+      : declared[1].split(',').map(part => part.trim().replace(/['"]/g, '')).filter(Boolean).join(',')
+    check('py 侧 DEFAULT_MODES 能被读出来（格式别改花）', parsed !== null, String(parsed))
+    check('JS 的缺省与 py 的 DEFAULT_MODES 一致（改一边不改另一边会红）',
+      parsed === DEFAULT_CONTEXT_MODES, `${parsed} vs ${DEFAULT_CONTEXT_MODES}`)
+    check('py 侧真的按这个缺省跑（不是只写了个常量没人用）',
+      python.includes('parse_modes(args.modes)') && python.includes('run_span(model, args, span, audio, rate, segments, modes)'))
+  })
+
   await it('实验模式的产物路径：结果与报告同名、都在 var/asr-eval 下', () => {
-    const paths = experimentPaths({ context: true, outJson: null, outMd: null },
+    const paths = experimentPaths({ context: true, outJson: null, outMd: null, modes: 'all' },
       'large-v3_cuda_float16', 'context-dev-20')
     check('文件名里带实验名、段清单名、模型（一眼看出是哪一批）',
       paths.json.endsWith('context_overlap__context-dev-20__large-v3_cuda_float16.json'), paths.json)
@@ -177,6 +239,18 @@ export async function runAsrPackSuite({ it, check }) {
     const cutPaths = experimentPaths({ cut: true, context: false }, 'm', 's')
     check('切句那一路的文件名带 context_eval（不用 context_overlap）',
       cutPaths.json.includes('context_eval__'), cutPaths.json)
+    // ⚠️ 缺省（不写 --modes）现在是 C1,T2，所以**必然带后缀** ——
+    //    这条与上面那条一起钉住"部分结果不与完整对照同名"。
+    check('不给 --modes 走缺省时带 -C1T2 后缀（部分结果不许叫完整对照的名字）',
+      experimentPaths({ context: true, outJson: null, outMd: null },
+        'm', 's').json.includes('context_overlap-C1T2__'))
+    check('--limit 冒烟测试也带 -nN（1 段的结果更不能叫完整对照的名字）',
+      experimentPaths({ context: true, outJson: null, outMd: null, modes: 'all', limit: 1 },
+        'm', 's').json.includes('context_overlap-n1__'),
+      experimentPaths({ context: true, outJson: null, outMd: null, modes: 'all', limit: 1 }, 'm', 's').json)
+    check('两种后缀能同时出现（--modes C1,T2 --limit 1）',
+      experimentPaths({ context: true, outJson: null, outMd: null, modes: 'C1,T2', limit: 2 },
+        'm', 's').json.includes('context_overlap-C1T2-n2__'))
   })
 
   await it('段清单自动解析：没有 spans 目录/空目录都要如实返回 null', () => {

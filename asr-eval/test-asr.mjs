@@ -33,8 +33,10 @@
  *       切句实验：从**原始录音**取连续段，同一段音频按不同切法各识别一遍，
  *       量"切碎吃掉多少""少切一点值不值"（结论见 docs/14 §6.7）。
  *
- *   node asr-eval/test-asr.mjs --context [--spans-file …]
+ *   node asr-eval/test-asr.mjs --context [--modes C1,T2] [--spans-file …]
  *       上下文实验：同一批段上比"提示词续传 / 左邻重叠 / 右邻重叠"（docs/14 §6.7.2）。
+ *       `--modes` 决定跑哪几种喂法，**缺省只跑 C1,T2**（现状 vs 已选定方案），
+ *       `--modes all` 才是全部五种 C1/T1/T2/L/R —— 已经否掉的方案不必每次复核都付一遍算力。
  *
  * ⚠️ **为什么不把两个实验的逻辑也搬进这个脚本**：它们的样本来源与比较基准都不一样 ——
  *    包 = 一条条**互不相邻**的片段（每场录音只抽十几条），实验 = 原始录音里的**连续段**。
@@ -91,6 +93,46 @@ const RESULT_DIR = ASR_RESULTS_DIR
 const REPORT_DIR = join(ASR_RESULTS_DIR, '..', 'reports')
 /** 固化的段清单（切句/上下文实验的输入，见 asr-eval/context_eval.py 的 save_spans） */
 const SPANS_DIR = join(ASR_DIR, 'spans')
+
+/**
+ * 上下文实验（`--context`）里可选哪几种喂法，以及**缺省跑哪几种**。
+ *
+ * ⚠️ 缺省是 `C1,T2` 而不是全部五种：五种各要一遍全段识别，而 T1（只看上一句）
+ *    与 L/R（声学重叠）在 docs/14 §6.7.2 里已经被否掉了 —— 复核一个已定的结论
+ *    不该每次都付五遍算力。要完整对照就显式 `--modes all`。
+ * ⚠️ 这个字符串必须与 `context_overlap.py` 里的 `DEFAULT_MODES` 一致。
+ *    两处字面量没有编译器帮你对齐，所以 `tests/asr-pack-suite.mjs` 会**读那个 py 文件**
+ *    比对，改一边不改另一边会红。
+ */
+export const DEFAULT_CONTEXT_MODES = 'C1,T2'
+export const MODE_MENU = 'C1,T1,T2,L,R'
+/** 一次运行里最多允许的代号数（= 五种），以及"整个参数长得像不像代号列表"的判据。 */
+const MODE_CODES = new Set(MODE_MENU.split(','))
+const MODE_LIST_RE = new RegExp(`^(all|\\*|(${MODE_MENU.replace(/,/g, '|')})(,(${MODE_MENU.replace(/,/g, '|')}))*)$`, 'i')
+
+/** 这一次 `--context` 实际要跑哪几种（没指定就用缺省）—— 命令、产物名、报告三处共用它。 */
+export function contextModes(options) {
+  return options?.modes ?? DEFAULT_CONTEXT_MODES
+}
+
+/**
+ * 产物名里的喂法后缀：跑全部五种 → 空（保持 `context_overlap__…` 这个老名字），
+ * 只跑一部分 → `-C1T2`。
+ *
+ * ⚠️ 为什么非要有这个后缀：一份"只跑了 C1,T2"的结果文件，如果名字和完整对照一样，
+ *    下次 `--compare` / 读报告的人就会把它当完整对照 —— 这正是 `--count 2` 覆盖
+ *    全量基线那件事的同一种错法（那次是 238 KB 被 2.8 KB 盖掉）。
+ */
+export function modesSuffix(modes) {
+  const codes = String(modes ?? '').trim().toLowerCase()
+  if (codes === 'all' || codes === '*') return ''
+  const picked = codes.split(',').map(part => part.trim().toUpperCase()).filter(Boolean)
+  // 引擎会给没选 C1 的清单**自动补上 C1**（它是所有比较的基线），
+  // 所以文件名按"实际会跑的那几种"写 —— 名字要比命令行更诚实。
+  if (picked.length > 0 && picked.includes('C1') === false) picked.push('C1')
+  if (picked.length === 0 || picked.length === MODE_CODES.size) return ''
+  return '-' + [...new Set(picked)].sort().join('')
+}
 
 /**
  * 给 Python 子进程准备环境变量。
@@ -168,7 +210,11 @@ function resolveModel(options) {
   }
 }
 
-function parseArgs(argv) {
+/**
+ * 命令行解析。**纯函数、可导出**：参数写错必须当场报错（不能悄悄跑成缺省），
+ * 而"报不报错"只有测试真的去调它才算数 —— 靠人读源码看不出漏了哪一支。
+ */
+export function parseArgs(argv) {
   const options = {
     set: null, setPath: null, model: null, device: null, compute: null, language: null,
     count: null, errorsAbove: 0.10, compare: false, list: false, byAccent: false,
@@ -176,6 +222,7 @@ function parseArgs(argv) {
     // ── 两个"实验"模式（见文件头的说明：入口统一，引擎分开）────────────────
     cut: false,            // 切句方式（context_eval.py）
     context: false,        // 上下文方式：提示词续传 / 声学重叠（context_overlap.py）
+    modes: null,           // --context 要跑哪几种喂法（见 DEFAULT_CONTEXT_MODES）
     spansFile: null, sweep: null, limit: null, skipB: false, promptDepth: null,
     outJson: null, outMd: null,
   }
@@ -197,7 +244,26 @@ function parseArgs(argv) {
     if (token === '--errors-above') { options.errorsAbove = Number(argv[++index]); continue }
     if (token === '--show') { options.show = Number(argv[++index]); continue }
     if (token === '--cut') { options.cut = true; continue }
-    if (token === '--context') { options.context = true; continue }
+    // `--context` 后面**可以**直接跟一组代号（`--context C1,T2` / `--context all`）——
+    // 只有当下一个参数**整个**长得像代号列表时才吃掉它，否则当成"不指定、用缺省"。
+    // 判据是精确匹配而不是"猜"：不匹配就走 --modes 那条路，写错了会明确报错。
+    if (token === '--context') {
+      options.context = true
+      const next = argv[index + 1]
+      if (next !== undefined && MODE_LIST_RE.test(next)) { options.modes = argv[++index] }
+      continue
+    }
+    if (token === '--modes') {
+      const value = argv[++index]
+      // 与 --context 用同一份校验：写错必须**当场报错**，不许悄悄跑成缺省那两种
+      // （否则报告看起来正常，实际只跑了一种，而文件名还写着别的）。
+      if (value === undefined || MODE_LIST_RE.test(value) === false) {
+        throw new Error(`--modes 写错了：${value ?? '（没给值）'}；`
+          + `可用 ${MODE_MENU}（逗号分隔）或 all，例：--modes C1,T2 / --modes all`)
+      }
+      options.modes = value
+      continue
+    }
     if (token === '--spans-file') { options.spansFile = argv[++index]; continue }
     if (token === '--sweep') { options.sweep = argv[++index]; continue }
     if (token === '--limit') { options.limit = Number(argv[++index]); continue }
@@ -209,6 +275,9 @@ function parseArgs(argv) {
   }
   if (options.cut && options.context) {
     throw new Error('--cut 与 --context 是两个不同的实验，一次只能跑一个')
+  }
+  if (options.modes !== null && options.context === false) {
+    throw new Error('--modes 只对 --context 有意义（切句那一路的开关是 --sweep / --prompt-depth）')
   }
   return options
 }
@@ -230,10 +299,19 @@ export function resolveSpansFile(options, spansDir = SPANS_DIR) {
   return files[0]
 }
 
-/** 结果/报告文件名：`<实验>__<段清单名>__<模型>.json` / `.md`（两类产物同名，好对上）。 */
+/**
+ * 结果/报告文件名：`<实验>__<段清单名>__<模型>.json` / `.md`（两类产物同名，好对上）。
+ *
+ * ⚠️ 两种"这次不是完整结果"的情况都会写进文件名（与 `--set` 那条 `-nN` 同一个道理）：
+ *    · 只跑一部分喂法（`--modes`）→ `-C1T2`
+ *    · 只跑前 N 段（`--limit`）  → `-n1`
+ *    否则一份"只有 1 段 / 只有两种喂法"的文件会和完整对照同名，下次被当成完整结果读。
+ */
 export function experimentPaths(options, modelKey, spansName) {
   const engine = options.context ? 'context_overlap' : 'context_eval'
-  const stem = `${engine}__${spansName}__${modelKey.replace(/[/@]/g, '_')}`
+  const suffix = options.context ? modesSuffix(contextModes(options)) : ''
+  const limitSuffix = options.limit ? `-n${options.limit}` : ''
+  const stem = `${engine}${suffix}${limitSuffix}__${spansName}__${modelKey.replace(/[/@]/g, '_')}`
   return {
     engine,
     json: options.outJson ?? join(ASR_RESULTS_DIR, `${stem}.json`),
@@ -276,6 +354,9 @@ export function experimentCommand(options, model, spansFile) {
   }
   const args = [join(ROOT, 'asr-eval', 'context_overlap.py'),
     '--spans-file', spansFile, ...common]
+  // 喂法清单**总是显式传**：入口不再依赖引擎的缺省值，否则两边各有一个缺省，
+  // 迟早一个改了另一个没改（有断言在读 py 文件比对这两处）。
+  args.push('--modes', contextModes(options))
   if (options.limit !== null) args.push('--limit', String(options.limit))
   return args
 }
@@ -413,6 +494,22 @@ function runOne(set, model, options) {
 const percent = value => (value === null || value === undefined) ? '—' : (value * 100).toFixed(1) + '%'
 
 /**
+ * 实验模式下没写 `--model` 时用哪一条配置。
+ *
+ * ⚠️ 这条是**真踩到的**：`runExperiment` 原来直接调 `resolveModel(options)`，
+ *    而 `--model` 不给时它是 `null` → 打印「不认识的模型：null」然后什么都不跑。
+ *    `--set` 那一路一直有缺省（MODELS[0]），只有后加的两个实验漏了 ——
+ *    而文档里的实验命令恰好都写着 `--model large-v3`，所以一直没暴露。
+ *    现在两边行为一致：不给就用第一条（large-v3 / cuda / float16）。
+ */
+function defaultExperimentModel(options) {
+  const chosen = MODELS.find(model => options.device === null || model.device === options.device)
+    ?? MODELS[0]
+  console.log(`（没指定 --model，用缺省：${keyOf(chosen.name, chosen.device, chosen.compute)}）`)
+  return chosen
+}
+
+/**
  * 跑"切句方式"或"上下文方式"两个实验。
  *
  * ⚠️ 为什么入口统一、引擎分开（而不是把两个实验的逻辑搬进这个脚本）：
@@ -423,7 +520,7 @@ const percent = value => (value === null || value === undefined) ? '—' : (valu
  *    三个引擎各自的判据与参数说明留在它们自己的 `--help` 里。
  */
 function runExperiment(options) {
-  const model = resolveModel(options)
+  const model = options.model === null ? defaultExperimentModel(options) : resolveModel(options)
   if (model === null) return
 
   const spansFile = resolveSpansFile(options)
@@ -444,6 +541,12 @@ function runExperiment(options) {
   console.log(`  模型        ${keyOf(model.name, model.device, model.compute)}（${model.note}）`)
   console.log(`  段清单      ${spansFile ?? '（这次新挑一批，会写到 var/asr-eval/spans/）'}`)
   if (options.sweep) console.log(`  扫描        ${options.sweep}`)
+  if (options.context) {
+    const asked = contextModes(options)
+    const all = modesSuffix(asked) === ''
+    console.log(`  喂法        ${asked}${options.modes === null ? '（缺省，不是全部五种）' : ''}`
+      + `${all ? '　＝全部五种' : '　（全跑用 --modes all）'}`)
+  }
   console.log(`  结果        ${paths.json}`)
   console.log(`  报告        ${paths.md}`)
   console.log(`  说明        这两个实验的样本来源是**原始录音里的连续段**，不是 --set 那个包 ——`)
@@ -522,7 +625,9 @@ function main() {
     console.log('用法：node asr-eval/test-asr.mjs --set ' + (sets[0]?.name ?? 'zh-eval') + ' [--model large-v3] [--compare]')
     console.log('      node asr-eval/test-asr.mjs --set-path <任意绝对/相对目录>（目录里要有 manifest.jsonl）')
     console.log('      node asr-eval/test-asr.mjs --cut [--count 20] [--sweep 500/15000,800/30000,…]')
-    console.log('      node asr-eval/test-asr.mjs --context [--spans-file var/asr-eval/spans/xxx.json]')
+    console.log('      node asr-eval/test-asr.mjs --context [--modes C1,T2 | --modes all]'
+      + ' [--spans-file var/asr-eval/spans/xxx.json]')
+    console.log(`        （--context 缺省只跑 ${DEFAULT_CONTEXT_MODES}；--modes all 才是全部五种：${MODE_MENU}）`)
     return
   }
 

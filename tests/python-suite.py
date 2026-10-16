@@ -83,6 +83,61 @@ def check(label, condition, detail=""):
         print(f"  ❌ {label}" + (f"\n     {detail}" if detail else ""))
 
 
+def _raises(thunk):
+    """跑一个应当报错的调用；只关心"报没报错"（错误文案另有断言）。"""
+    try:
+        thunk()
+    except ValueError:
+        return True
+    return False
+
+
+def _error_of(thunk):
+    try:
+        thunk()
+    except ValueError as error:
+        return str(error)
+    return ""
+
+
+def _partial_payload():
+    """造一份"只跑了 C1,T2"的最小 payload，用来验证报告有没有如实标注。"""
+    row = {
+        "recording": "R1.wav", "start": 0.0, "end": 30.0, "duration": 30.0, "segments": 8,
+        "reference": "你好",
+        "modes": {
+            "C1": {"rate": 0.16, "normalized": {"rate": 0.15, "units": 2, "distance": 0,
+                                                "substitutions": 0, "deletions": 0, "insertions": 0},
+                   "units": 2, "distance": 1, "substitutions": 1, "deletions": 0, "insertions": 0,
+                   "text": "尼好", "segmentRates": [0.0, 0.5], "promptEcho": 0, "fallbacks": 0,
+                   "disagreements": 0},
+            "T2": {"rate": 0.10, "normalized": {"rate": 0.10, "units": 2, "distance": 0,
+                                                "substitutions": 0, "deletions": 0, "insertions": 0},
+                   "units": 2, "distance": 0, "substitutions": 0, "deletions": 0, "insertions": 0,
+                   "text": "你好", "segmentRates": [0.0, 0.2], "promptEcho": 0, "fallbacks": 0,
+                   "disagreements": 0},
+        },
+    }
+    summary = {mode: {"rate": row["modes"][mode]["rate"],
+                      "normalized": 0.15, "units": 2, "sdi": (1, 0, 0),
+                      "used": 1.0, "echo": 0, "fallbacks": 0, "disagreements": 0}
+               for mode in ("C1", "T2")}
+    return {
+        "config": {"spansFile": "spans/x.json", "spansDigest": "d", "spans": 1,
+                   "totalSeconds": 30.0, "model": "large-v3", "device": "cuda",
+                   "computeType": "float16", "beamSize": 5, "vadFilter": True,
+                   "scoringRules": SCORING_RULES_VERSION,
+                   "normalizedRules": NORMALIZED_RULES_VERSION,
+                   "modesRun": ["C1", "T2"], "modesSkipped": ["T1", "L", "R"],
+                   "modesAutoBase": False, "limit": 0,
+                   "modeLabels": {"C1": "C1 逐段独立解码（产线现状）", "T2": "T2 逐段 + 提示词（前两段文本）"},
+                   "rerun": "python asr-eval/context_overlap.py --spans-file spans/x.json --modes C1,T2"},
+        "summary": summary,
+        "paired": {"T2": {"better": 1, "worse": 0, "same": 1, "meanDelta": -0.15}},
+        "verdict": {}, "records": [row],
+    }
+
+
 def tone(seconds, amplitude=0.15):
     """用正弦波冒充"说话声"。频率取 220Hz，避开直流和采样率边界。"""
     t = np.arange(int(round(seconds * TARGET_RATE)), dtype=np.float32) / TARGET_RATE
@@ -1441,6 +1496,55 @@ def main():
     check("没东西可比时返回 None（不能凭空空报）",
           proxy.echo_detail("", "tchau", "bom dia") is None
           and proxy.echo_detail("bom dia", "", "bom dia") is None)
+
+    # ⑭ `--modes`：只跑选中的喂法（缺省 C1,T2，all = 全部五种）
+    #
+    # 用户的要求：不要每次 `--context` 都把五种跑一遍 —— 已否掉的方案（T1/L/R，
+    # 见 docs/14 §6.7.2）复核时不该再付算力。这条测试钉三件事：
+    # 缺省是什么、写错会不会报错、**"只跑了一部分"有没有写进报告**。
+    heading("上下文实验 · --modes 选喂法")
+    check("不填 → 缺省 C1,T2（**不是**全部五种）",
+          ov.parse_modes(None) == (("C1", "T2"), False), str(ov.parse_modes(None)))
+    check("`all` → 全部五种，按固定顺序", ov.parse_modes("all") == (ov.MODES, False),
+          str(ov.parse_modes("all")))
+    check("大小写与空格都容忍", ov.parse_modes(" t1, t2 , l ") == (("C1", "T1", "T2", "L"), True),
+          str(ov.parse_modes(" t1, t2 , l ")))
+    check("顺序固定：T2,C1 与 C1,T2 得到同一个元组（产物名才不会两种写法）",
+          ov.parse_modes("T2,C1") == ov.parse_modes("C1,T2"))
+    check("没选 C1 会**自动补上**并如实报告（C1 是所有比较的基线）",
+          ov.parse_modes("T2") == (("C1", "T2"), True))
+    for bad in ("T9", "C1,Z", "1", ""):
+        try:
+            ov.parse_modes(bad) if bad else ov.parse_modes("x")
+        except ValueError:
+            pass
+    check("写错的代号必须报错，不许静默当成缺省",
+          all(_raises(lambda value=value: ov.parse_modes(value)) for value in ("T9", "C1,Z", "1")))
+    check("`all` 混在列表里给出专门的提示（不是含混的「不认识 ALL」）",
+          "单独写" in _error_of(lambda: ov.parse_modes("C1,all")))
+    check("run_span 真的按选中的喂法跑（没选的解码一次都不做）",
+          "def run_span(model, args, span, audio, rate, segments, modes)" in
+          (ROOT / "asr-eval" / "context_overlap.py").read_text(encoding="utf-8")
+          and 'if "L" in modes:' in (ROOT / "asr-eval" / "context_overlap.py").read_text(encoding="utf-8"))
+
+    partial = _partial_payload()
+    report = ov.render_report(partial)
+    check("报告里写明本次跑了哪几种", "本次跑了几种" in report and "C1、T2" in report)
+    check("报告里写明**没跑**哪几种、以及怎么跑全部",
+          "未跑：T1、L、R" in report and "--modes all" in report)
+    check("没跑 L/R 时不出「拼接分歧」那一节（空表比没有表更误导）",
+          "拼接分歧时谁对" not in report)
+    check("逐段明细只列跑了的喂法（不会出现空列/借来的数字）",
+          "| 录音 | 时间 | 秒 | C1 | T2 |" in report)
+    auto = dict(partial)
+    auto["config"] = {**partial["config"], "modesAutoBase": True, "modesSkipped": ["T1", "L", "R"],
+                      "modesRun": ["C1", "T2"]}
+    check("自动补 C1 时报告里说清楚（否则读报告的人以为连现状都没测）",
+          "已自动加入" in ov.render_report(auto))
+    limited = dict(partial)
+    limited["config"] = {**partial["config"], "limit": 3}
+    check("--limit 的结果在报告里标明**不是完整结果**",
+          "不能当基线读" in ov.render_report(limited))
 
     # ── 结果 ────────────────────────────────────────────────────────────────
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
