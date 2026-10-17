@@ -17,9 +17,9 @@
 
 ```powershell
 node scripts/generate.mjs        # 从核心逻辑生成 6 个产物（插件 3 个 + 技能文档 + 2 份文档/资源）
-node tests/run-all.mjs           # 302 个用例：新鲜度门禁 + 两个包装版本各跑一遍 + 一致性对比
+node tests/run-all.mjs           # 307 个用例：新鲜度门禁 + 两个包装版本各跑一遍 + 一致性对比
                                  #（JS 计入的是**用例数**：一个用例里可以有多条断言，失败即整条红）
-python tests/python-suite.py     # 另 174 条断言：分段器 + 音频尾随 + 语种 + 评分规则 + 测试包切分 + 错因分类
+python tests/python-suite.py     # 另 319 条断言：分段器 + 音频尾随 + 语种 + 评分规则 + 测试包切分 + 错因分类
                                  #（Python 计入的是**断言条数**，一节里的断言失败不会挡住后面的）
 
 # A) 不需要麦克风、不需要手机：重放一段中葡对照的剧本，看整条同传链路
@@ -98,7 +98,7 @@ node scripts/fake-phone.mjs --wav var/audio/zh/short-16k.wav --url http://127.0.
 | `lib/composition.mjs` · `lib/fs-node.mjs` · `lib/keepalive.mjs` | 组合生成与两个共用的小插件 |
 | `lib/real-tools.mjs` · `lib/loader-links.mjs` | 加载检出里真实的构建产物 / 建 loader junction |
 | `tests/` | 沙箱复刻 + 两个适配器 + 契约套件 + 桥套件 + 局域网套件 + 识别评测结构检查（用例数见下） |
-| `tests/python-suite.py` | **产线分段器 + 评测判据**验证（174 条断言，不加载模型；含静默失败的回归、不变量、负对照） |
+| `tests/python-suite.py` | **产线分段器 + 评测判据**验证（319 条断言，不加载模型；含静默失败的回归、不变量、负对照） |
 | `tests/live/` | **真实 Cordis 组合**：真实 `ToolRuntime` + 真实执行流水线 + 真实 `timer` + 真实 `output.schema` 校验（组合现场生成，见该目录 README） |
 | `skills/leion-interpreter/SKILL.md` | **同传操作规范**：巴葡 vs 葡葡用词差异表、字幕长度纪律、调用顺序 |
 | `var/` | **运行时数据**（不进版本库）：`live/` 收件箱与字幕总线、`cache/` 模型缓存、`audio/` 测试音频、`asr-eval/` **识别评测的测试包与结果**、`logs/`。分层原则见 `lib/paths.mjs` |

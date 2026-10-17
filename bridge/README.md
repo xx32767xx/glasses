@@ -115,7 +115,7 @@ python bridge/whisper_stream.py --language pt         # 固定巴西葡语：更
 桥有自己的契约套件（19 项），包含在总验证里：
 
 ```powershell
-node tests/run-all.mjs        # 83 项，其中「ASR 桥」一节就是它
+node tests/run-all.mjs        # 307 项，其中「ASR 桥」一节就是它
 ```
 
 覆盖：`\n` / `\r` / `\r\n` 断句、空白与多余空白的处理、**停顿即断句**（用可控时钟测，不靠 sleep 赌时间）、
