@@ -878,6 +878,43 @@ def main():
           "hint_text=hint, context_text=carried or None"
           in (ROOT / "bridge" / "whisper_stream.py").read_text(encoding="utf-8"))
 
+    # ── 归因工具（`asr-eval/carry_attribution.py`）：拆"上下文帮在哪、伤在哪"──────
+    #
+    # 这个工具的价值全在"口径对不对"，所以把两处最容易错的地方钉住：
+    #   ① 按句内位置归属时，「=」也必须推进参考位置（第一版漏了它，
+    #      算出"第 1 句 83% 错误率"这种显然不可能的假数）；
+    #   ② "抄上文"的比例必须真的按"更早出现的参考词"算，而不是全段词表。
+    import carry_attribution as attrib
+
+    heading("归因工具 · 上下文帮在哪 / 伤在哪")
+    reference = "são paulo capital são"
+    hypothesis = "são paulo capital são"
+    bounds = [(0, 3), (3, 6)]
+    first, later, units_first, units_later = attrib.split_errors(
+        reference, hypothesis, bounds, "word")
+    check("全对时 S/D/I 都是 0（先确认它不会凭空造错）",
+          sum(first.values()) + sum(later.values()) == 0, str((first, later)))
+    check("每句的单位数按参考算（上面的例子是 3 + 3）",
+          (units_first, units_later) == (3, 3), f"{units_first}/{units_later}")
+    # 「=」漏推进的后果：所有错误都会被算进第 1 句 —— 这条就是当时的回归点
+    first, later, _units_first, _units_later = attrib.split_errors(
+        "一二三四五六七八", "一二X四五六Y八", [(0, 4), (4, 8)], "char")
+    check("错误按句内位置分得开（第 2 句的错不会被算进第 1 句）",
+          first["S"] == 1 and later["S"] == 1, f"first={first} later={later}")
+    hits, total = attrib.bleeding("viajei pelo país viajei", "viajei pelo país viajei", "word")
+    check("全对时没有替换/插入可统计（分母为 0，不能除出个假比例）",
+          (hits, total) == (0, 0), f"{hits}/{total}")
+    hits, total = attrib.bleeding("viajei pelo país", "viajei pelo viajei", "word")
+    check("抄上文的替换被数出来（'país'→'viajei'，而 viajei 前面出现过）",
+          hits == 1 and total == 1, f"{hits}/{total}")
+    counts, _examples = attrib.classify_new_substitutions(
+        "viajei pelo país", "viajei pelo cidade", "viajei pelo viajei", "word")
+    check("新出现的替换若来自本段早前 → 记成「抄上文」",
+          counts["bleed"] == 1, str(counts))
+    counts, _examples = attrib.classify_new_substitutions("eh bom", "eh bom", "é bom", "word")
+    check("口语→书面（eh→é）单独算一档，不混进「真听错」",
+          counts["spoken"] == 1, str(counts))
+
     # 统计口径：延迟必须把"一段本身有多长"算进去 —— 这条口径错过很久，
     # 报告里把 1200ms 那档说成"只多等 2.3 秒"，实际是 6.2 秒（一句话要先攒成一整段）。
     heading("统计口径 · 字幕延迟不能漏掉段长")

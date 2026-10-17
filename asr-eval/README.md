@@ -178,6 +178,7 @@ python asr-eval/context_eval.py --spans-file var/asr-eval/spans/nurc-pt-20.json 
 | `context_overlap.py` | **上下文引擎**：提示词续传 vs 左邻/右邻重叠，逐段配对 + 拼接分歧 | 由 `test-asr.mjs --context` 调 |
 | `pt_context_proxy.py` | 🔴 **葡语代理实验（结论已被真数据推翻，留作反面教材）**：只测"提示词续传在葡语短片段上有没有用" | `python asr-eval/pt_context_proxy.py --groups 10` |
 | `pt_nurc_spans.py` | **葡语真数据**：从 CORAA **NURC-SP** 把逐句片段按原始时间轴拼回**连续发言**，挑出与中文实验同格式的段清单（`--list` 先体检） | `python asr-eval/pt_nurc_spans.py --count 20 --target-seconds 25` |
+| `carry_attribution.py` | **归因**：上下文续传为什么帮忙/帮倒忙 —— 按「句内位置 × 误差方向(S/D/I)」拆，并统计"抄上文"比例（只读已存结果，不重跑模型） | `python asr-eval/carry_attribution.py --kinds` |
 
 数据不在这个目录里（`var/` 整个不进版本库），对应关系是一一对应的：
 
