@@ -318,6 +318,9 @@ def main():
     parser.add_argument("--split", default="dev", choices=["dev", "test"],
                         help="用哪份原始录音（缺省 dev：调参只看 dev）")
     parser.add_argument("--count", type=int, default=12, help="取几段（缺省 12）")
+    parser.add_argument("--per-recording", type=int, default=0,
+                        help="每场录音最多取几段（缺省 0 = 不限制，会一直从前面几场取；"
+                             "跨场验证要设 1）")
     parser.add_argument("--target-seconds", type=float, default=30.0,
                         help="每段目标时长（缺省 30 秒）")
     parser.add_argument("--min-seconds", type=float, default=12.0, help="段最短时长")
@@ -367,8 +370,15 @@ def main():
     # 段清单一给，就不需要 MagicData 的官方划分了。
     wav_dir = Path(args.wav_dir) if args.wav_dir else root / "MDT2021S003" / "WAV"
     txt_dir = root / "MDT2021S003" / "TXT"
+    spans_file = Path(args.spans_file) if args.spans_file else (
+        ROOT / "var" / "asr-eval" / "spans" / f"context-{args.split}-{args.count}.json")
+    # ⚠️ 需要读官方划分的两种情况（第一版只看了"给没给 --spans-file"，于是
+    #    "给了段清单但文件还不存在"时既不读划分、也挑不出段，直接报"一段都没挑出来"）：
+    #    ① 这次要**挑段**（没给段清单 / 文件不存在 / --refresh-spans）→ 挑段要知道有哪些录音；
+    #    ② 没给 --wav-dir → 音频目录本身就是从 MagicData 结构推出来的。
+    need_pick = args.refresh_spans or spans_file.is_file() is False
     recordings = []
-    if args.spans_file is None:
+    if need_pick or args.wav_dir is None:
         partition = root / "DataPartition" / f"{args.split}.tsv"
         if partition.is_file() is False:
             sys.exit(f"找不到官方划分 {partition}（用 --magicdata-dir 指定，"
@@ -411,8 +421,6 @@ def main():
     print("=" * 96)
 
     # ── 段清单：存在就用同一批（参数扫描必须如此），不存在就挑好写下来 ─────────
-    spans_file = Path(args.spans_file) if args.spans_file else (
-        ROOT / "var" / "asr-eval" / "spans" / f"context-{args.split}-{args.count}.json")
     if spans_file.is_file() and not args.refresh_spans:
         spans = load_spans(spans_file)
         print(f"\n段清单：**复用** {spans_file}")
@@ -424,11 +432,17 @@ def main():
             transcript = txt_dir / (Path(recording).stem + ".txt")
             if transcript.is_file() is False or (wav_dir / recording).is_file() is False:
                 continue
+            # ⚠️ `--per-recording` 是这个循环的**上限**，不是"每场都挑这么多"：
+            #    不设上限时，挑段会一直从**第一场**录音里取（实测：20 段全来自同一场），
+            #    于是结论只在一个说话人、一个房间里成立 —— 要验证稳健性就必须跨场抽。
+            quota = args.count - len(spans)
+            if args.per_recording:
+                quota = min(quota, args.per_recording)
             picked = pick_spans(parse_transcript(transcript),
                                 target_seconds=args.target_seconds,
                                 min_seconds=args.min_seconds,
                                 min_utterances=args.min_utterances, max_gap=args.max_gap,
-                                count=args.count - len(spans), seed=0)
+                                count=quota, seed=0)
             for span in picked:
                 span["recording"] = recording
                 spans.append(span)
@@ -436,9 +450,14 @@ def main():
                 break
         if not spans:
             sys.exit("一段都没挑出来（把 --min-seconds / --min-utterances 放宽试试）")
+        used_recordings = len({span["recording"] for span in spans})
         save_spans(spans_file, spans)
         print(f"\n段清单：**新挑**并写到 {spans_file}")
-        print(f"  {len(spans)} 段，指纹 {spans_digest(spans)}（下次跑会复用这一批）")
+        print(f"  {len(spans)} 段 / {used_recordings} 场录音，指纹 {spans_digest(spans)}"
+              f"（下次跑会复用这一批）")
+        if used_recordings == 1:
+            print("  ⚠️ 这批段**全部来自同一场录音** —— 结论只在那个说话人/房间里成立。"
+                  "要跨场就用 `--per-recording 1`。")
     # `--limit` 只截取"这次跑几段"，**不改段清单文件** —— 冒烟测试不该污染固化的输入。
     if args.limit:
         spans = spans[:args.limit]

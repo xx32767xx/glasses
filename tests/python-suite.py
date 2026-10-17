@@ -1014,23 +1014,24 @@ def main():
           args.max_speech_ms == 30000, str(args.max_speech_ms))
     check("缺省会在上限处优先找停顿断句（不是硬切）",
           args.cut_pause_ms == 200, str(args.cut_pause_ms))
-    # 上下文续传：**按语种给不同的缺省**，而且两个语种的实测答案是反的：
-    #   · 中文 2：同一批 20 段连续录音上 16.8% → 15.1%（零额外等待）
-    #   · 葡语 0：NURC-SP 重建的 20 段真实对话上，带续传反而 **+0.1~+1.0 个百分点**
-    #     （500 档 17.61% → 18.65%）—— 之前的"代理实验"给出过 −2.2 的"收益"，那是错的。
-    # 所以 --context-depth 的缺省是 None（= 按语种取），不是写死的 2。
+    # 上下文续传：**缺省两个语种都关**（不是没测，是测了之后决定默认不开）。
+    #   ① 中文单场录音：500/800/1200 三档都是 −1.3~−1.8p（最初打开它的依据）
+    #   ② 中文跨 19 场录音：+3.48p（中位 0，8 好 / 7 差 / 4 平，均值被两段灾难性失败拉爆：
+    #      一段整段变幻听惯用语、一段整段飘成繁体）→ 期望值为负
+    #   ③ 葡语（NURC-SP 重建的真实对话）：噪声到略负
+    # 结论：默认关、保留开关。别再拿"单场录音 −1.5p"当依据 —— 那正是被 ② 推翻的结论。
     check("--context-depth 缺省不写死，按语种取（None）",
           args.context_depth is None, str(args.context_depth))
-    check("中文缺省续传 2 段（16.8% → 15.1%，零额外等待）",
-          context_depth_for("zh") == 2, str(context_depth_for("zh")))
-    check("葡语缺省**关**（真实对话实测：带续传 17.61% → 18.65%，是负的）",
+    check("中文缺省**关**（跨 19 场录音实测 +3.48p，单场 −1.5p 的结论已被推翻）",
+          context_depth_for("zh") == 0, str(context_depth_for("zh")))
+    check("葡语缺省也关（真实对话实测噪声到略负）",
           context_depth_for("pt") == 0, str(context_depth_for("pt")))
     check("语种不明时不默认开（没量过的组合不要默认打开）",
           context_depth_for(None) == 0 and context_depth_for("xx") == 0)
     check("续传的时间窗是 60 秒（必须长于一段本身，否则连续说话也会被误清）",
           args.context_gap_s == 60.0, str(args.context_gap_s))
     check("--context-depth 0 能显式关掉它", parse_args(["--context-depth", "0"]).context_depth == 0)
-    check("--context-depth 2 能显式打开（对所有语种生效，绕过按语种的缺省）",
+    check("--context-depth 2 能显式打开（绕过按语种的缺省，给「想再试一次」留口子）",
           parse_args(["--context-depth", "2"]).context_depth == 2)
 
     # 短句保护的实际行为：<800ms 的碎片后面跟 0.8 秒停顿，**不该**就此收句，
