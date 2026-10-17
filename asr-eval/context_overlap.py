@@ -277,7 +277,7 @@ def run_span(model, args, span, audio, rate, segments, modes):
 
     # 拼成整段的文本（与参考比）
     for mode in modes:
-        result[mode]["text"] = join_texts(result[mode]["pieces"], "char")
+        result[mode]["text"] = join_texts(result[mode]["pieces"], args.unit)
     # 拼接分歧：本段文本与 C1 逐段文本是否不一致（L/R 才有意义；没跑 C1 就没得比）
     for mode in ("L", "R"):
         if mode not in modes or "C1" not in modes:
@@ -318,6 +318,12 @@ def main():
                         help="每种喂法都先缀上产线那句语种提示词（中文压繁体、葡语稳巴葡），"
                              "配合 --no-vad-filter 就等于**产线的解码条件**")
     parser.add_argument("--magicdata-dir", default=r"E:\MagicData")
+    parser.add_argument("--wav-dir", default=None,
+                        help="音频目录（缺省走 MagicData 的 MDT2021S003/WAV）；"
+                             "指向别的语料重建出来的音频时用它，例如葡语 NURC 那批")
+    parser.add_argument("--unit", default="char", choices=["char", "word"],
+                        help="错误率单位：中文按 char（缺省）、葡语按 word。"
+                             "它同时决定参考文本怎么拼（按字拼接 / 按空格拼接）")
     parser.add_argument("--show", type=int, default=2, help="打印几段的详细对照")
     parser.add_argument("--out-json", default=None)
     parser.add_argument("--out-md", default=None)
@@ -334,7 +340,8 @@ def main():
     spans = load_spans(args.spans_file)
     if args.limit:
         spans = spans[:args.limit]
-    wav_dir = Path(args.magicdata_dir) / "MDT2021S003" / "WAV"
+    wav_dir = (Path(args.wav_dir) if args.wav_dir
+               else Path(args.magicdata_dir) / "MDT2021S003" / "WAV")
     total_seconds = sum(span["duration"] for span in spans)
     skipped = [mode for mode in MODES if mode not in modes]
 
@@ -371,7 +378,8 @@ def main():
     records = []
     for index, span in enumerate(spans, 1):
         audio, rate = read_slice(wav_dir / span["recording"], span["start"], span["end"])
-        reference = join_texts([row["text"] for row in span["utterances"]], "char")
+        # ⚠️ 单位随语种（中文按字、葡语按词），拼参考的方式也要跟着变
+        reference = join_texts([row["text"] for row in span["utterances"]], args.unit)
         segments = production_segments(audio, rate)
         result, marks = run_span(model, args, span, audio, rate, segments, modes)
 
@@ -393,9 +401,9 @@ def main():
                  "referencePieces": reference_pieces,
                  "modes": {}}
         for mode in modes:
-            strict = error_rate(reference, result[mode]["text"], "char")
-            norm = normalized_error_rate(reference, result[mode]["text"], "char")
-            rates = segment_error(reference_pieces, result[mode]["pieces"], "char")
+            strict = error_rate(reference, result[mode]["text"], args.unit)
+            norm = normalized_error_rate(reference, result[mode]["text"], args.unit)
+            rates = segment_error(reference_pieces, result[mode]["pieces"], args.unit)
             entry["modes"][mode] = {
                 **strict, "normalized": norm,
                 "used": result[mode]["used"],
@@ -511,6 +519,7 @@ def main():
                    "device": args.device, "computeType": args.compute_type,
                    "beamSize": args.beam_size, "language": args.language,
                    "vadFilter": args.vad_filter, "segmenter": PRODUCTION_SEGMENTER,
+                   "unit": args.unit, "wavDir": str(wav_dir),
                    "prodHint": args.prod_hint,
                    "hintPrompt": hint_prompt(args.language) if args.prod_hint else None,
                    "scoringRules": SCORING_RULES_VERSION,

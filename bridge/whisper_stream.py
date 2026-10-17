@@ -258,13 +258,10 @@ def parse_args(argv=None):
                              "副作用是短片段上会被模型回显成一句假字幕，那个由回显过滤挡住")
     parser.add_argument("--no-prompt", action="store_true",
                         help="不发提示词（想看纯模型输出、或怀疑提示词在捣乱时用）")
-    parser.add_argument("--context-depth", type=int, default=2,
+    parser.add_argument("--context-depth", type=int, default=None,
                         help="**上下文续传**：把前 N 段已定稿的文本喂给下一段当提示词"
-                             "（0 = 关；缺省 2 = 前两段）。"
-                             "实测（同一段口语录音的 20 个连续段）：逐段独立 16.8%% → "
-                             "前两段续传 15.1%%，**零额外等待**（不多听一秒音频）；"
-                             "再配合 --silence-ms 1200 一起用是 12.0%%。"
-                             "副作用（模型复读上文）由 looks_like_context_echo 挡住")
+                             "（0 = 关）。不给就用按语种的缺省："
+                             "中文 2、葡语 0 —— 见下面 CONTEXT_DEPTH_BY_LANGUAGE 的理由")
     parser.add_argument("--context-gap-s", type=float, default=60.0,
                         help="上下文续传的时间窗：距上一段定稿超过这么多秒就清空（缺省 60）。"
                              "⚠️ 这个数是**保守选择，不是测出来的最优值**，两个理由："
@@ -667,12 +664,31 @@ def prompt_for(language, explicit):
 
 # ── 上下文续传：把前几段**已定稿**的文本，当成下一段提示词的一部分 ────────────
 #
-# 为什么加它（实测，同一段 31 分钟口语录音取 20 个连续段、同一个参考）：
+# 为什么加它（实测，同一段 31 分钟中文口语录音取 20 个连续段、同一个参考）：
 #   · 逐段独立 16.8% → 前两段文本续传 15.1%（**零额外等待**：不多听一秒音频）
-#   · 再配合 silence 500→1200：12.0%，只差 0.3 个百分点追平「整段不切」（11.7%）
+#   · 再配合 silence 500→800：13.9%（只差 1 个百分点追平"整段不切"）
 # 机制：切碎的段缺上文，同音词只能靠猜；把上一两句的**文字**喂回去等于免费补语境。
 # 代价：提示词变长，模型"照抄上文"的风险上升 —— 所以同时加了 looks_like_context_echo。
 #
+# ⚠️ **按语种给缺省，而且两个语种的答案是反的**（这不是猜的，两边都做过受控实验）：
+#   · 中文 **2**：−1.8 个百分点（同一批 20 段连续录音）
+#   · 葡语 **0**：**不涨反跌**。用 NURC-SP 重建的 20 段真实连续对话（418 秒，3 个说话人）
+#     量了 500/800/1200 三个切句档：带续传分别 18.65% / 14.57% / 13.44%，
+#     不带是 17.61% / 14.48% / 13.18% → **+1.0 / +0.1 / +0.3 个百分点（即噪声到略负）**。
+#     而且替换错误明显上升（500 档 S 55 → 71），像是被上文带偏了。
+#     所以葡语缺省关掉；真要开可以用 --context-depth 2 显式试。
+#   ⚠️ 之前那个**代理实验**（相邻片段拼成"上文"）在葡语上给出过 −2.2 个百分点的"收益" ——
+#     那是**错的**：代理里"相邻"的其实是不同人的话，凑巧不产生带偏。
+#     这正好说明代理实验只能当方向性检查，不能当结论（see asr-eval/pt_context_proxy.py 的头部警告）。
+CONTEXT_DEPTH_BY_LANGUAGE = {"zh": 2, "pt": 0}
+CONTEXT_DEPTH_FALLBACK = 0        # 语种不明时不开：没量过的组合不要默认打开
+
+
+def context_depth_for(language):
+    """这个语种缺省用不用上下文续传、取前几段（`--context-depth` 显式给了就以它为准）。"""
+    return CONTEXT_DEPTH_BY_LANGUAGE.get(language or "", CONTEXT_DEPTH_FALLBACK)
+
+
 # ⚠️ 三条边界（都不是可选项，各有实测/推理支撑）：
 #   1. **换语种就清空**：中文的上下文喂给葡语解码，等于逼模型继续写中文；
 #   2. **隔太久就清空**（缺省 60 秒）：实测条件是"同一段连续发言"（句间 ≤2 秒），
@@ -1347,7 +1363,10 @@ def main():
     active = {"language": args.language}
 
     # 上下文续传（前 N 段的定稿文本当提示词）—— 见 ContextCarry 上面那段说明。
-    carry = ContextCarry(args.context_depth, args.context_gap_s)
+    # ⚠️ 缺省**按语种**取，而且手机中途可能切语种，所以深度在每次 handle 里现算：
+    #    --context-depth 显式给了就用它（对所有语种生效）；没给就 zh=2 / pt=0 / 其他=0。
+    carry = ContextCarry(args.context_depth if args.context_depth is not None else 0,
+                         args.context_gap_s)
     stats.carry = carry
 
     def handle(utterance):
@@ -1355,6 +1374,10 @@ def main():
         start = time.perf_counter()
         now = time.monotonic()
         language = active["language"]
+        # ⚠️ 续传深度**按当前语种现算**（手机中途可能切语种）：显式给了 --context-depth 就用它，
+        #    否则中文 2、葡语 0（两个语种的实测答案相反，见 CONTEXT_DEPTH_BY_LANGUAGE）。
+        carry.depth = (args.context_depth if args.context_depth is not None
+                       else context_depth_for(language))
         # 提示词 = 语种提示词 + 续传文本（顺序与实验一致：**指令在前、上文在后**）；
         # ⚠️ 但两段**分开传给 transcribe**：它们的闸判据强度不一样（见 transcribe 的说明）。
         hint = None if args.no_prompt else prompt_for(language, args.initial_prompt)

@@ -308,6 +308,13 @@ def main():
     parser = argparse.ArgumentParser(
         description="切短/边界/丢上下文造成的额外损失：整段 vs 官方句边界 vs 产线切句（可做参数扫描）")
     parser.add_argument("--magicdata-dir", default=str(MAGICDATA_DEFAULT))
+    parser.add_argument("--wav-dir", default=None,
+                        help="音频目录（缺省走 MagicData 的 MDT2021S003/WAV）。"
+                             "指向别的语料重建出来的音频时用它，例如葡语 NURC 那批")
+    parser.add_argument("--unit", default="char", choices=["char", "word"],
+                        help="错误率单位：中文按 char（缺省，没有空格分词）、葡语按 word。"
+                             "⚠️ 它同时决定参考文本怎么拼（按字拼接/按空格拼接），"
+                             "和包基线那套（asr_eval.py --unit）是同一个口径")
     parser.add_argument("--split", default="dev", choices=["dev", "test"],
                         help="用哪份原始录音（缺省 dev：调参只看 dev）")
     parser.add_argument("--count", type=int, default=12, help="取几段（缺省 12）")
@@ -356,17 +363,21 @@ def main():
     args = parser.parse_args()
 
     root = Path(args.magicdata_dir)
-    partition = root / "DataPartition" / f"{args.split}.tsv"
-    if partition.is_file() is False:
-        sys.exit(f"找不到官方划分 {partition}（用 --magicdata-dir 指定）")
-    wav_dir = root / "MDT2021S003" / "WAV"
+    # `--wav-dir` 用来指向**别的语料**重建出来的音频（例如 `pt_nurc_spans.py` 拼出来的葡语段）：
+    # 段清单一给，就不需要 MagicData 的官方划分了。
+    wav_dir = Path(args.wav_dir) if args.wav_dir else root / "MDT2021S003" / "WAV"
     txt_dir = root / "MDT2021S003" / "TXT"
-
-    # ⚠️ 划分文件是「录音名 <TAB> 采样点数」两列 —— 不能按"整行以 .wav 结尾"筛，
-    #    那样一行都筛不出来（实测踩到：打印出「0 场原始录音」）。
-    recordings = sorted({Path(line.split("\t")[0].strip()).name
-                         for line in partition.read_text(encoding="utf-8").splitlines()
-                         if line.split("\t")[0].strip().endswith(".wav")})
+    recordings = []
+    if args.spans_file is None:
+        partition = root / "DataPartition" / f"{args.split}.tsv"
+        if partition.is_file() is False:
+            sys.exit(f"找不到官方划分 {partition}（用 --magicdata-dir 指定，"
+                     f"或直接用 --spans-file + --wav-dir 指向别的语料）")
+        # ⚠️ 划分文件是「录音名 <TAB> 采样点数」两列 —— 不能按"整行以 .wav 结尾"筛，
+        #    那样一行都筛不出来（实测踩到：打印出「0 场原始录音」）。
+        recordings = sorted({Path(line.split("\t")[0].strip()).name
+                             for line in partition.read_text(encoding="utf-8").splitlines()
+                             if line.split("\t")[0].strip().endswith(".wav")})
 
     # 要跑哪些"喂法"：A 整段、B 逐句切，以及 C 的若干组产线切句参数
     configs = parse_sweep(args.sweep) if args.sweep else [
@@ -387,7 +398,10 @@ def main():
 
     print("=" * 96)
     print("切短/边界/丢上下文的影响：同一段音频、同一个参考，只改「怎么切」")
-    print(f"  语料 MagicData-RAMC {args.split} 划分 · {len(recordings)} 场原始录音")
+    if recordings:
+        print(f"  语料 MagicData-RAMC {args.split} 划分 · {len(recordings)} 场原始录音")
+    else:
+        print(f"  音频目录 {wav_dir}（段清单直接给的那批，不走 MagicData 划分）")
     print(f"  模型 {args.model} / {args.device} / {args.compute_type} / beam {args.beam_size}"
           f" / vad_filter={args.vad_filter} / 语种 {args.language}")
     print(f"  丢弃 <{PRODUCTION_SEGMENTER['min_speech_ms']}ms 的碎片（产线设置，所有 C 相同）")
@@ -457,8 +471,10 @@ def main():
     records = []
     for index, span in enumerate(spans, 1):
         audio, rate = read_slice(wav_dir / span["recording"], span["start"], span["end"])
-        reference = join_texts([row["text"] for row in span["utterances"]], "char")
-        unit = "char"
+        # ⚠️ 单位随语种：中文按**字**（没有空格分词，按词算的话整句就是一个 token），
+        #    葡语按**词**（按字算会把 WER 变成 CER，和包基线那套口径就对不上了）。
+        reference = join_texts([row["text"] for row in span["utterances"]], args.unit)
+        unit = args.unit
         entry = {"recording": span["recording"], "start": span["start"], "end": span["end"],
                  "duration": span["duration"], "utterances": len(span["utterances"]),
                  "reference": reference}
@@ -634,6 +650,7 @@ def main():
                            if getattr(args, "prod_hint", False) else None),
             "promptDepth": args.prompt_depth,
             "scoringRules": SCORING_RULES_VERSION, "normalizedRules": NORMALIZED_RULES_VERSION,
+            "unit": args.unit, "wavDir": str(wav_dir),
             "segmenterBase": PRODUCTION_SEGMENTER,
             "modes": [{k: m[k] for k in ("key", "label", "kind", "config")} for m in modes],
             "rerun": "python asr-eval/context_eval.py --spans-file " + str(spans_file)
