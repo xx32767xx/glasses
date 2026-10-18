@@ -280,7 +280,7 @@ def save_spans(path, spans):
     #    里面少一个字段会让下次跑出来的是**另一批段**，而且看不出来。
     #
     # ⚠️ **除固定字段外的附加字段必须原样保留**（第一版只挑固定字段，
-    #    于是 `pt_nurc_spans.py` 写的 `source`（来自哪一场录音、哪一秒到哪一秒）
+    #    于是某个建库脚本写的 `source`（来自哪一场录音、哪一秒到哪一秒）
     #    被**静默丢掉** —— 报告里再也查不回"这段是从语料哪个位置拼出来的"。
     #    可追溯性不能依赖"我记得它原来在哪"。）
     known = {"recording", "start", "end", "duration", "utterances"}
@@ -320,7 +320,7 @@ def main():
     parser.add_argument("--magicdata-dir", default=str(MAGICDATA_DEFAULT))
     parser.add_argument("--wav-dir", default=None,
                         help="音频目录（缺省走 MagicData 的 MDT2021S003/WAV）。"
-                             "指向别的语料重建出来的音频时用它，例如葡语 NURC 那批")
+                             "指向别的语料重建出来的音频时用它，例如自己录/拼出来的音频目录")
     parser.add_argument("--unit", default="char", choices=["char", "word"],
                         help="错误率单位：中文按 char（缺省，没有空格分词）、葡语按 word。"
                              "⚠️ 它同时决定参考文本怎么拼（按字拼接/按空格拼接），"
@@ -376,7 +376,7 @@ def main():
     args = parser.parse_args()
 
     root = Path(args.magicdata_dir)
-    # `--wav-dir` 用来指向**别的语料**重建出来的音频（例如 `pt_nurc_spans.py` 拼出来的葡语段）：
+    # `--wav-dir` 用来指向**别的音频目录**（自己录的、或从别的语料拼出来的）：
     # 段清单一给，就不需要 MagicData 的官方划分了。
     wav_dir = Path(args.wav_dir) if args.wav_dir else root / "MDT2021S003" / "WAV"
     txt_dir = root / "MDT2021S003" / "TXT"

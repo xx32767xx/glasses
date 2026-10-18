@@ -320,7 +320,7 @@ def main():
     parser.add_argument("--magicdata-dir", default=r"E:\MagicData")
     parser.add_argument("--wav-dir", default=None,
                         help="音频目录（缺省走 MagicData 的 MDT2021S003/WAV）；"
-                             "指向别的语料重建出来的音频时用它，例如葡语 NURC 那批")
+                             "指向别的语料重建出来的音频时用它，例如自己录/拼出来的音频目录")
     parser.add_argument("--unit", default="char", choices=["char", "word"],
                         help="错误率单位：中文按 char（缺省）、葡语按 word。"
                              "它同时决定参考文本怎么拼（按字拼接 / 按空格拼接）")

@@ -1018,7 +1018,7 @@ def main():
     #   ① 中文单场录音：500/800/1200 三档都是 −1.3~−1.8p（最初打开它的依据）
     #   ② 中文跨 19 场录音：+3.48p（中位 0，8 好 / 7 差 / 4 平，均值被两段灾难性失败拉爆：
     #      一段整段变幻听惯用语、一段整段飘成繁体）→ 期望值为负
-    #   ③ 葡语（NURC-SP 重建的真实对话）：噪声到略负
+    #   ③ 葡语：**没有连续录音可测** → 未验证，不默认开
     # 结论：默认关、保留开关。别再拿"单场录音 −1.5p"当依据 —— 那正是被 ② 推翻的结论。
     check("--context-depth 缺省不写死，按语种取（None）",
           args.context_depth is None, str(args.context_depth))
@@ -1563,7 +1563,7 @@ def main():
                              "utterances": [{"text": "甲"}]}])
           != ctx.spans_digest([{"recording": "a", "start": 0.0, "end": 1.0,
                                 "utterances": [{"text": "乙"}]}]))
-    # 附加字段必须活着：`pt_nurc_spans.py` 会给每段写 source（来自哪场录音哪一秒），
+    # 附加字段必须活着：建库脚本会给每段写 source（来自哪场录音哪一秒），
     # 而第一版 save_spans 只挑固定字段，把它**静默丢了** —— 报告里就再也查不回
     # "这段是从语料哪个位置拼出来的"。可追溯性不能依赖"我记得它原来在哪"。
     richer = [dict(named_spans[0], source={"recording": "SRC-1", "start": 1.5, "end": 9.0})]

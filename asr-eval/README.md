@@ -136,34 +136,21 @@ docs/14 §6.7.2 里已经被否掉了（文本续传赢过重叠，右邻还要�
 `--decode-json` 里写错参数名会明确报错，因为"我调了那个参数"变成空话的后果，
 是整批结论建立在没生效的配置上。
 
-### 葡语那一侧：**先重建连续音频，再走同样的两个引擎**（代理已作废）
+### 葡语那一侧：**切句代价、上下文收益都还没测**（只有包基线）
 
 `--cut` / `--context` 都要求**一段连续录音 + 官方逐句时间戳**（否则参考文本盖不住音频，
-公平性前提就破了）。中文有（MagicData 留了原始 31 分钟录音）；葡语一开始**没有** ——
-CORAA 只有一句一条的片段、没有时间戳、没有场次编号，所以早期只能做代理实验。
+公平性前提就破了）。中文有（MagicData 留了原始 31 分钟录音）；**葡语没有**：
+CORAA 只有一句一条的片段（中位 3.04 秒），元数据没有时间戳、没有场次编号，编号也不连续 ——
+**连哪几句属于同一场对话都确定不了**。
 
-**2025 找到了缺的那两样**：`E:\CORAA NURC-SP Minimal Corpus`（Projeto NURC/SP，1972 年
-圣保罗的 21 场真实对话，13 小时语音）每一段都带**原始录音时间轴上的 start/end**。
-于是 `pt_nurc_spans.py` 把这些片段按时间轴拼回连续音频（空档补静音），产出与中文
-**完全同格式**的段清单，然后直接喂给同一个 `context_eval.py` / `context_overlap.py`
-（`--wav-dir` 指定重建音频、`--unit word` 按词算 WER）。
+所以葡语现在**只有包基线**（`pt-speech-dev` 16.8% / `pt-speech-holdout` 17.6%，见 `docs/14` §6.1），
+切句代价、上下文收益这两件事**在葡语上都还没有数字**。要补，必须有**一段真实葡语连续录音**
+（哪怕 10 句）—— 这是 `docs/13` §5 的第 1 项。
 
-```
-python asr-eval/pt_nurc_spans.py --count 20 --target-seconds 25 --recordings SP_D2_255
-python asr-eval/context_eval.py --spans-file var/asr-eval/spans/nurc-pt-20.json `
-  --wav-dir var/asr-eval/audio/nurc-pt --unit word --language pt `
-  --sweep 500/15000,800/30000,1200/30000 --prompt-depth 2
-```
-
-⚠️ 重建的三条边界（写进脚本头部，也必须和数字一起读）：段间空档补的是**数字静音**
-（噪声底低于真实录音）；整场覆盖率 74.6%（逐场 41%~92%）；**1972 年的录音**。
-所以它适合量「切句代价 / 上下文收益」，不适合拿 `--silence-ms` 的绝对值代表现场。
-
-🔴 **`pt_context_proxy.py` 因此作废**（留作反面教材）：它在葡语上给出过
-"续传 −2.2 个百分点"的收益，而真实连续对话上是 **+0.1~+1.0（噪声到略负）**。
-原因很实在：代理里"相邻"的是**不同人**的话，不会把模型带偏；真实对话里上文是
-**同一个人刚说过的话**，续传反而把模型带向重复（替换 55 → 71）。
-**这就是"代理只能当方向性检查"的代价。**
+⚠️ **`pt_context_proxy.py` 不能拿来替代**：它把 manifest 上相邻的 8 条当成一段上文，
+而那其实是**不同人**的话，与真实对话的"同一个人刚说过的话"不是一回事，
+所以它的数字**不能当结论**（它曾算出"续传 −2.2 个百分点"的收益，
+而这恰好说明这类代理会把方向算反）。脚本留着只用于记录这个教训。
 
 ## 这一层里有什么
 
@@ -177,8 +164,7 @@ python asr-eval/context_eval.py --spans-file var/asr-eval/spans/nurc-pt-20.json 
 | `segment_eval.py` | **切句基准**：量"停顿多久算说完一句"（用的是产线那个分段器） | `python asr-eval/segment_eval.py --set var/asr-eval/packs/zh-eval --pauses` |
 | `context_eval.py` | **切句代价引擎**：整段 / 逐句切 / 产线切句参数扫描 | 由 `test-asr.mjs --cut` 调 |
 | `context_overlap.py` | **上下文引擎**：提示词续传 vs 左邻/右邻重叠，逐段配对 + 拼接分歧 | 由 `test-asr.mjs --context` 调 |
-| `pt_context_proxy.py` | 🔴 **葡语代理实验（结论已被真数据推翻，留作反面教材）**：只测"提示词续传在葡语短片段上有没有用" | `python asr-eval/pt_context_proxy.py --groups 10` |
-| `pt_nurc_spans.py` | **葡语真数据**：从 CORAA **NURC-SP** 把逐句片段按原始时间轴拼回**连续发言**，挑出与中文实验同格式的段清单（`--list` 先体检） | `python asr-eval/pt_nurc_spans.py --count 20 --target-seconds 25` |
+| `pt_context_proxy.py` | 🔴 **葡语代理实验（数字不能当证据）**：把不同人的相邻片段当成一段上文，只测"提示词续传在葡语短片段上有没有用" —— 它算出过 −2.2p 的"收益"，但真实对话的上文不是这么构成的，所以**别引用它的数字** | `python asr-eval/pt_context_proxy.py --groups 10` |
 | `carry_attribution.py` | **归因**：上下文续传为什么帮忙/帮倒忙 —— 按「句内位置 × 误差方向(S/D/I)」拆，并统计"抄上文"比例（只读已存结果，不重跑模型） | `python asr-eval/carry_attribution.py --kinds` |
 
 数据不在这个目录里（`var/` 整个不进版本库），对应关系是一一对应的：
@@ -197,8 +183,7 @@ var/asr-eval/results/<包名>__<模型>_<设备>_<精度>.json   ← 每一轮�
 |---|---|---|---|---|
 | `context_eval.py` | **切句本身吃掉多少准确率**：同一段录音，整段识别（11.7%）vs 按官方句边界切（15.6%）vs 按产线参数切（16.8%）—— 差的那几个点就是"切碎"的代价；`--sweep` 再多问一句"少切一点值不值" | MagicData **原始 31 分钟录音** + 官方逐句时间戳；**连续段**是它自己按 `--count / --target-seconds / --min-gap` 挑的 | 段清单（`spans/context-dev-N.json`）+ 结果 json + 人读 md | `node asr-eval/test-asr.mjs --cut [--sweep …]` |
 | `context_overlap.py` | **上下文该用哪种方式补**：文本续传（`T1/T2`）vs 声学重叠（`L/R`），并回答"重叠窗口拼接时两次输出不一致该怎么办"（逐段配对 + 拼接分歧 + 分歧时谁对） | **同一批段清单**（`--spans-file`，与 `context_eval.py` 共用同一批，否则两组数字不可比） | 结果 json + 人读 md（含逐段明细与重跑命令） | `node asr-eval/test-asr.mjs --context` |
-| `pt_nurc_spans.py` | **葡语从哪拿到"连续录音"**：把 NURC-SP 的逐句片段按原始时间轴拼回连续段（空档补静音），产出与中文实验同格式的段清单 | CORAA **NURC-SP Minimal Corpus**（21 场 1972 年圣保罗对话，13 小时语音，有原始时间轴） | 段清单 `spans/nurc-pt-N.json` + 重建的 wav（16 kHz 单声道） | `python asr-eval/pt_nurc_spans.py --count 20` |
-| `pt_context_proxy.py` | **葡语上"提示词续传"有没有用** —— 🔴 **代理，而且结论已经被上面的真数据推翻**。它把编号相邻的 8 条当成一段上文（其实是不同人的话），算出过 −2.2 个百分点的"收益"；真实连续对话上是 **+0.1~+1.0（噪声到略负）** | 冻结的葡语口语包 `pt-speech-dev`（一条条独立片段） | 结果 json（带 `proxy: true`） | `python asr-eval/pt_context_proxy.py --groups 10` |
+| `pt_context_proxy.py` | **葡语上"提示词续传"有没有用** —— 🔴 **代理，数字不能当结论**。它把编号相邻的 8 条当成一段上文（其实是不同人的话），曾算出 −2.2p 的"收益"；葡语**至今没有在真实连续录音上测过**，所以产线对葡语缺省关闭 | 冻结的葡语口语包 `pt-speech-dev`（一条条独立片段） | 结果 json（带 `proxy: true`） | `python asr-eval/pt_context_proxy.py --groups 10` |
 
 **为什么它们不能合成一个脚本**（也不是把 `--set` 那个包塞进去就行）：
 
@@ -206,7 +191,6 @@ var/asr-eval/results/<包名>__<模型>_<设备>_<精度>.json   ← 每一轮�
   否则"整段"那一路会混进参考没覆盖的话，对照就不公平了）；而 `--set` 的包里是**互不相邻的独立片段**。
 - **比较基准不同**：`--set` 比的是"不同模型"；两个实验比的是"同一段音频的不同切法 / 不同喂法"。
 - 所以入口只做三件事：**拼命令、统一产物路径、把产物指给你**；判据与参数留在各引擎自己的 `--help` 里。
-- 葡语那批是**先重建音频、再走同样的两个引擎**（`--wav-dir` + `--unit word`），所以引擎不复制第二份。
 
 ## 三件必须知道的事
 

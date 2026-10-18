@@ -15,10 +15,10 @@ carry_attribution.py —— 归因：**上下文续传为什么会帮忙 / 会�
   ④ 新出现的替换是什么性质？—— 抄上文 / 口语→书面 / 同词根 / 其他（多半真听错）。
 
 用法
-    # 默认把三档都跑一遍（中文 500、葡语 500/800/1200），需要段清单 + 结果文件
+    # 默认跑中文那批（500ms，20 段），需要段清单 + 结果文件都在 var/asr-eval/ 下
     python asr-eval/carry_attribution.py
 
-    # 也可以指定
+    # 换别的语料/配置就指定（葡语目前**没有**连续录音，所以没有默认项）
     python asr-eval/carry_attribution.py --spans <段清单> --result <结果.json> \
         --pairs C1:C1P,C2:C2P --unit word
 """
@@ -53,10 +53,6 @@ DEFAULTS = [
      "spans": ROOT / "var" / "asr-eval" / "spans" / "context-dev-20.json",
      "result": ROOT / "var" / "asr-eval" / "results" / "context_eval_two_knobs__dev__large-v3.json",
      "pairs": [("C1", "C1P")]},
-    {"label": "葡语 · 500/800/1200ms（NURC-SP 重建的 20 段）", "unit": "word",
-     "spans": ROOT / "var" / "asr-eval" / "spans" / "nurc-pt-20.json",
-     "result": ROOT / "var" / "asr-eval" / "results" / "pt_nurc_cut__dev__large-v3.json",
-     "pairs": [("C1", "C1P"), ("C2", "C2P"), ("C3", "C3P")]},
 ]
 
 
