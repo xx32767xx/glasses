@@ -278,14 +278,24 @@ def save_spans(path, spans):
     # ⚠️ `pick_spans` 只负责"挑哪几句"，`recording` 是调用方补上的（它得知道是哪场录音）。
     #    缺了就直接报错，不要写成空串 —— 段清单是"可重复执行"的地基，
     #    里面少一个字段会让下次跑出来的是**另一批段**，而且看不出来。
+    #
+    # ⚠️ **除固定字段外的附加字段必须原样保留**（第一版只挑固定字段，
+    #    于是 `pt_nurc_spans.py` 写的 `source`（来自哪一场录音、哪一秒到哪一秒）
+    #    被**静默丢掉** —— 报告里再也查不回"这段是从语料哪个位置拼出来的"。
+    #    可追溯性不能依赖"我记得它原来在哪"。）
+    known = {"recording", "start", "end", "duration", "utterances"}
+    payload = []
     for span in spans:
         if "recording" not in span:
             raise ValueError("段清单里每条都要有 recording（pick_spans 不产出这个字段，调用方补上）")
-    payload = [{"recording": s["recording"], "start": s["start"], "end": s["end"],
-                "duration": s["duration"],
-                "utterances": [{"start": u["start"], "end": u["end"], "speaker": u["speaker"],
-                                "text": u["text"]} for u in s["utterances"]]}
-               for s in spans]
+        entry = {"recording": span["recording"], "start": span["start"], "end": span["end"],
+                 "duration": span["duration"],
+                 "utterances": [{"start": u["start"], "end": u["end"], "speaker": u["speaker"],
+                                 "text": u["text"]} for u in span["utterances"]]}
+        for key, value in span.items():
+            if key not in known:
+                entry[key] = value
+        payload.append(entry)
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

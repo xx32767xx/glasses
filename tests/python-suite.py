@@ -1563,6 +1563,14 @@ def main():
                              "utterances": [{"text": "甲"}]}])
           != ctx.spans_digest([{"recording": "a", "start": 0.0, "end": 1.0,
                                 "utterances": [{"text": "乙"}]}]))
+    # 附加字段必须活着：`pt_nurc_spans.py` 会给每段写 source（来自哪场录音哪一秒），
+    # 而第一版 save_spans 只挑固定字段，把它**静默丢了** —— 报告里就再也查不回
+    # "这段是从语料哪个位置拼出来的"。可追溯性不能依赖"我记得它原来在哪"。
+    richer = [dict(named_spans[0], source={"recording": "SRC-1", "start": 1.5, "end": 9.0})]
+    ctx.save_spans(spans_file, richer)
+    again = ctx.load_spans(spans_file)
+    check("段清单保存时**保留附加字段**（source 这类可追溯信息不许丢）",
+          again[0].get("source", {}).get("recording") == "SRC-1", str(again[0].keys()))
 
     fake_payload = {
         "config": {"split": "dev", "spansFile": str(spans_file), "spansDigest": "abcd1234",
