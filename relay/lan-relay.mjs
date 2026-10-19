@@ -41,6 +41,9 @@ import {
   LIVE_DIR, defaultAudioIn, defaultAudioLang, defaultAudioRate, defaultBus, defaultInbox, defaultSecret,
 } from '../lib/paths.mjs'
 import { lintTranslation } from '../lib/translation-lint.mjs'
+import {
+  TERMS_LIMITS, getTable, loadTerms, normalizeUser, putTable, saveActiveUser, saveTerms, validateTerms,
+} from '../lib/terms.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
 
@@ -492,6 +495,10 @@ export async function startRelay(rawOptions = {}) {
     lintWarn: 0,
     /** 每种错各出现几次（kind → 次数），用来一眼看出"最常犯的是哪一类"。 */
     lintKinds: new Map(),
+    /** 热词对照表（docs/15）：成功上传过几次、最近一次是谁、几条。 */
+    termsSaves: 0,
+    termsUser: null,
+    termsEntries: 0,
     writer: null,
     /** 写入串行化：收件箱的顺序就是字幕的顺序，不能乱 */
     writeChain: Promise.resolve(),
@@ -694,12 +701,84 @@ export async function startRelay(rawOptions = {}) {
     send(response, status, payload)
   }
 
-  async function readBody(request) {
+  /**
+   * 热词对照表的"校验 / 落盘"共用实现（`POST /terms/validate` 与 `PUT /terms`）。
+   *
+   * 两件事刻意分开，但**校验用同一个函数**：界面上的"预校验"和真正落盘时的校验
+   * 不能说两套话 —— 否则会出现"界面上说没问题、真上传却被拒"这种最难解释的情况。
+   *
+   * @param {{ write: boolean }} mode write=true 才落盘
+   */
+  async function handleTermsWrite(response, request, mode) {
+    let body
+    try {
+      body = await readBody(request, TERMS_LIMITS.maxBodyBytes)
+    } catch (error) {
+      // 和 /say 一样：拒收一个没读完的请求体后必须关连接，否则留下脏 keep-alive
+      sendAndClose(request, response, error.statusCode ?? 400, { ok: false, error: String(error.message) })
+      return
+    }
+    const who = normalizeUser(body.user)
+    if (who.ok !== true) {
+      send(response, 400, { ok: false, error: 'bad-user', hint: who.error })
+      return
+    }
+    const checked = validateTerms(body.entries)
+    if (checked.ok !== true) {
+      // 方案 C：一条不合法 → 整张表不落盘，并把**每一处**问题都指出来（带下标）
+      send(response, 400, {
+        ok: false,
+        user: who.user,
+        accepted: checked.accepted,
+        rejected: checked.rejected,
+        warnings: checked.warnings,
+        error: 'invalid-entries',
+        hint: '整张表没有保存（一条不合法就整表不落盘），按 rejected 里的 index 改完再传',
+      })
+      return
+    }
+
+    if (mode.write === false) {
+      send(response, 200, {
+        ok: true, user: who.user, accepted: checked.accepted, rejected: [], warnings: checked.warnings, saved: false,
+      })
+      return
+    }
+
+    const doc = await loadTerms(options.dataDir)
+    const put = putTable(doc, who.user, checked.entries)
+    await saveTerms(options.dataDir, put.doc)
+    // 记下"当前会话用哪个用户"：插件下一场开始时会读它取表
+    try {
+      await saveActiveUser(options.dataDir, who.user)
+    } catch (error) {
+      debug(`⚠️ 写 terms-active.json 失败（不影响表已保存）：${error?.message ?? error}`)
+    }
+    state.termsSaves += 1
+    state.termsUser = who.user
+    state.termsEntries = checked.entries.length
+    debug(`[热词表] 用户 ${who.user} 上传 ${checked.entries.length} 条`
+      + (put.overwritten ? `（覆盖了原来的 ${put.previousEntries} 条）` : '（首次）')
+      + ' —— 下一次开始同传时生效')
+    send(response, 200, {
+      ok: true,
+      user: who.user,
+      accepted: checked.accepted,
+      rejected: [],
+      warnings: checked.warnings,
+      saved: true,
+      overwritten: put.overwritten,
+      previousEntries: put.previousEntries,
+      effectiveAt: 'next-session',
+    })
+  }
+
+  async function readBody(request, limit = MAX_BODY_BYTES) {
     const chunks = []
     let size = 0
     for await (const chunk of request) {
       size += chunk.length
-      if (size > MAX_BODY_BYTES) {
+      if (size > limit) {
         const error = new Error('请求体过大')
         error.statusCode = 413
         throw error
@@ -776,6 +855,15 @@ export async function startRelay(rawOptions = {}) {
 
       // ── GET /hello ────────────────────────────────────────────────────────
       if (request.method === 'GET' && url.pathname === '/hello') {
+        // 手机可以顺带报上"我是谁"：热词表按用户名区分（docs/15 §8.3）。
+        // 报错了不拦握手 —— 连接是第一位的，用户名只影响"读哪张表"。
+        const who = normalizeUser(url.searchParams.get('user'))
+        if (who.ok === true && url.searchParams.get('user') !== null) {
+          state.termsUser = who.user
+          void saveActiveUser(options.dataDir, who.user).catch(error => {
+            debug(`⚠️ 写 terms-active.json 失败：${error?.message ?? error}`)
+          })
+        }
         send(response, 200, { ok: true, ...info() })
         return
       }
@@ -1085,12 +1173,48 @@ export async function startRelay(rawOptions = {}) {
           audioChunks: state.audioChunks,
           audioRate: state.audioRateValue,
           audioLang: state.audioLangValue,
+          // 热词对照表：上传过几次、最近一次是谁、几条。手机端拿它显示"本次生效 N 条"。
+          termsSaves: state.termsSaves,
+          termsUser: state.termsUser,
+          termsEntries: state.termsEntries,
           ...info(),
         })
         return
       }
 
-      send(response, 404, { ok: false, error: 'not-found', routes: ['/hello', '/say', '/audio', '/frame', '/status'] })
+      // ── 热词对照表（docs/15：阶段 1 只有"校验 + 存取"，不做替换）────────────
+      //
+      // 三个端点刻意分开：
+      //   POST /terms/validate  只校验、不落盘 ——  手机界面可以边填边验，反复点
+      //   PUT  /terms           全合法才整体替换某个用户的表（方案 C：全有或全无）
+      //   GET  /terms?user=     取当前生效的表，手机端回显
+      //
+      // 为什么"全有或全无"：部分落盘会造出"用户看到 ok:true、其实半张表没存上"
+      // 的静默状态 —— 而我们的验收门槛是"误替换 = 0"，静默半生效正好能绕过所有判据。
+      if (request.method === 'POST' && url.pathname === '/terms/validate') {
+        await handleTermsWrite(response, request, { write: false })
+        return
+      }
+      if (request.method === 'PUT' && url.pathname === '/terms') {
+        await handleTermsWrite(response, request, { write: true })
+        return
+      }
+      if (request.method === 'GET' && url.pathname === '/terms') {
+        const who = normalizeUser(url.searchParams.get('user'))
+        if (who.ok !== true) {
+          send(response, 400, { ok: false, error: 'bad-user', hint: who.error })
+          return
+        }
+        const doc = await loadTerms(options.dataDir)
+        const table = getTable(doc, who.user)
+        send(response, 200, {
+          ok: true, user: who.user, entries: table.entries, updatedAt: table.updatedAt,
+          effectiveAt: 'next-session',
+        })
+        return
+      }
+
+      send(response, 404, { ok: false, error: 'not-found', routes: ['/hello', '/say', '/audio', '/frame', '/status', '/terms'] })
     })().catch(error => {
       if (!response.writableEnded) {
         send(response, 500, { ok: false, error: String(error && error.message ? error.message : error) })

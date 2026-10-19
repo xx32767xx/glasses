@@ -70,6 +70,15 @@ public class LanClient {
     private volatile boolean running = false;
     private Thread pollThread;
     private long seq = 0;
+    /**
+     * 热词表的用户名（docs/15 §8.3）。握手时随 `/hello?user=` 报给电脑，
+     * 电脑据此决定"下一场同传读哪张表"。空 → 电脑侧回落 `default`。
+     */
+    private volatile String user = "";
+
+    public void setUser(String value) {
+        this.user = value == null ? "" : value.trim();
+    }
 
     public LanClient(String baseUrl, String secret, Listener listener) {
         String trimmed = baseUrl == null ? "" : baseUrl.trim();
@@ -206,12 +215,107 @@ public class LanClient {
         thread.start();
     }
 
+    // ── 热词对照表（docs/15 阶段 1：只校验与存取，不做替换）─────────────────
+
+    /**
+     * 预校验：只让电脑判一遍，**不保存**。界面上可以反复点。
+     *
+     * <p>校验在电脑端做（`POST /terms/validate`），手机不自己判 ——
+     * 否则会出现"手机上通过、真上传被拒"这种最难解释的情况。
+     *
+     * @return `{ code, json }`；`json.ok` 为 true 表示全部合法
+     */
+    public JSONObject termsValidate(String user, org.json.JSONArray entries)
+            throws IOException, org.json.JSONException {
+        JSONObject body = new JSONObject();
+        body.put("user", user);
+        body.put("entries", entries);
+        return requestWithCode("/terms/validate", "POST", body, 8000);
+    }
+
+    /**
+     * 上传：**全合法才整表替换**（一条不合法就整表不存，返回 400 + 逐条原因）。
+     * @return `{ code, json }`
+     */
+    public JSONObject termsPut(String user, org.json.JSONArray entries)
+            throws IOException, org.json.JSONException {
+        JSONObject body = new JSONObject();
+        body.put("user", user);
+        body.put("entries", entries);
+        return requestWithCode("/terms", "PUT", body, 12000);
+    }
+
+    /** 取电脑上当前生效的那张表（用来回填编辑框）。 */
+    public JSONObject termsGet(String user) throws IOException, org.json.JSONException {
+        String suffix = user == null || user.isEmpty() ? "" : "?user=" + java.net.URLEncoder.encode(user, "UTF-8");
+        return requestWithCode("/terms" + suffix, "GET", null, 8000);
+    }
+
+    /**
+     * 一次请求，但**把非 2xx 也当正常返回**（返回 { code, json }）。
+     *
+     * <p>为什么热词表要这个：上传时"表里有一处写错"是**正常业务结果**，
+     * 而它带着 400 与逐条原因（第几行、什么错）。用 request() 会把这段 JSON
+     * 塞进异常消息里，界面就没法逐条显示了。其余端点继续用 request()。
+     */
+    private JSONObject requestWithCode(String path, String method, JSONObject body, int readTimeoutMs)
+            throws IOException {
+        HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + path).openConnection();
+        try {
+            connection.setRequestMethod(method);
+            connection.setRequestProperty("X-Leion-Secret", secret);
+            connection.setConnectTimeout(5000);
+            connection.setReadTimeout(readTimeoutMs);
+            connection.setUseCaches(false);
+
+            if (body != null) {
+                byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
+                connection.setDoOutput(true);
+                connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+                connection.setFixedLengthStreamingMode(bytes.length);
+                try (OutputStream out = connection.getOutputStream()) {
+                    out.write(bytes);
+                }
+            }
+
+            int code = connection.getResponseCode();
+            InputStream stream = (code >= 200 && code < 300)
+                    ? connection.getInputStream()
+                    : connection.getErrorStream();
+            String text = readAll(stream);
+            JSONObject result = new JSONObject();
+            result.put("code", code);
+            org.json.JSONObject parsed;
+            try {
+                parsed = new org.json.JSONObject(text);
+            } catch (org.json.JSONException error) {
+                parsed = new org.json.JSONObject();
+                parsed.put("error", text.length() > 300 ? text.substring(0, 300) : text);
+            }
+            result.put("json", parsed);
+            return result;
+        } catch (org.json.JSONException error) {
+            throw new IOException("回包不是合法 JSON：" + error.getMessage());
+        } finally {
+            connection.disconnect();
+        }
+    }
+
     // ── 内部 ──────────────────────────────────────────────────────────────
 
     private void pollLoop() {
         // 1) 握手：顺便验证密钥拿错没拿错
         try {
-            JSONObject hello = request("/hello", "GET", null, 8000);
+            // 顺手报上"我是谁"：电脑据此记下这一场用哪张热词表（报错了也不影响握手）
+            String helloPath = "/hello";
+            if (!user.isEmpty()) {
+                try {
+                    helloPath = "/hello?user=" + java.net.URLEncoder.encode(user, "UTF-8");
+                } catch (java.io.UnsupportedEncodingException ignored) {
+                    helloPath = "/hello";
+                }
+            }
+            JSONObject hello = request(helloPath, "GET", null, 8000);
             int cols = hello.optInt("cols", 40);
             int lineBudget = hello.optInt("lineBudget", 3);
             seq = hello.optLong("seq", 0);

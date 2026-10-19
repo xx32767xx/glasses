@@ -28,6 +28,7 @@ import { runStartAllSuite } from './start-all-suite.mjs'
 import { runNetDoctorSuite } from './net-doctor-suite.mjs'
 import { runBenchSuite } from './bench-suite.mjs'
 import { runLintSuite } from './lint-suite.mjs'
+import { runTermsSuite } from './terms-suite.mjs'
 import { runAndroidOrderSuite } from './android-order-suite.mjs'
 import { runAsrPackSuite } from './asr-pack-suite.mjs'
 import { runLive } from './live/run.mjs'
@@ -193,6 +194,15 @@ await runBenchSuite(helpers)
 
 heading('译文质检判据（专名音译 / 楼层房间号丢失 / 葡语性数不一致）')
 await runLintSuite(helpers)
+
+// ── 7d2. 用户热词对照表（阶段 1：校验 + 存取 + 端点，不做替换）──────────────
+// 这一层不做任何替换，所以它守的边界很清楚：**表写坏了只能让上传失败**，
+// 不能影响正在跑的字幕。两处最容易出错的地方各配了成对断言 ——
+//   · "好表一条都不许拒"（阈值定太严会让「高通」「安卓」这种真专名进不来）；
+//   · "坏表一条都不能落盘"（部分落盘会造出"看到 ok、其实半张表没存上"的静默状态）。
+
+heading('用户热词对照表（校验拒绝码 / 原子落盘 / PUT 全有或全无）')
+await runTermsSuite(helpers)
 
 // ── 7e. 识别测试包（"这是朗读还是真实口语"这类标签）─────────────────────────
 // 这一节的由来很具体：测试包的语体标签原来是**猜**的，新语料一律被标成"朗读"；

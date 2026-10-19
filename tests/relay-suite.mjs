@@ -282,7 +282,7 @@ export async function runRelaySuite({ it, check, assert }) {
   await it('未知路由 404，并列出可用路由', async () => {
     const result = await call('/nope')
     check('404', result.status === 404, String(result.status))
-    assert.deepEqual(result.json.routes, ['/hello', '/say', '/audio', '/frame', '/status'])
+    assert.deepEqual(result.json.routes, ['/hello', '/say', '/audio', '/frame', '/status', '/terms'])
   })
 
   await it('请求体过大返回 413', async () => {

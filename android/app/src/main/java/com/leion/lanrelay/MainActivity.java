@@ -86,6 +86,14 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private static final String KEY_BILINGUAL = "bilingual";
     /** 开发者模式：关掉时设置页不显示「实验」「诊断」。 */
     private static final String KEY_DEVELOPER = "developer";
+    /**
+     * 热词表的用户名：电脑按它区分"这是谁的表"（docs/15 §8.3）。
+     * 留空 → 电脑侧回落到 `default`；之所以默认空而不是设备名，
+     * 是因为"设备名"在日志里读起来是 `Leion Pro`，排查时分不出是谁。
+     */
+    private static final String KEY_USER = "termsUser";
+    /** 热词表编辑框的原始文本（一行一条）—— 存下来免得每次进来都从零开始填。 */
+    private static final String KEY_TERMS_DRAFT = "termsDraft";
 
     /**
      * 判定"这一小段里有人在讲话"的**界面**门槛。
@@ -117,6 +125,10 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private int inboxLines = 0;
     private int framesSeen = 0;
     private String lastError = "";
+    /** 热词表（电脑侧 /status 报的）：上传过几次、最近几条、最近是谁。 */
+    private int termsSaved = 0;
+    private int termsSavedEntries = 0;
+    private String termsSavedUser = "";
 
     /** 会话（规范第 5、9 节）。null = 当前没有会话。 */
     private Session session = null;
@@ -180,6 +192,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     // 设置页
     private TextView settingsServerState;
     private TextView settingsOutputState;
+    /** 热词表那一行的状态小字（"上传 12 条 · 下次生效"这类）。 */
+    private TextView settingsTermsState;
     private TextView diagnosticsText;
     private TextView fontValue;
     private TextView themeSystemView;
@@ -741,6 +755,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         prefs.edit().putString(KEY_HOST, address).putString(KEY_SECRET, pairing).apply();
 
         client = new LanClient(address, pairing, this);
+        // 握手时把用户名报给电脑：它据此记下"这一场读哪张热词表"（docs/15 §8.3）
+        client.setUser(termsUser());
         client.start();
         renderConnectionCard();
     }
@@ -756,6 +772,11 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                     busSeen = status.optBoolean("busSeen", false);
                     inboxLines = status.optInt("inboxLines", 0);
                     framesSeen = status.optInt("frames", 0);
+                    // 热词表：电脑侧刚上传过几张、最近是谁 —— 设置页那一行的小字用它
+                    termsSaved = status.optInt("termsSaves", 0);
+                    termsSavedEntries = status.optInt("termsEntries", 0);
+                    termsSavedUser = status.optString("termsUser", "");
+                    renderTermsState();
                     renderConnectionCard();
                     refreshDiagnostics();
                     if (whenDone != null) whenDone.run();
@@ -1314,6 +1335,14 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private void closeOverlay() {
         glassesRealStatus = null;
         glassesRealToggle = null;
+        // 热词表页也一起解绑：那边的请求在后台线程里跑，回来时页面可能已经关了
+        termsUserField = null;
+        termsEntriesField = null;
+        termsStatusText = null;
+        termsWarnTitleView = null;
+        termsWarnBodyView = null;
+        termsRejectTitleView = null;
+        termsRejectBodyView = null;
         overlayHost.removeAllViews();
         overlayHost.setVisibility(View.GONE);
         overlayRoot = null;
@@ -1327,6 +1356,274 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private LinearLayout overlayConnectProgress;
     private TextView overlayConnectProgressText;
     private View overlayConnectProgressDot;
+
+    // ── 热词对照表页（docs/15 阶段 1）────────────────────────────────────────
+
+    private EditText termsUserField;
+    private EditText termsEntriesField;
+    private TextView termsStatusText;
+    private TextView termsWarnTitleView;
+    private TextView termsWarnBodyView;
+    private TextView termsRejectTitleView;
+    private TextView termsRejectBodyView;
+
+    /**
+     * 打开热词表页。进来先做两件事：回填草稿（本地）、再**从电脑拉一次现表**。
+     *
+     * <p>为什么两边都填：草稿是"我上次改到一半的东西"，电脑上的表是"现在真正生效的东西"。
+     * 两者可能不一致（改了没传），而用户最需要知道的正是这一点 —— 所以状态行会明说。
+     */
+    private void openTermsPage() {
+        View view = pushOverlay(R.layout.overlay_terms);
+        termsUserField = view.findViewById(R.id.termsUser);
+        termsEntriesField = view.findViewById(R.id.termsEntries);
+        termsStatusText = view.findViewById(R.id.termsStatus);
+        termsWarnTitleView = view.findViewById(R.id.termsWarnTitle);
+        termsWarnBodyView = view.findViewById(R.id.termsWarnBody);
+        termsRejectTitleView = view.findViewById(R.id.termsRejectTitle);
+        termsRejectBodyView = view.findViewById(R.id.termsRejectBody);
+
+        view.findViewById(R.id.termsBack).setOnClickListener(v -> closeOverlay());
+        termsUserField.setText(termsUser());
+        termsUserField.setHint(R.string.terms_user_hint);
+        termsEntriesField.setText(prefs.getString(KEY_TERMS_DRAFT, ""));
+        termsEntriesField.setHint(R.string.terms_entries_hint);
+
+        view.findViewById(R.id.termsValidate).setOnClickListener(v -> runTermsAction("validate"));
+        view.findViewById(R.id.termsUpload).setOnClickListener(v -> runTermsAction("upload"));
+        view.findViewById(R.id.termsLoad).setOnClickListener(v -> runTermsAction("load"));
+
+        showTermsReport(getString(R.string.terms_status_idle), R.color.ink_soft, null, null);
+        // 进页面就静默拉一次：用户不改任何东西也能看出"电脑上现在存了什么"
+        runTermsAction("load");
+    }
+
+    private String termsUser() {
+        String value = prefs.getString(KEY_USER, "");
+        return value == null ? "" : value.trim();
+    }
+
+    /**
+     * 把编辑框里的文本变成条目数组。
+     *
+     * 格式：一行一条，`中文 = 葡语`。等号两边空白会被去掉。
+     *
+     * <p>为什么解析失败要**逐行报**而不是跳过：静默跳过的后果是"我明明填了这条，
+     * 怎么没生效" —— 那种问题用户自己无法排查。所以看不懂的行一律算错误，
+     * 由界面列出第几行，让他改。
+     *
+     * @return `{ entries, badLines }`；badLines 里是 1 起的行号
+     */
+    private org.json.JSONArray parseTermLines(String text, java.util.List<Integer> badLines) {
+        org.json.JSONArray entries = new org.json.JSONArray();
+        if (text == null) return entries;
+        String[] lines = text.split("\n");
+        for (int index = 0; index < lines.length; index += 1) {
+            String line = lines[index].trim();
+            if (line.isEmpty()) continue;
+            if (line.startsWith("#")) continue;          // 允许注释，方便自己写备注
+            int split = indexOfSeparator(line);
+            if (split <= 0) {
+                badLines.add(index + 1);
+                continue;
+            }
+            String zh = line.substring(0, split).trim();
+            String pt = line.substring(split + 1).trim();
+            if (zh.isEmpty() || pt.isEmpty()) {
+                badLines.add(index + 1);
+                continue;
+            }
+            try {
+                org.json.JSONObject entry = new org.json.JSONObject();
+                entry.put("zh", zh);
+                entry.put("pt", pt);
+                entries.put(entry);
+            } catch (org.json.JSONException error) {
+                badLines.add(index + 1);
+            }
+        }
+        return entries;
+    }
+
+    /** 找 `=`、`＝`、`→` 这三种分隔符里最早出现的那个；都没有返回 -1。 */
+    private static int indexOfSeparator(String line) {
+        int best = -1;
+        for (char mark : new char[] { '=', '＝', '→' }) {
+            int at = line.indexOf(mark);
+            if (at > 0 && (best < 0 || at < best)) best = at;
+        }
+        return best;
+    }
+
+    /** 三个动作共用：解析 → 后台请求 → 回主线程渲染。 */
+    private void runTermsAction(final String action) {
+        final String user = termsUserField == null ? "" : termsUserField.getText().toString().trim();
+        prefs.edit().putString(KEY_USER, user).apply();
+        final String raw = termsEntriesField == null ? "" : termsEntriesField.getText().toString();
+        prefs.edit().putString(KEY_TERMS_DRAFT, raw).apply();
+
+        if (client == null) {
+            showTermsReport(getString(R.string.terms_status_need_connect), R.color.err, null, null);
+            return;
+        }
+
+        final java.util.List<Integer> badLines = new java.util.ArrayList<>();
+        final org.json.JSONArray entries = parseTermLines(raw, badLines);
+        showTermsReport(getString(R.string.terms_status_working), R.color.warn, null, null);
+
+        new Thread(() -> {
+            String status;
+            int color = R.color.brand;
+            org.json.JSONObject warnings = null;
+            org.json.JSONObject rejected = null;
+            try {
+                if ("load".equals(action)) {
+                    org.json.JSONObject result = client.termsGet(user);
+                    org.json.JSONObject json = result.optJSONObject("json");
+                    int code = result.optInt("code", 0);
+                    if (code != 200) {
+                        status = getString(R.string.terms_status_failed, describeTermsError(json, code));
+                        color = R.color.err;
+                    } else {
+                        // 把电脑上的表回填成文本，同时**保留**本地草稿里那些还没上传的行
+                        String loaded = formatTermLines(json.optJSONArray("entries"));
+                        int count = json.optJSONArray("entries") == null ? 0 : json.optJSONArray("entries").length();
+                        prefs.edit().putString(KEY_TERMS_DRAFT, loaded).apply();
+                        main.post(() -> {
+                            if (termsEntriesField != null) termsEntriesField.setText(loaded);
+                        });
+                        status = getString(R.string.terms_status_loaded, count);
+                    }
+                } else if ("validate".equals(action)) {
+                    org.json.JSONObject result = client.termsValidate(user, entries);
+                    org.json.JSONObject json = result.optJSONObject("json");
+                    int code = result.optInt("code", 0);
+                    // 校验的返回体里同时带 warnings 与 rejected，两个区都从它渲染
+                    warnings = json;
+                    if (code == 200) {
+                        status = getString(R.string.terms_status_valid, entries.length());
+                    } else {
+                        int bad = json == null || json.optJSONArray("rejected") == null ? 0 : json.optJSONArray("rejected").length();
+                        status = getString(R.string.terms_status_invalid, Math.max(bad, 1));
+                        color = R.color.err;
+                        rejected = json;
+                    }
+                } else {
+                    org.json.JSONObject result = client.termsPut(user, entries);
+                    org.json.JSONObject json = result.optJSONObject("json");
+                    int code = result.optInt("code", 0);
+                    if (code == 200 && json != null && json.optBoolean("ok", false)) {
+                        int previous = json.optInt("previousEntries", 0);
+                        status = json.optBoolean("overwritten", false)
+                                ? getString(R.string.terms_status_uploaded_overwrite, entries.length(), previous)
+                                : getString(R.string.terms_status_uploaded, entries.length());
+                        warnings = json;
+                    } else {
+                        int bad = json == null || json.optJSONArray("rejected") == null ? 0 : json.optJSONArray("rejected").length();
+                        status = getString(R.string.terms_status_invalid, Math.max(bad, 1));
+                        color = R.color.err;
+                        rejected = json;
+                    }
+                }
+            } catch (Exception error) {
+                status = getString(R.string.terms_status_failed, String.valueOf(error.getMessage()));
+                color = R.color.err;
+            }
+            final String finalStatus = status;
+            final int finalColor = color;
+            final org.json.JSONObject finalWarnings = warnings;
+            final org.json.JSONObject finalRejected = rejected;
+            main.post(() -> showTermsReport(finalStatus, finalColor,
+                    termLineProblems(finalWarnings, "warnings", badLines),
+                    termLineProblems(finalRejected, "rejected", badLines)));
+        }, "terms-action").start();
+    }
+
+    /** 电脑上的条目数组 → 编辑框文本（一行一条 `中文 = 葡语`）。 */
+    private static String formatTermLines(org.json.JSONArray entries) {
+        if (entries == null) return "";
+        StringBuilder out = new StringBuilder();
+        for (int index = 0; index < entries.length(); index += 1) {
+            org.json.JSONObject entry = entries.optJSONObject(index);
+            if (entry == null) continue;
+            if (out.length() > 0) out.append('\n');
+            out.append(entry.optString("zh", "")).append(" = ").append(entry.optString("pt", ""));
+        }
+        return out.toString();
+    }
+
+    /**
+     * 把服务端返回的 `warnings` / `rejected` 渲染成给人看的几行。
+     *
+     * <p>`index` 是**条目下标**（0 起），而用户看的是**行号**（1 起，且注释行/空行也在数）。
+     * 所以这里先按"第 N 个条目"说，再附上他自己输入的第几行 —— 两者都给，
+     * 他才知道该改哪一行（只给下标会让他去数条目而不是数行）。
+     */
+    private static String termLineProblems(org.json.JSONObject payload, String key,
+                                           java.util.List<Integer> badLines) {
+        StringBuilder out = new StringBuilder();
+        org.json.JSONArray items = payload == null ? null : payload.optJSONArray(key);
+        if (items != null) {
+            for (int index = 0; index < items.length(); index += 1) {
+                org.json.JSONObject item = items.optJSONObject(index);
+                if (item == null) continue;
+                int at = item.optInt("index", -1);
+                if (out.length() > 0) out.append('\n');
+                out.append(at >= 0 ? ("第 " + (at + 1) + " 条：") : "").append(item.optString("reason", ""));
+            }
+        }
+        for (Integer line : badLines) {
+            if (out.length() > 0) out.append('\n');
+            out.append("第 ").append(line).append(" 行看不懂（每行要写成「中文 = 葡语」）");
+        }
+        return out.length() == 0 ? null : out.toString();
+    }
+
+    private static String describeTermsError(org.json.JSONObject json, int code) {
+        if (json == null) return "HTTP " + code;
+        String hint = json.optString("hint", "");
+        String error = json.optString("error", "");
+        String text = error.isEmpty() ? hint : (hint.isEmpty() ? error : error + "：" + hint);
+        return text.isEmpty() ? ("HTTP " + code) : text;
+    }
+
+    /**
+     * 设置页那一行热词表的小字：说清"电脑上现在有没有表、几张、是谁的"。
+     *
+     * <p>为什么用电脑侧的数字而不是本地草稿：本地草稿可能改了没传 ——
+     * 那块正好是用户最容易误判的地方（"我填了怎么没生效"），
+     * 所以这里一律报**电脑侧事实**，没连上就直说没连上。
+     */
+    private void renderTermsState() {
+        if (settingsTermsState == null) return;
+        if (termsSaved <= 0) {
+            settingsTermsState.setText(R.string.settings_terms_hint);
+            return;
+        }
+        String who = termsSavedUser.isEmpty() ? "default" : termsSavedUser;
+        settingsTermsState.setText("电脑上最近上传：" + termsSavedEntries + " 条（" + who + "）· 下次同传生效");
+    }
+
+    /** 渲染结果区：状态行 + 提醒 + 拒绝原因。三块各自可空。 */
+    private void showTermsReport(String status, int colorRes, String warnings, String rejected) {
+        if (termsStatusText != null) {
+            termsStatusText.setText(status);
+            termsStatusText.setTextColor(getColor(colorRes));
+        }
+        if (termsWarnTitleView != null && termsWarnBodyView != null) {
+            boolean show = warnings != null && !warnings.isEmpty();
+            termsWarnTitleView.setVisibility(show ? View.VISIBLE : View.GONE);
+            termsWarnBodyView.setVisibility(show ? View.VISIBLE : View.GONE);
+            if (show) termsWarnBodyView.setText(warnings);
+        }
+        if (termsRejectTitleView != null && termsRejectBodyView != null) {
+            boolean show = rejected != null && !rejected.isEmpty();
+            termsRejectTitleView.setVisibility(show ? View.VISIBLE : View.GONE);
+            termsRejectBodyView.setVisibility(show ? View.VISIBLE : View.GONE);
+            if (show) termsRejectBodyView.setText(rejected);
+        }
+    }
+
 
     private void openConnectPage() {
         View view = pushOverlay(R.layout.overlay_connect);
@@ -1542,6 +1839,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         settingsPage.findViewById(R.id.settingsOutputRow).setOnClickListener(v -> openOutputSheet());
         settingsPage.findViewById(R.id.settingsGlassesRow).setOnClickListener(v -> openGlassesPreview());
         settingsPage.findViewById(R.id.settingsTypeRow).setOnClickListener(v -> promptManualText());
+        settingsTermsState = settingsPage.findViewById(R.id.settingsTermsState);
+        settingsPage.findViewById(R.id.settingsTermsRow).setOnClickListener(v -> openTermsPage());
         themeSystemView.setOnClickListener(v -> setThemeMode("system"));
         themeLightView.setOnClickListener(v -> setThemeMode("light"));
         themeDarkView.setOnClickListener(v -> setThemeMode("dark"));
@@ -1561,6 +1860,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         developerRow.setOnClickListener(v -> setDeveloperMode(!developerSwitch.isChecked()));
         developerSwitch.setOnCheckedChangeListener((button, checked) -> setDeveloperMode(checked));
         applyDeveloperMode();
+        renderTermsState();
     }
 
     /**

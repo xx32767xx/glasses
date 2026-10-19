@@ -189,4 +189,29 @@
     <string name="err_service">同传服务暂时不可用</string>
     <string name="processing">正在处理…</string>
     <string name="tech_detail">技术详情</string>
+    <!-- 热词对照表（设置页入口 + 整页）。规程见 docs/15-热词对照表.md -->
+    <string name="settings_terms">热词表</string>
+    <string name="settings_terms_title">热词对照表</string>
+    <string name="settings_terms_hint">上传「中文 = 葡语」的名字对照，下一次同传开始时生效</string>
+    <string name="terms_title">热词对照表</string>
+    <string name="terms_intro">一行一条，用等号隔开：左边中文，右边葡语。这些名字在译文里会被强制写成右边的写法。</string>
+    <string name="terms_user_label">用户名</string>
+    <string name="terms_user_hint">电脑按它区分是谁的表（留空用 default）</string>
+    <string name="terms_entries_label">对照表</string>
+    <string name="terms_entries_hint">亮亮视野 = LLVision</string>
+    <string name="terms_validate">校验</string>
+    <string name="terms_upload">上传</string>
+    <string name="terms_load">从电脑拉取</string>
+    <string name="terms_status_idle">还没上传过（当前没有热词表）</string>
+    <string name="terms_status_working">正在与电脑通信…</string>
+    <string name="terms_status_need_connect">还没连上电脑 —— 先在「连接电脑」里连上</string>
+    <string name="terms_status_parsed">共 %1$d 条，%2$d 行看不懂（每行要写成「中文 = 葡语」）</string>
+    <string name="terms_status_valid">校验通过：%1$d 条可以上传</string>
+    <string name="terms_status_invalid">有 %1$d 处问题，改完再上传（整张表不会保存）</string>
+    <string name="terms_status_uploaded">已上传 %1$d 条 · 下一次同传开始时生效</string>
+    <string name="terms_status_uploaded_overwrite">已上传 %1$d 条（覆盖了原来的 %2$d 条）· 下一次同传开始时生效</string>
+    <string name="terms_status_loaded">从电脑拉回 %1$d 条</string>
+    <string name="terms_status_failed">失败：%1$s</string>
+    <string name="terms_warn_title">提醒（不影响上传）</string>
+    <string name="terms_reject_title">不能上传的原因</string>
 </resources>
