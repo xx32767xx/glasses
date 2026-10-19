@@ -160,16 +160,19 @@
 
     <!-- 眼镜预览 -->
     <string name="glasses_preview_title">眼镜显示预览</string>
+    <string name="glasses_real_idle">眼镜未连接（用 USB 接上眼镜）</string>
+    <string name="glasses_real_cast">开始投屏</string>
+    <string name="glasses_real_stop">停止投屏</string>
 
     <!-- 真眼镜（USB 接的那副）投屏。见 docs/09-眼镜SDK接入.md -->
     <string name="glasses_sample_title">投屏样例</string>
-    <string name="glasses_sample_hint">点一句 → 真的投到眼镜上，按「短 / 中 / 长」连着看，就知道从多长开始翻页。前提是投屏已经起来（眼镜连上 + App 连上电脑后自动投屏）。</string>
+    <string name="glasses_sample_hint">点一句 → 真的投到眼镜上，按「短 / 中 / 长」连着看，就知道从多长开始翻页。前提是投屏已经起来（上面那行「开始投屏」亮着）。</string>
     <string name="glasses_sample_zh">中文</string>
     <string name="glasses_sample_pt">葡语</string>
     <string name="glasses_sample_custom_hint">或者自己输一句（你想确认的那句）</string>
     <string name="glasses_self_check">排版自检（在当前字号下量一遍）</string>
     <string name="glasses_sample_send">投屏这句</string>
-    <string name="glasses_sample_need_cast">还没投屏 —— 先让眼镜连上、App 连上电脑（连上后会自动投屏），否则点了也不会显示。</string>
+    <string name="glasses_sample_need_cast">还没投屏 —— 点上面那行「开始投屏」（眼镜没连上时它会说明原因），否则点了也不会显示。</string>
     <string name="glasses_sample_need_text">先在上面输一句，或者点一个现成的例句。</string>
     <string name="glasses_sample_sent">已投屏（%1$d 字，%2$d 行，%3$d 页）</string>
     <string name="glasses_sample_busy">同传正在跑 —— 真实字幕马上会盖掉这个样例。要看样例请先停同传。</string>

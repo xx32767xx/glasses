@@ -42,10 +42,51 @@
     </LinearLayout>
 
     <!--
-      正文放进 ScrollView：这一页的内容已经超出手机一屏了
-      （微调卡 + 投屏样例卡）。
-      标题栏留在外面**不滚** —— 返回按钮任何时候都要够得着，
-      而这一页的正文用户本来就要来回翻着看（改字号 → 看样例 → 再改）。
+      真眼镜（USB 接的那副）的状态行 + 手动投屏开关。
+      为什么要有开关：连接是自动的，自动投屏也只在"刚连上"那一次试一次 ——
+      那一次失败（眼镜还没就绪之类）之后，没有手动入口就只能拔插或重启 App。
+      SDK 的显示接口是"投屏"（见 docs/09-眼镜SDK接入.md），所以这里说的是"投屏"而不是"发送"。
+    -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="10dp"
+        android:background="@drawable/bg_card"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:padding="12dp">
+
+        <TextView
+            android:id="@+id/glassesRealStatus"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/glasses_real_idle"
+            android:textColor="@color/ink_soft"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/glassesRealToggle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/tap_pill"
+            android:clickable="true"
+            android:focusable="true"
+            android:paddingStart="14dp"
+            android:paddingTop="7dp"
+            android:paddingEnd="14dp"
+            android:paddingBottom="7dp"
+            android:text="@string/glasses_real_cast"
+            android:textColor="@color/brand"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <!--
+      正文放进 ScrollView：这一页的内容已经超出手机一屏了（微调卡 + 投屏样例卡）。
+      标题栏和上面那条状态行留在外面**不滚** —— 返回按钮、以及"眼镜连没连上、
+      投屏成没成"这两件事任何时候都要看得见、够得着。
     -->
     <ScrollView
         android:layout_width="match_parent"
