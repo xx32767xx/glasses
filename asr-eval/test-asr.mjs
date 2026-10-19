@@ -218,6 +218,7 @@ export function parseArgs(argv) {
   const options = {
     set: null, setPath: null, model: null, device: null, compute: null, language: null,
     count: null, errorsAbove: 0.10, compare: false, list: false, byAccent: false,
+    hotwords: null,
     show: 3, keep: false,
     // ── 两个"实验"模式（见文件头的说明：入口统一，引擎分开）────────────────
     cut: false,            // 切句方式（context_eval.py）
@@ -242,6 +243,16 @@ export function parseArgs(argv) {
     if (token === '--language') { options.language = argv[++index]; continue }
     if (token === '--count') { options.count = Number(argv[++index]); continue }
     if (token === '--errors-above') { options.errorsAbove = Number(argv[++index]); continue }
+    // 热词：空格分隔的词表，原样透传给 asr_eval.py 的 --hotwords。
+    // 产物文件名会自动带 `-hw`（见 resultPath），所以不会覆盖基线。
+    if (token === '--hotwords') {
+      const value = argv[++index]
+      if (value === undefined || String(value).trim() === '') {
+        throw new Error('--hotwords 需要一串词（空格分隔），例：--hotwords "亮亮视野 LLVision Leion Pro"')
+      }
+      options.hotwords = String(value).trim()
+      continue
+    }
     if (token === '--show') { options.show = Number(argv[++index]); continue }
     if (token === '--cut') { options.cut = true; continue }
     // `--context` 后面**可以**直接跟一组代号（`--context C1,T2` / `--context all`）——
@@ -453,16 +464,21 @@ function checkAudio(dir, limit = 5) {
  *      · 完整跑（`--count 0`）→ `zh-speech-dev__large-v3_cuda_float16.json`（`--compare` 只读这种）
  *      · 小批跑（`--count 2`）→ `zh-speech-dev-n2__large-v3_cuda_float16.json`
  *    **一个样本量一个文件名**，跑小批就不可能再悄悄盖掉完整结果。
+ *
+ * ⚠️ 带 `--hotwords` 的跑法同理：文件名带 `-hw`，**绝不和基线同名**。
+ *    热词是"先验通道"的一种，跑一次就该留下独立的一份结果，不能覆盖基线。
  */
-export function resultPath(setName, modelKey, count = null) {
+export function resultPath(setName, modelKey, count = null, hotwords = null) {
   const suffix = (count !== null && count > 0) ? `-n${count}` : ''
-  return join(RESULT_DIR, `${setName}${suffix}__${modelKey.replace(/[/@]/g, '_')}.json`)
+  const tag = hotwords ? '-hw' : ''
+  return join(RESULT_DIR, `${setName}${suffix}${tag}__${modelKey.replace(/[/@]/g, '_')}.json`)
 }
 
 /** 调同目录的 asr_eval.py 跑一轮，把它的 JSON 结果读回来。 */
 function runOne(set, model, options) {
   mkdirSync(RESULT_DIR, { recursive: true })
-  const outJson = resultPath(set.name, keyOf(model.name, model.device, model.compute), options.count)
+  const outJson = resultPath(set.name, keyOf(model.name, model.device, model.compute),
+    options.count, options.hotwords)
   const args = [
     // 与这个脚本同目录 —— 评测层的脚本互相调用，不跨层去 bridge/ 找。
     join(ROOT, 'asr-eval', 'asr_eval.py'),
@@ -480,7 +496,9 @@ function runOne(set, model, options) {
   ]
   if (options.language !== null) args.push('--language', options.language)
   if (options.count !== null) args.push('--count', String(options.count))
-  console.log(`\n▶ ${set.name} × ${model.name} / ${model.device} / ${model.compute} …`)
+  if (options.hotwords) args.push('--hotwords', options.hotwords)
+  console.log(`\n▶ ${set.name} × ${model.name} / ${model.device} / ${model.compute} …`
+    + (options.hotwords ? `\n  热词：${options.hotwords}` : ''))
   try {
     // 直接把子进程输出透传（进度点、预热耗时、逐条对照都在里面，别藏起来）
     execFileSync('python', args, { stdio: 'inherit', cwd: ROOT, env: childEnv() })

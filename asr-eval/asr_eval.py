@@ -36,6 +36,7 @@ import argparse
 import hashlib
 import io
 import json
+import os
 import re
 import subprocess
 import sys
@@ -47,6 +48,11 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent          # 本文件在 asr-eval/ 下
 ROOT = HERE.parent                              # 仓库根
+# ⚠️ 直接跑这个脚本时也要指到仓库里的模型缓存 —— 走 test-asr.mjs 时是那个入口设的，
+#    手动跑没设就会去 ~/.cache/huggingface 找、然后报一个**和真实原因无关**的 401
+#    （"Repository Not Found"）。同目录其它脚本早就有这两行，就这里漏了。
+os.environ.setdefault("HF_HOME", str(ROOT / "var" / "cache" / "hf"))
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 sys.path.insert(0, str(HERE))                   # 同层的兄弟模块（asr_score …）
 # ⚠️ 依赖方向是**单向**的：评测层可以用 bridge/ 里的共享工具（whisper_transcribe 的
 #    解码器、whisper_stream 的语种解析），但 bridge/ **永远不许** import asr-eval/。
@@ -127,6 +133,13 @@ def parse_args(argv=None):
     parser.add_argument("--decode-json", default=None,
                         help="透传给 transcribe() 的参数（JSON）。例："
                              "'{\"no_speech_threshold\": null, \"log_prob_threshold\": -2.0}'")
+    # 热词/词偏置：单独给一个开关（不塞进 --decode-json），因为**它要进文件名**——
+    # 跑过带热词的结果不许和基线同名，否则下次 --compare 会把两者混起来。
+    parser.add_argument("--hotwords", default=None,
+                        help="喂给 faster-whisper 的 hotwords（空格分隔的词/短语）。"
+                             "⚠️ 它的实现是把词表编成 token 塞进 decoder 的 previous_tokens"
+                             "（和 initial_prompt 同一条先验通道），所以**必须实测**："
+                             "短片段上可能诱发漏字或回显。空字符串等于不传")
     args = parser.parse_args(argv)
 
     # 解析并校验候选语种。
@@ -158,6 +171,10 @@ def parse_args(argv=None):
         if unknown:
             parser.error(f"--decode-json 里有 transcribe() 不认的参数：{unknown}")
         args.decode = parsed
+    # 热词：空格分隔；空串 = 不传（用 "" 会让 faster-whisper 拼出空 token，没必要）
+    args.hotwords = (args.hotwords or "").strip() or None
+    if args.hotwords and "hotwords" in args.decode:
+        parser.error("--hotwords 与 --decode-json 里的 hotwords 冲突，只留一个")
     return args
 
 
@@ -304,6 +321,9 @@ def run_provenance(args, wavset, items, unit):
         "language": args.language,
         "langCandidates": list(args.lang_candidates) if args.lang_candidates else None,
         "initialPrompt": args.initial_prompt,
+        # 热词必须进 provenance：不然"这份结果到底带没带词表"说不清，
+        # 而它恰恰是最容易被人记错的一个配置项。
+        "hotwords": args.hotwords,
         "normalizePeak": not args.no_normalize,
         "vadFilter": args.vad_filter,
         "decodeOverrides": args.decode,
@@ -385,6 +405,8 @@ def main():
             "condition_on_previous_text": False,
             "initial_prompt": args.initial_prompt,
         }
+        if args.hotwords:
+            decode_kwargs["hotwords"] = args.hotwords
         decode_kwargs.update(args.decode)          # --decode-json 最后覆盖
         try:
             segments, info = model.transcribe(audio, **decode_kwargs)

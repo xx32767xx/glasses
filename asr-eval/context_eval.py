@@ -13,10 +13,13 @@ context_eval.py —— 切短、边界、丢上下文到底让口语识别多损
 
       A 整段        整段一次识别（保留全部上下文，边界由录音本身给）
       B 官方句边界  按官方逐句时间戳切成一句一句，各自识别后**拼接**
-      C 产线切句    用产线上那个 UtteranceSegmenter（静音判定 500ms）切，各自识别后拼接
+      C 产线切句    用产线上那个 UtteranceSegmenter（**基线档**静音判定 500ms）切，各自识别后拼接
 
     A−B = 「切短 + 边界 + 丢上下文」的代价
     A−C = 上面这些 + 「产线切句自己的毛病（丢碎片、合并、切错位置）」的代价
+
+⚠️ C 的"基线档"是**改造前的产线参数**（500ms），不是今天的产线（800ms + 上下文续传）——
+   它被冻在这里当历史对照的基准，理由见下面 PRODUCTION_SEGMENTER 的注释。
 
 ⚠️ 三个必须说清楚的公平性前提（不满足的话这个对照就不成立）：
 
@@ -68,13 +71,24 @@ from asr_score import (                                                       # 
     normalized_error_rate, overall_rate,
 )
 from whisper_stream import (                                                  # noqa: E402
-    UtteranceSegmenter, force_utf8_stdio, looks_like_prompt_echo,
+    LANGUAGE_PROMPTS, UtteranceSegmenter, force_utf8_stdio, looks_like_prompt_echo,
 )
 from whisper_transcribe import TARGET_RATE                                    # noqa: E402
 
 force_utf8_stdio()
 
-# 产线切句的缺省参数（与 whisper_stream.py 的 argparse 缺省一致；改这里等于改实验条件）
+
+def hint_prompt(language):
+    """产线那句语种提示词（**从产线代码取，不另抄一份**）—— 见 `--prod-hint`。"""
+    return LANGUAGE_PROMPTS.get(language or "", "") or ""
+
+
+# ⚠️ **这是"实验基线"，不是当前产线缺省**，两者现在**不一样**，别搞混：
+#    · 这里的 500/15000 是**改造前的产线参数**，也是所有已发布对照表里 "C1/现状" 那一列的基准。
+#      改它 = 把历史结果全部作废（同一批段、同一个参考的比较就不成立了），所以**故意冻在这里**。
+#    · 当前产线是 `--silence-ms 800 --max-speech-ms 30000 --context-depth 2`、
+#      中文**不发**语种提示词（见 docs/06 §2 与 docs/14 §6.7.5）。
+#    想量"新产线 vs 老产线"就用 `--sweep 800/30000 --prompt-depth 2`（不要带动这个常量）。
 PRODUCTION_SEGMENTER = {
     "block_ms": 100,
     "silence_ms": 500,
@@ -222,7 +236,11 @@ def transcribe_one(model, audio, args, language, prompt=None):
     ⚠️ `prompt` 是**唯一允许**在"同一批段的不同喂法"之间变化的东西（上下文续传实验）：
        其余解码参数一律不动，否则量到的是参数差异，不是"补语境"的效果。
        按字算的口径下这个函数也被 `context_overlap.py` 复用（那边自己传 prompt）。
+    ⚠️ `--prod-hint` 打开时，**每一种**喂法都先缀上产线那句语种提示词
+       （顺序与产线一致：提示词在前、续传文本在后）。
     """
+    if getattr(args, "prod_hint", False):
+        prompt = hint_prompt(language) + (prompt or "")
     decode = {
         "language": language,
         "beam_size": args.beam_size,
@@ -260,14 +278,24 @@ def save_spans(path, spans):
     # ⚠️ `pick_spans` 只负责"挑哪几句"，`recording` 是调用方补上的（它得知道是哪场录音）。
     #    缺了就直接报错，不要写成空串 —— 段清单是"可重复执行"的地基，
     #    里面少一个字段会让下次跑出来的是**另一批段**，而且看不出来。
+    #
+    # ⚠️ **除固定字段外的附加字段必须原样保留**（第一版只挑固定字段，
+    #    于是某个建库脚本写的 `source`（来自哪一场录音、哪一秒到哪一秒）
+    #    被**静默丢掉** —— 报告里再也查不回"这段是从语料哪个位置拼出来的"。
+    #    可追溯性不能依赖"我记得它原来在哪"。）
+    known = {"recording", "start", "end", "duration", "utterances"}
+    payload = []
     for span in spans:
         if "recording" not in span:
             raise ValueError("段清单里每条都要有 recording（pick_spans 不产出这个字段，调用方补上）")
-    payload = [{"recording": s["recording"], "start": s["start"], "end": s["end"],
-                "duration": s["duration"],
-                "utterances": [{"start": u["start"], "end": u["end"], "speaker": u["speaker"],
-                                "text": u["text"]} for u in s["utterances"]]}
-               for s in spans]
+        entry = {"recording": span["recording"], "start": span["start"], "end": span["end"],
+                 "duration": span["duration"],
+                 "utterances": [{"start": u["start"], "end": u["end"], "speaker": u["speaker"],
+                                 "text": u["text"]} for u in span["utterances"]]}
+        for key, value in span.items():
+            if key not in known:
+                entry[key] = value
+        payload.append(entry)
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -290,9 +318,19 @@ def main():
     parser = argparse.ArgumentParser(
         description="切短/边界/丢上下文造成的额外损失：整段 vs 官方句边界 vs 产线切句（可做参数扫描）")
     parser.add_argument("--magicdata-dir", default=str(MAGICDATA_DEFAULT))
+    parser.add_argument("--wav-dir", default=None,
+                        help="音频目录（缺省走 MagicData 的 MDT2021S003/WAV）。"
+                             "指向别的语料重建出来的音频时用它，例如自己录/拼出来的音频目录")
+    parser.add_argument("--unit", default="char", choices=["char", "word"],
+                        help="错误率单位：中文按 char（缺省，没有空格分词）、葡语按 word。"
+                             "⚠️ 它同时决定参考文本怎么拼（按字拼接/按空格拼接），"
+                             "和包基线那套（asr_eval.py --unit）是同一个口径")
     parser.add_argument("--split", default="dev", choices=["dev", "test"],
                         help="用哪份原始录音（缺省 dev：调参只看 dev）")
     parser.add_argument("--count", type=int, default=12, help="取几段（缺省 12）")
+    parser.add_argument("--per-recording", type=int, default=0,
+                        help="每场录音最多取几段（缺省 0 = 不限制，会一直从前面几场取；"
+                             "跨场验证要设 1）")
     parser.add_argument("--target-seconds", type=float, default=30.0,
                         help="每段目标时长（缺省 30 秒）")
     parser.add_argument("--min-seconds", type=float, default=12.0, help="段最短时长")
@@ -308,6 +346,9 @@ def main():
                         help="所有喂法都用这个设置（缺省开，与评测口径一致）")
     parser.add_argument("--no-vad-filter", dest="vad_filter", action="store_false",
                         help="关掉内置 VAD（与产线一致）—— 所有喂法仍然一致")
+    parser.add_argument("--prod-hint", action="store_true",
+                        help="每种喂法都先缀上产线那句语种提示词（配合 --no-vad-filter "
+                             "就等于**产线的解码条件**）")
     # 参数扫描：一个值一个点，跑在同一批段、同一个参考上。
     # 写法 `500,800,1200,2000`，或 `500/15000,800/30000`（斜杠后面是句子上限 ms）。
     parser.add_argument("--sweep", default=None,
@@ -335,21 +376,33 @@ def main():
     args = parser.parse_args()
 
     root = Path(args.magicdata_dir)
-    partition = root / "DataPartition" / f"{args.split}.tsv"
-    if partition.is_file() is False:
-        sys.exit(f"找不到官方划分 {partition}（用 --magicdata-dir 指定）")
-    wav_dir = root / "MDT2021S003" / "WAV"
+    # `--wav-dir` 用来指向**别的音频目录**（自己录的、或从别的语料拼出来的）：
+    # 段清单一给，就不需要 MagicData 的官方划分了。
+    wav_dir = Path(args.wav_dir) if args.wav_dir else root / "MDT2021S003" / "WAV"
     txt_dir = root / "MDT2021S003" / "TXT"
-
-    # ⚠️ 划分文件是「录音名 <TAB> 采样点数」两列 —— 不能按"整行以 .wav 结尾"筛，
-    #    那样一行都筛不出来（实测踩到：打印出「0 场原始录音」）。
-    recordings = sorted({Path(line.split("\t")[0].strip()).name
-                         for line in partition.read_text(encoding="utf-8").splitlines()
-                         if line.split("\t")[0].strip().endswith(".wav")})
+    spans_file = Path(args.spans_file) if args.spans_file else (
+        ROOT / "var" / "asr-eval" / "spans" / f"context-{args.split}-{args.count}.json")
+    # ⚠️ 需要读官方划分的两种情况（第一版只看了"给没给 --spans-file"，于是
+    #    "给了段清单但文件还不存在"时既不读划分、也挑不出段，直接报"一段都没挑出来"）：
+    #    ① 这次要**挑段**（没给段清单 / 文件不存在 / --refresh-spans）→ 挑段要知道有哪些录音；
+    #    ② 没给 --wav-dir → 音频目录本身就是从 MagicData 结构推出来的。
+    need_pick = args.refresh_spans or spans_file.is_file() is False
+    recordings = []
+    if need_pick or args.wav_dir is None:
+        partition = root / "DataPartition" / f"{args.split}.tsv"
+        if partition.is_file() is False:
+            sys.exit(f"找不到官方划分 {partition}（用 --magicdata-dir 指定，"
+                     f"或直接用 --spans-file + --wav-dir 指向别的语料）")
+        # ⚠️ 划分文件是「录音名 <TAB> 采样点数」两列 —— 不能按"整行以 .wav 结尾"筛，
+        #    那样一行都筛不出来（实测踩到：打印出「0 场原始录音」）。
+        recordings = sorted({Path(line.split("\t")[0].strip()).name
+                             for line in partition.read_text(encoding="utf-8").splitlines()
+                             if line.split("\t")[0].strip().endswith(".wav")})
 
     # 要跑哪些"喂法"：A 整段、B 逐句切，以及 C 的若干组产线切句参数
     configs = parse_sweep(args.sweep) if args.sweep else [
-        dict(PRODUCTION_SEGMENTER, label=f"C 产线切句（silence {PRODUCTION_SEGMENTER['silence_ms']}ms）")]
+        dict(PRODUCTION_SEGMENTER,
+             label=f"C 产线切句（基线档 silence {PRODUCTION_SEGMENTER['silence_ms']}ms）")]
     modes = [{"key": "A", "label": "A 整段（留全部上下文）", "kind": "whole", "config": None}]
     if not args.skip_b:
         modes.append({"key": "B", "label": "B 官方句边界（逐句切）", "kind": "utterance",
@@ -365,7 +418,10 @@ def main():
 
     print("=" * 96)
     print("切短/边界/丢上下文的影响：同一段音频、同一个参考，只改「怎么切」")
-    print(f"  语料 MagicData-RAMC {args.split} 划分 · {len(recordings)} 场原始录音")
+    if recordings:
+        print(f"  语料 MagicData-RAMC {args.split} 划分 · {len(recordings)} 场原始录音")
+    else:
+        print(f"  音频目录 {wav_dir}（段清单直接给的那批，不走 MagicData 划分）")
     print(f"  模型 {args.model} / {args.device} / {args.compute_type} / beam {args.beam_size}"
           f" / vad_filter={args.vad_filter} / 语种 {args.language}")
     print(f"  丢弃 <{PRODUCTION_SEGMENTER['min_speech_ms']}ms 的碎片（产线设置，所有 C 相同）")
@@ -375,8 +431,6 @@ def main():
     print("=" * 96)
 
     # ── 段清单：存在就用同一批（参数扫描必须如此），不存在就挑好写下来 ─────────
-    spans_file = Path(args.spans_file) if args.spans_file else (
-        ROOT / "var" / "asr-eval" / "spans" / f"context-{args.split}-{args.count}.json")
     if spans_file.is_file() and not args.refresh_spans:
         spans = load_spans(spans_file)
         print(f"\n段清单：**复用** {spans_file}")
@@ -388,11 +442,17 @@ def main():
             transcript = txt_dir / (Path(recording).stem + ".txt")
             if transcript.is_file() is False or (wav_dir / recording).is_file() is False:
                 continue
+            # ⚠️ `--per-recording` 是这个循环的**上限**，不是"每场都挑这么多"：
+            #    不设上限时，挑段会一直从**第一场**录音里取（实测：20 段全来自同一场），
+            #    于是结论只在一个说话人、一个房间里成立 —— 要验证稳健性就必须跨场抽。
+            quota = args.count - len(spans)
+            if args.per_recording:
+                quota = min(quota, args.per_recording)
             picked = pick_spans(parse_transcript(transcript),
                                 target_seconds=args.target_seconds,
                                 min_seconds=args.min_seconds,
                                 min_utterances=args.min_utterances, max_gap=args.max_gap,
-                                count=args.count - len(spans), seed=0)
+                                count=quota, seed=0)
             for span in picked:
                 span["recording"] = recording
                 spans.append(span)
@@ -400,9 +460,14 @@ def main():
                 break
         if not spans:
             sys.exit("一段都没挑出来（把 --min-seconds / --min-utterances 放宽试试）")
+        used_recordings = len({span["recording"] for span in spans})
         save_spans(spans_file, spans)
         print(f"\n段清单：**新挑**并写到 {spans_file}")
-        print(f"  {len(spans)} 段，指纹 {spans_digest(spans)}（下次跑会复用这一批）")
+        print(f"  {len(spans)} 段 / {used_recordings} 场录音，指纹 {spans_digest(spans)}"
+              f"（下次跑会复用这一批）")
+        if used_recordings == 1:
+            print("  ⚠️ 这批段**全部来自同一场录音** —— 结论只在那个说话人/房间里成立。"
+                  "要跨场就用 `--per-recording 1`。")
     # `--limit` 只截取"这次跑几段"，**不改段清单文件** —— 冒烟测试不该污染固化的输入。
     if args.limit:
         spans = spans[:args.limit]
@@ -435,8 +500,10 @@ def main():
     records = []
     for index, span in enumerate(spans, 1):
         audio, rate = read_slice(wav_dir / span["recording"], span["start"], span["end"])
-        reference = join_texts([row["text"] for row in span["utterances"]], "char")
-        unit = "char"
+        # ⚠️ 单位随语种：中文按**字**（没有空格分词，按词算的话整句就是一个 token），
+        #    葡语按**词**（按字算会把 WER 变成 CER，和包基线那套口径就对不上了）。
+        reference = join_texts([row["text"] for row in span["utterances"]], args.unit)
+        unit = args.unit
         entry = {"recording": span["recording"], "start": span["start"], "end": span["end"],
                  "duration": span["duration"], "utterances": len(span["utterances"]),
                  "reference": reference}
@@ -607,11 +674,18 @@ def main():
             "spans": len(spans), "totalSeconds": total_seconds, "model": args.model,
             "device": args.device, "computeType": args.compute_type,
             "beamSize": args.beam_size, "language": args.language, "vadFilter": args.vad_filter,
+            "prodHint": bool(getattr(args, "prod_hint", False)),
+            "hintPrompt": (hint_prompt(args.language)
+                           if getattr(args, "prod_hint", False) else None),
+            "promptDepth": args.prompt_depth,
             "scoringRules": SCORING_RULES_VERSION, "normalizedRules": NORMALIZED_RULES_VERSION,
+            "unit": args.unit, "wavDir": str(wav_dir),
             "segmenterBase": PRODUCTION_SEGMENTER,
             "modes": [{k: m[k] for k in ("key", "label", "kind", "config")} for m in modes],
             "rerun": "python asr-eval/context_eval.py --spans-file " + str(spans_file)
                      + (f" --sweep {args.sweep}" if args.sweep else "")
+                     + (f" --prompt-depth {args.prompt_depth}" if args.prompt_depth else "")
+                     + (" --no-vad-filter --prod-hint" if getattr(args, "prod_hint", False) else "")
                      + f" --model {args.model} --device {args.device}"
                      + f" --compute-type {args.compute_type}",
         },

@@ -121,6 +121,16 @@ export async function runAsrPackSuite({ it, check }) {
     check('两者不是同一个文件（否则小批会覆盖完整结果）', full !== partial)
     check('没传 count 时保持旧口径（--compare 读的就是它）',
       resultPath('zh-speech-dev', 'large-v3_cuda_float16') === full)
+    // 热词跑出来的结果必须有独立文件名：它和基线是**两种配置**，混在一起会毁掉可比性。
+    const hotworded = resultPath('zh-speech-dev', 'large-v3_cuda_float16', 0, '亮亮视野 LLVision')
+    check('带热词的跑法文件名带 -hw', hotworded.endsWith('zh-speech-dev-hw__large-v3_cuda_float16.json'),
+      hotworded)
+    check('热词结果与基线不是同一个文件', hotworded !== full)
+    check('没传热词时不加后缀（基线仍可被 --compare 读到）',
+      resultPath('zh-speech-dev', 'large-v3_cuda_float16', 0, null) === full)
+    check('小批 + 热词两个后缀能同时出现',
+      resultPath('zh-speech-dev', 'large-v3_cuda_float16', 2, 'x')
+        .endsWith('zh-speech-dev-n2-hw__large-v3_cuda_float16.json'))
     check('结果目录就是 paths.mjs 里那一个（不另写路径）',
       full.startsWith(ASR_RESULTS_DIR), full)
     check('模型名里的 / 与 @ 会被替换掉（否则会写进子目录）',
@@ -151,6 +161,26 @@ export async function runAsrPackSuite({ it, check }) {
     check('--limit 带过去了（冒烟测试用）', ctx.includes('--limit') && ctx.includes('4'))
     check('上下文那一路**不该**收到 --sweep（它没有这个参数，传了会直接报错）',
       ctx.includes('--sweep') === false, ctx.join(' '))
+  })
+
+  // ── 热词（`--hotwords`）：先验通道的一种，必须能量、且不能覆盖基线 ──────────
+  //
+  // faster-whisper 的 hotwords 是把词表编成 token 塞进 decoder 的 previous_tokens，
+  // 和 initial_prompt 走同一条通道 —— 所以它既可能修好专名拼写，也可能诱发漏字/回显。
+  // 这里钉的是"能不能传、传错了会不会报错、产物名会不会撞基线"。
+  await it('热词参数：能传、写错要报错、产物名带 -hw 不撞基线', () => {
+    const parsed = parseArgs(['--set', 'zh-read-dev', '--hotwords', 'Chhappan Bhog CEP'])
+    check('--hotwords 被解析成一整串（空格分隔的词表）',
+      parsed.hotwords === 'Chhappan Bhog CEP', String(parsed.hotwords))
+    check('不给 --hotwords 时是 null（不是空串 —— 空串会拼出空 token）',
+      parseArgs(['--set', 'zh-read-dev']).hotwords === null)
+    let message = ''
+    try { parseArgs(['--set', 'zh-read-dev', '--hotwords']) } catch (error) { message = String(error.message) }
+    check('--hotwords 后面没给值要明确报错', message.includes('--hotwords'), message)
+    message = ''
+    try { parseArgs(['--set', 'zh-read-dev', '--hotwords', '  ']) } catch (error) { message = String(error.message) }
+    check('--hotwords 只给空白也要报错（不许静默当成"没开热词"）',
+      message.includes('--hotwords'), message)
   })
 
   await it('实验模式：段清单与 --count 的关系（不许悄悄只跑旧的那一批）', () => {

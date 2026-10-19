@@ -29,6 +29,7 @@ import os
 import subprocess
 import wave
 import contextlib
+import inspect
 import io
 from pathlib import Path
 
@@ -42,9 +43,10 @@ sys.path.insert(0, str(ROOT / "bridge"))
 sys.path.insert(0, str(ROOT / "asr-eval"))
 
 from whisper_stream import (   # noqa: E402
-    IdleTracker, LANGUAGE_PROMPTS, PcmFollower, SPEECH_RMS_FLOOR, UtteranceSegmenter,
-    decide_no_speech, looks_like_hallucination, looks_like_prompt_echo,
-    normalize_peak, parse_args, pick_language, prompt_for, rms_of, whisper_language_of,
+    LANGUAGE_PROMPTS, SPEECH_RMS_FLOOR, ContextCarry, IdleTracker, PcmFollower, Stats,
+    UtteranceSegmenter, context_depth_for, decide_no_speech, looks_like_context_echo,
+    looks_like_hallucination, looks_like_prompt_echo, normalize_peak, parse_args,
+    pick_language, prompt_for, rms_of, transcribe, whisper_language_of,
 )
 from whisper_transcribe import TARGET_RATE, load_audio                    # noqa: E402
 import asr_pack                                                          # noqa: E402
@@ -748,17 +750,23 @@ def main():
     check("归一化不改变波形形状（只是整体缩放）",
           bool(np.allclose(normalize_peak(quiet) / 0.9, quiet / 0.2, atol=1e-5)))
 
-    # 提示词：一波三折之后**默认开着** —— 因为回显那道闸已经能挡住唯一的坏处，
-    # 而基准显示它确实提准确率（medium 7.4%→5.9%，疑似繁体 8 字→1 字）。
-    check("中文提示词要求普通话 + 简体（压掉繁体输出）",
-          "简体" in (prompt_for("zh", None) or "") and "普通话" in (prompt_for("zh", None) or ""),
-          str(prompt_for("zh", None)))
-    check("葡语提示词是巴葡口吻", "Brasil" in (prompt_for("pt", None) or ""), str(prompt_for("pt", None)))
+    # 提示词：一波三折，最后**中文那句被实测否掉了** —— 这段历史必须留在测试里，
+    # 否则下次有人看到"以前开着"又会顺手打开。
+    #   ① 起初开：想压繁体。② 因为被回显成假字幕而关，加了回显闸之后又开。
+    #   ③ 现在关：在**真实口语**包 zh-speech-dev（304 条、跨多场录音）上只改这一个变量——
+    #      不发 15.55%/14.51%（删除 352、繁体 45 字）；发 18.24%/17.96%（删除 489、繁体 1 字）。
+    #      多错 2.7~3.5 个点换 0.8 个点的繁体，净亏。
+    check("中文**缺省不发**那句提示词（口语包实测：发了要多错 2.7~3.5 个百分点）",
+          prompt_for("zh", None) is None, str(prompt_for("zh", None)))
+    check("那句提示词仍然留在目录里（要显式发、或别的实验要模拟它时还用得上）",
+          "简体" in LANGUAGE_PROMPTS["zh"] and "普通话" in LANGUAGE_PROMPTS["zh"])
+    check("葡语那句缺省仍然发（⚠️ 它还没量过，所以不跟着一起关）",
+          "Brasil" in (prompt_for("pt", None) or ""), str(prompt_for("pt", None)))
     check("认不出语种就不发提示词（别硬塞一个错的）",
           prompt_for("xx", None) is None, str(prompt_for("xx", None)))
-    check("显式给的提示词优先", prompt_for("zh", "自定义") == "自定义")
-    check("缺省会发提示词（不是 None）", prompt_for("zh", args.initial_prompt) is not None)
-    check("--no-prompt 能关掉它",
+    check("显式给的提示词优先（想临时开回来就 --initial-prompt）",
+          prompt_for("zh", "自定义") == "自定义")
+    check("--no-prompt 能关掉任何缺省提示词",
           args.no_prompt is False and parse_args(["--no-prompt"]).no_prompt is True)
 
     # 回显过滤：这条闸必须真的拦得住 —— 按实测复现出来的真实样本
@@ -789,6 +797,147 @@ def main():
     check("真实回显仍然拦得住：实测那次丢弃的原文",
           looks_like_prompt_echo("请用简体中文输出。", PROMPT),
           "这个漏了就等于闸门形同虚设")
+
+    # 第 4 条判据：**半截提示词混在正常字幕里** —— 这条是补的，来源是一次真实测量。
+    # 产线解码条件（vad 关 + 提示词开）下跑 20 段连续录音，C1 的错误率 21.9%（关掉提示词是
+    # 16.8%），而样本输出里能直接看到漏进来的提示词尾巴：
+    #   `人们活了很长时间,只记住这四千年。请用简体中文输出。二百五十年…`
+    # 整段既不是提示词的子串、也不是它的"一部分"，原来三条判据**全部放行** → 假字幕照发。
+    heading("回显过滤 · 半截提示词混在正常字幕里（实测漏网样本）")
+    leak = "人们活了很长时间,只记住这四千年。请用简体中文输出。二百五十年他在干什么"
+    check("实测漏掉的那句现在拦得住", looks_like_prompt_echo(leak, PROMPT),
+          "半截提示词会被当成正常字幕显示出去")
+    check("单独一句半截提示词也拦得住", looks_like_prompt_echo("请用简体中文输出", PROMPT))
+    check("但 2~3 字的常用词仍然一律放行（这条不能松）",
+          all(not looks_like_prompt_echo(word, PROMPT) for word in ("中文", "输出", "句子", "的话")))
+    check("正常长句仍然放行（新判据只认「整句就是提示词里的一段」）",
+          not looks_like_prompt_echo("我觉得这个方案不行，明天再讨论一下。", PROMPT))
+
+    # ── 上下文续传（把前 N 段的定稿文本喂回去当提示词）──────────────────────
+    #
+    # 实测（同一段口语录音的 20 个连续段、同一个参考）：逐段独立 16.8% → 前两段续传 15.1%，
+    # 而且**零额外等待**（不多听一秒音频）。它比"声学重叠"便宜也有效（后者要拼窗口、
+    # 右邻还要多等一段）。但提示词变长会带来"模型复读上文"这个新失败方式，
+    # 所以这一节同时钉住三条边界：换语种清空、隔太久清空、只记定稿文本。
+    heading("上下文续传 · 取哪几段、什么时候清空")
+    carry = ContextCarry(2, max_gap_seconds=60.0)
+    check("一开始没有上文（第一段不该凭空带上一句）", carry.prompt("zh", 0.0) == "")
+    carry.push("第一句话。", "zh", 0.0)
+    carry.push("第二句话。", "zh", 1.0)
+    check("取到最近两段、按原顺序",
+          carry.prompt("zh", 2.0) == "第一句话。第二句话。", carry.prompt("zh", 2.0))
+    carry.push("第三句话。", "zh", 3.0)
+    check("只保留最近 N 段（第三句进来，第一句就该掉出去）",
+          carry.prompt("zh", 4.0) == "第二句话。第三句话。", carry.prompt("zh", 4.0))
+    check("空文本不入库（否则上文的空档会把窗口挤掉）",
+          (carry.push("", "zh", 5.0), carry.prompt("zh", 5.0))[1] == "第二句话。第三句话。")
+    check("换语种立刻清空（中文上文喂给葡语解码 = 逼模型继续写中文）",
+          carry.prompt("pt", 6.0) == "" and carry.resets["language"] == 1,
+          f"prompt={carry.prompt('pt', 6.0)!r} resets={carry.resets}")
+    carry.push("Agora em português.", "pt", 7.0)
+    check("清空之后能重新攒（不是被永久关掉）",
+          carry.prompt("pt", 8.0) == "Agora em português.")
+    check("隔太久清空（缺省 60 秒：几分钟前的上一句不属于同一段上文）",
+          carry.prompt("pt", 8.0 + 61) == "" and carry.resets["gap"] == 1, str(carry.resets))
+    check("depth=0 时整个功能关掉（不记也不带）",
+          (lambda c: (c.push("x", "zh", 0.0), c.prompt("zh", 1.0))[1])(ContextCarry(0)) == "")
+
+    heading("上下文续传 · 复读上文的闸（宁可漏拦，也不能吃掉正常字幕）")
+    context = "我们今天讨论三个问题。第一个是预算。"
+    check("整段几乎全是上文时判为复读",
+          looks_like_context_echo("我们今天讨论三个问题。第一个是预算。", context),
+          "模型把上一句整句又说了一遍，字幕会重复")
+    check("**接着往下说**不算复读（这是这条闸最重要的性质）",
+          not looks_like_context_echo("第一个是预算，第二个是排期。", context),
+          "重复了上文的一句、后面还有新内容 —— 后半句的新内容不能跟着一起丢")
+    check("正常的新句子不会被误判",
+          not looks_like_context_echo("第二个是排期，下周一之前定下来。", context))
+    check("只是**用词重合**不算复读（用户真的重复说一句时不能吃掉字幕）",
+          not looks_like_context_echo("我觉得这个方案不行，我们先看预算。", context))
+    check("没有上文时永远不判（别把第一句吃掉）",
+          not looks_like_context_echo("第一个是预算", ""))
+    check("短句不判（宁可放过，也不冒吃字幕的险）",
+          not looks_like_context_echo("预算", context))
+
+    # ⚠️ 两道"抄"的闸必须**分开用**：指令用严判据、上文用松判据。
+    #    实测踩到过：把"指令 + 上文"拼成一个 initial_prompt 一起过严判据之后，
+    #    800ms 那一轮实验回显计数器报了 1 次，而那一整段输出里**没有任何重复片段** ——
+    #    它报的只是"用户自己重复用了几个字/一句话"。在产线上那就是真字幕被吃掉。
+    heading("两道闸分开用：指令严判、上文松判")
+    carried = "这个盒子里边放的东西很重要。"
+    continued = "这个盒子里边放的东西很重要，只有第二级才真的严重。"
+    check("严判据**确实会**把「含有上文」当成回显（所以它不能用来判上文）",
+          looks_like_prompt_echo(continued, carried),
+          "这条断言是在记录「为什么必须分开」：严判据对上文必然误杀")
+    check("松判据放行「重复上文 + 新内容」（真字幕不能被吃掉）",
+          not looks_like_context_echo(continued, carried))
+    check("transcribe 的签名把两段分开收（hint_text / context_text）",
+          {"hint_text", "context_text"} <= set(inspect.signature(transcribe).parameters),
+          str(list(inspect.signature(transcribe).parameters)))
+    check("handle 传的是 hint_text=hint / context_text=carried（不是拼在一起）",
+          "hint_text=hint, context_text=carried or None"
+          in (ROOT / "bridge" / "whisper_stream.py").read_text(encoding="utf-8"))
+
+    # ── 归因工具（`asr-eval/carry_attribution.py`）：拆"上下文帮在哪、伤在哪"──────
+    #
+    # 这个工具的价值全在"口径对不对"，所以把两处最容易错的地方钉住：
+    #   ① 按句内位置归属时，「=」也必须推进参考位置（第一版漏了它，
+    #      算出"第 1 句 83% 错误率"这种显然不可能的假数）；
+    #   ② "抄上文"的比例必须真的按"更早出现的参考词"算，而不是全段词表。
+    import carry_attribution as attrib
+
+    heading("归因工具 · 上下文帮在哪 / 伤在哪")
+    reference = "são paulo capital são"
+    hypothesis = "são paulo capital são"
+    bounds = [(0, 3), (3, 6)]
+    first, later, units_first, units_later = attrib.split_errors(
+        reference, hypothesis, bounds, "word")
+    check("全对时 S/D/I 都是 0（先确认它不会凭空造错）",
+          sum(first.values()) + sum(later.values()) == 0, str((first, later)))
+    check("每句的单位数按参考算（上面的例子是 3 + 3）",
+          (units_first, units_later) == (3, 3), f"{units_first}/{units_later}")
+    # 「=」漏推进的后果：所有错误都会被算进第 1 句 —— 这条就是当时的回归点
+    first, later, _units_first, _units_later = attrib.split_errors(
+        "一二三四五六七八", "一二X四五六Y八", [(0, 4), (4, 8)], "char")
+    check("错误按句内位置分得开（第 2 句的错不会被算进第 1 句）",
+          first["S"] == 1 and later["S"] == 1, f"first={first} later={later}")
+    hits, total = attrib.bleeding("viajei pelo país viajei", "viajei pelo país viajei", "word")
+    check("全对时没有替换/插入可统计（分母为 0，不能除出个假比例）",
+          (hits, total) == (0, 0), f"{hits}/{total}")
+    hits, total = attrib.bleeding("viajei pelo país", "viajei pelo viajei", "word")
+    check("抄上文的替换被数出来（'país'→'viajei'，而 viajei 前面出现过）",
+          hits == 1 and total == 1, f"{hits}/{total}")
+    counts, _examples = attrib.classify_new_substitutions(
+        "viajei pelo país", "viajei pelo cidade", "viajei pelo viajei", "word")
+    check("新出现的替换若来自本段早前 → 记成「抄上文」",
+          counts["bleed"] == 1, str(counts))
+    counts, _examples = attrib.classify_new_substitutions("eh bom", "eh bom", "é bom", "word")
+    check("口语→书面（eh→é）单独算一档，不混进「真听错」",
+          counts["spoken"] == 1, str(counts))
+
+    # 统计口径：延迟必须把"一段本身有多长"算进去 —— 这条口径错过很久，
+    # 报告里把 1200ms 那档说成"只多等 2.3 秒"，实际是 6.2 秒（一句话要先攒成一整段）。
+    heading("统计口径 · 字幕延迟不能漏掉段长")
+    stats = Stats()
+    for _ in range(10):
+        stats.add(4.0, 0.6, False)
+    report = io.StringIO()
+    with contextlib.redirect_stderr(report):
+        stats.report(1200, gate="测试门槛")
+    text = report.getvalue()
+    check("报告里有平均段长", "平均段长" in text and "4.00s" in text, text[-300:])
+    check("延迟 = 段内位置 + 静音判定 + 识别（三项都在）",
+          "段内平均位置 2.00s" in text and "静音判定 1.20s" in text and "识别 0.60s" in text,
+          text[-300:])
+    check("同时给最坏情况（段长 + 静音 + 识别）", "最坏 5.80s" in text, text[-300:])
+    check("标明是**估算**，不是实测", "估算" in text)
+    stats.carry = ContextCarry(2)
+    report = io.StringIO()
+    with contextlib.redirect_stderr(report):
+        stats.report(1200)
+    check("报告里能看出续传有没有在工作（清空次数 + 复读拦了几段）",
+          "上下文续传" in report.getvalue() and "照抄上文被丢弃" in report.getvalue(),
+          report.getvalue()[-300:])
 
     # 幻听闸：那条「谢谢观看,下次见!」是实测混过去的假字幕（按真实上传节奏重放时出来的），
     # 它当时直接当字幕发到了眼镜上 —— 假字幕比没有字幕糟得多。
@@ -851,13 +1000,39 @@ def main():
     check("缺省开启短句保护，但阈值克制（不把相邻两句合起来）",
           args.short_utterance_ms == 800 and args.short_silence_ms == 1100,
           f"{args.short_utterance_ms}/{args.short_silence_ms}")
-    # 静音判定的缺省值是量出来改过的：原来 700ms，实测在"句间停顿 500ms"的连续说话下
-    # 会把句子并成 12~14 秒的长段，文字错误率 23.9%；改成 500ms 后降到 10.0%。
-    # 反方向（说话人停顿本来就长）只贵 2 个百分点 —— 这个不对称是选 500 的理由。
-    check("缺省静音判定 500ms（基准实测：判太慢的代价比判太快大得多）",
-          args.silence_ms == 500, str(args.silence_ms))
+    # 静音判定的缺省值是**量出来改过两次**的，两次都记在这里，免得下次又有人凭直觉改回去：
+    #   ① 起初 700 → 500：在"朗读语料 + 合成停顿"上，判 1000ms 会把句子并成 12~14 秒的长段，
+    #      错误率 23.9%；判 500ms 是 10.0%。
+    #   ② 500 → 800（现在）：在**真实口语**（31 分钟原始录音取 20 个连续段、同一个参考、
+    #      同一套切句器）上做受控对照：500 → 16.8%、800 → 15.5%、1200 → 13.3%、2000 → 12.2%。
+    #      机制：段太碎时 min_speech_ms 会丢碎片（500ms 档只覆盖 79.1% 的音频，800 档 82.8%）。
+    #      ⚠️ **没取最准的 1200，是产品取舍**：字幕延迟（含"段内等待"）500 档 2.7 秒、
+    #      800 档 3.8 秒、1200 档 6.2 秒 —— 800 是拿一半延迟换一半准确率的折中档。
+    check("缺省静音判定 800ms（口语受控实测：500 是 16.8%，800 是 15.5%，1200 是 13.3%）",
+          args.silence_ms == 800, str(args.silence_ms))
+    check("静音判定放宽了，句子上限也要跟着放宽（否则长段会被硬切）",
+          args.max_speech_ms == 30000, str(args.max_speech_ms))
     check("缺省会在上限处优先找停顿断句（不是硬切）",
           args.cut_pause_ms == 200, str(args.cut_pause_ms))
+    # 上下文续传：**缺省两个语种都关**（不是没测，是测了之后决定默认不开）。
+    #   ① 中文单场录音：500/800/1200 三档都是 −1.3~−1.8p（最初打开它的依据）
+    #   ② 中文跨 19 场录音：+3.48p（中位 0，8 好 / 7 差 / 4 平，均值被两段灾难性失败拉爆：
+    #      一段整段变幻听惯用语、一段整段飘成繁体）→ 期望值为负
+    #   ③ 葡语：**没有连续录音可测** → 未验证，不默认开
+    # 结论：默认关、保留开关。别再拿"单场录音 −1.5p"当依据 —— 那正是被 ② 推翻的结论。
+    check("--context-depth 缺省不写死，按语种取（None）",
+          args.context_depth is None, str(args.context_depth))
+    check("中文缺省**关**（跨 19 场录音实测 +3.48p，单场 −1.5p 的结论已被推翻）",
+          context_depth_for("zh") == 0, str(context_depth_for("zh")))
+    check("葡语缺省也关（真实对话实测噪声到略负）",
+          context_depth_for("pt") == 0, str(context_depth_for("pt")))
+    check("语种不明时不默认开（没量过的组合不要默认打开）",
+          context_depth_for(None) == 0 and context_depth_for("xx") == 0)
+    check("续传的时间窗是 60 秒（必须长于一段本身，否则连续说话也会被误清）",
+          args.context_gap_s == 60.0, str(args.context_gap_s))
+    check("--context-depth 0 能显式关掉它", parse_args(["--context-depth", "0"]).context_depth == 0)
+    check("--context-depth 2 能显式打开（绕过按语种的缺省，给「想再试一次」留口子）",
+          parse_args(["--context-depth", "2"]).context_depth == 2)
 
     # 短句保护的实际行为：<800ms 的碎片后面跟 0.8 秒停顿，**不该**就此收句，
     # 而是等它接上后面的话；但正常长度的话仍然按 700ms 收句（不然字幕会拖）。
@@ -1388,6 +1563,14 @@ def main():
                              "utterances": [{"text": "甲"}]}])
           != ctx.spans_digest([{"recording": "a", "start": 0.0, "end": 1.0,
                                 "utterances": [{"text": "乙"}]}]))
+    # 附加字段必须活着：建库脚本会给每段写 source（来自哪场录音哪一秒），
+    # 而第一版 save_spans 只挑固定字段，把它**静默丢了** —— 报告里就再也查不回
+    # "这段是从语料哪个位置拼出来的"。可追溯性不能依赖"我记得它原来在哪"。
+    richer = [dict(named_spans[0], source={"recording": "SRC-1", "start": 1.5, "end": 9.0})]
+    ctx.save_spans(spans_file, richer)
+    again = ctx.load_spans(spans_file)
+    check("段清单保存时**保留附加字段**（source 这类可追溯信息不许丢）",
+          again[0].get("source", {}).get("recording") == "SRC-1", str(again[0].keys()))
 
     fake_payload = {
         "config": {"split": "dev", "spansFile": str(spans_file), "spansDigest": "abcd1234",
