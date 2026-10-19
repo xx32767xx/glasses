@@ -19,8 +19,10 @@ android {
     // 显示那一块（字号固定值化、投屏样例、排版自检）到此收口，版本进 4.0，
     // 下一阶段的重点转到**准确率**。versionCode 从 29 起继续递增，
     // 不跟着 versionName 的位数走 —— 它只保证"每次都比上一个大"。
-    versionCode = 29
-    versionName = "4.0"
+    // 4.1：把接真机那阵子的调试界面删掉（连接自检 / 真眼镜状态卡 / 诊断行），
+    //      「排版自检」保留（它是排版校准工具，不是连接调试）。
+    versionCode = 30
+    versionName = "4.1"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

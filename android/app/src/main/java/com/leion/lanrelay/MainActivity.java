@@ -341,7 +341,6 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                     glassesView.showIdle(true);
                     glassesView.setIdleText("等待输入", idleNoteText());
                 }
-                renderGlassesRealStatus();
             }
 
             /**
@@ -401,7 +400,6 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                 if (raw.length() > 0) glassesCanvasNote += " 原始:" + raw;
             }
         }
-        renderGlassesRealStatus();
     }
 
     /** 眼镜 SDK 需要的那几条运行时权限（照官方 glassRuntimePermissions() 的分档）。 */
@@ -438,7 +436,6 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         glassesPermMissing = missing.size();
         if (!missing.isEmpty()) {
             glassesStatus = "等待眼镜权限（还差 " + missing.size() + " 项）";
-            renderGlassesRealStatus();
             requestPermissions(missing.toArray(new String[0]), REQUEST_GLASSES_PERMISSIONS);
             return;
         }
@@ -449,7 +446,6 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private void afterRuntimePermissions() {
         if (Build.VERSION.SDK_INT >= 23 && Settings.canDrawOverlays(this) == false) {
             glassesStatus = "还需要「显示在其他应用上层」权限";
-            renderGlassesRealStatus();
             new AlertDialog.Builder(this)
                     .setTitle("眼镜需要悬浮窗权限")
                     .setMessage("眼镜 SDK 要求「显示在其他应用上层」才肯连接。\n\n"
@@ -468,7 +464,6 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                     })
                     .setNegativeButton("稍后", (dialog, which) -> {
                         glassesStatus = "缺悬浮窗权限，眼镜可能连不上";
-                        renderGlassesRealStatus();
                     })
                     .show();
             return;
@@ -480,7 +475,6 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private void startGlassesSdk() {
         if (glasses == null) return;
         glassesStatus = "正在初始化眼镜 SDK…";
-        renderGlassesRealStatus();
         glasses.init();
     }
 
@@ -1318,29 +1312,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         overlayConnectProgress = null;
         glassesSampleNote = null;
         fullscreenList = null;
-        // 停止诊断行的定时刷新（否则关了页面还在白跑）
-        glassesDiagHandler.removeCallbacks(glassesDiagTick);
-        glassesRealDiag = null;
-        glassesRealStatus = null;
     }
-
-    /**
-     * 诊断行定时刷新（眼镜预览页开着时才跑）。
-     *
-     * <p><b>为什么必须有这个</b>：诊断行原来只在"状态变化"时重画一次，
-     * 所以上面那个「帧 N」**是个不会动的快照** —— 而它存在的全部意义就是
-     * 让人盯着看它涨不涨（涨 = 采集在持续采样；几乎不动 = 采集是事件驱动的）。
-     * 一个不会更新的计数器，正好不能回答它该回答的问题。
-     */
-    private final Handler glassesDiagHandler = new Handler(Looper.getMainLooper());
-    private final Runnable glassesDiagTick = new Runnable() {
-        @Override
-        public void run() {
-            if (glassesRealDiag == null) return;      // 页面已关
-            renderGlassesRealStatus();
-            glassesDiagHandler.postDelayed(this, 500);
-        }
-    };
 
     // ── 连接电脑页 ──────────────────────────────────────────────────────────
 
@@ -1377,14 +1349,6 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             connect(address, secretField.getText().toString().trim());
         });
 
-        // 自检：只做只读探测，不改连接状态。
-        // 与"测试连接"分开，是为了能在"会话已经坏了"的时候单独跑诊断。
-        view.findViewById(R.id.connectSelfCheck).setOnClickListener(v -> {
-            final String address = hostField.getText().toString().trim();
-            final String key = secretField.getText().toString().trim();
-            showConnectProgress(getString(R.string.connect_selfcheck_running), R.color.warn);
-            runSelfCheck(address, key);
-        });
 
         View detail = view.findViewById(R.id.connectDetail);
         detail.setVisibility(online() ? View.VISIBLE : View.GONE);
@@ -1403,32 +1367,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                 ColorStateList.valueOf(getColor(colorRes)));
     }
 
-    /**
-     * 跑连接自检并弹结果。
-     *
-     * <p>必须在**后台线程**跑：{@link SelfCheck#run} 会做 TCP 连接和 HTTP 请求，
-     * 主线程上会直接 NetworkOnMainThreadException。
-     */
-    private void runSelfCheck(String address, String key) {
-        final String shownAddress = address.isEmpty() ? host() : address;
-        final String shownKey = key.isEmpty() ? secret() : key;
-        new Thread(() -> {
-            String report;
-            try {
-                report = SelfCheck.run(shownAddress, shownKey);
-            } catch (Throwable error) {
-                report = "自检本身出错了：" + error.getClass().getSimpleName()
-                        + "：" + error.getMessage();
-            }
-            final String text = report;
-            runOnUiThread(() -> {
-                showConnectProgress(getString(R.string.connect_selfcheck_done), R.color.brand);
-                showTextDialog("连接自检", text);
-            });
-        }, "self-check").start();
-    }
 
-    /** 等宽、可滚动、可复制的长文本弹窗（自检报告 / SDK 探测都用它）。 */
+    /** 等宽、可滚动、可复制的长文本弹窗（排版自检报告用）。 */
     private void showTextDialog(String title, String text) {
         TextView box = new TextView(this);
         box.setText(text);
@@ -1853,11 +1793,6 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
     /** 「投屏样例」下面那行提示（没投屏 / 已投屏 N 行 N 页 / 同传在跑）。 */
     private TextView glassesSampleNote = null;
-    /** 真眼镜的状态行与投屏开关（只有打开这个预览页时才有）。 */
-    private TextView glassesRealStatus = null;
-    private TextView glassesRealToggle = null;
-    /** 诊断行：权限差几项 / 悬浮窗 / SDK / 设备数 / 投屏 —— 哪一步是 0 就是卡在哪。 */
-    private TextView glassesRealDiag = null;
     /** 上一次检查时缺了几项眼镜权限（诊断用）。 */
     private int glassesPermMissing = 0;
     /** 当前投屏画布用了什么尺寸（诊断用）：读到真实分辨率、还是交给 SDK 测量。 */
@@ -2078,9 +2013,6 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private void openGlassesPreview() {
         View view = pushOverlay(R.layout.overlay_glasses);
         glassesSampleNote = view.findViewById(R.id.glassesSampleNote);
-        glassesRealStatus = view.findViewById(R.id.glassesRealStatus);
-        glassesRealToggle = view.findViewById(R.id.glassesRealToggle);
-        glassesRealDiag = view.findViewById(R.id.glassesRealDiag);
         // 每次打开都重新问一遍权限状态 —— 用户可能刚去设置里开过
         glassesPermMissing = 0;
         for (String permission : glassesPermissions()) {
@@ -2090,14 +2022,6 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             }
         }
         view.findViewById(R.id.glassesBack).setOnClickListener(v -> closeOverlay());
-        glassesRealToggle.setOnClickListener(v -> toggleGlassesCast());
-        // 长按诊断行 → API 探测（真机上 adb 不一定能用，只能靠 App 自己说）
-        if (glassesRealDiag != null) {
-            glassesRealDiag.setOnLongClickListener(v -> {
-                showGlassesApiProbe();
-                return true;
-            });
-        }
         // 标题上带**版本号**：真机验证时第一件要确认的事是"装的到底是不是新版"。
         //  没有这个，很容易出现"改了但装的是旧包，然后一起怀疑代码"。
         TextView title = view.findViewById(R.id.glassesTitle);
@@ -2177,17 +2101,10 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                 CrashLog.endAction(this);
             }
             renderCameraLabel();
-            renderGlassesRealStatus();
         });
         renderCameraLabel();
         renderMicSourceLabel();
         applyGlassesTuning();
-
-        renderGlassesRealStatus();
-        // 诊断行定时刷新：那个「帧 N」必须能自己动，
-        // 否则它作为一个"看采集涨不涨"的计数器就是废的（原来只在状态变化时重画一次）
-        glassesDiagHandler.removeCallbacks(glassesDiagTick);
-        glassesDiagHandler.postDelayed(glassesDiagTick, 500);
     }
 
     /** 待机提示下面那行小字：说清"为什么现在没字幕"，比只显示"等待输入"有用。 */
@@ -2211,95 +2128,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                 idleNoteText());
     }
 
-    /** 手动开始/停止投屏。连接是自动的（插上就有回调），但投屏允许手动重试。 */
-    private void toggleGlassesCast() {
-        // 三条分支都必须**留下可见反馈**。原来 glassesView == null 时是静默 return ——
-        // 那正是"点了没反应"最典型的成因：代码什么都没做，界面也什么都不说。
-        if (glasses == null || glassesView == null) {
-            glassesStatus = "眼镜模块还没就绪（等待权限/悬浮窗）";
-        } else if (glasses.isCasting()) {
-            glasses.stopCast();
-        } else if (glasses.isConnected()) {
-            glassesStatus = "正在投屏…";
-            applyGlassesCanvasSize();
-            glasses.requestCast(glassesView.getView());
-        } else {
-            // 设备列表和连接状态分开报：这两个数字对不上才是真正要查的问题
-            glassesStatus = "眼镜未连接（设备列表 " + glasses.getDeviceCount() + " 个）——重插一下眼镜";
-        }
-        renderGlassesRealStatus();
-    }
 
-    /**
-     * 把真眼镜的状态画到状态行上。没有这一行，出问题只能靠猜。
-     *
-     * <p>现在这里会带**诊断信息**（权限差几项、悬浮窗有没有、SDK 有没有初始化、
-     * 认出几个设备、投屏状态）。加这些是因为真机上 adb 不一定能用
-     * （沙箱里 adb 服务端起不来），所以**得让 App 自己把卡在哪一步说出来**。
-     */
-    private void renderGlassesRealStatus() {
-        if (glassesRealStatus == null) return;
-        boolean casting = glasses != null && glasses.isCasting();
-        boolean inited = glasses != null && glasses.isInitialized();
-        String dot = glassesConnected ? "● " : "○ ";
-        glassesRealStatus.setText(dot + glassesStatus);
-
-        // 诊断行：每一步单独可见，哪一步是 0 / false 就是卡在哪
-        StringBuilder diag = new StringBuilder();
-        diag.append("权限差 ").append(glassesPermMissing).append(" 项")
-            .append(" · 悬浮窗 ").append(canDrawOverlaysNow() ? "有" : "无")
-            .append(" · SDK ").append(inited ? "已初始化" : "未初始化")
-            .append(" · 设备 ").append(glasses == null ? "?" : glasses.getDeviceCount()).append(" 个")
-            .append(" · 服务 ").append(glasses == null ? "?" : (glasses.isServicesReady() ? "就绪" : "启动中"))
-            .append(" · ").append(casting ? "投屏中" : "未投屏");
-        diag.append("\n").append(glassesCanvasNote);
-        if (glasses != null && casting) {
-            // 投屏中：帧数与 LCD 状态是"为什么看不见"的两个关键数字
-            diag.append(" · ").append(glasses.getFrameInfo());
-            String lcdInfo = glasses.queryLcdInfo();
-            if (lcdInfo.length() > 0) diag.append("\n").append(lcdInfo);
-        }
-        if (glasses != null && glasses.getPrepareNote().length() > 0) {
-            diag.append("\n投屏前准备：").append(glasses.getPrepareNote());
-        }
-        // 服务列表：相机预览需要**相机服务**在跑。用户报"隔夜之后相机预览不生效"，
-        // 这一行能直接回答"是服务没起来，还是设置没生效"——两者修法完全不同。
-        if (glasses != null && (casting || glassesCameraBackground())) {
-            String services = glasses.queryServices();
-            if (services.length() > 0) diag.append("\n服务：").append(services);
-        }
-        if (glasses != null && glasses.getStep().length() > 0) {
-            diag.append("\n投屏步：").append(glasses.getStep());
-        }
-        if (glasses != null && glasses.getLastError().length() > 0) {
-            diag.append("\n最近错误：").append(glasses.getLastError());
-        }
-        // 上次崩溃的堆栈：真机 adb 不一定能用，只能让 App 自己把话留下
-        String crash = CrashLog.last(this);
-        if (crash.length() > 0) {
-            diag.append("\n⚠ 上次闪退：").append(firstLines(crash, 3));
-        } else {
-            // 没有 Java 堆栈不代表没崩过 —— 原生崩溃抓不到堆栈。
-            // 这时面包屑就是唯一的线索：它说"上次死在哪个动作里"。
-            String action = CrashLog.lastAction(this);
-            if (action.length() > 0) {
-                diag.append("\n⚠ 上次没走完：").append(action)
-                    .append("（无 Java 堆栈 → 多半是原生崩溃）");
-            }
-        }
-        diag.append("\n（长按本行看 API 探测）");
-        glassesRealDiag.setText(diag.toString());
-
-        glassesRealStatus.setTextColor(getColor(
-                glassesConnected ? (casting ? R.color.ok : R.color.brand) : R.color.ink_soft));
-        if (glassesRealToggle != null) {
-            glassesRealToggle.setText(casting ? R.string.glasses_real_stop : R.string.glasses_real_cast);
-            // 没连眼镜时按钮暗着，但**不禁用**：点了会明确说"眼镜未连接"，
-            // 而不是让人对着一个点不动的按钮猜
-            glassesRealToggle.setTextColor(getColor(
-                    glassesConnected ? R.color.brand : R.color.ink_faint));
-        }
-    }
 
     private boolean canDrawOverlaysNow() {
         return Build.VERSION.SDK_INT < 23 || Settings.canDrawOverlays(this);
@@ -2316,6 +2145,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         return out.toString();
     }
 
+
     /**
      * 「排版自检」：在当前字号下把**全部投屏样例**真的排一遍，把实况数字弹出来。
      *
@@ -2329,7 +2159,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
      * 这样"点开看"和"看数字"说的是同一件事；用户自己输的那句也一起量，
      * 因为他用的一定是他最关心的那句。
      *
-     * <p>顺带把结果写进诊断行 → relay 日志，这样"用户报的问题"和"用户当时的
+     * <p>顺带把结果写一行进 relay 日志，这样"用户报的问题"和"用户当时的
      * 字号"能对上号，不用来回问。
      */
     private void showGlassesSelfCheck() {
@@ -2355,35 +2185,11 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                     + "：" + error.getMessage();
         }
         CrashLog.endAction(this);
-        // 一行版塞进诊断行（诊断行会被 relay 收走），完整版给弹窗
+        // 一行版塞进 relay 日志，完整版给弹窗
         String oneLine = report.replace('\n', ' ');
         if (oneLine.length() > 180) oneLine = oneLine.substring(0, 180) + "…";
-        if (glassesRealDiag != null) glassesRealDiag.setText("排版自检：" + oneLine);
         if (client != null) client.sendDiag("排版自检 " + oneLine);
         showTextDialog("排版自检（当前字号下的真实排版）", report);
-    }
-
-    /**
-     * 长按诊断行 → 弹出 SDK 的 API 探测结果。
-     *
-     * <p>为什么要一个弹窗而不是写在诊断行里：探测结果是几十行方法签名，
-     * 挤在那一行里没法看。用等宽字体 + 可滚动，是为了让签名里的逗号、
-     * 包名能一眼对齐 —— 反射只认**精确签名**，差一个参数类型就找不到方法。
-     */
-    private void showGlassesApiProbe() {
-        if (glasses == null) return;
-        StringBuilder text = new StringBuilder();
-        // 崩溃堆栈放最前面 —— 它是当前最想知道的东西
-        String crash = CrashLog.last(this);
-        if (crash.length() > 0) {
-            text.append("═══ 上次闪退堆栈 ═══\n").append(crash).append('\n');
-            CrashLog.clear(this);          // 看过就清，免得下次又弹同一个旧的
-        }
-        text.append("═══ SDK 探测 ═══\n")
-            .append(GlassesSdk.probeAvailability()).append("\n\n")
-            .append(glasses.probeApi());
-
-        showTextDialog("眼镜 SDK API 探测", text.toString());
     }
 
     /** 当前安装的版本名 —— 印在眼镜预览页标题上，用来确认"装的是不是新版"。 */
@@ -2582,7 +2388,6 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                 afterRuntimePermissions();
             } else {
                 glassesStatus = "眼镜权限被拒（相机/媒体），眼镜连不上";
-                renderGlassesRealStatus();
             }
             return;
         }

@@ -43,7 +43,7 @@
 
     <!--
       正文放进 ScrollView：这一页的内容已经超出手机一屏了
-      （真眼镜状态卡 + 诊断行 + 微调卡 + 投屏样例卡）。
+      （微调卡 + 投屏样例卡）。
       标题栏留在外面**不滚** —— 返回按钮任何时候都要够得着，
       而这一页的正文用户本来就要来回翻着看（改字号 → 看样例 → 再改）。
     -->
@@ -59,63 +59,6 @@
             android:orientation="vertical"
             android:paddingBottom="16dp">
 
-    <!--
-      真眼镜（USB 接的那副）的状态与开关。
-      为什么必须显示：眼镜连没连上、投屏成没成功，**在手机上看不出来** ——
-      而这套 SDK 的失败大多是"什么都不显示"。不写这一行，出问题只能靠猜。
-      SDK 的显示接口是"投屏"（见 docs/09-眼镜SDK接入.md），所以这里说的是"投屏"而不是"发送"。
-    -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="16dp"
-        android:layout_marginEnd="16dp"
-        android:layout_marginBottom="10dp"
-        android:background="@drawable/bg_card"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:padding="12dp">
-
-        <TextView
-            android:id="@+id/glassesRealStatus"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="@string/glasses_real_idle"
-            android:textColor="@color/ink_soft"
-            android:textSize="13sp" />
-
-        <TextView
-            android:id="@+id/glassesRealToggle"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:background="@drawable/tap_pill"
-            android:clickable="true"
-            android:focusable="true"
-            android:paddingStart="14dp"
-            android:paddingTop="7dp"
-            android:paddingEnd="14dp"
-            android:paddingBottom="7dp"
-            android:text="@string/glasses_real_cast"
-            android:textColor="@color/brand"
-            android:textSize="13sp" />
-    </LinearLayout>
-
-    <!--
-      诊断行：每一步单独可见 —— 哪一步是 0 / false 就是卡在哪。
-      为什么要它：真机上 adb 不一定能用（沙箱里 adb 服务端起不来），
-      所以**必须让 App 自己把"卡在哪一步"说出来**，不然只能靠猜。
-    -->
-    <TextView
-        android:id="@+id/glassesRealDiag"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="16dp"
-        android:layout_marginEnd="16dp"
-        android:layout_marginBottom="10dp"
-        android:fontFamily="monospace"
-        android:textColor="@color/ink_soft"
-        android:textSize="11sp" />
 
     <!--
       显示微调：字号 / 左留白 / 右留白。
@@ -399,6 +342,7 @@
                 android:textColor="@color/brand"
                 android:textSize="13sp" />
         </LinearLayout>
+
 
         <!--
           排版自检：在**真机上真的排一遍**，报出"这个字号一行能放几个字、一页几行"。

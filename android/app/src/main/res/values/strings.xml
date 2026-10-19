@@ -73,12 +73,8 @@
     <string name="connect_pairing">配对码</string>
     <string name="connect_pairing_hint">电脑上启动时打印的那串</string>
     <string name="connect_test">测试并连接</string>
-    <string name="connect_selfcheck">连接自检（查是哪一层断了）</string>
-    <string name="connect_selfcheck_running">正在自检…</string>
-    <string name="connect_selfcheck_done">自检完成</string>
     <string name="glasses_tune_font_zh">中文字号</string>
     <string name="glasses_tune_font_pt">葡语字号</string>
-    <string name="glasses_self_check">排版自检（在当前字号下量一遍）</string>
     <string name="glasses_tune_right">右侧留白</string>
     <string name="glasses_tune_left">左侧留白</string>
     <string name="glasses_tune_page_delay">长句翻页间隔</string>
@@ -166,16 +162,14 @@
     <string name="glasses_preview_title">眼镜显示预览</string>
 
     <!-- 真眼镜（USB 接的那副）投屏。见 docs/09-眼镜SDK接入.md -->
-    <string name="glasses_real_idle">眼镜未连接（用 USB 接上眼镜）</string>
-    <string name="glasses_real_cast">开始投屏</string>
-    <string name="glasses_real_stop">停止投屏</string>
     <string name="glasses_sample_title">投屏样例</string>
-    <string name="glasses_sample_hint">点一句 → 真的投到眼镜上，按「短 / 中 / 长」连着看，就知道从多长开始翻页。需要先在上面开启投屏。</string>
+    <string name="glasses_sample_hint">点一句 → 真的投到眼镜上，按「短 / 中 / 长」连着看，就知道从多长开始翻页。前提是投屏已经起来（眼镜连上 + App 连上电脑后自动投屏）。</string>
     <string name="glasses_sample_zh">中文</string>
     <string name="glasses_sample_pt">葡语</string>
     <string name="glasses_sample_custom_hint">或者自己输一句（你想确认的那句）</string>
+    <string name="glasses_self_check">排版自检（在当前字号下量一遍）</string>
     <string name="glasses_sample_send">投屏这句</string>
-    <string name="glasses_sample_need_cast">还没投屏 —— 先点上面的「开始投屏」，否则点了也不会显示。</string>
+    <string name="glasses_sample_need_cast">还没投屏 —— 先让眼镜连上、App 连上电脑（连上后会自动投屏），否则点了也不会显示。</string>
     <string name="glasses_sample_need_text">先在上面输一句，或者点一个现成的例句。</string>
     <string name="glasses_sample_sent">已投屏（%1$d 字，%2$d 行，%3$d 页）</string>
     <string name="glasses_sample_busy">同传正在跑 —— 真实字幕马上会盖掉这个样例。要看样例请先停同传。</string>
