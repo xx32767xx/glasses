@@ -41,22 +41,6 @@
             android:textSize="13sp" />
     </LinearLayout>
 
-    <!--
-      身份不再由这一页输入：它来自「设置 → 账户」登录后拿到的 token。
-      （原来在这里填用户名，等于让用户自己声明"我是谁" —— 谁都能填别人。）
-      这里只显示"当前是哪个账户"，让人知道自己改的是谁的表。
-    -->
-    <TextView
-        android:id="@+id/termsAccount"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="16dp"
-        android:layout_marginTop="10dp"
-        android:layout_marginEnd="16dp"
-        android:text="@string/settings_account_none"
-        android:textColor="@color/ink_soft"
-        android:textSize="13sp" />
-
     <!-- 表头 + 两个按钮（新增 / 批量导入） -->
     <LinearLayout
         android:layout_width="match_parent"

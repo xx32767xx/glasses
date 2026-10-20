@@ -52,6 +52,15 @@ import {
 const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
 
 /**
+ * 转发进程的**能力清单**（写进 /hello 与 /status）。
+ *
+ * <p>为什么需要它：手机上"注册失败：not-found"这种提示，用户根本猜不到是因为
+ * **电脑上跑的还是旧版进程**（没有 `/auth/*` 端点）。与其让人对着 404 猜，
+ * 不如让这一端把自己的能力报出来，手机据此说人话。
+ */
+export const RELAY_FEATURES = ['hello', 'say', 'audio', 'frame', 'status', 'diag', 'lint', 'terms', 'settings', 'auth']
+
+/**
  * 默认数据目录：和 scripts/harness-side.mjs 指向同一对文件，两边靠它对接。
  * 具体路径来自 lib/paths.mjs —— 那是唯一的来源，别在这里再写字面量。
  */
@@ -895,6 +904,7 @@ export async function startRelay(rawOptions = {}) {
       lineBudget: state.lastFrame?.lineBudget ?? FALLBACK_LINES,
       seq: state.seq,
       bridge: 'lan-relay',
+      features: RELAY_FEATURES,
     }
   }
 
@@ -1260,6 +1270,8 @@ export async function startRelay(rawOptions = {}) {
           audioChunks: state.audioChunks,
           audioRate: state.audioRateValue,
           audioLang: state.audioLangValue,
+          // 能力清单：手机据此判断"对面是不是旧版进程"（例如没有 auth 就提示重启）
+          features: RELAY_FEATURES,
           // 账户：这台电脑上有没有人注册过（手机据此决定显示"登录"还是"注册"）
           accounts: hasAccounts(await loadAccounts(options.dataDir)),
           authOk: state.authOk,

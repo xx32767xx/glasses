@@ -130,6 +130,14 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private int inboxLines = 0;
     private int framesSeen = 0;
     private String lastError = "";
+    /**
+     * 电脑侧支持的能力（`/status` 的 `features`）。
+     *
+     * <p>用它来判断"对面是不是旧版进程"—— 旧版没有 `auth`，注册只会得到 404。
+     * 与其让用户对着 not-found 猜，不如我们直接说"重启 start-all"。
+     */
+    private java.util.Set<String> relayFeatures = new java.util.HashSet<>();
+
     /** 热词表（电脑侧 /status 报的）：上传过几次、最近几条、最近是谁。 */
     private int termsSaved = 0;
     private int termsSavedEntries = 0;
@@ -816,6 +824,14 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                     inboxLines = status.optInt("inboxLines", 0);
                     framesSeen = status.optInt("frames", 0);
                     // 热词表：电脑侧刚上传过几张、最近是谁 —— 设置页那一行的小字用它
+                    org.json.JSONArray features = status.optJSONArray("features");
+                    java.util.Set<String> next = new java.util.HashSet<>();
+                    if (features != null) {
+                        for (int index = 0; index < features.length(); index += 1) {
+                            next.add(String.valueOf(features.opt(index)));
+                        }
+                    }
+                    relayFeatures = next;
                     termsSaved = status.optInt("termsSaves", 0);
                     termsSavedEntries = status.optInt("termsEntries", 0);
                     termsSavedUser = status.optString("termsUser", "");
@@ -1722,9 +1738,19 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         renderAccount();
     }
 
+    /** 电脑侧是不是支持账户接口（旧版没有）。null 概念上等于"还不知道"，按支持处理。 */
+    private boolean relaySupportsAuth() {
+        if (relayFeatures.isEmpty()) return true;      // 还没读到能力清单 → 不冤枉它
+        return relayFeatures.contains("auth");
+    }
+
     /** 渲染账户页：当前是谁、token 要不要露出来、注销按钮显不显示。 */
     private void renderAccount() {
         boolean in = loggedIn();
+        if (accountStatusView != null && relaySupportsAuth() == false) {
+            accountStatusView.setText("电脑上的接收进程是旧版（没有账户接口）—— 重启 node scripts/start-all.mjs 后可用");
+            accountStatusView.setTextColor(getColor(R.color.err));
+        }
         if (accountStateView != null) {
             accountStateView.setText(in
                     ? getString(R.string.account_state_some, accountUser().isEmpty() ? "?" : accountUser())
@@ -1745,17 +1771,20 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                     ? getString(R.string.account_state_some, accountUser().isEmpty() ? "?" : accountUser())
                     : getString(R.string.settings_account_none));
         }
-        if (termsAccountView != null) {
-            termsAccountView.setText(in
-                    ? getString(R.string.account_state_some, accountUser().isEmpty() ? "?" : accountUser())
-                    : getString(R.string.terms_need_login));
-        }
     }
 
     /** 注册 / 登录 / 注销：都要经过电脑（账户存在电脑上）。 */
     private void runAccountAction(final String action) {
         if (client == null) {
             if (accountStatusView != null) accountStatusView.setText(R.string.account_need_connect);
+            return;
+        }
+        if (relaySupportsAuth() == false) {
+            // 已经知道对面是旧版：不发请求，直接说人话（省一次 404 往返，也省得用户猜）
+            if (accountStatusView != null) {
+                accountStatusView.setText("电脑上的接收进程是旧版（没有账户接口）—— 重启 node scripts/start-all.mjs 后可用");
+                accountStatusView.setTextColor(getColor(R.color.err));
+            }
             return;
         }
         final String username = accountUsernameField == null ? "" : accountUsernameField.getText().toString().trim();
@@ -1823,8 +1852,6 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                     if (client != null) client.setToken(finalToken);
                     if (accountPasswordField != null) accountPasswordField.setText("");
                     renderAccount();
-                    if (termsAccountView != null) termsAccountView.setText(
-                            getString(R.string.account_state_some, finalUser));
                 } else {
                     renderAccount();
                 }
@@ -1836,13 +1863,24 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         }, "account-action").start();
     }
 
-    /** 从 `{code, json}` 里取一句能看懂的失败原因。 */
+    /**
+     * 从 `{code, json}` 里取一句能看懂的失败原因。
+     *
+     * <p>⚠️ 404 单独处理：它几乎总是"电脑上的接收进程还是旧版"（没有 `/auth/*` 端点），
+     * 而不是"注册写错了"。原来的实现只显示 `not-found`，用户根本猜不到要重启什么。
+     */
     private static String accountError(org.json.JSONObject result) {
         org.json.JSONObject json = result == null ? null : result.optJSONObject("json");
         int code = result == null ? 0 : result.optInt("code", 0);
+        if (code == 404) {
+            return "电脑上的接收进程是旧版（没有账户接口）—— 重启 node scripts/start-all.mjs 后可用";
+        }
         if (json == null) return "HTTP " + code;
         String hint = json.optString("hint", "");
         String error = json.optString("error", "");
+        if ("not-found".equals(error)) {
+            return "电脑上的接收进程是旧版（没有账户接口）—— 重启 node scripts/start-all.mjs 后可用";
+        }
         String text = error.isEmpty() ? hint : (hint.isEmpty() ? error : error + "：" + hint);
         return text.isEmpty() ? ("HTTP " + code) : text;
     }
@@ -1850,8 +1888,6 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     // ── 热词表页（底部导航第 4 栏，表格形式）─────────────────────────────────
 
     private TextView termsCountView;
-    /** 热词表页顶部那一行：显示"当前是哪个账户"（身份来自登录，不在这里填）。 */
-    private TextView termsAccountView;
     private LinearLayout termsRowsBox;
     private TextView termsEmptyView;
     private TextView termsStatusText;
@@ -1995,7 +2031,6 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         pageHost.addView(termsPage);
 
         termsCountView = termsPage.findViewById(R.id.termsCount);
-        termsAccountView = termsPage.findViewById(R.id.termsAccount);
         termsRowsBox = termsPage.findViewById(R.id.termsRows);
         termsEmptyView = termsPage.findViewById(R.id.termsEmpty);
         termsStatusText = termsPage.findViewById(R.id.termsStatus);
