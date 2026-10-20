@@ -27,8 +27,10 @@ android {
     // 4.4：热词表独立成底部第 4 栏（表格形式）、校对开关修好、连接进度修好。
     // 4.5：修"打开就闪退"（buildTermsPage 忘了被调用）+ showPage 判空；
     //      连接进度、校对开关两处修复也在这一版。
-    versionCode = 34
-    versionName = "4.5"
+    // 4.6：热词表页按反馈改：单元格居中+换行、改完即可上传（实时同步）、
+    //      去掉校验按钮改为自动校验（本地即时 + 电脑端防抖），补葡语列写中文的检查。
+    versionCode = 35
+    versionName = "4.6"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

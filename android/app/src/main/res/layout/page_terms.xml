@@ -91,6 +91,7 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:fontFamily="sans-serif-medium"
+            android:gravity="center"
             android:text="@string/terms_col_zh"
             android:textColor="@color/ink_soft"
             android:textSize="13sp" />
@@ -100,6 +101,7 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:fontFamily="sans-serif-medium"
+            android:gravity="center"
             android:text="@string/terms_col_pt"
             android:textColor="@color/ink_soft"
             android:textSize="13sp" />
@@ -185,23 +187,9 @@
             android:orientation="horizontal">
 
             <TextView
-                android:id="@+id/termsValidate"
-                android:layout_width="0dp"
-                android:layout_height="40dp"
-                android:layout_weight="1"
-                android:background="@drawable/tap_pill"
-                android:clickable="true"
-                android:focusable="true"
-                android:gravity="center"
-                android:text="@string/terms_validate"
-                android:textColor="@color/brand"
-                android:textSize="13sp" />
-
-            <TextView
                 android:id="@+id/termsUpload"
                 android:layout_width="0dp"
                 android:layout_height="40dp"
-                android:layout_marginStart="8dp"
                 android:layout_weight="1"
                 android:background="@drawable/tap_pill"
                 android:clickable="true"

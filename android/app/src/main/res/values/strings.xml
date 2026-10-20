@@ -237,4 +237,6 @@
     <string name="terms_add_both">中文和葡语都要填</string>
     <string name="terms_batch_none">没有认出可以导入的行（每行要能分成两列）</string>
     <string name="terms_batch_done">导入了 %1$d 条</string>
+    <string name="terms_status_local_invalid">这几条不能上传（改完会自动重新检查）</string>
+    <string name="terms_status_local_ok">格式没问题：%1$d 条（连上电脑后会自动做完整校验）</string>
 </resources>

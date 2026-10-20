@@ -1695,6 +1695,115 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
      */
     private final java.util.List<String[]> termsRowsData = new java.util.ArrayList<>();
 
+    /** 自动校验的防抖句柄：连续输入时只跑最后一次。 */
+    private final android.os.Handler termsValidateHandler =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+    private Runnable termsValidateTick = null;
+
+    /**
+     * 安排一次自动校验（防抖 500ms）。
+     *
+     * <p>为什么要防抖：每敲一个字就发一次请求，既刷屏又慢；而**逐字校验也没有意义**
+     * ——"高通"打到一半叫"高"，本来就还没填完。
+     */
+    private void scheduleAutoValidate() {
+        if (termsValidateTick != null) termsValidateHandler.removeCallbacks(termsValidateTick);
+        termsValidateTick = () -> runAutoValidate();
+        termsValidateHandler.postDelayed(termsValidateTick, 500);
+    }
+
+    /**
+     * 自动校验：**先本地看明显的错，再问电脑**。
+     *
+     * <p>两层是刻意的：
+     *  · 本地这层只查"肉眼可见"的（空着一侧、葡语列写中文、太长），
+     *    好处是**没连电脑时也能立刻看到红字**，而且不用等网络；
+     *  · 电脑那层才是权威（拒绝码、重复、别名冲突、方向装反都在它那儿），
+     *    因为"什么算合法"必须只有一套实现，不能手机一套、电脑一套。
+     */
+    private void runAutoValidate() {
+        org.json.JSONArray entries = collectTermEntries();
+        String local = localTermProblems(entries);
+        if (local != null) {
+            showTermsReport(getString(R.string.terms_status_local_invalid), R.color.err, null, local);
+            return;
+        }
+        if (entries.length() == 0) {
+            showTermsReport(getString(R.string.terms_status_idle), R.color.ink_soft, null, null);
+            return;
+        }
+        if (client == null) {
+            // 没连电脑：本地这关过了就先说"格式没问题"，别让用户以为校验没生效
+            showTermsReport(getString(R.string.terms_status_local_ok, entries.length()), R.color.brand, null, null);
+            return;
+        }
+        final LanClient current = client;
+        final String user = termsUserField == null ? "" : termsUserField.getText().toString().trim();
+        new Thread(() -> {
+            String status;
+            int color = R.color.brand;
+            org.json.JSONObject warnings = null;
+            org.json.JSONObject rejected = null;
+            try {
+                org.json.JSONObject result = current.termsValidate(user, entries);
+                org.json.JSONObject json = result.optJSONObject("json");
+                int code = result.optInt("code", 0);
+                warnings = json;
+                if (code == 200) {
+                    status = getString(R.string.terms_status_valid, entries.length());
+                } else {
+                    int bad = json == null || json.optJSONArray("rejected") == null
+                            ? 0 : json.optJSONArray("rejected").length();
+                    status = getString(R.string.terms_status_invalid, Math.max(bad, 1));
+                    color = R.color.err;
+                    rejected = json;
+                }
+            } catch (Exception error) {
+                status = getString(R.string.terms_status_failed, String.valueOf(error.getMessage()));
+                color = R.color.err;
+            }
+            final String finalStatus = status;
+            final int finalColor = color;
+            final org.json.JSONObject finalWarnings = warnings;
+            final org.json.JSONObject finalRejected = rejected;
+            main.post(() -> showTermsReport(finalStatus, finalColor,
+                    termProblems(finalWarnings, "warnings", java.util.Collections.emptyList()),
+                    termProblems(finalRejected, "rejected", java.util.Collections.emptyList())));
+        }, "terms-validate").start();
+    }
+
+    /**
+     * 本地能看出来的问题（**不是权威校验**，只是"不用等网络的红字"）。
+     *
+     * <p>三条都直接来自被反馈的坑：
+     *  ① 一侧空着；
+     *  ② **葡语列写中文**（用户当场试出来的：葡语那栏能填中文，而原先只有上传才会被拒）；
+     *  ③ 太长（>200 字符，电脑也会拒，这里提前说）。
+     *
+     * @return null = 没看出问题
+     */
+    private String localTermProblems(org.json.JSONArray entries) {
+        StringBuilder out = new StringBuilder();
+        for (int index = 0; index < entries.length(); index += 1) {
+            org.json.JSONObject entry = entries.optJSONObject(index);
+            if (entry == null) continue;
+            String zh = entry.optString("zh", "");
+            String pt = entry.optString("pt", "");
+            String problem = null;
+            if (zh.isEmpty() || pt.isEmpty()) {
+                problem = "中文和葡语都要填";
+            } else if (pt.matches(".*[\\u4e00-\\u9fa5].*")) {
+                problem = "葡语这一栏写的是中文 —— 两栏可能填反了";
+            } else if (zh.length() > 200 || pt.length() > 200) {
+                problem = "字数超过 200";
+            }
+            if (problem == null) continue;
+            if (out.length() > 0) out.append('\n');
+            out.append("第 ").append(index + 1).append(" 条：").append(problem);
+        }
+        return out.length() == 0 ? null : out.toString();
+    }
+
     /** 热词表的用户名（留空 → 电脑侧回落到 default）。 */
     private String termsUser() {
         String value = prefs.getString(KEY_USER, "");
@@ -1724,7 +1833,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
         termsPage.findViewById(R.id.termsAdd).setOnClickListener(v -> showAddTermDialog());
         termsPage.findViewById(R.id.termsBatch).setOnClickListener(v -> showBatchImportDialog());
-        termsPage.findViewById(R.id.termsValidate).setOnClickListener(v -> runTermsAction("validate"));
+        // ⚠️ 没有「校验」按钮了：校验在**改完 / 上传前**自动跑（用户要求）。
+        //    留一个按钮等于逼用户记得点它 —— 而校验本来就是"随时该有的反馈"。
         termsPage.findViewById(R.id.termsUpload).setOnClickListener(v -> runTermsAction("upload"));
         termsPage.findViewById(R.id.termsLoad).setOnClickListener(v -> runTermsAction("load"));
 
@@ -1759,39 +1869,21 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         final String[] pair = termsRowsData.get(index);
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        row.setGravity(android.view.Gravity.TOP);
         row.setPadding(0, dp(4), 0, dp(4));
 
-        final EditText zhField = new EditText(this);
-        zhField.setText(pair[0]);
-        zhField.setHint(R.string.terms_col_zh);
-        zhField.setTextSize(14f);
-        zhField.setSingleLine(true);
-        zhField.setBackgroundResource(R.drawable.bg_card);
+        final EditText zhField = makeTermCell(pair[0], R.string.terms_col_zh);
         LinearLayout.LayoutParams zhParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         zhParams.setMarginEnd(dp(6));
         zhField.setLayoutParams(zhParams);
-        zhField.setOnFocusChangeListener((view, hasFocus) -> {
-            if (!hasFocus) {
-                pair[0] = zhField.getText().toString().trim();
-                saveTermsDraft();
-            }
-        });
+        // 每敲一个字就同步进内存 —— 原来只在**失焦**时才同步，
+        // 于是"改完直接点上传"读到的还是旧值（用户报的"改了不起作用"就是这个）。
+        zhField.addTextChangedListener(termCellWatcher(pair, 0, zhField));
 
-        final EditText ptField = new EditText(this);
-        ptField.setText(pair[1]);
-        ptField.setHint(R.string.terms_col_pt);
-        ptField.setTextSize(14f);
-        ptField.setSingleLine(true);
-        ptField.setBackgroundResource(R.drawable.bg_card);
+        final EditText ptField = makeTermCell(pair[1], R.string.terms_col_pt);
         LinearLayout.LayoutParams ptParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         ptField.setLayoutParams(ptParams);
-        ptField.setOnFocusChangeListener((view, hasFocus) -> {
-            if (!hasFocus) {
-                pair[1] = ptField.getText().toString().trim();
-                saveTermsDraft();
-            }
-        });
+        ptField.addTextChangedListener(termCellWatcher(pair, 1, ptField));
 
         TextView remove = new TextView(this);
         remove.setText("×");
@@ -1802,17 +1894,60 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         remove.setFocusable(true);
         LinearLayout.LayoutParams removeParams = new LinearLayout.LayoutParams(dp(36), dp(36));
         removeParams.setMarginStart(dp(6));
+        removeParams.topMargin = dp(10);
         remove.setLayoutParams(removeParams);
         remove.setOnClickListener(v -> {
             if (index < termsRowsData.size()) termsRowsData.remove(index);
             saveTermsDraft();
             renderTermsTable();
+            scheduleAutoValidate();
         });
 
         row.addView(zhField);
         row.addView(ptField);
         row.addView(remove);
         return row;
+    }
+
+    /**
+     * 造一个单元格：**文字居中 + 过长自动换行**（按用户要求）。
+     *
+     * <p>为什么不单行：名字（尤其机构名、带型号的产品名）本来就长，
+     * 单行会把后半截截掉 —— 而用户看不到自己填的字，就没法判断有没有填错。
+     * 所以这里允许最多 4 行；再长的内容会滚动，
+     * 因为一张表里塞一整段描述本身就不合适（该用备注字段，不在本期）。
+     */
+    private EditText makeTermCell(String text, int hintRes) {
+        EditText field = new EditText(this);
+        field.setText(text);
+        field.setHint(hintRes);
+        field.setTextSize(14f);
+        field.setGravity(android.view.Gravity.CENTER);
+        field.setSingleLine(false);
+        field.setMinLines(1);
+        field.setMaxLines(4);
+        field.setHorizontallyScrolling(false);
+        field.setBackgroundResource(R.drawable.bg_card);
+        field.setPadding(dp(8), dp(8), dp(8), dp(8));
+        return field;
+    }
+
+    /** 单元格改动 → 立刻写进内存 + 存草稿 + 触发防抖自动校验。 */
+    private android.text.TextWatcher termCellWatcher(final String[] pair, final int column, final EditText field) {
+        return new android.text.TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) { }
+
+            @Override
+            public void afterTextChanged(android.text.Editable s) {
+                pair[column] = field.getText().toString().trim();
+                saveTermsDraft();
+                scheduleAutoValidate();
+            }
+        };
     }
 
     /** 「新增」：弹一个两格的小表格式对话框（不是让用户记分隔符）。 */
@@ -1873,7 +2008,11 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                     saveTermsDraft();
                     renderTermsTable();
                     if (added == 0) showNote(getString(R.string.terms_batch_none));
-                    else showTermsReport(getString(R.string.terms_batch_done, added), R.color.brand, null, null);
+                    else {
+                        showTermsReport(getString(R.string.terms_batch_done, added), R.color.brand, null, null);
+                        // 导完立刻自动校验一遍：这是"有没有认错列"最该被看见的时刻
+                        scheduleAutoValidate();
+                    }
                 })
                 .show();
     }
@@ -1983,6 +2122,15 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         final String user = termsUserField == null ? "" : termsUserField.getText().toString().trim();
         prefs.edit().putString(KEY_USER, user).apply();
 
+        // 上传前先跑一遍本地检查：明显不合法的直接说清楚，不发请求（也就不会白等一次往返）
+        if ("upload".equals(action)) {
+            String local = localTermProblems(collectTermEntries());
+            if (local != null) {
+                showTermsReport(getString(R.string.terms_status_local_invalid), R.color.err, null, local);
+                return;
+            }
+        }
+
         if (client == null) {
             showTermsReport(getString(R.string.terms_status_need_connect), R.color.err, null, null);
             return;
@@ -2009,19 +2157,6 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                         int count = rows == null ? 0 : rows.length();
                         loadedRows = rows == null ? "" : rows.toString();
                         status = getString(R.string.terms_status_loaded, count);
-                    }
-                } else if ("validate".equals(action)) {
-                    org.json.JSONObject result = client.termsValidate(user, entries);
-                    org.json.JSONObject json = result.optJSONObject("json");
-                    int code = result.optInt("code", 0);
-                    warnings = json;
-                    if (code == 200) {
-                        status = getString(R.string.terms_status_valid, entries.length());
-                    } else {
-                        int bad = json == null || json.optJSONArray("rejected") == null ? 0 : json.optJSONArray("rejected").length();
-                        status = getString(R.string.terms_status_invalid, Math.max(bad, 1));
-                        color = R.color.err;
-                        rejected = json;
                     }
                 } else {
                     org.json.JSONObject result = client.termsPut(user, entries);
