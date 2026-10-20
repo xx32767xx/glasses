@@ -122,6 +122,39 @@
                     android:textColor="@color/ink_faint"
                     android:textSize="11sp" />
             </LinearLayout>
+
+            <!--
+              热词表：用户自己的名字对照表。放在底部导航而不是塞进设置里，
+              因为它是**用户长期维护的东西**（一次配好、经常回来改），
+              和"同传 / 记录 / 设置"同级更符合使用频率。
+            -->
+            <LinearLayout
+                android:id="@+id/navTerms"
+                android:layout_width="0dp"
+                android:layout_height="56dp"
+                android:layout_weight="1"
+                android:background="@drawable/tap_nav_item"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:id="@+id/navTermsIcon"
+                    android:layout_width="22dp"
+                    android:layout_height="22dp"
+                    android:contentDescription="@string/nav_terms"
+                    android:src="@drawable/ic_records" />
+
+                <TextView
+                    android:id="@+id/navTermsLabel"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="@string/nav_terms"
+                    android:textColor="@color/ink_faint"
+                    android:textSize="11sp" />
+            </LinearLayout>
         </LinearLayout>
     </LinearLayout>
 

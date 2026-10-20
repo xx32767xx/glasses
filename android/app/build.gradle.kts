@@ -24,8 +24,9 @@ android {
     // 4.2：热词对照表阶段 1（设置 → 热词表：编辑 / 校验 / 上传 / 从电脑拉取）。
     //      这一版**只存取、不替换** —— 译文还没接它，见 docs/15 §11。
     // 4.3：设置页加「校对（第二遍）」开关（缺省开、可关）。
-    versionCode = 32
-    versionName = "4.3"
+    // 4.4：热词表独立成底部第 4 栏（表格形式）、校对开关修好、连接进度修好。
+    versionCode = 33
+    versionName = "4.4"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

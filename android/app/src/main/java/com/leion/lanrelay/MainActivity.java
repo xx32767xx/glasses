@@ -161,6 +161,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private LinearLayout bottomNav;
     private View navLive;
     private View navRecords;
+    private View navTerms;
     private View navSettings;
 
     // 同传页
@@ -192,13 +193,19 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     // 设置页
     private TextView settingsServerState;
     private TextView settingsOutputState;
-    /** 热词表那一行的状态小字（"上传 12 条 · 下次生效"这类）。 */
-    private TextView settingsTermsState;
     /** 校对开关：以**电脑侧**状态为准（`/status` 的 `settings.proofread`）。 */
     private Switch settingsProofreadSwitch;
     private TextView settingsProofreadState;
-    /** 电脑上校对现在开着没有；null = 还没读到（不假装知道）。 */
-    private Boolean proofreadOnServer = null;
+    /**
+     * 电脑上校对现在开着没有。
+     *
+     * <p>缺省按 **true** 算：插件的默认值就是开启（`proofread: 'idle'`），
+     * "读不到"不等于"关着"。早先写成 `Boolean null` 再当 false 用 ——
+     * 电脑上还没有 settings.json 时开关永远显示关，点一下也立刻弹回去（用户报的现象）。
+     */
+    private boolean proofreadOnServer = true;
+    /** 电脑侧设置接口能不能用（旧版接收进程没有 /settings，会 404）。 */
+    private boolean proofreadApiAvailable = true;
     private TextView diagnosticsText;
     private TextView fontValue;
     private TextView themeSystemView;
@@ -266,6 +273,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         bottomNav = findViewById(R.id.bottomNav);
         navLive = findViewById(R.id.navLive);
         navRecords = findViewById(R.id.navRecords);
+        navTerms = findViewById(R.id.navTerms);
         navSettings = findViewById(R.id.navSettings);
 
         buildLivePage();
@@ -274,6 +282,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
         navLive.setOnClickListener(v -> showPage(Page.LIVE));
         navRecords.setOnClickListener(v -> showPage(Page.RECORDS));
+        navTerms.setOnClickListener(v -> showPage(Page.TERMS));
         navSettings.setOnClickListener(v -> showPage(Page.SETTINGS));
 
         showPage(Page.LIVE);
@@ -565,19 +574,22 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
     // ── 页面切换 ────────────────────────────────────────────────────────────
 
-    private enum Page { LIVE, RECORDS, SETTINGS }
+    private enum Page { LIVE, RECORDS, TERMS, SETTINGS }
 
     private Page currentPage = Page.LIVE;
     private View livePage;
     private View settingsPage;
     private View recordsPage;
+    private View termsPage;
 
     private void showPage(Page page) {
         currentPage = page;
         livePage.setVisibility(page == Page.LIVE ? View.VISIBLE : View.GONE);
         recordsPage.setVisibility(page == Page.RECORDS ? View.VISIBLE : View.GONE);
+        termsPage.setVisibility(page == Page.TERMS ? View.VISIBLE : View.GONE);
         settingsPage.setVisibility(page == Page.SETTINGS ? View.VISIBLE : View.GONE);
         if (page == Page.RECORDS) renderRecords();
+        if (page == Page.TERMS) onTermsPageShown();
         if (page == Page.SETTINGS) refreshSettingsPage();
         paintNav();
     }
@@ -586,14 +598,17 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private void paintNav() {
         paintNavItem(navLive, currentPage == Page.LIVE);
         paintNavItem(navRecords, currentPage == Page.RECORDS);
+        paintNavItem(navTerms, currentPage == Page.TERMS);
         paintNavItem(navSettings, currentPage == Page.SETTINGS);
     }
 
     private void paintNavItem(View item, boolean selected) {
         ImageView icon = item.findViewById(item == navLive ? R.id.navLiveIcon
-                : item == navRecords ? R.id.navRecordsIcon : R.id.navSettingsIcon);
+                : item == navRecords ? R.id.navRecordsIcon
+                    : item == navTerms ? R.id.navTermsIcon : R.id.navSettingsIcon);
         TextView label = item.findViewById(item == navLive ? R.id.navLiveLabel
-                : item == navRecords ? R.id.navRecordsLabel : R.id.navSettingsLabel);
+                : item == navRecords ? R.id.navRecordsLabel
+                    : item == navTerms ? R.id.navTermsLabel : R.id.navSettingsLabel);
         int color = getColor(selected ? R.color.brand : R.color.ink_faint);
         icon.setColorFilter(color);
         label.setTextColor(color);
@@ -781,11 +796,11 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                     termsSaved = status.optInt("termsSaves", 0);
                     termsSavedEntries = status.optInt("termsEntries", 0);
                     termsSavedUser = status.optString("termsUser", "");
-                    renderTermsState();
                     // 校对开关：以电脑上的实际状态为准（手机不自己猜）
                     org.json.JSONObject settings = status.optJSONObject("settings");
                     if (settings != null && settings.has("proofread")) {
-                        proofreadOnServer = settings.optBoolean("proofread", false);
+                        proofreadOnServer = settings.optBoolean("proofread", true);
+                        proofreadApiAvailable = true;
                         renderProofread(proofreadOnServer, false);
                     }
                     renderConnectionCard();
@@ -813,6 +828,11 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     public void onHello(final String device, final int serverCols, final int serverLineBudget) {
         main.post(() -> {
             deviceName = device;
+            // ⚠️ 连接页那一行必须在这里更新。原来只在**失败**时更新，
+            //    于是连上以后它永远停在"正在连接电脑…"（用户报的遗留问题）。
+            if (overlayConnectProgress != null) {
+                showConnectProgress(getString(R.string.connect_ok, device), R.color.ok);
+            }
             // ⚠️ serverCols / serverLineBudget（电脑那边的 40 列 × 3 行预算）这里**故意不用**。
             //    它们只对电脑端"把译文排成 40×3"有意义；手机这块早就改成按真实分辨率投屏、
             //    由安卓真实排版决定行数了。原来它们被用来渲染"模拟预览"面板 ——
@@ -1346,14 +1366,6 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private void closeOverlay() {
         glassesRealStatus = null;
         glassesRealToggle = null;
-        // 热词表页也一起解绑：那边的请求在后台线程里跑，回来时页面可能已经关了
-        termsUserField = null;
-        termsEntriesField = null;
-        termsStatusText = null;
-        termsWarnTitleView = null;
-        termsWarnBodyView = null;
-        termsRejectTitleView = null;
-        termsRejectBodyView = null;
         overlayHost.removeAllViews();
         overlayHost.setVisibility(View.GONE);
         overlayRoot = null;
@@ -1368,342 +1380,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private TextView overlayConnectProgressText;
     private View overlayConnectProgressDot;
 
-    // ── 热词对照表页（docs/15 阶段 1）────────────────────────────────────────
+    // 热词表是**页面**（底部导航第 4 栏），不再是覆盖层 —— 见 buildTermsPage()。
 
-    private EditText termsUserField;
-    private EditText termsEntriesField;
-    private TextView termsStatusText;
-    private TextView termsWarnTitleView;
-    private TextView termsWarnBodyView;
-    private TextView termsRejectTitleView;
-    private TextView termsRejectBodyView;
-
-    /**
-     * 打开热词表页。进来先做两件事：回填草稿（本地）、再**从电脑拉一次现表**。
-     *
-     * <p>为什么两边都填：草稿是"我上次改到一半的东西"，电脑上的表是"现在真正生效的东西"。
-     * 两者可能不一致（改了没传），而用户最需要知道的正是这一点 —— 所以状态行会明说。
-     */
-    private void openTermsPage() {
-        View view = pushOverlay(R.layout.overlay_terms);
-        termsUserField = view.findViewById(R.id.termsUser);
-        termsEntriesField = view.findViewById(R.id.termsEntries);
-        termsStatusText = view.findViewById(R.id.termsStatus);
-        termsWarnTitleView = view.findViewById(R.id.termsWarnTitle);
-        termsWarnBodyView = view.findViewById(R.id.termsWarnBody);
-        termsRejectTitleView = view.findViewById(R.id.termsRejectTitle);
-        termsRejectBodyView = view.findViewById(R.id.termsRejectBody);
-
-        view.findViewById(R.id.termsBack).setOnClickListener(v -> closeOverlay());
-        termsUserField.setText(termsUser());
-        termsUserField.setHint(R.string.terms_user_hint);
-        termsEntriesField.setText(prefs.getString(KEY_TERMS_DRAFT, ""));
-        termsEntriesField.setHint(R.string.terms_entries_hint);
-
-        view.findViewById(R.id.termsValidate).setOnClickListener(v -> runTermsAction("validate"));
-        view.findViewById(R.id.termsUpload).setOnClickListener(v -> runTermsAction("upload"));
-        view.findViewById(R.id.termsLoad).setOnClickListener(v -> runTermsAction("load"));
-
-        showTermsReport(getString(R.string.terms_status_idle), R.color.ink_soft, null, null);
-        // 进页面就静默拉一次：用户不改任何东西也能看出"电脑上现在存了什么"
-        runTermsAction("load");
-    }
-
-    private String termsUser() {
-        String value = prefs.getString(KEY_USER, "");
-        return value == null ? "" : value.trim();
-    }
-
-    /**
-     * 把编辑框里的文本变成条目数组。
-     *
-     * 格式：一行一条，`中文 = 葡语`。等号两边空白会被去掉。
-     *
-     * <p>为什么解析失败要**逐行报**而不是跳过：静默跳过的后果是"我明明填了这条，
-     * 怎么没生效" —— 那种问题用户自己无法排查。所以看不懂的行一律算错误，
-     * 由界面列出第几行，让他改。
-     *
-     * @return `{ entries, badLines }`；badLines 里是 1 起的行号
-     */
-    private org.json.JSONArray parseTermLines(String text, java.util.List<Integer> badLines) {
-        org.json.JSONArray entries = new org.json.JSONArray();
-        if (text == null) return entries;
-        String[] lines = text.split("\n");
-        for (int index = 0; index < lines.length; index += 1) {
-            String line = lines[index].trim();
-            if (line.isEmpty()) continue;
-            if (line.startsWith("#")) continue;          // 允许注释，方便自己写备注
-            int split = indexOfSeparator(line);
-            if (split <= 0) {
-                badLines.add(index + 1);
-                continue;
-            }
-            String zh = line.substring(0, split).trim();
-            String pt = line.substring(split + 1).trim();
-            if (zh.isEmpty() || pt.isEmpty()) {
-                badLines.add(index + 1);
-                continue;
-            }
-            try {
-                org.json.JSONObject entry = new org.json.JSONObject();
-                entry.put("zh", zh);
-                entry.put("pt", pt);
-                entries.put(entry);
-            } catch (org.json.JSONException error) {
-                badLines.add(index + 1);
-            }
-        }
-        return entries;
-    }
-
-    /** 找 `=`、`＝`、`→` 这三种分隔符里最早出现的那个；都没有返回 -1。 */
-    private static int indexOfSeparator(String line) {
-        int best = -1;
-        for (char mark : new char[] { '=', '＝', '→' }) {
-            int at = line.indexOf(mark);
-            if (at > 0 && (best < 0 || at < best)) best = at;
-        }
-        return best;
-    }
-
-    /** 三个动作共用：解析 → 后台请求 → 回主线程渲染。 */
-    private void runTermsAction(final String action) {
-        final String user = termsUserField == null ? "" : termsUserField.getText().toString().trim();
-        prefs.edit().putString(KEY_USER, user).apply();
-        final String raw = termsEntriesField == null ? "" : termsEntriesField.getText().toString();
-        prefs.edit().putString(KEY_TERMS_DRAFT, raw).apply();
-
-        if (client == null) {
-            showTermsReport(getString(R.string.terms_status_need_connect), R.color.err, null, null);
-            return;
-        }
-
-        final java.util.List<Integer> badLines = new java.util.ArrayList<>();
-        final org.json.JSONArray entries = parseTermLines(raw, badLines);
-        showTermsReport(getString(R.string.terms_status_working), R.color.warn, null, null);
-
-        new Thread(() -> {
-            String status;
-            int color = R.color.brand;
-            org.json.JSONObject warnings = null;
-            org.json.JSONObject rejected = null;
-            try {
-                if ("load".equals(action)) {
-                    org.json.JSONObject result = client.termsGet(user);
-                    org.json.JSONObject json = result.optJSONObject("json");
-                    int code = result.optInt("code", 0);
-                    if (code != 200) {
-                        status = getString(R.string.terms_status_failed, describeTermsError(json, code));
-                        color = R.color.err;
-                    } else {
-                        // 把电脑上的表回填成文本，同时**保留**本地草稿里那些还没上传的行
-                        String loaded = formatTermLines(json.optJSONArray("entries"));
-                        int count = json.optJSONArray("entries") == null ? 0 : json.optJSONArray("entries").length();
-                        prefs.edit().putString(KEY_TERMS_DRAFT, loaded).apply();
-                        main.post(() -> {
-                            if (termsEntriesField != null) termsEntriesField.setText(loaded);
-                        });
-                        status = getString(R.string.terms_status_loaded, count);
-                    }
-                } else if ("validate".equals(action)) {
-                    org.json.JSONObject result = client.termsValidate(user, entries);
-                    org.json.JSONObject json = result.optJSONObject("json");
-                    int code = result.optInt("code", 0);
-                    // 校验的返回体里同时带 warnings 与 rejected，两个区都从它渲染
-                    warnings = json;
-                    if (code == 200) {
-                        status = getString(R.string.terms_status_valid, entries.length());
-                    } else {
-                        int bad = json == null || json.optJSONArray("rejected") == null ? 0 : json.optJSONArray("rejected").length();
-                        status = getString(R.string.terms_status_invalid, Math.max(bad, 1));
-                        color = R.color.err;
-                        rejected = json;
-                    }
-                } else {
-                    org.json.JSONObject result = client.termsPut(user, entries);
-                    org.json.JSONObject json = result.optJSONObject("json");
-                    int code = result.optInt("code", 0);
-                    if (code == 200 && json != null && json.optBoolean("ok", false)) {
-                        int previous = json.optInt("previousEntries", 0);
-                        status = json.optBoolean("overwritten", false)
-                                ? getString(R.string.terms_status_uploaded_overwrite, entries.length(), previous)
-                                : getString(R.string.terms_status_uploaded, entries.length());
-                        warnings = json;
-                    } else {
-                        int bad = json == null || json.optJSONArray("rejected") == null ? 0 : json.optJSONArray("rejected").length();
-                        status = getString(R.string.terms_status_invalid, Math.max(bad, 1));
-                        color = R.color.err;
-                        rejected = json;
-                    }
-                }
-            } catch (Exception error) {
-                status = getString(R.string.terms_status_failed, String.valueOf(error.getMessage()));
-                color = R.color.err;
-            }
-            final String finalStatus = status;
-            final int finalColor = color;
-            final org.json.JSONObject finalWarnings = warnings;
-            final org.json.JSONObject finalRejected = rejected;
-            main.post(() -> showTermsReport(finalStatus, finalColor,
-                    termLineProblems(finalWarnings, "warnings", badLines),
-                    termLineProblems(finalRejected, "rejected", badLines)));
-        }, "terms-action").start();
-    }
-
-    /** 电脑上的条目数组 → 编辑框文本（一行一条 `中文 = 葡语`）。 */
-    private static String formatTermLines(org.json.JSONArray entries) {
-        if (entries == null) return "";
-        StringBuilder out = new StringBuilder();
-        for (int index = 0; index < entries.length(); index += 1) {
-            org.json.JSONObject entry = entries.optJSONObject(index);
-            if (entry == null) continue;
-            if (out.length() > 0) out.append('\n');
-            out.append(entry.optString("zh", "")).append(" = ").append(entry.optString("pt", ""));
-        }
-        return out.toString();
-    }
-
-    /**
-     * 把服务端返回的 `warnings` / `rejected` 渲染成给人看的几行。
-     *
-     * <p>`index` 是**条目下标**（0 起），而用户看的是**行号**（1 起，且注释行/空行也在数）。
-     * 所以这里先按"第 N 个条目"说，再附上他自己输入的第几行 —— 两者都给，
-     * 他才知道该改哪一行（只给下标会让他去数条目而不是数行）。
-     */
-    private static String termLineProblems(org.json.JSONObject payload, String key,
-                                           java.util.List<Integer> badLines) {
-        StringBuilder out = new StringBuilder();
-        org.json.JSONArray items = payload == null ? null : payload.optJSONArray(key);
-        if (items != null) {
-            for (int index = 0; index < items.length(); index += 1) {
-                org.json.JSONObject item = items.optJSONObject(index);
-                if (item == null) continue;
-                int at = item.optInt("index", -1);
-                if (out.length() > 0) out.append('\n');
-                out.append(at >= 0 ? ("第 " + (at + 1) + " 条：") : "").append(item.optString("reason", ""));
-            }
-        }
-        for (Integer line : badLines) {
-            if (out.length() > 0) out.append('\n');
-            out.append("第 ").append(line).append(" 行看不懂（每行要写成「中文 = 葡语」）");
-        }
-        return out.length() == 0 ? null : out.toString();
-    }
-
-    private static String describeTermsError(org.json.JSONObject json, int code) {
-        if (json == null) return "HTTP " + code;
-        String hint = json.optString("hint", "");
-        String error = json.optString("error", "");
-        String text = error.isEmpty() ? hint : (hint.isEmpty() ? error : error + "：" + hint);
-        return text.isEmpty() ? ("HTTP " + code) : text;
-    }
-
-    /**
-     * 切换「校对（第二遍）」，并把结果**送到电脑**。
-     *
-     * <p>为什么必须送到电脑、不能只改本地：开关的效果发生在电脑侧。只改本地会造出
-     * "界面上关着、电脑上还在每句多花一次调用"的状态 —— 那比没有开关更糟。
-     *
-     * <p>失败时**把界面退回原状**：不能让开关显示成一个假的"已关闭"。
-     */
-    private void toggleProofread() {
-        if (client == null) {
-            showNote(getString(R.string.settings_proofread_need_connect));
-            return;
-        }
-        final boolean next = proofreadOnServer == null ? true : !proofreadOnServer;
-        // 立刻更新成"想设置的"样子，但用 pending 文案说明还没落地
-        renderProofread(next, true);
-        final LanClient current = client;
-        new Thread(() -> {
-            String note = null;
-            boolean ok = false;
-            boolean value = next;
-            try {
-                org.json.JSONObject result = current.settingsPutProofread(next);
-                org.json.JSONObject json = result.optJSONObject("json");
-                int code = result.optInt("code", 0);
-                if (code == 200) {
-                    ok = true;
-                    value = json != null && json.optJSONObject("settings") != null
-                            ? json.optJSONObject("settings").optBoolean("proofread", next) : next;
-                    note = getString(R.string.settings_proofread_saved, value ? "已打开" : "已关闭");
-                } else {
-                    note = getString(R.string.settings_proofread_failed,
-                            json == null ? ("HTTP " + code) : json.optString("hint", "HTTP " + code));
-                }
-            } catch (Exception error) {
-                note = getString(R.string.settings_proofread_failed, String.valueOf(error.getMessage()));
-            }
-            final boolean finalOk = ok;
-            final boolean finalValue = value;
-            final String finalNote = note;
-            main.post(() -> {
-                if (finalOk) {
-                    proofreadOnServer = finalValue;
-                    renderProofread(finalValue, false);
-                    showNote(finalNote);
-                } else {
-                    // 没送成功 → 退回"电脑上的真实状态"，并把原因说出来
-                    renderProofread(proofreadOnServer == null ? false : proofreadOnServer, false);
-                    showNote(finalNote);
-                }
-            });
-        }, "proofread-toggle").start();
-    }
-
-    /** 渲染校对开关：`pending` 表示"正在送电脑"，此时文案不说已完成。 */
-    private void renderProofread(boolean on, boolean pending) {
-        if (settingsProofreadSwitch != null) settingsProofreadSwitch.setChecked(on);
-        if (settingsProofreadState == null) return;
-        if (pending) {
-            settingsProofreadState.setText(on ? "正在打开…" : "正在关闭…");
-            return;
-        }
-        if (proofreadOnServer == null) {
-            settingsProofreadState.setText(R.string.settings_proofread_on);
-            return;
-        }
-        settingsProofreadState.setText(proofreadOnServer
-                ? R.string.settings_proofread_on : R.string.settings_proofread_off);
-    }
-
-    /**
-     * 设置页那一行热词表的小字：说清"电脑上现在有没有表、几张、是谁的"。
-     *
-     * <p>为什么用电脑侧的数字而不是本地草稿：本地草稿可能改了没传 ——
-     * 那块正好是用户最容易误判的地方（"我填了怎么没生效"），
-     * 所以这里一律报**电脑侧事实**，没连上就直说没连上。
-     */
-    private void renderTermsState() {
-        if (settingsTermsState == null) return;
-        if (termsSaved <= 0) {
-            settingsTermsState.setText(R.string.settings_terms_hint);
-            return;
-        }
-        String who = termsSavedUser.isEmpty() ? "default" : termsSavedUser;
-        settingsTermsState.setText("电脑上最近上传：" + termsSavedEntries + " 条（" + who + "）· 下次同传生效");
-    }
-
-    /** 渲染结果区：状态行 + 提醒 + 拒绝原因。三块各自可空。 */
-    private void showTermsReport(String status, int colorRes, String warnings, String rejected) {
-        if (termsStatusText != null) {
-            termsStatusText.setText(status);
-            termsStatusText.setTextColor(getColor(colorRes));
-        }
-        if (termsWarnTitleView != null && termsWarnBodyView != null) {
-            boolean show = warnings != null && !warnings.isEmpty();
-            termsWarnTitleView.setVisibility(show ? View.VISIBLE : View.GONE);
-            termsWarnBodyView.setVisibility(show ? View.VISIBLE : View.GONE);
-            if (show) termsWarnBodyView.setText(warnings);
-        }
-        if (termsRejectTitleView != null && termsRejectBodyView != null) {
-            boolean show = rejected != null && !rejected.isEmpty();
-            termsRejectTitleView.setVisibility(show ? View.VISIBLE : View.GONE);
-            termsRejectBodyView.setVisibility(show ? View.VISIBLE : View.GONE);
-            if (show) termsRejectBodyView.setText(rejected);
-        }
-    }
 
 
     private void openConnectPage() {
@@ -1901,6 +1579,538 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
     // ── 设置页 ──────────────────────────────────────────────────────────────
 
+    /**
+     * 切换「校对（第二遍）」，并把结果**送到电脑**。
+     *
+     * <p>为什么必须送到电脑：开关的效果发生在电脑侧（它决定排不排第二次模型调用）。
+     * 只改本地会造出"界面上关着、电脑上还在每句多花一次调用"的状态 —— 那比没有开关更糟。
+     *
+     * <p>失败时界面退回**电脑上的真实状态**（不是退回 false），并把原因说出来：
+     * 原来这里用 `null → false`，于是电脑上还没写过 settings.json 时，
+     * 用户点一下开关就立刻弹回"关闭"—— 那是 4.3 报上来的第二个问题。
+     */
+    private void toggleProofread() {
+        if (client == null) {
+            showNote(getString(R.string.settings_proofread_need_connect));
+            return;
+        }
+        final boolean next = !proofreadOnServer;
+        renderProofread(next, true);          // 先显示"正在…"，避免看起来没反应
+        final LanClient current = client;
+        new Thread(() -> {
+            String note = null;
+            boolean ok = false;
+            boolean value = next;
+            boolean apiAvailable = true;
+            try {
+                org.json.JSONObject result = current.settingsPutProofread(next);
+                org.json.JSONObject json = result.optJSONObject("json");
+                int code = result.optInt("code", 0);
+                if (code == 200) {
+                    ok = true;
+                    value = json != null && json.optJSONObject("settings") != null
+                            ? json.optJSONObject("settings").optBoolean("proofread", next) : next;
+                    note = getString(R.string.settings_proofread_saved, value ? "已打开" : "已关闭");
+                } else if (code == 404) {
+                    apiAvailable = false;
+                    note = "电脑上的接收进程是旧版（没有这个接口）—— 重启 start-all 后可用";
+                } else {
+                    note = getString(R.string.settings_proofread_failed,
+                            json == null ? ("HTTP " + code) : json.optString("hint", "HTTP " + code));
+                }
+            } catch (Exception error) {
+                note = getString(R.string.settings_proofread_failed, String.valueOf(error.getMessage()));
+            }
+            final boolean finalOk = ok;
+            final boolean finalValue = value;
+            final boolean finalApi = apiAvailable;
+            final String finalNote = note;
+            main.post(() -> {
+                if (finalOk) {
+                    proofreadOnServer = finalValue;
+                    proofreadApiAvailable = true;
+                    renderProofread(finalValue, false);
+                } else {
+                    proofreadApiAvailable = finalApi;
+                    renderProofread(proofreadOnServer, false);      // 退回电脑的真实状态
+                }
+                showNote(finalNote);
+            });
+        }, "proofread-toggle").start();
+    }
+
+    /** 渲染校对开关：`pending` = 正在送电脑，此时不说"已完成"。 */
+    private void renderProofread(boolean on, boolean pending) {
+        if (settingsProofreadSwitch != null) settingsProofreadSwitch.setChecked(on);
+        if (settingsProofreadState == null) return;
+        if (pending) {
+            settingsProofreadState.setText(on ? "正在打开…" : "正在关闭…");
+            return;
+        }
+        if (proofreadApiAvailable == false) {
+            settingsProofreadState.setText("电脑上的接收进程是旧版（没有设置接口）");
+            return;
+        }
+        settingsProofreadState.setText(proofreadOnServer
+                ? R.string.settings_proofread_on : R.string.settings_proofread_off);
+    }
+
+    // ── 热词表页（底部导航第 4 栏，表格形式）─────────────────────────────────
+
+    private TextView termsCountView;
+    private EditText termsUserField;
+    private LinearLayout termsRowsBox;
+    private TextView termsEmptyView;
+    private TextView termsStatusText;
+    private TextView termsWarnTitleView;
+    private TextView termsWarnBodyView;
+    private TextView termsRejectTitleView;
+    private TextView termsRejectBodyView;
+
+    /**
+     * 表格里的数据：每项 `{zh, pt}`。
+     *
+     * <p>为什么用内存列表 + 动态加行，而不是让用户按分隔符手打一段文本：
+     * 用户手上的表在 Excel/Word/微信里，让他重录一遍必然出错；而格式错（少个等号、
+     * 用了中文逗号、全角空格）最后表现为"校验失败"，他又看不出错在哪。
+     * 表格的好处是**每一格都能各自编辑、每一行都能删**，错了立刻看得见。
+     */
+    private final java.util.List<String[]> termsRowsData = new java.util.ArrayList<>();
+
+    /** 热词表的用户名（留空 → 电脑侧回落到 default）。 */
+    private String termsUser() {
+        String value = prefs.getString(KEY_USER, "");
+        return value == null ? "" : value.trim();
+    }
+
+    private void buildTermsPage() {
+        termsPage = LayoutInflater.from(this).inflate(R.layout.page_terms, pageHost, false);
+        termsPage.setVisibility(View.GONE);
+        pageHost.addView(termsPage);
+
+        termsCountView = termsPage.findViewById(R.id.termsCount);
+        termsUserField = termsPage.findViewById(R.id.termsUser);
+        termsRowsBox = termsPage.findViewById(R.id.termsRows);
+        termsEmptyView = termsPage.findViewById(R.id.termsEmpty);
+        termsStatusText = termsPage.findViewById(R.id.termsStatus);
+        termsWarnTitleView = termsPage.findViewById(R.id.termsWarnTitle);
+        termsWarnBodyView = termsPage.findViewById(R.id.termsWarnBody);
+        termsRejectTitleView = termsPage.findViewById(R.id.termsRejectTitle);
+        termsRejectBodyView = termsPage.findViewById(R.id.termsRejectBody);
+
+        termsUserField.setText(termsUser());
+        termsUserField.setHint(R.string.terms_user_hint);
+        termsUserField.setOnFocusChangeListener((view, hasFocus) -> {
+            if (!hasFocus) prefs.edit().putString(KEY_USER, termsUserField.getText().toString().trim()).apply();
+        });
+
+        termsPage.findViewById(R.id.termsAdd).setOnClickListener(v -> showAddTermDialog());
+        termsPage.findViewById(R.id.termsBatch).setOnClickListener(v -> showBatchImportDialog());
+        termsPage.findViewById(R.id.termsValidate).setOnClickListener(v -> runTermsAction("validate"));
+        termsPage.findViewById(R.id.termsUpload).setOnClickListener(v -> runTermsAction("upload"));
+        termsPage.findViewById(R.id.termsLoad).setOnClickListener(v -> runTermsAction("load"));
+
+        loadTermsDraft();
+        renderTermsTable();
+    }
+
+    /** 切到这一页时：先把本地草稿画出来，再**静默拉一次电脑上的现表**（以电脑为准）。 */
+    private void onTermsPageShown() {
+        if (termsUserField != null) termsUserField.setText(termsUser());
+        renderTermsTable();
+        if (client != null) runTermsAction("load");
+    }
+
+    // ── 表格渲染 ────────────────────────────────────────────────────────────
+
+    private void renderTermsTable() {
+        if (termsRowsBox == null) return;
+        termsRowsBox.removeAllViews();
+        for (int index = 0; index < termsRowsData.size(); index += 1) {
+            termsRowsBox.addView(buildTermRow(index));
+        }
+        boolean empty = termsRowsData.isEmpty();
+        if (termsEmptyView != null) termsEmptyView.setVisibility(empty ? View.VISIBLE : View.GONE);
+        if (termsCountView != null) {
+            termsCountView.setText(getString(R.string.terms_count, termsRowsData.size()));
+        }
+    }
+
+    /** 造一行：中文输入框 + 葡语输入框 + 删除。 */
+    private View buildTermRow(final int index) {
+        final String[] pair = termsRowsData.get(index);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(4), 0, dp(4));
+
+        final EditText zhField = new EditText(this);
+        zhField.setText(pair[0]);
+        zhField.setHint(R.string.terms_col_zh);
+        zhField.setTextSize(14f);
+        zhField.setSingleLine(true);
+        zhField.setBackgroundResource(R.drawable.bg_card);
+        LinearLayout.LayoutParams zhParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        zhParams.setMarginEnd(dp(6));
+        zhField.setLayoutParams(zhParams);
+        zhField.setOnFocusChangeListener((view, hasFocus) -> {
+            if (!hasFocus) {
+                pair[0] = zhField.getText().toString().trim();
+                saveTermsDraft();
+            }
+        });
+
+        final EditText ptField = new EditText(this);
+        ptField.setText(pair[1]);
+        ptField.setHint(R.string.terms_col_pt);
+        ptField.setTextSize(14f);
+        ptField.setSingleLine(true);
+        ptField.setBackgroundResource(R.drawable.bg_card);
+        LinearLayout.LayoutParams ptParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        ptField.setLayoutParams(ptParams);
+        ptField.setOnFocusChangeListener((view, hasFocus) -> {
+            if (!hasFocus) {
+                pair[1] = ptField.getText().toString().trim();
+                saveTermsDraft();
+            }
+        });
+
+        TextView remove = new TextView(this);
+        remove.setText("×");
+        remove.setTextSize(18f);
+        remove.setTextColor(getColor(R.color.ink_soft));
+        remove.setGravity(android.view.Gravity.CENTER);
+        remove.setClickable(true);
+        remove.setFocusable(true);
+        LinearLayout.LayoutParams removeParams = new LinearLayout.LayoutParams(dp(36), dp(36));
+        removeParams.setMarginStart(dp(6));
+        remove.setLayoutParams(removeParams);
+        remove.setOnClickListener(v -> {
+            if (index < termsRowsData.size()) termsRowsData.remove(index);
+            saveTermsDraft();
+            renderTermsTable();
+        });
+
+        row.addView(zhField);
+        row.addView(ptField);
+        row.addView(remove);
+        return row;
+    }
+
+    /** 「新增」：弹一个两格的小表格式对话框（不是让用户记分隔符）。 */
+    private void showAddTermDialog() {
+        final LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(8), dp(20), 0);
+
+        final EditText zhField = new EditText(this);
+        zhField.setHint(R.string.terms_col_zh);
+        zhField.setTextSize(14f);
+        box.addView(zhField);
+
+        final EditText ptField = new EditText(this);
+        ptField.setHint(R.string.terms_col_pt);
+        ptField.setTextSize(14f);
+        box.addView(ptField);
+
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.terms_add_title)
+                .setView(box)
+                .setNegativeButton(R.string.cancel, null)
+                .setPositiveButton(R.string.confirm, (dialog, which) -> {
+                    String zh = zhField.getText().toString().trim();
+                    String pt = ptField.getText().toString().trim();
+                    if (zh.isEmpty() || pt.isEmpty()) {
+                        showNote(getString(R.string.terms_add_both));
+                        return;
+                    }
+                    termsRowsData.add(new String[] { zh, pt });
+                    saveTermsDraft();
+                    renderTermsTable();
+                    showTermsReport(getString(R.string.terms_count, termsRowsData.size()), R.color.brand, null, null);
+                })
+                .show();
+    }
+
+    /**
+     * 「批量导入」：一个多行框，直接粘贴。
+     *
+     * <p>为什么支持 Tab / 逗号 / 等号三种分隔：用户从 Excel 复制出来是 Tab，
+     * 从微信/记事本是空格或等号。**不要求他统一格式**，我们认；认不出的行会明说。
+     */
+    private void showBatchImportDialog() {
+        final EditText input = new EditText(this);
+        input.setHint(R.string.terms_batch_hint);
+        input.setMinLines(6);
+        input.setGravity(android.view.Gravity.TOP | android.view.Gravity.START);
+        input.setTextSize(13f);
+        input.setTypeface(Typeface.MONOSPACE);
+
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.terms_batch_title)
+                .setView(input)
+                .setNegativeButton(R.string.cancel, null)
+                .setPositiveButton(R.string.confirm, (dialog, which) -> {
+                    int added = importTermLines(input.getText().toString());
+                    saveTermsDraft();
+                    renderTermsTable();
+                    if (added == 0) showNote(getString(R.string.terms_batch_none));
+                    else showTermsReport(getString(R.string.terms_batch_done, added), R.color.brand, null, null);
+                })
+                .show();
+    }
+
+    /**
+     * 解析粘贴进来的文本并追加到表格。
+     *
+     * <p>每行按 **Tab → 逗号（半角/全角）→ 等号（半角/全角）→ 多个空格** 的顺序找第一个分隔符。
+     * 只认两列；多出来的部分并进第二列（避免把葡语里的逗号切开）。
+     * 空行与 `#` 开头的行跳过。
+     *
+     * @return 实际导入的条数
+     */
+    private int importTermLines(String text) {
+        if (text == null) return 0;
+        int added = 0;
+        for (String raw : text.split("\n")) {
+            String line = raw.trim();
+            if (line.isEmpty() || line.startsWith("#")) continue;
+            String[] parts = splitTermLine(line);
+            if (parts == null) continue;
+            termsRowsData.add(parts);
+            added += 1;
+        }
+        return added;
+    }
+
+    /** 把一行拆成 {中文, 葡语}；拆不出来返回 null。 */
+    private static String[] splitTermLine(String line) {
+        final char[] separators = { '\t', ',', '，', '=', '＝', '→' };
+        for (char separator : separators) {
+            int at = line.indexOf(separator);
+            if (at <= 0) continue;
+            String left = line.substring(0, at).trim();
+            String right = line.substring(at + 1).trim();
+            if (left.isEmpty() || right.isEmpty()) continue;
+            return new String[] { left, right };
+        }
+        // 最后再试"两个以上空格"当分隔（从 Word 里粘过来常见）
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\s{2,}").matcher(line);
+        if (matcher.find() && matcher.start() > 0) {
+            String left = line.substring(0, matcher.start()).trim();
+            String right = line.substring(matcher.end()).trim();
+            if (!left.isEmpty() && !right.isEmpty()) return new String[] { left, right };
+        }
+        return null;
+    }
+
+    // ── 草稿存取 ────────────────────────────────────────────────────────────
+
+    private void saveTermsDraft() {
+        org.json.JSONArray array = new org.json.JSONArray();
+        for (String[] pair : termsRowsData) {
+            if (pair[0].isEmpty() && pair[1].isEmpty()) continue;
+            org.json.JSONArray row = new org.json.JSONArray();
+            row.put(pair[0]);
+            row.put(pair[1]);
+            array.put(row);
+        }
+        prefs.edit().putString(KEY_TERMS_DRAFT, array.toString()).apply();
+    }
+
+    private void loadTermsDraft() {
+        termsRowsData.clear();
+        String raw = prefs.getString(KEY_TERMS_DRAFT, "");
+        if (raw == null || raw.isEmpty()) return;
+        try {
+            org.json.JSONArray array = new org.json.JSONArray(raw);
+            for (int index = 0; index < array.length(); index += 1) {
+                org.json.JSONArray row = array.optJSONArray(index);
+                if (row == null) continue;
+                termsRowsData.add(new String[] { row.optString(0, ""), row.optString(1, "") });
+            }
+        } catch (org.json.JSONException error) {
+            // 草稿坏了就当没有：它只是"上次改到一半的东西"，绝不能影响使用
+            termsRowsData.clear();
+        }
+    }
+
+    // ── 三个动作：校验 / 上传 / 从电脑拉取 ──────────────────────────────────
+
+    /**
+     * 把表格变成条目数组（空行跳过）。
+     *
+     * <p>**不在手机上判合法性**：校验一律由电脑做（`POST /terms/validate`），
+     * 否则会出现"手机上通过、真上传被拒"这种最难解释的情况。
+     */
+    private org.json.JSONArray collectTermEntries() {
+        org.json.JSONArray entries = new org.json.JSONArray();
+        for (String[] pair : termsRowsData) {
+            String zh = pair[0] == null ? "" : pair[0].trim();
+            String pt = pair[1] == null ? "" : pair[1].trim();
+            if (zh.isEmpty() && pt.isEmpty()) continue;
+            try {
+                org.json.JSONObject entry = new org.json.JSONObject();
+                entry.put("zh", zh);
+                entry.put("pt", pt);
+                entries.put(entry);
+            } catch (org.json.JSONException ignored) {
+                // 理论上不会发生；真发生了就跳过这一行，不中断整体
+            }
+        }
+        return entries;
+    }
+
+    private void runTermsAction(final String action) {
+        final String user = termsUserField == null ? "" : termsUserField.getText().toString().trim();
+        prefs.edit().putString(KEY_USER, user).apply();
+
+        if (client == null) {
+            showTermsReport(getString(R.string.terms_status_need_connect), R.color.err, null, null);
+            return;
+        }
+        final org.json.JSONArray entries = collectTermEntries();
+        showTermsReport(getString(R.string.terms_status_working), R.color.warn, null, null);
+
+        new Thread(() -> {
+            String status;
+            int color = R.color.brand;
+            org.json.JSONObject warnings = null;
+            org.json.JSONObject rejected = null;
+            String loadedRows = null;
+            try {
+                if ("load".equals(action)) {
+                    org.json.JSONObject result = client.termsGet(user);
+                    org.json.JSONObject json = result.optJSONObject("json");
+                    int code = result.optInt("code", 0);
+                    if (code != 200) {
+                        status = getString(R.string.terms_status_failed, describeTermsError(json, code));
+                        color = R.color.err;
+                    } else {
+                        org.json.JSONArray rows = json == null ? null : json.optJSONArray("entries");
+                        int count = rows == null ? 0 : rows.length();
+                        loadedRows = rows == null ? "" : rows.toString();
+                        status = getString(R.string.terms_status_loaded, count);
+                    }
+                } else if ("validate".equals(action)) {
+                    org.json.JSONObject result = client.termsValidate(user, entries);
+                    org.json.JSONObject json = result.optJSONObject("json");
+                    int code = result.optInt("code", 0);
+                    warnings = json;
+                    if (code == 200) {
+                        status = getString(R.string.terms_status_valid, entries.length());
+                    } else {
+                        int bad = json == null || json.optJSONArray("rejected") == null ? 0 : json.optJSONArray("rejected").length();
+                        status = getString(R.string.terms_status_invalid, Math.max(bad, 1));
+                        color = R.color.err;
+                        rejected = json;
+                    }
+                } else {
+                    org.json.JSONObject result = client.termsPut(user, entries);
+                    org.json.JSONObject json = result.optJSONObject("json");
+                    int code = result.optInt("code", 0);
+                    if (code == 200 && json != null && json.optBoolean("ok", false)) {
+                        int previous = json.optInt("previousEntries", 0);
+                        status = json.optBoolean("overwritten", false)
+                                ? getString(R.string.terms_status_uploaded_overwrite, entries.length(), previous)
+                                : getString(R.string.terms_status_uploaded, entries.length());
+                        warnings = json;
+                    } else {
+                        int bad = json == null || json.optJSONArray("rejected") == null ? 0 : json.optJSONArray("rejected").length();
+                        status = getString(R.string.terms_status_invalid, Math.max(bad, 1));
+                        color = R.color.err;
+                        rejected = json;
+                    }
+                }
+            } catch (Exception error) {
+                status = getString(R.string.terms_status_failed, String.valueOf(error.getMessage()));
+                color = R.color.err;
+                loadedRows = null;
+            }
+            final String finalStatus = status;
+            final int finalColor = color;
+            final org.json.JSONObject finalWarnings = warnings;
+            final org.json.JSONObject finalRejected = rejected;
+            final String finalRows = loadedRows;
+            main.post(() -> {
+                if (finalRows != null) applyLoadedRows(finalRows);
+                showTermsReport(finalStatus, finalColor,
+                        termProblems(finalWarnings, "warnings", java.util.Collections.emptyList()),
+                        termProblems(finalRejected, "rejected", java.util.Collections.emptyList()));
+            });
+        }, "terms-action").start();
+    }
+
+    /** 把电脑上的条目填回表格（拉取后**直接覆盖**本地草稿：以电脑为准）。 */
+    private void applyLoadedRows(String rowsJson) {
+        try {
+            org.json.JSONArray rows = new org.json.JSONArray(rowsJson);
+            termsRowsData.clear();
+            for (int index = 0; index < rows.length(); index += 1) {
+                org.json.JSONObject row = rows.optJSONObject(index);
+                if (row == null) continue;
+                termsRowsData.add(new String[] { row.optString("zh", ""), row.optString("pt", "") });
+            }
+            saveTermsDraft();
+            renderTermsTable();
+        } catch (org.json.JSONException error) {
+            showNote("拉回来的内容看不懂：" + error.getMessage());
+        }
+    }
+
+    /**
+     * 把服务端返回的 `warnings` / `rejected` 渲染成给人看的几行。
+     *
+     * <p>`index` 是**条目下标**（0 起），用户看的是表格第几行 —— 所以这里统一按
+     * "第 N 条"说，并在界面上把条数显示出来，让他对得上。
+     */
+    private static String termProblems(org.json.JSONObject payload, String key, java.util.List<Integer> badLines) {
+        StringBuilder out = new StringBuilder();
+        org.json.JSONArray items = payload == null ? null : payload.optJSONArray(key);
+        if (items != null) {
+            for (int index = 0; index < items.length(); index += 1) {
+                org.json.JSONObject item = items.optJSONObject(index);
+                if (item == null) continue;
+                int at = item.optInt("index", -1);
+                if (out.length() > 0) out.append('\n');
+                out.append(at >= 0 ? ("第 " + (at + 1) + " 条：") : "").append(item.optString("reason", ""));
+            }
+        }
+        for (Integer line : badLines) {
+            if (out.length() > 0) out.append('\n');
+            out.append("第 ").append(line).append(" 行看不懂");
+        }
+        return out.length() == 0 ? null : out.toString();
+    }
+
+    private static String describeTermsError(org.json.JSONObject json, int code) {
+        if (json == null) return "HTTP " + code;
+        String hint = json.optString("hint", "");
+        String error = json.optString("error", "");
+        String text = error.isEmpty() ? hint : (hint.isEmpty() ? error : error + "：" + hint);
+        return text.isEmpty() ? ("HTTP " + code) : text;
+    }
+
+    /** 渲染结果区：状态行 + 提醒 + 拒绝原因。三块各自可空。 */
+    private void showTermsReport(String status, int colorRes, String warnings, String rejected) {
+        if (termsStatusText != null) {
+            termsStatusText.setText(status);
+            termsStatusText.setTextColor(getColor(colorRes));
+        }
+        if (termsWarnTitleView != null && termsWarnBodyView != null) {
+            boolean show = warnings != null && !warnings.isEmpty();
+            termsWarnTitleView.setVisibility(show ? View.VISIBLE : View.GONE);
+            termsWarnBodyView.setVisibility(show ? View.VISIBLE : View.GONE);
+            if (show) termsWarnBodyView.setText(warnings);
+        }
+        if (termsRejectTitleView != null && termsRejectBodyView != null) {
+            boolean show = rejected != null && !rejected.isEmpty();
+            termsRejectTitleView.setVisibility(show ? View.VISIBLE : View.GONE);
+            termsRejectBodyView.setVisibility(show ? View.VISIBLE : View.GONE);
+            if (show) termsRejectBodyView.setText(rejected);
+        }
+    }
+
     private void buildSettingsPage() {
         settingsPage = LayoutInflater.from(this).inflate(R.layout.page_settings, pageHost, false);
         settingsPage.setVisibility(View.GONE);
@@ -1920,8 +2130,6 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         settingsPage.findViewById(R.id.settingsOutputRow).setOnClickListener(v -> openOutputSheet());
         settingsPage.findViewById(R.id.settingsGlassesRow).setOnClickListener(v -> openGlassesPreview());
         settingsPage.findViewById(R.id.settingsTypeRow).setOnClickListener(v -> promptManualText());
-        settingsTermsState = settingsPage.findViewById(R.id.settingsTermsState);
-        settingsPage.findViewById(R.id.settingsTermsRow).setOnClickListener(v -> openTermsPage());
         settingsProofreadSwitch = settingsPage.findViewById(R.id.settingsProofreadSwitch);
         settingsProofreadState = settingsPage.findViewById(R.id.settingsProofreadState);
         // 整行可点：Switch 本身只有 48dp 宽，点行更省事（和开发者开关同一套做法）
@@ -1947,7 +2155,6 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         developerRow.setOnClickListener(v -> setDeveloperMode(!developerSwitch.isChecked()));
         developerSwitch.setOnCheckedChangeListener((button, checked) -> setDeveloperMode(checked));
         applyDeveloperMode();
-        renderTermsState();
     }
 
     /**

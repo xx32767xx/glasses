@@ -222,4 +222,19 @@
     <string name="settings_proofread_need_connect">还没连上电脑 —— 这个开关要通过电脑生效</string>
     <string name="settings_proofread_failed">设置没送到电脑：%1$s</string>
     <string name="settings_proofread_saved">已保存：校对%1$s · 下一场同传生效</string>
+    <!-- 热词表页（底部导航第 4 个栏位，表格形式） -->
+    <string name="nav_terms">热词表</string>
+    <string name="terms_add">新增</string>
+    <string name="terms_add_title">新增一条对照</string>
+    <string name="terms_batch">批量导入</string>
+    <string name="terms_batch_title">批量导入（粘贴即可）</string>
+    <string name="terms_batch_hint">每行一条，支持从 Excel / 表格里直接粘贴（Tab、逗号或等号分隔）</string>
+    <string name="terms_col_zh">中文</string>
+    <string name="terms_col_pt">葡语</string>
+    <string name="terms_delete">删除</string>
+    <string name="terms_empty">还没有条目 —— 点「新增」加一条，或「批量导入」粘贴一片</string>
+    <string name="terms_count">%1$d 条</string>
+    <string name="terms_add_both">中文和葡语都要填</string>
+    <string name="terms_batch_none">没有认出可以导入的行（每行要能分成两列）</string>
+    <string name="terms_batch_done">导入了 %1$d 条</string>
 </resources>
