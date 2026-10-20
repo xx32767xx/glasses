@@ -33,7 +33,7 @@ import { join, resolve } from 'node:path'
 import { CHECKOUT } from '../lib/real-tools.mjs'
 import { ensureLoaderLinks } from '../lib/loader-links.mjs'
 import { buildComposition, LIVE_DATA_DIR, repoFile } from '../lib/composition.mjs'
-import { defaultBus, defaultInbox, defaultSettings } from '../lib/paths.mjs'
+import { TERMS_LOG_NAME, defaultBus, defaultInbox, defaultSettings, defaultTerms, defaultTermsActive } from '../lib/paths.mjs'
 
 const HELP = `harness-side —— 常驻的 harness 侧进程（给手机 + 局域网转发用）
 
@@ -155,6 +155,11 @@ async function main() {
       // plugin/core.mjs 的 refreshRuntimeSettings()。
       proofread: options.proofread ? 'idle' : 'off',
       settingsPath: defaultSettings(options.dataDir).replace(/\\/g, '/'),
+      // 热词归一（docs/15 阶段 3）：开关 + 表 + "当前用哪个用户" + 事件日志
+      terms: 'on',
+      termsPath: defaultTerms(options.dataDir).replace(/\\/g, '/'),
+      termsActivePath: defaultTermsActive(options.dataDir).replace(/\\/g, '/'),
+      termsLogPath: join(options.dataDir, TERMS_LOG_NAME).replace(/\\/g, '/'),
     },
     extraRows: [`- name: '${repoFile('lib', 'keepalive.mjs')}'`],
   })

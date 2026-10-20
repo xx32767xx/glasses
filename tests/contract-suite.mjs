@@ -14,7 +14,7 @@ import { createServer } from 'node:http'
 import { TEST_DIR } from '../lib/paths.mjs'
 // 纯函数直接从源文件拿（core.mjs 零 import，在 node 里能直接加载）——
 // 这样判据可以**绕过链路直接单测**：链路里的假 LLM 输出是固定句型，造不出某些场景。
-import { proofreadRegression } from '../plugin/core.mjs'
+import { normalizeTerms, proofreadRegression } from '../plugin/core.mjs'
 
 /** 按 system 提示词判断要产出哪种语言的译文，让语向断言是确定的。 */
 function cannedTranslation(options) {
@@ -664,6 +664,97 @@ export async function runContractSuite(adapter, { it, check, assert }) {
   //
   // ⚠️ 缺省值从 'off' 改成了 'idle'（按用户要求默认开启），所以第一条现在必须
   //    **显式写 proofread: 'off'** —— 否则它测的就不是"关掉"而是"默认"了。
+
+  // ── 5d. 热词归一（docs/15 阶段 3）─────────────────────────────────────────
+  //
+  // 这一组在**导出的纯函数**上断言（`normalizeTerms`），不走整条链路 ——
+  // 原因是写测试时踩到的：假 LLM 的译文是固定句型，里面没有变体可换，
+  // 拿它测"变体被换掉"永远测不出来。整条链路那一段只验"接线通不通"（看状态计数）。
+  const TERMS_ENTRIES = [
+    {
+      id: 't_test',
+      zh: '亮亮视野',
+      pt: 'LLVision',
+      variants: [],
+      approved: ['LLVision'],
+      wrong: ['Liangliang Vision'],
+      direction: 'auto',
+      enforce: 'must',
+      fold: true,
+    },
+  ]
+
+  await it('热词归一（纯函数）：已知变体 → 规范写法；幂等；空表不动', () => {
+    const replaced = normalizeTerms('A Liangliang Vision cresceu este ano.', 'pt-BR', TERMS_ENTRIES)
+    check('变体被换成规范写法', replaced.text === 'A LLVision cresceu este ano.', replaced.text)
+    check('记了 replace 事件', replaced.events.some(e => e.event === 'replace'), JSON.stringify(replaced.events))
+
+    const again = normalizeTerms(replaced.text, 'pt-BR', TERMS_ENTRIES)
+    check('幂等：再归一一次不变', again.text === replaced.text && again.changed === false, JSON.stringify(again))
+
+    const already = normalizeTerms('A LLVision cresceu.', 'pt-BR', TERMS_ENTRIES)
+    check('已经是规范写法 → 只记 hit，不改字', already.changed === false, JSON.stringify(already))
+
+    const empty = normalizeTerms('A Liangliang Vision cresceu.', 'pt-BR', [])
+    check('空表 → 一个字都不改', empty.changed === false && empty.text.includes('Liangliang'), empty.text)
+
+    const zh = normalizeTerms('亮亮视野发布了新品。', 'zh-CN', TERMS_ENTRIES)
+    check('中文侧已经是规范写法 → 不动', zh.changed === false, JSON.stringify(zh))
+  })
+
+  await it('热词归一：两侧同名（Leion Pro = Leion Pro）不改字，也不算替换', () => {
+    const entries = [{ id: 't2', zh: 'Leion Pro', pt: 'Leion Pro', approved: ['Leion Pro'], fold: true }]
+    const result = normalizeTerms('Comprei o Leion Pro ontem.', 'pt-BR', entries)
+    check('文本不变', result.text === 'Comprei o Leion Pro ontem.', result.text)
+    check('没有 replace 事件', result.events.every(e => e.event !== 'replace'), JSON.stringify(result.events))
+  })
+
+  await it('热词归一的接线：表被读进来、状态里报出条数（链路本身不崩）', async () => {
+    const store = new Map()
+    const path = inboxPathOf('terms-wire.jsonl')
+    const termsPath = inboxPathOf('terms-wire.json')
+    const termsActivePath = inboxPathOf('terms-wire-active.json')
+    store.set(termsPath, JSON.stringify({
+      version: 1,
+      tables: { test: { entries: TERMS_ENTRIES } },
+    }))
+    store.set(termsActivePath, JSON.stringify({ user: 'test' }))
+    const llm = makeProofreadLlm({ corrected: '不该出现' })
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: { inboxPath: path, inboxPollMs: 100, proofread: 'off', termsPath, termsActivePath },
+    })
+    store.set(path, 'A reunião de hoje passou para as três da tarde.\n')
+    const processed = await waitFor(async () =>
+      (await box.tools.get('leion_inbox').execute({ action: 'status' })).processed >= 1)
+    check('这句被处理了', processed)
+    const status = await box.tools.get('leion_inbox').execute({ action: 'status' })
+    check('状态里报出表条数与用户',
+      status.terms !== undefined && status.terms.entries === 1 && status.terms.user === 'test',
+      JSON.stringify(status.terms))
+    check('只调了一次模型（归一不额外花钱）', llm.calls.length === 1, String(llm.calls.length))
+    await box.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
+  await it('热词归一可回滚：terms=off 时即使有表也不改字', async () => {
+    const store = new Map()
+    const path = inboxPathOf('terms-off.jsonl')
+    const termsPath = inboxPathOf('terms-off.json')
+    store.set(termsPath, JSON.stringify({ version: 1, tables: { default: { entries: TERMS_ENTRIES } } }))
+    const llm = makeProofreadLlm({ corrected: '不该出现' })
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: { inboxPath: path, inboxPollMs: 100, proofread: 'off', terms: 'off', termsPath },
+    })
+    store.set(path, 'A reunião de hoje passou para as três da tarde.\n')
+    const processed = await waitFor(async () =>
+      (await box.tools.get('leion_inbox').execute({ action: 'status' })).processed >= 1)
+    check('这句被处理了', processed)
+    const status = await box.tools.get('leion_inbox').execute({ action: 'status' })
+    check('关掉时状态里是 0 条（没去读表）',
+      status.terms !== undefined && status.terms.entries === 0, JSON.stringify(status.terms))
+    await box.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
 
   await it('校对显式关闭：一句只调一次模型，行为与加这个功能之前完全一样', async () => {
     const store = new Map()

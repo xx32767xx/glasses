@@ -443,6 +443,20 @@ const CONFIG_DEFAULTS = {
    * 留空 = 不读（完全按 config 走）。读不到就忽略 —— 一个坏文件不该影响出字幕。
    */
   settingsPath: '',
+  /**
+   * 热词归一（docs/15 §7.1）的总开关。
+   *
+   * <p>`'on'`：译文里出现**已知变体**时换成规范写法；`'off'`：完全不动，
+   * 行为与加这个功能之前**逐字一致**（docs/15 §11 要求的"可回滚闸"）。
+   * 默认开：没有表时它什么也不做，所以"开着"与"没有这个功能"等价。
+   */
+  terms: 'on',
+  /** 热词表文件（`{ tables: { user: { entries } } }`），由 relay 写入。留空 = 不读。 */
+  termsPath: '',
+  /** "当前会话用哪个用户"的文件（`{ user: 'wu' }`），由 relay 写入。 */
+  termsActivePath: '',
+  /** 替换事件的落盘位置（一行一条 JSON）。留空 = 只打控制台。 */
+  termsLogPath: '',
 
   /**
    * 大模型校对（讯飞那种"两遍"）：第一遍**快速出译文并立刻上屏**，
@@ -545,6 +559,14 @@ function validateConfig(raw) {
   }
   if (typeof config.settingsPath !== 'string') {
     throw new Error(`leion-pro: settingsPath 必须是字符串，收到 ${JSON.stringify(config.settingsPath)}`)
+  }
+  if (!['on', 'off'].includes(config.terms)) {
+    throw new Error(`leion-pro: terms 只能是 'on' / 'off'，收到 ${JSON.stringify(config.terms)}`)
+  }
+  for (const key of ['termsPath', 'termsActivePath', 'termsLogPath']) {
+    if (typeof config[key] !== 'string') {
+      throw new Error(`leion-pro: ${key} 必须是字符串，收到 ${JSON.stringify(config[key])}`)
+    }
   }
   if (config.inboxPath !== '') {
     if (!Number.isInteger(config.inboxPollMs) || config.inboxPollMs < 100) {
@@ -1125,6 +1147,162 @@ function createTransport(ctx, config) {
  *             plugin/policy.generated.mjs（生成物）。两个包装目标各自把 policy 传进来：
  *             正式包 import 生成模块，动态包由生成器内联成常量。
  */
+/** 折叠用的串，**长度必须不变**（否则所有偏移量都会错位）。 */
+function foldForTerms(text) {
+  let out = ''
+  for (const char of String(text)) {
+    const base = char.normalize('NFD')[0]
+    const lowered = base.toLowerCase()
+    out += lowered.length === 1 ? lowered : char
+  }
+  return out
+}
+
+/** 中文"危险邻居"：和两字名字拼起来会变成另一个词的字（从真实碰撞里来，必然不完整）。 */
+const ZH_COMPOUND_NEIGHBORS = new Set('量路速频压温值铁率程通倍分条段'.split(''))
+
+/** 只认汉字：标点/数字/拉丁字母都算天然边界。 */
+function dangerousZhNeighbor(char) {
+  if (char === undefined || char === '') return false
+  if (/[\p{Script=Han}]/u.test(char) === false) return false
+  return ZH_COMPOUND_NEIGHBORS.has(char)
+}
+
+function isWordChar(char) {
+  if (char === undefined) return false
+  return /[\p{L}\p{N}]/u.test(char)
+}
+
+function hanCountOf(text) {
+  const found = String(text).match(/\p{Script=Han}/gu)
+  return found === null ? 0 : found.length
+}
+
+/** 去空白后折叠 + 紧凑下标映射（让 `LeionPro` 与 `Leion Pro` 等价，同时能回到原文）。 */
+function compactFold(text) {
+  let compact = ''
+  const map = []
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]
+    if (/\s/.test(char)) continue
+    compact += foldForTerms(char)
+    map.push(index)
+  }
+  return { compact, map }
+}
+
+/** 把表编译成"同语种归一"用的两个索引。 */
+function buildTermsIndex(entries) {
+  const zh = []
+  const pt = []
+  for (const entry of entries || []) {
+    for (const form of [entry.zh, ...(entry.variants || []), ...(entry.wrong || [])]) {
+      if (typeof form === 'string' && form !== '') {
+        zh.push({ entry, form, replacement: entry.zh, kind: 'zh' })
+      }
+    }
+    for (const form of [entry.pt, ...(entry.approved || []), ...(entry.wrong || [])]) {
+      if (typeof form === 'string' && form !== '') {
+        pt.push({ entry, form, replacement: entry.pt, kind: 'pt' })
+      }
+    }
+  }
+  return { zh, pt }
+}
+
+/**
+ * 对一段译文做归一（**纯函数**：给它文本、语种、表，它就返回结果）。
+ *
+ * <p>为什么单独抽出来并导出：契约测试要能直接断言"变体→规范写法"、
+ * "幂等"、"空表不动"。走整条链路测不干净 —— 假 LLM 的译文是固定句型，
+ * 里面根本没有变体可换（这一点我在写测试时踩到了）。
+ *
+ * @param {string} text
+ * @param {string} lang
+ * @param {object[]} entries
+ * @returns {{ text: string, events: object[], changed: boolean }}
+ */
+function normalizeTerms(text, lang, entries) {
+  const source = typeof text === 'string' ? text : ''
+  if (source === '' || Array.isArray(entries) === false || entries.length === 0) {
+    return { text: source, events: [], changed: false }
+  }
+  const isZh = String(lang).toLowerCase().startsWith('zh')
+  const index = buildTermsIndex(entries)
+  const candidates = isZh ? index.zh : index.pt
+  const folded = foldForTerms(source)
+  const compact = compactFold(source)
+
+  const found = []
+  for (const item of candidates) {
+    const foldEnabled = item.entry.fold !== false
+    const needle = foldEnabled
+      ? (isZh ? foldForTerms(item.form) : foldForTerms(item.form).replace(/\s+/g, ''))
+      : item.form
+    const haystack = foldEnabled ? (isZh ? folded : compact.compact) : source
+    if (needle.length === 0) continue
+    let from = 0
+    for (;;) {
+      const at = haystack.indexOf(needle, from)
+      if (at < 0) break
+      from = at + 1
+      const start = foldEnabled && isZh === false ? compact.map[at] : at
+      const end = foldEnabled && isZh === false
+        ? compact.map[at + needle.length - 1] + 1
+        : at + needle.length
+      if (start === undefined || end === undefined) continue
+      if (isZh) {
+        const mustCheck = hanCountOf(item.form) === 2 || item.entry.strictBoundary === true
+        if (mustCheck) {
+          const before = source.charAt(start - 1)
+          const after = source.charAt(end)
+          if (dangerousZhNeighbor(before) || dangerousZhNeighbor(after)) {
+            found.push({ start, end, item, skipped: true })
+            continue
+          }
+        }
+      } else {
+        if (start > 0 && isWordChar(source.charAt(start - 1))) continue
+        if (end < source.length && isWordChar(source.charAt(end))) continue
+      }
+      found.push({ start, end, item, skipped: false })
+    }
+  }
+
+  // 实体重叠：被更长匹配覆盖的短匹配一律丢弃（`Leion` 在 `Leion Pro` 里必须让位）
+  const usable = found.filter(match => match.skipped !== true)
+    .sort((a, b) => (a.start - b.start) || ((b.end - b.start) - (a.end - a.start)))
+  const picked = []
+  let cursor = 0
+  for (const match of usable) {
+    if (match.start < cursor) continue
+    picked.push(match)
+    cursor = match.end
+  }
+
+  const events = []
+  let out = ''
+  let position = 0
+  for (const match of picked) {
+    const original = source.slice(match.start, match.end)
+    const replacement = match.item.replacement
+    out += source.slice(position, match.start)
+    if (foldForTerms(original) === foldForTerms(replacement)) {
+      out += original
+      events.push({ event: 'hit', id: match.item.entry.id })
+    } else {
+      out += replacement
+      events.push({ event: 'replace', id: match.item.entry.id, from: original, to: replacement })
+    }
+    position = match.end
+  }
+  out += source.slice(position)
+  for (const match of found) {
+    if (match.skipped === true) events.push({ event: 'boundary_skip', id: match.item.entry.id })
+  }
+  return { text: out, events, changed: out !== source }
+}
+
 function createInterpreter(ctx, rawConfig, deps) {
   const config = validateConfig(rawConfig)
   if (deps === undefined || deps === null || deps.policy === undefined) {
@@ -1154,6 +1332,8 @@ function createInterpreter(ctx, rawConfig, deps) {
     displaySeq: 0,
     /** 校对统计。字段名直说结果，便于在自检和日志里一眼看出"校对到底有没有在干活"。 */
     proofread: { enqueued: 0, settled: 0, fixed: 0, same: 0, rejected: 0, dropped: 0, failed: 0, lastNote: null },
+    /** 热词归一（docs/15 §7.1）：用了几条表、替换/命中/边界跳过各几次。 */
+    terms: { enabled: false, user: null, entries: 0, replace: 0, hit: 0, boundarySkip: 0, lastNote: null },
     /** 最近几句（原文+译文），给校对当上下文用。只留很少几条，避免把提示词撑大。 */
     recent: [],
   }
@@ -1226,6 +1406,116 @@ function createInterpreter(ctx, rawConfig, deps) {
     state.frames.push(frame)
     if (state.frames.length > HISTORY_CAP) state.frames.shift()
     return frame
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 热词归一（docs/15 阶段 3）：把译文里的"已知变体"换成用户写的规范写法
+  //
+  // 为什么这套实现**写在 core.mjs 里、而不是从 lib/ 引过来**：
+  // 插件要被内联进动态插件的沙箱，那个沙箱**没有 import**（生成器只剥 `export `，
+  // 一个字面 import 会在沙箱里炸）。所以这一层必须自包含。
+  // 对应的单测与评测脚本仍然用 lib/terms-matcher.mjs —— 那是同一套规则的
+  // "可测副本"，两边由 tests/terms-matcher-suite.mjs 与 contract-suite 同时盯着。
+  //
+  // ⚠️ 三条边界写死在这里：
+  //   ① **不调用模型**：纯字符串；② **幂等**：一次扫描内替换完，再喂一遍不变；
+  //   ③ **只做归一**：不做"缺失重译"（那是后续独立实验）。
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /**
+   * 对一段译文做归一（**实例内**的入口：带开关与已载入的表）。
+   *
+   * @param {string} text 译文
+   * @param {string} lang 译文语种（`zh-CN` / `pt-BR`）：**在同一种语言内部**收敛写法
+   */
+  function applyTerms(text, lang) {
+    if (config.terms !== 'on') {
+      return { text: typeof text === 'string' ? text : '', events: [], changed: false }
+    }
+    return normalizeTerms(text, lang, termEntries)
+  }
+
+  /** 每场只读一次表（快照）：运行中改表不影响正在跑的这一场（docs/15 §8.1）。 */
+  let termEntries = []
+  let termsLoaded = false
+
+  async function refreshTerms() {
+    if (termsLoaded === true) return
+    termsLoaded = true
+    if (config.terms !== 'on' || config.termsPath === '') return
+    const fs = ctx.get('fs')
+    if (fs === undefined) {
+      state.terms.lastNote = '没有 fs 服务，热词表未加载'
+      return
+    }
+    try {
+      // 先看"当前会话用哪个用户"，再取那个用户的表
+      let user = null
+      if (config.termsActivePath !== '') {
+        try {
+          const activeTarget = await fs.resolve(config.termsActivePath)
+          const activeInfo = await fs.stat(activeTarget)
+          if (activeInfo !== undefined) {
+            const parsed = JSON.parse(await fs.readText(activeTarget))
+            if (parsed !== null && typeof parsed === 'object' && typeof parsed.user === 'string') {
+              user = parsed.user
+            }
+          }
+        } catch { /* 没有 active 文件就用 default */ }
+      }
+      const target = await fs.resolve(config.termsPath)
+      const info = await fs.stat(target)
+      if (info === undefined) {
+        state.terms.lastNote = '没有热词表文件'
+        return
+      }
+      const doc = JSON.parse(await fs.readText(target))
+      const tables = doc !== null && typeof doc === 'object' && doc.tables !== null
+        && typeof doc.tables === 'object' ? doc.tables : {}
+      const chosen = user !== null && tables[user] !== undefined ? user : 'default'
+      const table = tables[chosen]
+      const entries = table !== null && table !== undefined && Array.isArray(table.entries) ? table.entries : []
+      termEntries = entries
+      state.terms.enabled = config.terms === 'on'
+      state.terms.user = chosen
+      state.terms.entries = entries.length
+      console.log('[leion-pro] 热词表：' + entries.length + ' 条（user=' + chosen + '）')
+    } catch (error) {
+      // 读表失败**绝不能影响出字幕**：当作没有热词表
+      state.terms.lastNote = '读热词表失败（已忽略）：'
+        + String(error && error.message ? error.message : error)
+      console.log('[leion-pro] 热词表：' + state.terms.lastNote)
+    }
+  }
+
+  /** 把替换事件写一行日志（控制台 + 可选落盘）。失败一律忽略。 */
+  const termsLogLines = []
+  async function logTermsEvents(events, where) {
+    if (!Array.isArray(events) || events.length === 0) return
+    for (const event of events) {
+      if (event.event === 'replace') {
+        state.terms.replace += 1
+        console.log('[leion-pro] ✎ 术语：' + event.from + ' → ' + event.to)
+      } else if (event.event === 'hit') {
+        state.terms.hit += 1
+      } else if (event.event === 'boundary_skip') {
+        state.terms.boundarySkip += 1
+      }
+      termsLogLines.push(JSON.stringify({
+        t: new Date().toISOString(), where, ...event,
+      }))
+    }
+    if (config.termsLogPath === '') return
+    const fs = ctx.get('fs')
+    if (fs === undefined) return
+    try {
+      // fs 服务只有 writeText（没有 append），所以整份重写；只保留最近 2000 行
+      while (termsLogLines.length > 2000) termsLogLines.shift()
+      const target = await fs.resolve(config.termsLogPath)
+      await fs.writeText(target, termsLogLines.join('\n') + '\n')
+    } catch {
+      /* 日志写不进去就算了：它是可观测性，不是功能 */
+    }
   }
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -1370,7 +1660,12 @@ function createInterpreter(ctx, rawConfig, deps) {
       }
       state.proofread.settled += 1
 
-      const corrected = String(result.text).trim()
+      const correctedRaw = String(result.text).trim()
+      // §14.6 的"最终裁决"：校对可能把我们归一好的写法又改回去，所以这里再过一遍。
+      // 这不是重复劳动 —— 校对是**在归一之后**跑的，只有它有能力破坏归一结果。
+      const renormalized = applyTerms(correctedRaw, item.to)
+      await logTermsEvents(renormalized.events, 'proofread')
+      const corrected = renormalized.text
       if (corrected === '' || corrected === item.draft) {
         state.proofread.same += 1       // 模型认为不用改 —— 这是正常且期望的结果
         return true
@@ -1759,6 +2054,7 @@ function createInterpreter(ctx, rawConfig, deps) {
           ? null
           : Object.assign({ mode: config.proofread, runtime: runtimeProofread,
             pending: proofreadQueue.length, inFlight: proofreading }, state.proofread),
+        terms: Object.assign({ mode: config.terms }, state.terms),
       }
     },
     start() {
@@ -1973,6 +2269,9 @@ function createInterpreter(ctx, rawConfig, deps) {
       const wearerReadsTranslation = to === ZH
       const displaySpeaker = wearerReadsTranslation ? 'them' : 'me'
 
+      // 先确保热词表已载入（每场只读一次）。放在这里而不是更早：
+      // 它只依赖文件，读失败也只是"没有表"，不影响这次翻译。
+      await refreshTerms()
       state.translating = true
       let partialsPushed = 0
       const result = await translator.translate({
@@ -2018,7 +2317,11 @@ function createInterpreter(ctx, rawConfig, deps) {
         }
       }
 
-      const finalFrame = buildFrame({ text: result.text, speaker: displaySpeaker, lang: to,
+      // ★ 热词归一：**译文出来后、上屏之前**做一次（docs/15 §7.1 / §14.6）
+      //   零模型调用、纯字符串；没有表或开关关着时原样返回（行为逐字不变）。
+      const normalized = applyTerms(result.text, to)
+      await logTermsEvents(normalized.events, 'final')
+      const finalFrame = buildFrame({ text: normalized.text, speaker: displaySpeaker, lang: to,
         source, sourceLang: from })
       await pushFrame(finalFrame)
 
@@ -2027,14 +2330,15 @@ function createInterpreter(ctx, rawConfig, deps) {
       // 上下文只在与本句**同向**时才给 —— 语向来回切时，上一句的译文是另一种语言，
       // 塞给模型只会把它带偏。
       const previous = state.recent.length > 0 ? state.recent[state.recent.length - 1] : null
-      // 排进校对队列之前读一次手机侧开关（每场只读一次；读不到就按配置走）。
+      // 排进校对队列之前读一次手机侧开关与热词表（每场只读一次；读不到就按配置走）。
       // 放在这个位置而不是开头：翻译本身不该因为这个文件读失败而多等一拍。
       await refreshRuntimeSettings()
+      await refreshTerms()
       enqueueProofread({
         source,
         from,
         to,
-        draft: result.text,
+        draft: normalized.text,
         displaySpeaker,
         draftFrame: finalFrame,
         // 记下"此刻屏幕的版本号"：等真轮到时用它确认这一句还在屏幕上（见 state.displaySeq）
@@ -2042,7 +2346,7 @@ function createInterpreter(ctx, rawConfig, deps) {
         at: Date.now(),
         context: previous !== null && previous.to === to ? previous : null,
       })
-      state.recent.push({ source, translation: result.text, to })
+      state.recent.push({ source, translation: normalized.text, to })
       if (state.recent.length > 4) state.recent.shift()
 
       return {
@@ -2050,7 +2354,7 @@ function createInterpreter(ctx, rawConfig, deps) {
         from,
         to,
         source,
-        translation: result.text,
+        translation: normalized.text,
         displaySpeaker,
         model: result.provider + '/' + result.model,
         forced: args.from !== undefined || args.to !== undefined,
@@ -2058,6 +2362,9 @@ function createInterpreter(ctx, rawConfig, deps) {
         // 校对开着时把它的计数一并给出（拷贝一份：这是即时快照，不是活引用）。
         // 输出外壳是 additionalProperties: true，所以加字段不会破坏 schema 校验。
         proofread: proofreadWanted() === false ? null : Object.assign({}, state.proofread),
+        // 热词归一：用了几条表、替换/命中/边界跳过各几次（手机端与日志都看它）
+        terms: Object.assign({ mode: config.terms }, state.terms),
+        terms: Object.assign({ mode: config.terms }, state.terms),
         outbound: to === PT
           ? {
             channel: 'counterpart',
@@ -2184,6 +2491,7 @@ function createInterpreter(ctx, rawConfig, deps) {
           : Object.assign({ mode: config.proofread, runtime: runtimeProofread,
             pending: proofreadQueue.length, inFlight: proofreading,
             unavailable: proofreadUnavailable }, state.proofread),
+        terms: Object.assign({ mode: config.terms }, state.terms),
         notes,
         preview: drawFrame(probe, config.cols),
       }
