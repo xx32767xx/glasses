@@ -80,12 +80,12 @@
     <string name="glasses_tune_page_delay">长句翻页间隔</string>
     <string name="glasses_tune_plus">＋</string>
     <string name="glasses_tune_minus">－</string>
-    <string name="glasses_tune_ruler">显示边界标尺（校准用）</string>
-    <string name="glasses_tune_ruler_on">边界标尺已开 · 点一下关掉</string>
-    <string name="glasses_mic_source">音源：眼镜麦克风（点一下换成手机）</string>
-    <string name="glasses_mic_source_phone">音源：手机麦克风（点一下换成眼镜）</string>
-    <string name="glasses_camera_bg">相机预览背景：关（点一下打开）</string>
-    <string name="glasses_camera_bg_on">相机预览背景：开（点一下关掉）</string>
+    <string name="glasses_tune_ruler">显示边界标尺</string>
+    <string name="glasses_tune_ruler_on">边界标尺：开</string>
+    <string name="glasses_mic_source">音源：眼镜麦克风</string>
+    <string name="glasses_mic_source_phone">音源：手机麦克风</string>
+    <string name="glasses_camera_bg">相机预览背景：关</string>
+    <string name="glasses_camera_bg_on">相机预览背景：开</string>
     <string name="connect_recent">最近成功连接</string>
     <string name="connect_recent_empty">还没有连接过</string>
     <string name="connect_progress_connecting">正在连接电脑…</string>
@@ -103,7 +103,7 @@
     <string name="lang_pt_short">葡萄牙语</string>
     <string name="lang_zh_short">简体中文</string>
     <string name="lang_pt_full">葡萄牙语（巴西）</string>
-    <string name="lang_zh_full">简体中文（普通话）</string>
+    <string name="lang_zh_full">简体中文</string>
     <string name="lang_pt_note">对方说的语言</string>
     <string name="lang_zh_note">译成这个语言</string>
     <string name="swap_sides">交换翻译方向</string>
@@ -144,7 +144,7 @@
     <string name="settings_display">显示</string>
     <string name="settings_default_mode">字幕显示方式</string>
     <string name="settings_glasses_preview">眼镜显示预览</string>
-    <string name="settings_glasses_preview_hint">按 40 列 × 3 行看这块屏幕将来会显示成什么样</string>
+    <string name="settings_glasses_preview_hint">预览眼镜上的显示效果</string>
     <string name="settings_audio">音频</string>
     <string name="settings_output">音频输出</string>
     <string name="settings_connection">连接</string>
@@ -153,29 +153,29 @@
     <string name="settings_developer_mode">开发者模式</string>
     <string name="settings_developer_hint">打开后显示实验与诊断选项</string>
     <string name="settings_experiments">实验</string>
-    <string name="settings_type_text">手输一句话（不经过语音识别）</string>
+    <string name="settings_type_text">手动输入</string>
     <string name="settings_type_text_hint">把链路验证和语音识别解耦：语音坏了也能确认后面是好的</string>
     <string name="settings_send">发送</string>
     <string name="settings_diagnostics">诊断</string>
 
     <!-- 眼镜预览 -->
     <string name="glasses_preview_title">眼镜显示预览</string>
-    <string name="glasses_real_idle">眼镜未连接（用 USB 接上眼镜）</string>
+    <string name="glasses_real_idle">眼镜未连接</string>
     <string name="glasses_real_cast">开始投屏</string>
     <string name="glasses_real_stop">停止投屏</string>
 
     <!-- 真眼镜（USB 接的那副）投屏。见 docs/09-眼镜SDK接入.md -->
     <string name="glasses_sample_title">投屏样例</string>
-    <string name="glasses_sample_hint">点一句 → 真的投到眼镜上，按「短 / 中 / 长」连着看，就知道从多长开始翻页。前提是投屏已经起来（上面那行「开始投屏」亮着）。</string>
+    <string name="glasses_sample_hint">点击样例可投屏比较不同长度的排版效果。</string>
     <string name="glasses_sample_zh">中文</string>
     <string name="glasses_sample_pt">葡语</string>
-    <string name="glasses_sample_custom_hint">或者自己输一句（你想确认的那句）</string>
-    <string name="glasses_self_check">排版自检（在当前字号下量一遍）</string>
+    <string name="glasses_sample_custom_hint">或输入自定义内容</string>
+    <string name="glasses_self_check">排版自检</string>
     <string name="glasses_sample_send">投屏这句</string>
-    <string name="glasses_sample_need_cast">还没投屏 —— 点上面那行「开始投屏」（眼镜没连上时它会说明原因），否则点了也不会显示。</string>
+    <string name="glasses_sample_need_cast">投屏尚未开始</string>
     <string name="glasses_sample_need_text">先在上面输一句，或者点一个现成的例句。</string>
-    <string name="glasses_sample_sent">已投屏（%1$d 字，%2$d 行，%3$d 页）</string>
-    <string name="glasses_sample_busy">同传正在跑 —— 真实字幕马上会盖掉这个样例。要看样例请先停同传。</string>
+    <string name="glasses_sample_sent">已投屏：%1$d 字 / %2$d 行 / %3$d 页</string>
+    <string name="glasses_sample_busy">同传进行中，真实字幕会覆盖样例</string>
 
     <!-- 异常与等待 -->
     <string name="err_mic_permission">需要麦克风权限才能采集声音</string>
@@ -196,30 +196,30 @@
     <string name="terms_title">热词对照表</string>
     <string name="terms_intro">一行一条，用等号隔开：左边中文，右边葡语。这些名字在译文里会被强制写成右边的写法。</string>
     <string name="terms_user_label">用户名</string>
-    <string name="terms_user_hint">电脑按它区分是谁的表（留空用 default）</string>
+    <string name="terms_user_hint">用户名</string>
     <string name="terms_entries_label">对照表</string>
-    <string name="terms_entries_hint">亮亮视野 = LLVision</string>
+    <string name="terms_entries_hint">中文 / 葡语</string>
     <string name="terms_validate">校验</string>
     <string name="terms_upload">上传</string>
     <string name="terms_load">从电脑拉取</string>
-    <string name="terms_status_idle">还没上传过（当前没有热词表）</string>
+    <string name="terms_status_idle">尚未上传</string>
     <string name="terms_status_working">正在与电脑通信…</string>
-    <string name="terms_status_need_connect">还没连上电脑 —— 先在「连接电脑」里连上</string>
-    <string name="terms_status_parsed">共 %1$d 条，%2$d 行看不懂（每行要写成「中文 = 葡语」）</string>
+    <string name="terms_status_need_connect">未连接电脑</string>
+    <string name="terms_status_parsed">共 %1$d 条，%2$d 行格式不正确</string>
     <string name="terms_status_valid">校验通过：%1$d 条可以上传</string>
-    <string name="terms_status_invalid">有 %1$d 处问题，改完再上传（整张表不会保存）</string>
+    <string name="terms_status_invalid">%1$d 处需要修改</string>
     <string name="terms_status_uploaded">已上传 %1$d 条 · 下一次同传开始时生效</string>
-    <string name="terms_status_uploaded_overwrite">已上传 %1$d 条（覆盖了原来的 %2$d 条）· 下一次同传开始时生效</string>
+    <string name="terms_status_uploaded_overwrite">已上传 %1$d 条，替换原有 %2$d 条</string>
     <string name="terms_status_loaded">从电脑拉回 %1$d 条</string>
     <string name="terms_status_failed">失败：%1$s</string>
-    <string name="terms_warn_title">提醒（不影响上传）</string>
+    <string name="terms_warn_title">提醒</string>
     <string name="terms_reject_title">不能上传的原因</string>
     <!-- 校对（第二遍）开关：缺省是开着的，用户可以关掉 -->
-    <string name="settings_proofread_section">校对（第二遍）</string>
-    <string name="settings_proofread_title">回头改错</string>
-    <string name="settings_proofread_on">开：字幕先上屏，空闲时再回头改这一句（每句可能多一次模型调用）</string>
-    <string name="settings_proofread_off">关：只出初译，不再回头改（省一次调用，听错的句子改不回来）</string>
-    <string name="settings_proofread_need_connect">还没连上电脑 —— 这个开关要通过电脑生效</string>
+    <string name="settings_proofread_section">校对</string>
+    <string name="settings_proofread_title">自动校对</string>
+    <string name="settings_proofread_on">开</string>
+    <string name="settings_proofread_off">关</string>
+    <string name="settings_proofread_need_connect">未连接电脑</string>
     <string name="settings_proofread_failed">设置没送到电脑：%1$s</string>
     <string name="settings_proofread_saved">已保存：校对%1$s · 下一场同传生效</string>
     <!-- 热词表页（底部导航第 4 个栏位，表格形式） -->
@@ -227,35 +227,35 @@
     <string name="terms_add">新增</string>
     <string name="terms_add_title">新增一条对照</string>
     <string name="terms_batch">批量导入</string>
-    <string name="terms_batch_title">批量导入（粘贴即可）</string>
-    <string name="terms_batch_hint">每行一条，支持从 Excel / 表格里直接粘贴（Tab、逗号或等号分隔）</string>
+    <string name="terms_batch_title">批量导入</string>
+    <string name="terms_batch_hint">每行一条，可用 Tab、逗号或等号分隔</string>
     <string name="terms_col_zh">中文</string>
     <string name="terms_col_pt">葡语</string>
     <string name="terms_delete">删除</string>
-    <string name="terms_empty">还没有条目 —— 点「新增」加一条，或「批量导入」粘贴一片</string>
+    <string name="terms_empty">暂无条目</string>
     <string name="terms_count">%1$d 条</string>
-    <string name="terms_add_both">中文和葡语都要填</string>
-    <string name="terms_batch_none">没有认出可以导入的行（每行要能分成两列）</string>
+    <string name="terms_add_both">中文与葡语均需填写</string>
+    <string name="terms_batch_none">未识别到可导入的行</string>
     <string name="terms_batch_done">导入了 %1$d 条</string>
-    <string name="terms_status_local_invalid">这几条不能上传（改完会自动重新检查）</string>
-    <string name="terms_status_local_ok">格式没问题：%1$d 条（连上电脑后会自动做完整校验）</string>
+    <string name="terms_status_local_invalid">以下条目需要修改</string>
+    <string name="terms_status_local_ok">格式检查通过：%1$d 条</string>
     <!-- 账户（注册 / 登录），热词表的身份来源 -->
     <string name="settings_account">账户</string>
-    <string name="settings_account_title">账户（热词表用）</string>
-    <string name="settings_account_none">还没登录 —— 登录后才能读写自己的热词表</string>
+    <string name="settings_account_title">账户</string>
+    <string name="settings_account_none">未登录</string>
     <string name="account_title">账户</string>
-    <string name="account_intro">热词表按账户区分：注册或登录之后，你只能读写自己那张表。密码只存在电脑上（加盐哈希，不存明文）。</string>
-    <string name="account_username">用户名（字母数字与 _ . -）</string>
+    <string name="account_intro">热词表按账户区分，登录后仅可读写本账户的对照表。</string>
+    <string name="account_username">用户名</string>
     <string name="account_password_hint">密码（至少 6 位）</string>
     <string name="account_register">注册</string>
     <string name="account_login">登录</string>
     <string name="account_logout">注销这台设备的登录</string>
     <string name="account_state_none">未登录</string>
     <string name="account_state_some">已登录：%1$s</string>
-    <string name="account_token_title">当前 token（等同于密码，别外传）</string>
-    <string name="account_need_fields">用户名和密码都要填</string>
-    <string name="account_need_connect">还没连上电脑 —— 注册和登录都要经过电脑</string>
+    <string name="account_token_title">当前 token</string>
+    <string name="account_need_fields">请填写用户名与密码</string>
+    <string name="account_need_connect">未连接电脑</string>
     <string name="account_ok">成功：%1$s</string>
     <string name="account_failed">失败：%1$s</string>
-    <string name="terms_need_login">还没登录 —— 先在「设置 → 账户」里注册或登录，再回来编辑热词表</string>
+    <string name="terms_need_login">未登录</string>
 </resources>

@@ -32,8 +32,9 @@ android {
     // 4.7：账户（注册 / 登录 / token）。热词表只认 token，身份来自「设置 → 账户」，
     //      热词表页不再让用户填用户名（那等于自报身份、能改别人的表）。
     // 4.8：热词表页去掉重复的「未登录」；账户注册遇到旧版进程时直说（不再只报 not-found）。
-    versionCode = 37
-    versionName = "4.8"
+    // 4.9：文案收紧（去掉括号里的解释、去掉口语腔、删掉冗余小字），界面只留必要信息。
+    versionCode = 38
+    versionName = "4.9"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

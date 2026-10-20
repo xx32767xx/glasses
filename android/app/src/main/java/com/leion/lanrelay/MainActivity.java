@@ -162,7 +162,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     /** 眼镜投屏（真眼镜，不是界面里那个"眼镜预览"面板）。见 GlassesSdk 与 docs/09。 */
     private GlassesSdk glasses = null;
     private GlassesSubtitleView glassesView = null;
-    private String glassesStatus = "眼镜未初始化";
+    private String glassesStatus = "未初始化";
     private boolean glassesConnected = false;
 
     private long lastSpeechAt = 0;
@@ -437,7 +437,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         if (width > 0 && height > 0) {
             glassesCanvasNote = "画布 " + width + "×" + height;
         } else {
-            glassesCanvasNote = "画布尺寸未知（靠已测量尺寸自愈）";
+            glassesCanvasNote = "画布尺寸未知";
             if (glasses != null) {
                 String raw = glasses.getRawResolution();
                 if (raw.length() > 0) glassesCanvasNote += " 原始:" + raw;
@@ -479,7 +479,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         }
         glassesPermMissing = missing.size();
         if (!missing.isEmpty()) {
-            glassesStatus = "等待眼镜权限（还差 " + missing.size() + " 项）";
+            glassesStatus = "等待权限：还差 " + missing.size() + " 项";
             renderGlassesRealStatus();
             requestPermissions(missing.toArray(new String[0]), REQUEST_GLASSES_PERMISSIONS);
             return;
@@ -490,7 +490,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     /** 运行时权限这一关过了 → 再看悬浮窗（官方把它并列为前置条件）。 */
     private void afterRuntimePermissions() {
         if (Build.VERSION.SDK_INT >= 23 && Settings.canDrawOverlays(this) == false) {
-            glassesStatus = "还需要「显示在其他应用上层」权限";
+            glassesStatus = "需要悬浮窗权限";
             renderGlassesRealStatus();
             new AlertDialog.Builder(this)
                     .setTitle("眼镜需要悬浮窗权限")
@@ -509,7 +509,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                         }
                     })
                     .setNegativeButton("稍后", (dialog, which) -> {
-                        glassesStatus = "缺悬浮窗权限，眼镜可能连不上";
+                        glassesStatus = "缺少悬浮窗权限";
                         renderGlassesRealStatus();
                     })
                     .show();
@@ -521,7 +521,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     /** 权限与悬浮窗都就绪 —— 这才初始化 SDK（官方也是在这里才 init）。 */
     private void startGlassesSdk() {
         if (glasses == null) return;
-        glassesStatus = "正在初始化眼镜 SDK…";
+        glassesStatus = "正在初始化…";
         renderGlassesRealStatus();
         glasses.init();
     }
@@ -1095,7 +1095,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             if (problem == null) return candidate;
             candidate.stop();
             Log.w("MainActivity", "眼镜取音失败，改用手机麦克风：" + problem);
-            showNote("眼镜取音失败，已改用手机麦克风：" + problem);
+            showNote("眼镜取音失败，已切换为手机麦克风：" + problem);
         }
         MicUploader phone = new MicUploader(client, this);
         phone.setLanguage(sourceLang);
@@ -1225,7 +1225,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         TextView inputView = view.findViewById(R.id.sumAudioInput);
         if (inputView != null) {
             if (draft.audioInput.isEmpty()) {
-                inputView.setText("本场输入设备：未采集到（录音期间没能读到设备信息）");
+                inputView.setText("本场输入设备：未知");
             } else {
                 inputView.setText("本场输入设备：" + draft.audioInput
                         + (draft.audioMixed ? "\n⚠ 期间出现过两路同时录音，本场音频可能被污染" : ""));
@@ -1687,7 +1687,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             return;
         }
         if (proofreadApiAvailable == false) {
-            settingsProofreadState.setText("电脑上的接收进程是旧版（没有设置接口）");
+            settingsProofreadState.setText("电脑端版本过低，缺少设置接口");
             return;
         }
         settingsProofreadState.setText(proofreadOnServer
@@ -1748,7 +1748,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private void renderAccount() {
         boolean in = loggedIn();
         if (accountStatusView != null && relaySupportsAuth() == false) {
-            accountStatusView.setText("电脑上的接收进程是旧版（没有账户接口）—— 重启 node scripts/start-all.mjs 后可用");
+            accountStatusView.setText("电脑端版本过低，缺少账户接口");
             accountStatusView.setTextColor(getColor(R.color.err));
         }
         if (accountStateView != null) {
@@ -1782,7 +1782,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         if (relaySupportsAuth() == false) {
             // 已经知道对面是旧版：不发请求，直接说人话（省一次 404 往返，也省得用户猜）
             if (accountStatusView != null) {
-                accountStatusView.setText("电脑上的接收进程是旧版（没有账户接口）—— 重启 node scripts/start-all.mjs 后可用");
+                accountStatusView.setText("电脑端版本过低，缺少账户接口");
                 accountStatusView.setTextColor(getColor(R.color.err));
             }
             return;
@@ -2427,7 +2427,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             saveTermsDraft();
             renderTermsTable();
         } catch (org.json.JSONException error) {
-            showNote("拉回来的内容看不懂：" + error.getMessage());
+            showNote("读取电脑端数据失败：" + error.getMessage());
         }
     }
 
@@ -3133,17 +3133,17 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
      */
     private void toggleGlassesCast() {
         if (glasses == null || glassesView == null) {
-            glassesStatus = "眼镜模块还没就绪（等待权限/悬浮窗）";
+            glassesStatus = "模块未就绪";
         } else if (glasses.isCasting()) {
             glasses.stopCast();
             glassesStatus = "已停止投屏";
         } else if (glasses.isConnected()) {
-            glassesStatus = "正在投屏…";
+            glassesStatus = "正在投屏";
             applyGlassesCanvasSize();
             glasses.requestCast(glassesView.getView());
         } else {
             // 设备列表和连接状态分开报：这两个数字对不上才是真正要查的问题
-            glassesStatus = "眼镜未连接（设备列表 " + glasses.getDeviceCount() + " 个）——重插一下眼镜";
+            glassesStatus = "眼镜未连接（检测到 " + glasses.getDeviceCount() + " 个设备）";
         }
         renderGlassesRealStatus();
     }
@@ -3413,7 +3413,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             if (allGranted) {
                 afterRuntimePermissions();
             } else {
-                glassesStatus = "眼镜权限被拒（相机/媒体），眼镜连不上";
+                glassesStatus = "权限被拒";
                 renderGlassesRealStatus();
             }
             return;
