@@ -170,6 +170,40 @@ export async function runAndroidOrderSuite({ it, check }) {
     })
   }
 
+  // ── 页面构建：buildXxxPage() 必须真的被调用 ──────────────────────────────
+  //
+  // 4.4 的一次真实闪退就是这条没守住：`buildTermsPage()` 写好了却**没有被调用**，
+  // 于是 `termsPage` 是 null，`showPage()` 第一行 setVisibility 就空指针 ——
+  // **打开 App 就闪退**，而编译毫无怨言（私有方法没人调用只是警告）。
+  //
+  // 这类错误机械可查：文件里每个 `private void build…Page()` 都必须至少被调用一次。
+  const pageFile = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay', 'MainActivity.java')
+  const pageSource = stripComments(readFileSync(pageFile, 'utf-8'))
+
+  await it('每个 build…Page() 都必须被调用（写了不调用 = 打开就闪退）', () => {
+    const declared = [...pageSource.matchAll(/private\s+void\s+(build\w*Page)\s*\(\s*\)/g)].map(m => m[1])
+    check('至少找到了 build*Page 方法', declared.length > 0, declared.join(','))
+    for (const name of declared) {
+      const callPattern = new RegExp(`(^|[^.\\w])${name}\\s*\\(\\s*\\)`, 'm')
+      // 去掉声明本身再找调用，避免"声明被当成调用"
+      const withoutDeclaration = pageSource.replace(
+        new RegExp(`private\\s+void\\s+${name}\\s*\\(\\s*\\)`, 'g'), '')
+      check(`${name} 有被调用`, callPattern.test(withoutDeclaration),
+        `${name} 声明了但没有任何调用点 —— 那个页面永远是 null`)
+    }
+  })
+
+  await it('页面切换对"还没建出来的页面"免疫（不因缺页面而闪退）', () => {
+    // showPage 里不能裸着 setVisibility：要么判空，要么走统一的 showOnly()
+    const showPageBody = pageSource.slice(pageSource.indexOf('private void showPage(Page page)'))
+    const body = showPageBody.slice(0, showPageBody.indexOf('\n    }', 200))
+    const bare = body
+      .split('\n')
+      .filter(line => /\.setVisibility\s*\(/.test(line))
+      .filter(line => !/showOnly\(|!=\s*null|==\s*null/.test(line))
+    check('showPage 里没有裸 setVisibility', bare.length === 0, bare.join(' | '))
+  })
+
   // 反向自检：把"用在前、构造在后"的假代码喂给检查函数，它必须报出来。
   // 没有这一条的话，上面那个断言可能永远为真而我们还以为它在守着。
   await it('顺序检查本身有效：故意写反的代码必须被判为不合格', async () => {

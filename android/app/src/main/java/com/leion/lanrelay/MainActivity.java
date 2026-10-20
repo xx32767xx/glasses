@@ -279,6 +279,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         buildLivePage();
         buildSettingsPage();
         buildRecordsPage();
+        buildTermsPage();
 
         navLive.setOnClickListener(v -> showPage(Page.LIVE));
         navRecords.setOnClickListener(v -> showPage(Page.RECORDS));
@@ -584,14 +585,31 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
     private void showPage(Page page) {
         currentPage = page;
-        livePage.setVisibility(page == Page.LIVE ? View.VISIBLE : View.GONE);
-        recordsPage.setVisibility(page == Page.RECORDS ? View.VISIBLE : View.GONE);
-        termsPage.setVisibility(page == Page.TERMS ? View.VISIBLE : View.GONE);
-        settingsPage.setVisibility(page == Page.SETTINGS ? View.VISIBLE : View.GONE);
+        // ⚠️ 每个页面都先判空。这不是防御性洁癖：4.4 崩过一次 ——
+        //    buildTermsPage() 忘了被调用，而 showPage 在这里直接 setVisibility，
+        //    于是**打开 App 就闪退**（NullPointerException），报错点在从没见过的 589 行。
+        //    一个"忘了建页面"的疏漏不该让整个 App 起不来。
+        showOnly(livePage, page == Page.LIVE);
+        showOnly(recordsPage, page == Page.RECORDS);
+        showOnly(termsPage, page == Page.TERMS);
+        showOnly(settingsPage, page == Page.SETTINGS);
         if (page == Page.RECORDS) renderRecords();
         if (page == Page.TERMS) onTermsPageShown();
         if (page == Page.SETTINGS) refreshSettingsPage();
         paintNav();
+    }
+
+    /** 页面没被创建出来时跳过（并在日志里留一句，便于发现"忘了 build"）。 */
+    private void showOnly(View view, boolean visible) {
+        if (view == null) {
+            if (visible) consoleNoteMissingPage(currentPage);
+            return;
+        }
+        view.setVisibility(visible ? View.VISIBLE : View.GONE);
+    }
+
+    private void consoleNoteMissingPage(Page page) {
+        System.out.println("[leion] 页面 " + page + " 还没被创建出来（忘了调 buildXxxPage？）");
     }
 
     /** 导航项选中态：图标与文字变主色，底色是淡主色胶囊。 */
