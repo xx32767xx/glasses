@@ -33,7 +33,7 @@ import { join, resolve } from 'node:path'
 import { CHECKOUT } from '../lib/real-tools.mjs'
 import { ensureLoaderLinks } from '../lib/loader-links.mjs'
 import { buildComposition, LIVE_DATA_DIR, repoFile } from '../lib/composition.mjs'
-import { defaultBus, defaultInbox } from '../lib/paths.mjs'
+import { defaultBus, defaultInbox, defaultSettings } from '../lib/paths.mjs'
 
 const HELP = `harness-side —— 常驻的 harness 侧进程（给手机 + 局域网转发用）
 
@@ -41,7 +41,8 @@ const HELP = `harness-side —— 常驻的 harness 侧进程（给手机 + 局�
 
 选项
   --offline             用离线例句表翻译，不联网、零成本（只认得剧本里那 14 句）
-  --proofread           打开大模型校对（第二遍）：初译先上屏，空闲时回头改这一句。
+  --proofread           打开大模型校对（第二遍）：**现在缺省就是开着的**，加它等于重申。
+  --no-proofread        关掉大模型校对（少一次模型调用，牺牲"回头改错"的能力）。
                         只在 --live 下有实际意义（离线例句表认不出校对请求）
   --data-dir <path>     收件箱与字幕总线所在目录（缺省 var/live）
   --inbox <path>        收件箱文件（缺省 <data-dir>/asr-inbox.jsonl）
@@ -66,12 +67,13 @@ const HELP = `harness-side —— 常驻的 harness 侧进程（给手机 + 局�
 `
 
 export function parseArgs(argv) {
-  const options = { mode: 'live', dataDir: LIVE_DATA_DIR, cols: 40, lines: 3, pollMs: 150, keepInbox: false, proofread: false }
+  const options = { mode: 'live', dataDir: LIVE_DATA_DIR, cols: 40, lines: 3, pollMs: 150, keepInbox: false, proofread: true }
   const takesValue = new Set(['data-dir', 'inbox', 'bus', 'cols', 'lines', 'poll-ms'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (token === '--offline') { options.mode = 'offline'; continue }
     if (token === '--proofread') { options.proofread = true; continue }
+  if (token === '--no-proofread') { options.proofread = false; continue }
     if (token === '--keep-inbox') { options.keepInbox = true; continue }
     if (token === '--help') { options.help = true; continue }
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -147,8 +149,12 @@ async function main() {
       inboxPollMs: options.pollMs,
       cols: options.cols,
       lines: options.lines,
-      // 校对（第二遍）：缺省关闭。开了之后初译照旧先上屏，校对只在空闲时做。
+      // 校对（第二遍）：**缺省开启**（plugin/core.mjs 的默认值也是 'idle'）。
+      // 初译照旧先上屏，校对只在空闲时做；不想花那次调用的加 --no-proofread。
+      // 手机侧还有一个运行时开关（var/live/settings.json），以手机为准 —— 见
+      // plugin/core.mjs 的 refreshRuntimeSettings()。
       proofread: options.proofread ? 'idle' : 'off',
+      settingsPath: defaultSettings(options.dataDir).replace(/\\/g, '/'),
     },
     extraRows: [`- name: '${repoFile('lib', 'keepalive.mjs')}'`],
   })

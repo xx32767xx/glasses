@@ -656,15 +656,22 @@ export async function runContractSuite(adapter, { it, check, assert }) {
 
   // ── 5c. 大模型校对（第二遍，讯飞那种"先出译文、再回头改"）──────────────────
   //
-  // 这一组断言的顺序是有讲究的：先证明"缺省完全不变"（否则前面所有用例都可能被它影响），
-  // 再证明"开了之后真的会改"，最后证明**它绝不会改错屏幕**（这一条最重要）。
+  // 这一组断言的顺序是有讲究的：
+  //   ① 显式关掉时"一句只调一次模型"（不虚报、不乱花钱）；
+  //   ② 手机侧开关能把已开启的校对关掉（运行时覆盖，缺省已改为开启）；
+  //   ③ 开了之后真的会改；
+  //   ④ 它绝不会改错屏幕（这一条最重要）。
+  //
+  // ⚠️ 缺省值从 'off' 改成了 'idle'（按用户要求默认开启），所以第一条现在必须
+  //    **显式写 proofread: 'off'** —— 否则它测的就不是"关掉"而是"默认"了。
 
-  await it('校对缺省关闭：一句只调一次模型，行为与加这个功能之前完全一样', async () => {
+  await it('校对显式关闭：一句只调一次模型，行为与加这个功能之前完全一样', async () => {
     const store = new Map()
     const path = inboxPathOf('proofread-off.jsonl')
     const llm = makeProofreadLlm({ corrected: '不该出现' })
     const box = await adapter.create({
-      llm, fs: makeFakeFs(store), config: { inboxPath: path, inboxPollMs: 100 },
+      llm, fs: makeFakeFs(store),
+      config: { inboxPath: path, inboxPollMs: 100, proofread: 'off' },
     })
     store.set(path, 'A reunião de hoje passou para as três da tarde.\n')
     const processed = await waitFor(async () =>
@@ -677,6 +684,48 @@ export async function runContractSuite(adapter, { it, check, assert }) {
     check('状态里校对是 null（关闭时不虚报）', status.proofread === null, JSON.stringify(status.proofread))
     const history = await box.tools.get('leion_history').execute({ limit: 10 })
     check('没有出现校对产物', !history.entries.some(e => e.text.includes('不该出现')))
+    await box.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
+  await it('手机侧开关能关掉校对：settings.json 里 proofread=false → 不排第二遍', async () => {
+    const store = new Map()
+    const path = inboxPathOf('proofread-settings-off.jsonl')
+    const settingsPath = inboxPathOf('settings.json')
+    const llm = makeProofreadLlm({ corrected: '不该出现' })
+    // 缺省是开启（'idle'），但手机侧写了 false —— 以手机为准
+    store.set(settingsPath, JSON.stringify({ proofread: false }))
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: { inboxPath: path, inboxPollMs: 100, settingsPath },
+    })
+    store.set(path, 'A reunião de hoje passou para as três da tarde.\n')
+    const processed = await waitFor(async () =>
+      (await box.tools.get('leion_inbox').execute({ action: 'status' })).processed >= 1)
+    check('这句被处理了', processed)
+    await sleep(400)
+    check('手机侧关掉后不再多调模型', llm.calls.length === 1,
+      '实际 ' + llm.calls.length + ' 次')
+    const status = await box.tools.get('leion_inbox').execute({ action: 'status' })
+    check('状态里如实报 null（不虚报开着）', status.proofread === null, JSON.stringify(status.proofread))
+    await box.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
+  await it('手机侧开关是"坏的"也没关系：读不到就按配置走，字幕照出', async () => {
+    const store = new Map()
+    const path = inboxPathOf('proofread-settings-broken.jsonl')
+    const settingsPath = inboxPathOf('settings.json')
+    const llm = makeProofreadLlm({ corrected: 'Esta é uma mensagem de teste.' })
+    store.set(settingsPath, '{ 这不是 JSON')
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      // 显式关掉 + 坏文件：应当仍然"关着"，且不影响出字幕
+      config: { inboxPath: path, inboxPollMs: 100, settingsPath, proofread: 'off' },
+    })
+    store.set(path, '这是一条测试语音。\n')
+    const processed = await waitFor(async () =>
+      (await box.tools.get('leion_inbox').execute({ action: 'status' })).processed >= 1)
+    check('坏设置文件不影响处理', processed)
+    check('仍然只有一次调用', llm.calls.length === 1, String(llm.calls.length))
     await box.tools.get('leion_inbox').execute({ action: 'stop' })
   })
 

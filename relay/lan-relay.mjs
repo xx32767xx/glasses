@@ -32,13 +32,14 @@
 
 import { createServer } from 'node:http'
 import { createHash, randomBytes } from 'node:crypto'
-import { mkdir, appendFile, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, appendFile, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { networkInterfaces } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createInboxWriter } from '../bridge/asr-bridge.mjs'
 import {
   LIVE_DIR, defaultAudioIn, defaultAudioLang, defaultAudioRate, defaultBus, defaultInbox, defaultSecret,
+  defaultSettings,
 } from '../lib/paths.mjs'
 import { lintTranslation } from '../lib/translation-lint.mjs'
 import {
@@ -499,6 +500,8 @@ export async function startRelay(rawOptions = {}) {
     termsSaves: 0,
     termsUser: null,
     termsEntries: 0,
+    /** 手机侧运行时设置被改过几次（校对开关）。 */
+    settingsWrites: 0,
     writer: null,
     /** 写入串行化：收件箱的顺序就是字幕的顺序，不能乱 */
     writeChain: Promise.resolve(),
@@ -771,6 +774,31 @@ export async function startRelay(rawOptions = {}) {
       previousEntries: put.previousEntries,
       effectiveAt: 'next-session',
     })
+  }
+
+  /**
+   * 读手机侧运行时设置。**任何失败都返回空对象** —— 设置坏了绝不能影响开端口、转字幕。
+   */
+  async function readSettings(dataDir) {
+    try {
+      const text = await readFile(defaultSettings(dataDir), 'utf-8')
+      const parsed = JSON.parse(text)
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+      const out = {}
+      if (typeof parsed.proofread === 'boolean') out.proofread = parsed.proofread
+      return out
+    } catch {
+      return {}
+    }
+  }
+
+  /** 原子写设置（tmp + rename）：插件可能在任意时刻读它，不能让它读到半截 JSON。 */
+  async function writeSettings(dataDir, settings) {
+    const target = defaultSettings(dataDir)
+    await mkdir(dirname(target), { recursive: true })
+    const temp = target + '.tmp'
+    await writeFile(temp, JSON.stringify(settings, null, 2) + '\n', 'utf-8')
+    await rename(temp, target)
   }
 
   async function readBody(request, limit = MAX_BODY_BYTES) {
@@ -1173,12 +1201,45 @@ export async function startRelay(rawOptions = {}) {
           audioChunks: state.audioChunks,
           audioRate: state.audioRateValue,
           audioLang: state.audioLangValue,
+          // 手机侧设置：校对现在是开还是关（手机端据此显示开关状态，而不是自以为）。
+          settings: await readSettings(options.dataDir),
+          settingsWrites: state.settingsWrites,
           // 热词对照表：上传过几次、最近一次是谁、几条。手机端拿它显示"本次生效 N 条"。
           termsSaves: state.termsSaves,
           termsUser: state.termsUser,
           termsEntries: state.termsEntries,
           ...info(),
         })
+        return
+      }
+
+      // ── 手机侧运行时设置（docs/15 §14 与 plugin/core.mjs 的 refreshRuntimeSettings）──
+      //
+      // 现在只有一项：`proofread`（大模型校对开关）。放在这里的理由很实际：
+      // 部署时的 config 改一次要重启 harness，而"这一场要不要校对"是用户当场想改的事。
+      // 插件在**排进第一条校对之前**读一次这个文件；读不到就按 config 走。
+      if (request.method === 'GET' && url.pathname === '/settings') {
+        const current = await readSettings(options.dataDir)
+        send(response, 200, { ok: true, settings: current, path: defaultSettings(options.dataDir) })
+        return
+      }
+      if (request.method === 'PUT' && url.pathname === '/settings') {
+        let body
+        try {
+          body = await readBody(request)
+        } catch (error) {
+          sendAndClose(request, response, error.statusCode ?? 400, { ok: false, error: String(error.message) })
+          return
+        }
+        if (body === null || typeof body !== 'object' || typeof body.proofread !== 'boolean') {
+          send(response, 400, { ok: false, error: 'bad-settings', hint: '需要 { "proofread": true/false }' })
+          return
+        }
+        const next = { proofread: body.proofread }
+        await writeSettings(options.dataDir, next)
+        state.settingsWrites += 1
+        debug(`[设置] 手机把校对 ${next.proofread ? '打开' : '关掉'}了 —— 下一场同传生效`)
+        send(response, 200, { ok: true, settings: next, effectiveAt: 'next-session' })
         return
       }
 
@@ -1214,7 +1275,7 @@ export async function startRelay(rawOptions = {}) {
         return
       }
 
-      send(response, 404, { ok: false, error: 'not-found', routes: ['/hello', '/say', '/audio', '/frame', '/status', '/terms'] })
+      send(response, 404, { ok: false, error: 'not-found', routes: ['/hello', '/say', '/audio', '/frame', '/status', '/terms', '/settings'] })
     })().catch(error => {
       if (!response.writableEnded) {
         send(response, 500, { ok: false, error: String(error && error.message ? error.message : error) })

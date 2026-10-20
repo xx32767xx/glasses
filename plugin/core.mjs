@@ -78,6 +78,11 @@ export const CONFIG_DEFAULTS = {
   inboxPollMs: 700,
   /** 强制指定收件行的源语种（ASR 已知语种时有用）；留空 = 逐行自动判定。 */
   inboxFrom: '',
+  /**
+   * 手机侧运行时设置的落点（`{ "proofread": true/false }`），由 relay 的 `PUT /settings` 写。
+   * 留空 = 不读（完全按 config 走）。读不到就忽略 —— 一个坏文件不该影响出字幕。
+   */
+  settingsPath: '',
 
   /**
    * 大模型校对（讯飞那种"两遍"）：第一遍**快速出译文并立刻上屏**，
@@ -95,8 +100,17 @@ export const CONFIG_DEFAULTS = {
    *     （哪怕是下一句的流式增量），校对结果直接丢弃 —— 否则屏幕会**倒退**回上一句。
    *   · 超过 proofreadMaxAgeMs 还没轮到的，也不再改了：观众早就读过、翻页了。
    *   · 一次只跑一个校对（proofreading 标志），不和翻译抢模型。
+   *
+   * ⚠️ **缺省值从 'off' 改成了 'idle'（默认开启）**，按用户要求：
+   *   同传里最常见的硬错不是"译得不好"而是"听错了"，而校对是唯一能救回来的手段
+   *   （docs/07 §5.3 有实测：初译把 Qualcomm 泛化成 "alta capacidade"，校对补回来）。
+   *   代价要说清：**每句可能多一次模型调用**。所以：
+   *     · 它是"空闲才跑"，不占关键路径；
+   *     · 手机上有一个开关（设置 → 校对），关掉后这台设备就不再排校对；
+   *     · 手机开关通过 `var/live/settings.json` 生效（见 refreshRuntimeSettings）——
+   *       一份数据两处可改时，**以手机为准**（用户当场能摸到的那个更可信）。
    */
-  proofread: 'off',
+  proofread: 'idle',
   /** 校对结果超过这个年龄（毫秒）就丢弃 —— 屏幕早换页了，改了也没人看。 */
   proofreadMaxAgeMs: 8000,
   /** 待校对队列的上限。积压说明机器跟不上，多排也只会更晚、更没意义。 */
@@ -168,6 +182,9 @@ export function validateConfig(raw) {
   }
   if (typeof config.inboxPath !== 'string') {
     throw new Error(`leion-pro: inboxPath 必须是字符串，收到 ${JSON.stringify(config.inboxPath)}`)
+  }
+  if (typeof config.settingsPath !== 'string') {
+    throw new Error(`leion-pro: settingsPath 必须是字符串，收到 ${JSON.stringify(config.settingsPath)}`)
   }
   if (config.inboxPath !== '') {
     if (!Number.isInteger(config.inboxPollMs) || config.inboxPollMs < 100) {
@@ -855,9 +872,56 @@ export function createInterpreter(ctx, rawConfig, deps) {
   // 大模型校对（第二遍）：把已经上屏的译文回头再检查一次
   // ───────────────────────────────────────────────────────────────────────────
 
+  /**
+   * 手机侧的运行时开关（`var/live/settings.json`，由 relay 的 `PUT /settings` 写入）。
+   *
+   * 为什么需要它：`config.proofread` 是**部署时**的配置，改它要重启 harness；
+   * 而"这一场要不要校对"是用户当场就想改的事（费不费钱、快不快）。
+   * 所以留一个文件接缝 —— 与收件箱/字幕总线同一套做法。
+   *
+   * 约定：
+   *   · 文件不存在 / 读不到 / 格式不对 → **完全忽略**，按 config 来（不能让一个坏文件影响出字幕）；
+   *   · 文件里有 `proofread` → **以它为准**（用户当场能摸到的那份更可信）；
+   *   · 每场同传只读一次（第一次要排校对时），所以"改了下次生效"是天然的。
+   */
+  let runtimeProofread = null       // null = 还没读过 / 读不到
+  let runtimeSettingsRead = false
+
+  async function refreshRuntimeSettings() {
+    if (runtimeSettingsRead) return
+    runtimeSettingsRead = true
+    const fs = ctx.get('fs')
+    if (fs === undefined) return
+    try {
+      const target = await fs.resolve(config.settingsPath)
+      const info = await fs.stat(target)
+      if (info === undefined) return
+      const text = await fs.readText(target)
+      const parsed = JSON.parse(text)
+      if (parsed !== null && typeof parsed === 'object' && typeof parsed.proofread === 'boolean') {
+        runtimeProofread = parsed.proofread
+        console.log('[leion-pro] 校对：按手机侧设置 ' + (runtimeProofread ? '开启' : '关闭'))
+      }
+    } catch (error) {
+      // 读设置失败**绝不能影响出字幕**：忽略即可
+      console.log('[leion-pro] 校对：读 settings.json 失败（已忽略，按配置走）：'
+        + String(error && error.message ? error.message : error))
+    }
+  }
+
+  /**
+   * 校对到底开没开（配置与手机侧开关合并后的**唯一判定**）。
+   *
+   * 为什么要有这么一个小函数：状态输出、自检说明、以及真正的排队判断
+   * 都必须用同一套口径，否则会出现"状态说开着、其实没排队"这种最容易误导人的情况。
+   */
+  function proofreadWanted() {
+    return runtimeProofread === null ? config.proofread === 'idle' : runtimeProofread
+  }
+
   /** 有没有可用的模型服务。没有就别排队了 —— 排了也是每次都失败。 */
   function proofreadEnabled() {
-    if (config.proofread !== 'idle' || proofreadUnavailable) return false
+    if (proofreadWanted() !== true || proofreadUnavailable) return false
     if (translator.kind === 'none') return false     // 纯显示通道：插件不碰模型
     const llm = ctx.get('llm')
     if (llm === undefined) {
@@ -1331,10 +1395,10 @@ export function createInterpreter(ctx, rawConfig, deps) {
         lastError: inbox.lastError,
         // 校对的运行状态（关着时是 null）：调用方一眼能看出"第二遍"有没有在跑、
         // 改了几次、丢了几次（丢 = 屏幕上已经换页，主动放弃覆盖）。
-        proofread: config.proofread === 'off'
+        proofread: proofreadWanted() === false
           ? null
-          : Object.assign({ mode: config.proofread, pending: proofreadQueue.length,
-            inFlight: proofreading }, state.proofread),
+          : Object.assign({ mode: config.proofread, runtime: runtimeProofread,
+            pending: proofreadQueue.length, inFlight: proofreading }, state.proofread),
       }
     },
     start() {
@@ -1603,6 +1667,9 @@ export function createInterpreter(ctx, rawConfig, deps) {
       // 上下文只在与本句**同向**时才给 —— 语向来回切时，上一句的译文是另一种语言，
       // 塞给模型只会把它带偏。
       const previous = state.recent.length > 0 ? state.recent[state.recent.length - 1] : null
+      // 排进校对队列之前读一次手机侧开关（每场只读一次；读不到就按配置走）。
+      // 放在这个位置而不是开头：翻译本身不该因为这个文件读失败而多等一拍。
+      await refreshRuntimeSettings()
       enqueueProofread({
         source,
         from,
@@ -1630,7 +1697,7 @@ export function createInterpreter(ctx, rawConfig, deps) {
         preview: drawFrame(finalFrame, config.cols),
         // 校对开着时把它的计数一并给出（拷贝一份：这是即时快照，不是活引用）。
         // 输出外壳是 additionalProperties: true，所以加字段不会破坏 schema 校验。
-        proofread: config.proofread === 'off' ? null : Object.assign({}, state.proofread),
+        proofread: proofreadWanted() === false ? null : Object.assign({}, state.proofread),
         outbound: to === PT
           ? {
             channel: 'counterpart',
@@ -1730,8 +1797,10 @@ export function createInterpreter(ctx, rawConfig, deps) {
 
       // 校对（第二遍）：只报状态，不作为自检成败的判据 ——
       // 它是个"锦上添花"的环节，坏了不该让整条链路报 FAIL。
-      if (config.proofread === 'off') {
-        notes.push('校对：关闭（config.proofread = off）')
+      if (proofreadWanted() === false) {
+        notes.push(config.proofread === 'off'
+          ? '校对：关闭（config.proofread = off）'
+          : '校对：已被手机侧设置关闭（settings.json 的 proofread=false）')
       } else if (proofreadUnavailable) {
         notes.push('校对：已自动关闭 —— ' + (state.proofread.lastNote || '没有可用的 llm 服务'))
       } else {
@@ -1750,10 +1819,11 @@ export function createInterpreter(ctx, rawConfig, deps) {
         detect,
         translate: translateOk,
         inbox: inboxOk,
-        proofread: config.proofread === 'off'
+        proofread: proofreadWanted() === false
           ? null
-          : Object.assign({ mode: config.proofread, pending: proofreadQueue.length,
-            inFlight: proofreading, unavailable: proofreadUnavailable }, state.proofread),
+          : Object.assign({ mode: config.proofread, runtime: runtimeProofread,
+            pending: proofreadQueue.length, inFlight: proofreading,
+            unavailable: proofreadUnavailable }, state.proofread),
         notes,
         preview: drawFrame(probe, config.cols),
       }

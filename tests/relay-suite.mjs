@@ -282,7 +282,37 @@ export async function runRelaySuite({ it, check, assert }) {
   await it('未知路由 404，并列出可用路由', async () => {
     const result = await call('/nope')
     check('404', result.status === 404, String(result.status))
-    assert.deepEqual(result.json.routes, ['/hello', '/say', '/audio', '/frame', '/status', '/terms'])
+    assert.deepEqual(result.json.routes, ['/hello', '/say', '/audio', '/frame', '/status', '/terms', '/settings'])
+  })
+
+  await it('手机侧设置：PUT /settings 落盘、GET 能读回、坏请求被拒、且写在数据目录里', async () => {
+    const initial = await call('/settings')
+    check('200', initial.status === 200, initial.text)
+    check('缺省是空对象（没写过就是没有设置）', JSON.stringify(initial.json.settings) === '{}', initial.text)
+
+    const put = await call('/settings', { method: 'PUT', body: { proofread: false } })
+    check('200', put.status === 200, put.text)
+    check('回显写进去的值', put.json.settings.proofread === false, put.text)
+    check('写明生效时机', put.json.effectiveAt === 'next-session', put.text)
+
+    const after = await call('/settings')
+    check('读回来还是 false', after.json.settings.proofread === false, after.text)
+
+    const written = JSON.parse(await readFile(join(TMP, 'settings.json'), 'utf-8'))
+    check('真的落在数据目录的 settings.json（插件读的就是这个）', written.proofread === false,
+      JSON.stringify(written))
+
+    const bad = await call('/settings', { method: 'PUT', body: { proofread: 'yes' } })
+    check('类型不对被拒（boolean 才行）', bad.status === 400, bad.text)
+    const bad2 = await call('/settings', { method: 'PUT', body: {} })
+    check('缺字段被拒', bad2.status === 400, bad2.text)
+    const still = await call('/settings')
+    check('坏请求没有污染已有设置', still.json.settings.proofread === false, still.text)
+
+    const noSecret = await call('/settings', { secret: null })
+    check('没密钥 401（和字幕同一把锁）', noSecret.status === 401, String(noSecret.status))
+    // 复原，免得影响后面的用例
+    await call('/settings', { method: 'PUT', body: { proofread: true } })
   })
 
   await it('请求体过大返回 413', async () => {

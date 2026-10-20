@@ -214,4 +214,12 @@
     <string name="terms_status_failed">失败：%1$s</string>
     <string name="terms_warn_title">提醒（不影响上传）</string>
     <string name="terms_reject_title">不能上传的原因</string>
+    <!-- 校对（第二遍）开关：缺省是开着的，用户可以关掉 -->
+    <string name="settings_proofread_section">校对（第二遍）</string>
+    <string name="settings_proofread_title">回头改错</string>
+    <string name="settings_proofread_on">开：字幕先上屏，空闲时再回头改这一句（每句可能多一次模型调用）</string>
+    <string name="settings_proofread_off">关：只出初译，不再回头改（省一次调用，听错的句子改不回来）</string>
+    <string name="settings_proofread_need_connect">还没连上电脑 —— 这个开关要通过电脑生效</string>
+    <string name="settings_proofread_failed">设置没送到电脑：%1$s</string>
+    <string name="settings_proofread_saved">已保存：校对%1$s · 下一场同传生效</string>
 </resources>

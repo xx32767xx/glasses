@@ -301,6 +301,23 @@ public class LanClient {
         }
     }
 
+    /**
+     * 读电脑上的运行时设置（现在只有 `proofread`：校对开关）。
+     *
+     * <p>为什么以电脑为准：开关真正的效果发生在电脑侧（它决定排不排第二次模型调用）。
+     * 手机如果只改本地偏好，就会变成"界面上关着、电脑上还在跑"——那是比没有开关更糟的事。
+     */
+    public JSONObject settingsGet() throws IOException, org.json.JSONException {
+        return requestWithCode("/settings", "GET", null, 8000);
+    }
+
+    /** 把校对开关送到电脑。响应里 `effectiveAt` 会写 `next-session`。 */
+    public JSONObject settingsPutProofread(boolean enabled) throws IOException, org.json.JSONException {
+        JSONObject body = new JSONObject();
+        body.put("proofread", enabled);
+        return requestWithCode("/settings", "PUT", body, 8000);
+    }
+
     // ── 内部 ──────────────────────────────────────────────────────────────
 
     private void pollLoop() {

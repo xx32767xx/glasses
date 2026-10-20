@@ -29,6 +29,7 @@ import { runNetDoctorSuite } from './net-doctor-suite.mjs'
 import { runBenchSuite } from './bench-suite.mjs'
 import { runLintSuite } from './lint-suite.mjs'
 import { runTermsSuite } from './terms-suite.mjs'
+import { runTermsMatcherSuite } from './terms-matcher-suite.mjs'
 import { runAndroidOrderSuite } from './android-order-suite.mjs'
 import { runAsrPackSuite } from './asr-pack-suite.mjs'
 import { runLive } from './live/run.mjs'
@@ -203,6 +204,14 @@ await runLintSuite(helpers)
 
 heading('用户热词对照表（校验拒绝码 / 原子落盘 / PUT 全有或全无）')
 await runTermsSuite(helpers)
+
+// ── 7d3. 热词匹配器（"已知变体 → 规范写法"，纯字符串、零模型调用）────────────
+// 这是全功能里唯一能改字幕文字的地方，所以每条规则都配成对的负对照：
+// 左边验"该换的换了"，右边验"不该换的一个都没换"（改错比不改更糟）。
+// 其中三条是真实踩过的坑：equipa/equipamentos、高通/高通量、Leion 在 Leion Pro 里。
+
+heading('热词匹配器（文件边界 / 实体重叠 / 中文边界 / 折叠 / 幂等 / 方向）')
+await runTermsMatcherSuite(helpers)
 
 // ── 7e. 识别测试包（"这是朗读还是真实口语"这类标签）─────────────────────────
 // 这一节的由来很具体：测试包的语体标签原来是**猜**的，新语料一律被标成"朗读"；

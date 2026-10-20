@@ -194,6 +194,11 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private TextView settingsOutputState;
     /** 热词表那一行的状态小字（"上传 12 条 · 下次生效"这类）。 */
     private TextView settingsTermsState;
+    /** 校对开关：以**电脑侧**状态为准（`/status` 的 `settings.proofread`）。 */
+    private Switch settingsProofreadSwitch;
+    private TextView settingsProofreadState;
+    /** 电脑上校对现在开着没有；null = 还没读到（不假装知道）。 */
+    private Boolean proofreadOnServer = null;
     private TextView diagnosticsText;
     private TextView fontValue;
     private TextView themeSystemView;
@@ -777,6 +782,12 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                     termsSavedEntries = status.optInt("termsEntries", 0);
                     termsSavedUser = status.optString("termsUser", "");
                     renderTermsState();
+                    // 校对开关：以电脑上的实际状态为准（手机不自己猜）
+                    org.json.JSONObject settings = status.optJSONObject("settings");
+                    if (settings != null && settings.has("proofread")) {
+                        proofreadOnServer = settings.optBoolean("proofread", false);
+                        renderProofread(proofreadOnServer, false);
+                    }
                     renderConnectionCard();
                     refreshDiagnostics();
                     if (whenDone != null) whenDone.run();
@@ -1588,6 +1599,76 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     }
 
     /**
+     * 切换「校对（第二遍）」，并把结果**送到电脑**。
+     *
+     * <p>为什么必须送到电脑、不能只改本地：开关的效果发生在电脑侧。只改本地会造出
+     * "界面上关着、电脑上还在每句多花一次调用"的状态 —— 那比没有开关更糟。
+     *
+     * <p>失败时**把界面退回原状**：不能让开关显示成一个假的"已关闭"。
+     */
+    private void toggleProofread() {
+        if (client == null) {
+            showNote(getString(R.string.settings_proofread_need_connect));
+            return;
+        }
+        final boolean next = proofreadOnServer == null ? true : !proofreadOnServer;
+        // 立刻更新成"想设置的"样子，但用 pending 文案说明还没落地
+        renderProofread(next, true);
+        final LanClient current = client;
+        new Thread(() -> {
+            String note = null;
+            boolean ok = false;
+            boolean value = next;
+            try {
+                org.json.JSONObject result = current.settingsPutProofread(next);
+                org.json.JSONObject json = result.optJSONObject("json");
+                int code = result.optInt("code", 0);
+                if (code == 200) {
+                    ok = true;
+                    value = json != null && json.optJSONObject("settings") != null
+                            ? json.optJSONObject("settings").optBoolean("proofread", next) : next;
+                    note = getString(R.string.settings_proofread_saved, value ? "已打开" : "已关闭");
+                } else {
+                    note = getString(R.string.settings_proofread_failed,
+                            json == null ? ("HTTP " + code) : json.optString("hint", "HTTP " + code));
+                }
+            } catch (Exception error) {
+                note = getString(R.string.settings_proofread_failed, String.valueOf(error.getMessage()));
+            }
+            final boolean finalOk = ok;
+            final boolean finalValue = value;
+            final String finalNote = note;
+            main.post(() -> {
+                if (finalOk) {
+                    proofreadOnServer = finalValue;
+                    renderProofread(finalValue, false);
+                    showNote(finalNote);
+                } else {
+                    // 没送成功 → 退回"电脑上的真实状态"，并把原因说出来
+                    renderProofread(proofreadOnServer == null ? false : proofreadOnServer, false);
+                    showNote(finalNote);
+                }
+            });
+        }, "proofread-toggle").start();
+    }
+
+    /** 渲染校对开关：`pending` 表示"正在送电脑"，此时文案不说已完成。 */
+    private void renderProofread(boolean on, boolean pending) {
+        if (settingsProofreadSwitch != null) settingsProofreadSwitch.setChecked(on);
+        if (settingsProofreadState == null) return;
+        if (pending) {
+            settingsProofreadState.setText(on ? "正在打开…" : "正在关闭…");
+            return;
+        }
+        if (proofreadOnServer == null) {
+            settingsProofreadState.setText(R.string.settings_proofread_on);
+            return;
+        }
+        settingsProofreadState.setText(proofreadOnServer
+                ? R.string.settings_proofread_on : R.string.settings_proofread_off);
+    }
+
+    /**
      * 设置页那一行热词表的小字：说清"电脑上现在有没有表、几张、是谁的"。
      *
      * <p>为什么用电脑侧的数字而不是本地草稿：本地草稿可能改了没传 ——
@@ -1841,6 +1922,12 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         settingsPage.findViewById(R.id.settingsTypeRow).setOnClickListener(v -> promptManualText());
         settingsTermsState = settingsPage.findViewById(R.id.settingsTermsState);
         settingsPage.findViewById(R.id.settingsTermsRow).setOnClickListener(v -> openTermsPage());
+        settingsProofreadSwitch = settingsPage.findViewById(R.id.settingsProofreadSwitch);
+        settingsProofreadState = settingsPage.findViewById(R.id.settingsProofreadState);
+        // 整行可点：Switch 本身只有 48dp 宽，点行更省事（和开发者开关同一套做法）
+        settingsProofreadSwitch.setClickable(false);
+        settingsPage.findViewById(R.id.settingsProofreadRow)
+                .setOnClickListener(v -> toggleProofread());
         themeSystemView.setOnClickListener(v -> setThemeMode("system"));
         themeLightView.setOnClickListener(v -> setThemeMode("light"));
         themeDarkView.setOnClickListener(v -> setThemeMode("dark"));
