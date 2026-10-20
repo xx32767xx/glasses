@@ -35,6 +35,7 @@ node scripts/start-all.mjs             # 转发 + 识别 + 大脑，日志带前
                                        # Ctrl-C 一次停掉全部；起之前会检查端口有没有被旧进程占着
                                        # --cpu 用 CPU 识别 / --offline 不联网 / --open-window 另开调试窗口
 node scripts/build-apk.mjs             # 构建安卓 App → android/README.md 有完整步骤
+node scripts/test-account.mjs          # 备好测试账户 + 预置热词表（验证热词表/账户时用）
 node scripts/debug-window.mjs          # 另开一个终端：实时显示断在哪一环（只读，不影响链路）
 
 # 没有手机也能验整条路：
@@ -84,6 +85,7 @@ node scripts/fake-phone.mjs --wav var/audio/zh/short-16k.wav --url http://127.0.
 | `relay/lan-relay.mjs` | **局域网转发**：手机 ↔ 电脑，5 个端点 + 共享密钥（含 `POST /audio` 录音上传，见下） |
 | `scripts/harness-side.mjs` | 常驻的 harness 侧进程（真实组合 + 插件，文件模式） |
 | `scripts/start-all.mjs` | **一键启动**：一次起齐"转发 + 识别 + 大脑"，日志带前缀汇总、Ctrl-C 全停、先查端口有没有被旧进程占着 |
+| `scripts/test-account.mjs` | **测试账户一条命令备好**：建账户（密码 scrypt 加盐哈希）+ 写一份预置热词表（含实测出现过的 `wrong` 写法），凭据落到 `var/live/test-account.json`。验证热词表/账户这条线时不用再手点手机；`--show` 看状态、`--reset` 清理 |
 | `scripts/fake-phone.mjs` | **假手机**：没有手机时按同样的协议逐块上传音频，用来验证「录音上传」那条路 |
 | `scripts/net-doctor.mjs` | **网络体检**：手机连不上时把"地址变了 / 不在同一网段 / 进程没在听 / 防火墙拦了"分开报；`--watch` 还能判断包到底有没有到电脑（用来区分防火墙与校园网隔离） |
 | `scripts/test-phrases.mjs` | **同传效果测试句集**（18 条中文长难句）+ 一键跑批：自动判"数字有没有丢、有没有用葡葡词、译文在 40×3 上会不会被截掉开头、有没有假字幕"。`--list` 只打印句子，`--read-aloud` 连"这条测什么"一起打印 |

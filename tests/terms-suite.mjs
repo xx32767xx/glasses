@@ -95,9 +95,15 @@ export async function runTermsSuite({ it, check, assert }) {
     ])
     check('跨条目的变体冲突被拒', clash.ok === false && clash.rejected[0].code === 'ALIAS_CONFLICT',
       JSON.stringify(clash.rejected))
-    const selfClash = validateTerms([{ zh: '亮亮视野', pt: 'LLVision', approved: ['llvision'] }])
-    check('同条目 pt 与 approved 仅大小写不同被判冲突',
-      selfClash.ok === false && selfClash.rejected[0].code === 'ALIAS_CONFLICT')
+    // pt 与 approved 只是大小写/重音不同 → **合法**（approved 的用途就是"同一目标的其它写法"）。
+    // 这条是改过的：原来把它算成冲突，于是 `São Paulo` + `Sao Paulo` 这种正常写法会被拒。
+    const accents = validateTerms([{ zh: '圣保罗', pt: 'São Paulo', approved: ['Sao Paulo'] }])
+    check('重音不同的 approved 应当被接受', accents.ok === true, JSON.stringify(accents.rejected))
+    // 但同一个串**既当源写法又当目标写法**必须被拒（会来回替换）
+    const selfClash = validateTerms([{ zh: '亮亮视野', pt: 'LLVision', approved: ['亮亮视野'] }])
+    check('源写法出现在 approved 里被判冲突',
+      selfClash.ok === false && selfClash.rejected[0].code === 'ALIAS_CONFLICT',
+      JSON.stringify(selfClash.rejected))
   })
 
   await it('有歧义的条目可以关掉折叠（docs/15 §5.3）', () => {

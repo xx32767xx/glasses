@@ -14,6 +14,7 @@ import { mkdir, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { startRelay } from '../relay/lan-relay.mjs'
 import { VAR_DIR } from '../lib/paths.mjs'
+import { ensureTestAccount, resetTestAccount } from '../scripts/test-account.mjs'
 import {
   checkPassword, emptyAccounts, hashPassword, issueToken, login, normalizeUsername, register,
   revokeToken, tokenKey, userForToken, verifyPassword,
@@ -74,6 +75,28 @@ export async function runAccountsSuite({ it, check, assert }) {
     check('注销成功', revoked.ok === true)
     check('被注销的 token 失效', userForToken(revoked.doc, second.token) === null)
     check('另一个 token 仍有效', userForToken(revoked.doc, reg.token) === 'wu')
+  })
+
+  await it('测试账户脚本：一条命令建好账户 + 热词表，token 当场可用，reset 能清干净', async () => {
+    const dataDir = join(TMP, 'script-account')
+    const result = await ensureTestAccount({ dataDir, terms: [{ zh: '亮亮视野', pt: 'LLVision' }] })
+    check('给了用户名与 token', result.username === 'test' && result.token.length === 64, JSON.stringify(result))
+    check('表写进去了', result.entries === 1, String(result.entries))
+    // 同一个账号再跑一次：不该报错（走登录、重新签发 token）
+    const again = await ensureTestAccount({ dataDir, terms: [{ zh: '亮亮视野', pt: 'LLVision' }] })
+    check('可重复执行（幂等）', again.username === 'test' && again.entries === 1, JSON.stringify(again))
+    check('两次的 token 不同（每次登录都新签一个）', again.token !== result.token)
+    // 旧 token 仍然有效（登录不踢掉别的设备）—— 这是刻意的语义
+    const { loadAccounts, userForToken } = await import('../lib/accounts.mjs')
+    const doc = await loadAccounts(dataDir)
+    check('旧 token 仍有效', userForToken(doc, result.token) === 'test')
+    check('新 token 也有效', userForToken(doc, again.token) === 'test')
+    // reset 之后账户与表都没了
+    await resetTestAccount({ dataDir })
+    const after = await loadAccounts(dataDir)
+    check('账户被清掉', Object.keys(after.users).includes('test') === false, JSON.stringify(after.users))
+    const { loadTerms, getTable } = await import('../lib/terms.mjs')
+    check('表被清掉', getTable(await loadTerms(dataDir), 'test').entries.length === 0)
   })
 
   // ── 2. HTTP 端点与越权 ─────────────────────────────────────────────────
