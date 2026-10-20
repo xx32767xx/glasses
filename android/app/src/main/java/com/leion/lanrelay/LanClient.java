@@ -75,9 +75,24 @@ public class LanClient {
      * 电脑据此决定"下一场同传读哪张表"。空 → 电脑侧回落 `default`。
      */
     private volatile String user = "";
+    /**
+     * 账户 token（登录/注册后拿到）。它的用途只有一个：说明"我是谁"。
+     *
+     * <p>为什么不再用用户名当身份：原来客户端自报 `user=wu`、服务端就信 ——
+     * 改一个参数就能读写别人的表。现在服务端只认 token，用户名只是 token 的属性。
+     */
+    private volatile String token = "";
 
     public void setUser(String value) {
         this.user = value == null ? "" : value.trim();
+    }
+
+    public void setToken(String value) {
+        this.token = value == null ? "" : value.trim();
+    }
+
+    public String getToken() {
+        return token;
     }
 
     public LanClient(String baseUrl, String secret, Listener listener) {
@@ -215,6 +230,38 @@ public class LanClient {
         thread.start();
     }
 
+    // ── 账户（注册 / 登录 / 注销 / 我是谁）──────────────────────────────────
+
+    /** 注册账户，成功后拿 token（以后所有请求的身份凭据）。 */
+    public JSONObject authRegister(String username, String password)
+            throws IOException, org.json.JSONException {
+        JSONObject body = new JSONObject();
+        body.put("username", username);
+        body.put("password", password);
+        body.put("label", "android");
+        return requestWithCode("/auth/register", "POST", body, 12000);
+    }
+
+    /** 登录（服务端刻意不区分"用户不存在"与"密码错"）。 */
+    public JSONObject authLogin(String username, String password)
+            throws IOException, org.json.JSONException {
+        JSONObject body = new JSONObject();
+        body.put("username", username);
+        body.put("password", password);
+        body.put("label", "android");
+        return requestWithCode("/auth/login", "POST", body, 12000);
+    }
+
+    /** 注销当前 token（别的设备不受影响）。 */
+    public JSONObject authLogout() throws IOException, org.json.JSONException {
+        return requestWithCode("/auth/logout", "POST", null, 8000);
+    }
+
+    /** 用当前 token 问"我是谁"（失效时 401）。 */
+    public JSONObject authWhoAmI() throws IOException, org.json.JSONException {
+        return requestWithCode("/auth/whoami", "GET", null, 8000);
+    }
+
     // ── 热词对照表（docs/15 阶段 1：只校验与存取，不做替换）─────────────────
 
     /**
@@ -225,10 +272,9 @@ public class LanClient {
      *
      * @return `{ code, json }`；`json.ok` 为 true 表示全部合法
      */
-    public JSONObject termsValidate(String user, org.json.JSONArray entries)
+    public JSONObject termsValidate(org.json.JSONArray entries)
             throws IOException, org.json.JSONException {
         JSONObject body = new JSONObject();
-        body.put("user", user);
         body.put("entries", entries);
         return requestWithCode("/terms/validate", "POST", body, 8000);
     }
@@ -237,18 +283,16 @@ public class LanClient {
      * 上传：**全合法才整表替换**（一条不合法就整表不存，返回 400 + 逐条原因）。
      * @return `{ code, json }`
      */
-    public JSONObject termsPut(String user, org.json.JSONArray entries)
+    public JSONObject termsPut(org.json.JSONArray entries)
             throws IOException, org.json.JSONException {
         JSONObject body = new JSONObject();
-        body.put("user", user);
         body.put("entries", entries);
         return requestWithCode("/terms", "PUT", body, 12000);
     }
 
     /** 取电脑上当前生效的那张表（用来回填编辑框）。 */
-    public JSONObject termsGet(String user) throws IOException, org.json.JSONException {
-        String suffix = user == null || user.isEmpty() ? "" : "?user=" + java.net.URLEncoder.encode(user, "UTF-8");
-        return requestWithCode("/terms" + suffix, "GET", null, 8000);
+    public JSONObject termsGet() throws IOException, org.json.JSONException {
+        return requestWithCode("/terms", "GET", null, 8000);
     }
 
     /**
@@ -264,6 +308,8 @@ public class LanClient {
         try {
             connection.setRequestMethod(method);
             connection.setRequestProperty("X-Leion-Secret", secret);
+            // 有 token 就带上：服务端据此确定"我是谁"（热词表只认它）
+            if (!token.isEmpty()) connection.setRequestProperty("X-Leion-Token", token);
             connection.setConnectTimeout(5000);
             connection.setReadTimeout(readTimeoutMs);
             connection.setUseCaches(false);
@@ -400,6 +446,8 @@ public class LanClient {
         try {
             connection.setRequestMethod(method);
             connection.setRequestProperty("X-Leion-Secret", secret);
+            // 有 token 就带上：服务端据此确定"我是谁"（热词表只认它）
+            if (!token.isEmpty()) connection.setRequestProperty("X-Leion-Token", token);
             connection.setConnectTimeout(5000);
             connection.setReadTimeout(readTimeoutMs);
             connection.setUseCaches(false);

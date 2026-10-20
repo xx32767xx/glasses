@@ -29,6 +29,7 @@ import { runNetDoctorSuite } from './net-doctor-suite.mjs'
 import { runBenchSuite } from './bench-suite.mjs'
 import { runLintSuite } from './lint-suite.mjs'
 import { runTermsSuite } from './terms-suite.mjs'
+import { runAccountsSuite } from './accounts-suite.mjs'
 import { runTermsMatcherSuite } from './terms-matcher-suite.mjs'
 import { runTermsEvalSuite } from './terms-eval-suite.mjs'
 import { runAndroidOrderSuite } from './android-order-suite.mjs'
@@ -202,6 +203,9 @@ await runLintSuite(helpers)
 // 不能影响正在跑的字幕。两处最容易出错的地方各配了成对断言 ——
 //   · "好表一条都不许拒"（阈值定太严会让「高通」「安卓」这种真专名进不来）；
 //   · "坏表一条都不能落盘"（部分落盘会造出"看到 ok、其实半张表没存上"的静默状态）。
+
+heading('账户与 token（密码只存哈希 / 热词表只认 token / 不能越权）')
+await runAccountsSuite(helpers)
 
 heading('用户热词对照表（校验拒绝码 / 原子落盘 / PUT 全有或全无）')
 await runTermsSuite(helpers)

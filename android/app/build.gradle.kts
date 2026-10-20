@@ -29,8 +29,10 @@ android {
     //      连接进度、校对开关两处修复也在这一版。
     // 4.6：热词表页按反馈改：单元格居中+换行、改完即可上传（实时同步）、
     //      去掉校验按钮改为自动校验（本地即时 + 电脑端防抖），补葡语列写中文的检查。
-    versionCode = 35
-    versionName = "4.6"
+    // 4.7：账户（注册 / 登录 / token）。热词表只认 token，身份来自「设置 → 账户」，
+    //      热词表页不再让用户填用户名（那等于自报身份、能改别人的表）。
+    versionCode = 36
+    versionName = "4.7"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

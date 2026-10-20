@@ -92,6 +92,11 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
      * 是因为"设备名"在日志里读起来是 `Leion Pro`，排查时分不出是谁。
      */
     private static final String KEY_USER = "termsUser";
+    /**
+     * 账户 token（登录/注册后拿到）。**热词表的身份就是它** ——
+     * 原来存的是"用户名字符串"并由客户端自报，那等于没有权限。
+     */
+    private static final String KEY_TOKEN = "accountToken";
     /** 热词表编辑框的原始文本（一行一条）—— 存下来免得每次进来都从零开始填。 */
     private static final String KEY_TERMS_DRAFT = "termsDraft";
 
@@ -793,8 +798,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         prefs.edit().putString(KEY_HOST, address).putString(KEY_SECRET, pairing).apply();
 
         client = new LanClient(address, pairing, this);
-        // 握手时把用户名报给电脑：它据此记下"这一场读哪张热词表"（docs/15 §8.3）
-        client.setUser(termsUser());
+        // 身份 = token（登录得到的）。握手时带上，电脑据此记下"这一场读哪张热词表"。
+        client.setToken(accountToken());
         client.start();
         renderConnectionCard();
     }
@@ -1673,10 +1678,180 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                 ? R.string.settings_proofread_on : R.string.settings_proofread_off);
     }
 
+    // ── 账户（注册 / 登录）：热词表的身份来源 ────────────────────────────────
+
+    private TextView settingsAccountState;
+    private TextView accountStateView;
+    private EditText accountUsernameField;
+    private EditText accountPasswordField;
+    private TextView accountTokenTitleView;
+    private TextView accountTokenView;
+    private TextView accountStatusView;
+    private View accountLogoutView;
+
+    private String accountToken() {
+        String value = prefs.getString(KEY_TOKEN, "");
+        return value == null ? "" : value.trim();
+    }
+
+    private String accountUser() {
+        String value = prefs.getString(KEY_USER, "");
+        return value == null ? "" : value.trim();
+    }
+
+    private boolean loggedIn() {
+        return accountToken().isEmpty() == false;
+    }
+
+    private void openAccountPage() {
+        View view = pushOverlay(R.layout.overlay_account);
+        accountStateView = view.findViewById(R.id.accountState);
+        accountUsernameField = view.findViewById(R.id.accountUsername);
+        accountPasswordField = view.findViewById(R.id.accountPassword);
+        accountTokenTitleView = view.findViewById(R.id.accountTokenTitle);
+        accountTokenView = view.findViewById(R.id.accountToken);
+        accountStatusView = view.findViewById(R.id.accountStatus);
+        accountLogoutView = view.findViewById(R.id.accountLogout);
+
+        view.findViewById(R.id.accountBack).setOnClickListener(v -> closeOverlay());
+        view.findViewById(R.id.accountRegister).setOnClickListener(v -> runAccountAction("register"));
+        view.findViewById(R.id.accountLogin).setOnClickListener(v -> runAccountAction("login"));
+        accountLogoutView.setOnClickListener(v -> runAccountAction("logout"));
+
+        accountUsernameField.setText(accountUser());
+        renderAccount();
+    }
+
+    /** 渲染账户页：当前是谁、token 要不要露出来、注销按钮显不显示。 */
+    private void renderAccount() {
+        boolean in = loggedIn();
+        if (accountStateView != null) {
+            accountStateView.setText(in
+                    ? getString(R.string.account_state_some, accountUser().isEmpty() ? "?" : accountUser())
+                    : getString(R.string.account_state_none));
+        }
+        if (accountTokenTitleView != null) {
+            accountTokenTitleView.setVisibility(in ? View.VISIBLE : View.GONE);
+        }
+        if (accountTokenView != null) {
+            accountTokenView.setVisibility(in ? View.VISIBLE : View.GONE);
+            if (in) accountTokenView.setText(accountToken());
+        }
+        if (accountLogoutView != null) {
+            accountLogoutView.setVisibility(in ? View.VISIBLE : View.GONE);
+        }
+        if (settingsAccountState != null) {
+            settingsAccountState.setText(in
+                    ? getString(R.string.account_state_some, accountUser().isEmpty() ? "?" : accountUser())
+                    : getString(R.string.settings_account_none));
+        }
+        if (termsAccountView != null) {
+            termsAccountView.setText(in
+                    ? getString(R.string.account_state_some, accountUser().isEmpty() ? "?" : accountUser())
+                    : getString(R.string.terms_need_login));
+        }
+    }
+
+    /** 注册 / 登录 / 注销：都要经过电脑（账户存在电脑上）。 */
+    private void runAccountAction(final String action) {
+        if (client == null) {
+            if (accountStatusView != null) accountStatusView.setText(R.string.account_need_connect);
+            return;
+        }
+        final String username = accountUsernameField == null ? "" : accountUsernameField.getText().toString().trim();
+        final String password = accountPasswordField == null ? "" : accountPasswordField.getText().toString();
+
+        if ("logout".equals(action) == false) {
+            if (username.isEmpty() || password.isEmpty()) {
+                if (accountStatusView != null) accountStatusView.setText(R.string.account_need_fields);
+                return;
+            }
+        }
+        if (accountStatusView != null) accountStatusView.setText(R.string.terms_status_working);
+
+        final LanClient current = client;
+        new Thread(() -> {
+            String status;
+            int color = R.color.brand;
+            String token = null;
+            String user = null;
+            try {
+                if ("logout".equals(action)) {
+                    current.setToken(accountToken());
+                    org.json.JSONObject result = current.authLogout();
+                    if (result.optInt("code", 0) == 200) {
+                        // 注销成功：本地也清掉（否则界面说注销了、token 还在用）
+                        prefs.edit().remove(KEY_TOKEN).apply();
+                        current.setToken("");
+                        status = "已注销这台设备的登录";
+                    } else if (result.optInt("code", 0) == 401) {
+                        // token 早就失效了：直接清本地，别让用户卡在"注销不了"
+                        prefs.edit().remove(KEY_TOKEN).apply();
+                        current.setToken("");
+                        status = "本地登录已清除（电脑上那个 token 早就失效了）";
+                    } else {
+                        status = getString(R.string.account_failed, accountError(result));
+                        color = R.color.err;
+                    }
+                } else {
+                    org.json.JSONObject result = "register".equals(action)
+                            ? current.authRegister(username, password)
+                            : current.authLogin(username, password);
+                    org.json.JSONObject json = result.optJSONObject("json");
+                    int code = result.optInt("code", 0);
+                    if (code == 200 && json != null) {
+                        token = json.optString("token", "");
+                        user = json.optString("user", username);
+                        status = getString(R.string.account_ok,
+                                ("register".equals(action) ? "注册成功：" : "登录成功：") + user);
+                    } else {
+                        status = getString(R.string.account_failed, accountError(result));
+                        color = R.color.err;
+                    }
+                }
+            } catch (Exception error) {
+                status = getString(R.string.account_failed, String.valueOf(error.getMessage()));
+                color = R.color.err;
+            }
+            final String finalStatus = status;
+            final int finalColor = color;
+            final String finalToken = token;
+            final String finalUser = user;
+            main.post(() -> {
+                if (finalToken != null && finalToken.isEmpty() == false) {
+                    prefs.edit().putString(KEY_TOKEN, finalToken).putString(KEY_USER, finalUser).apply();
+                    if (client != null) client.setToken(finalToken);
+                    if (accountPasswordField != null) accountPasswordField.setText("");
+                    renderAccount();
+                    if (termsAccountView != null) termsAccountView.setText(
+                            getString(R.string.account_state_some, finalUser));
+                } else {
+                    renderAccount();
+                }
+                if (accountStatusView != null) {
+                    accountStatusView.setText(finalStatus);
+                    accountStatusView.setTextColor(getColor(finalColor));
+                }
+            });
+        }, "account-action").start();
+    }
+
+    /** 从 `{code, json}` 里取一句能看懂的失败原因。 */
+    private static String accountError(org.json.JSONObject result) {
+        org.json.JSONObject json = result == null ? null : result.optJSONObject("json");
+        int code = result == null ? 0 : result.optInt("code", 0);
+        if (json == null) return "HTTP " + code;
+        String hint = json.optString("hint", "");
+        String error = json.optString("error", "");
+        String text = error.isEmpty() ? hint : (hint.isEmpty() ? error : error + "：" + hint);
+        return text.isEmpty() ? ("HTTP " + code) : text;
+    }
+
     // ── 热词表页（底部导航第 4 栏，表格形式）─────────────────────────────────
 
     private TextView termsCountView;
-    private EditText termsUserField;
+    /** 热词表页顶部那一行：显示"当前是哪个账户"（身份来自登录，不在这里填）。 */
+    private TextView termsAccountView;
     private LinearLayout termsRowsBox;
     private TextView termsEmptyView;
     private TextView termsStatusText;
@@ -1737,15 +1912,19 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             showTermsReport(getString(R.string.terms_status_local_ok, entries.length()), R.color.brand, null, null);
             return;
         }
+        if (loggedIn() == false) {
+            showTermsReport(getString(R.string.terms_need_login), R.color.err, null, null);
+            return;
+        }
+        client.setToken(accountToken());
         final LanClient current = client;
-        final String user = termsUserField == null ? "" : termsUserField.getText().toString().trim();
         new Thread(() -> {
             String status;
             int color = R.color.brand;
             org.json.JSONObject warnings = null;
             org.json.JSONObject rejected = null;
             try {
-                org.json.JSONObject result = current.termsValidate(user, entries);
+                org.json.JSONObject result = current.termsValidate(entries);
                 org.json.JSONObject json = result.optJSONObject("json");
                 int code = result.optInt("code", 0);
                 warnings = json;
@@ -1816,7 +1995,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         pageHost.addView(termsPage);
 
         termsCountView = termsPage.findViewById(R.id.termsCount);
-        termsUserField = termsPage.findViewById(R.id.termsUser);
+        termsAccountView = termsPage.findViewById(R.id.termsAccount);
         termsRowsBox = termsPage.findViewById(R.id.termsRows);
         termsEmptyView = termsPage.findViewById(R.id.termsEmpty);
         termsStatusText = termsPage.findViewById(R.id.termsStatus);
@@ -1824,12 +2003,6 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         termsWarnBodyView = termsPage.findViewById(R.id.termsWarnBody);
         termsRejectTitleView = termsPage.findViewById(R.id.termsRejectTitle);
         termsRejectBodyView = termsPage.findViewById(R.id.termsRejectBody);
-
-        termsUserField.setText(termsUser());
-        termsUserField.setHint(R.string.terms_user_hint);
-        termsUserField.setOnFocusChangeListener((view, hasFocus) -> {
-            if (!hasFocus) prefs.edit().putString(KEY_USER, termsUserField.getText().toString().trim()).apply();
-        });
 
         termsPage.findViewById(R.id.termsAdd).setOnClickListener(v -> showAddTermDialog());
         termsPage.findViewById(R.id.termsBatch).setOnClickListener(v -> showBatchImportDialog());
@@ -1844,9 +2017,17 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
     /** 切到这一页时：先把本地草稿画出来，再**静默拉一次电脑上的现表**（以电脑为准）。 */
     private void onTermsPageShown() {
-        if (termsUserField != null) termsUserField.setText(termsUser());
+        renderAccount();
         renderTermsTable();
-        if (client != null) runTermsAction("load");
+        if (client == null) {
+            showTermsReport(getString(R.string.terms_status_need_connect), R.color.err, null, null);
+            return;
+        }
+        if (loggedIn() == false) {
+            showTermsReport(getString(R.string.terms_need_login), R.color.err, null, null);
+            return;
+        }
+        runTermsAction("load");
     }
 
     // ── 表格渲染 ────────────────────────────────────────────────────────────
@@ -2119,8 +2300,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     }
 
     private void runTermsAction(final String action) {
-        final String user = termsUserField == null ? "" : termsUserField.getText().toString().trim();
-        prefs.edit().putString(KEY_USER, user).apply();
+        // 身份 = token（由「设置 → 账户」登录得到），不再让这一页填用户名
+        if (client != null) client.setToken(accountToken());
 
         // 上传前先跑一遍本地检查：明显不合法的直接说清楚，不发请求（也就不会白等一次往返）
         if ("upload".equals(action)) {
@@ -2135,6 +2316,10 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             showTermsReport(getString(R.string.terms_status_need_connect), R.color.err, null, null);
             return;
         }
+        if (loggedIn() == false) {
+            showTermsReport(getString(R.string.terms_need_login), R.color.err, null, null);
+            return;
+        }
         final org.json.JSONArray entries = collectTermEntries();
         showTermsReport(getString(R.string.terms_status_working), R.color.warn, null, null);
 
@@ -2146,7 +2331,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             String loadedRows = null;
             try {
                 if ("load".equals(action)) {
-                    org.json.JSONObject result = client.termsGet(user);
+                    org.json.JSONObject result = client.termsGet();
                     org.json.JSONObject json = result.optJSONObject("json");
                     int code = result.optInt("code", 0);
                     if (code != 200) {
@@ -2159,7 +2344,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                         status = getString(R.string.terms_status_loaded, count);
                     }
                 } else {
-                    org.json.JSONObject result = client.termsPut(user, entries);
+                    org.json.JSONObject result = client.termsPut(entries);
                     org.json.JSONObject json = result.optJSONObject("json");
                     int code = result.optInt("code", 0);
                     if (code == 200 && json != null && json.optBoolean("ok", false)) {
@@ -2265,6 +2450,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     }
 
     private void buildSettingsPage() {
+        // 注意：账户那一行要等 settingsPage 建好、且 showPage 时再刷一遍（见 refreshSettingsPage）
         settingsPage = LayoutInflater.from(this).inflate(R.layout.page_settings, pageHost, false);
         settingsPage.setVisibility(View.GONE);
         pageHost.addView(settingsPage);
@@ -2283,6 +2469,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         settingsPage.findViewById(R.id.settingsOutputRow).setOnClickListener(v -> openOutputSheet());
         settingsPage.findViewById(R.id.settingsGlassesRow).setOnClickListener(v -> openGlassesPreview());
         settingsPage.findViewById(R.id.settingsTypeRow).setOnClickListener(v -> promptManualText());
+        settingsAccountState = settingsPage.findViewById(R.id.settingsAccountState);
+        settingsPage.findViewById(R.id.settingsAccountRow).setOnClickListener(v -> openAccountPage());
         settingsProofreadSwitch = settingsPage.findViewById(R.id.settingsProofreadSwitch);
         settingsProofreadState = settingsPage.findViewById(R.id.settingsProofreadState);
         // 整行可点：Switch 本身只有 48dp 宽，点行更省事（和开发者开关同一套做法）
@@ -2344,6 +2532,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         paintChoice(themeDarkView, "dark".equals(themeMode));
         paintChoice(modeBilingualView, bilingual);
         paintChoice(modeTargetOnlyView, !bilingual);
+        // 账户那一行：每次进设置页都刷一遍（用户可能刚在账户页登录或注销）
+        renderAccount();
         refreshDiagnostics();
     }
 

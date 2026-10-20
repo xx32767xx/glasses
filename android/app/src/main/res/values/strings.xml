@@ -239,4 +239,23 @@
     <string name="terms_batch_done">导入了 %1$d 条</string>
     <string name="terms_status_local_invalid">这几条不能上传（改完会自动重新检查）</string>
     <string name="terms_status_local_ok">格式没问题：%1$d 条（连上电脑后会自动做完整校验）</string>
+    <!-- 账户（注册 / 登录），热词表的身份来源 -->
+    <string name="settings_account">账户</string>
+    <string name="settings_account_title">账户（热词表用）</string>
+    <string name="settings_account_none">还没登录 —— 登录后才能读写自己的热词表</string>
+    <string name="account_title">账户</string>
+    <string name="account_intro">热词表按账户区分：注册或登录之后，你只能读写自己那张表。密码只存在电脑上（加盐哈希，不存明文）。</string>
+    <string name="account_username">用户名（字母数字与 _ . -）</string>
+    <string name="account_password_hint">密码（至少 6 位）</string>
+    <string name="account_register">注册</string>
+    <string name="account_login">登录</string>
+    <string name="account_logout">注销这台设备的登录</string>
+    <string name="account_state_none">未登录</string>
+    <string name="account_state_some">已登录：%1$s</string>
+    <string name="account_token_title">当前 token（等同于密码，别外传）</string>
+    <string name="account_need_fields">用户名和密码都要填</string>
+    <string name="account_need_connect">还没连上电脑 —— 注册和登录都要经过电脑</string>
+    <string name="account_ok">成功：%1$s</string>
+    <string name="account_failed">失败：%1$s</string>
+    <string name="terms_need_login">还没登录 —— 先在「设置 → 账户」里注册或登录，再回来编辑热词表</string>
 </resources>

@@ -45,6 +45,9 @@ import { lintTranslation } from '../lib/translation-lint.mjs'
 import {
   TERMS_LIMITS, getTable, loadTerms, normalizeUser, putTable, saveActiveUser, saveTerms, validateTerms,
 } from '../lib/terms.mjs'
+import {
+  ACCOUNT_LIMITS, hasAccounts, loadAccounts, login, register, revokeToken, saveAccounts, userForToken,
+} from '../lib/accounts.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
 
@@ -446,6 +449,14 @@ export async function startRelay(rawOptions = {}) {
     windowMs: PUBLIC_LIMITS.windowMs,
     maxRequests: PUBLIC_LIMITS.maxRequestsPerMinutePerIp,
   })
+  /**
+   * 登录/注册专用的额度桶：**10 次 / 10 分钟**。
+   *
+   * <p>它和公网限流分开，而且更严 —— 目的是防"把密码试出来"，
+   * 而不是防刷屏。局域网模式下公网限流是关的，但这一条**始终生效**
+   * （密码被暴力猜中的后果，与在不在公网无关）。
+   */
+  const authLimiter = createRateLimiter({ windowMs: 10 * 60_000, maxRequests: 10 })
   /** 定期清过期窗口 —— 长期运行的服务不能让 Map 无限长。 */
   const sweepTimer = options.public === true
     ? setInterval(() => limiter.sweep(), PUBLIC_LIMITS.windowMs).unref()
@@ -502,6 +513,11 @@ export async function startRelay(rawOptions = {}) {
     termsEntries: 0,
     /** 手机侧运行时设置被改过几次（校对开关）。 */
     settingsWrites: 0,
+    /** 账户：成功次数 / 被拒次数（登录失败、token 无效都算）。 */
+    authOk: 0,
+    authRejected: 0,
+    /** 迁移期那句"还没有账户"只提示一次，别刷屏。 */
+    legacyIdentityNoted: false,
     writer: null,
     /** 写入串行化：收件箱的顺序就是字幕的顺序，不能乱 */
     writeChain: Promise.resolve(),
@@ -705,6 +721,45 @@ export async function startRelay(rawOptions = {}) {
   }
 
   /**
+   * 判断"这次请求是谁"。**唯一可信来源是 token**。
+   *
+   * <p>三条规则，把兼容与安全都写清楚（不留隐藏后门）：
+   *  ① 带了有效 token → 就是那个用户；
+   *  ② 库里**一个账户都没有** → 退回旧行为（按 `user` 参数 / `default` 分表）。
+   *     这是为了"还没注册过的机器上手机能直接用"；一旦有人注册，这条路就关掉；
+   *  ③ 库里有账户但没带 token / token 无效 → **401**，不再接受自报用户名。
+   */
+  async function resolveIdentity(request, url, bodyUser = null) {
+    const token = request.headers['x-leion-token'] ?? url.searchParams.get('token')
+    const accounts = await loadAccounts(options.dataDir)
+    if (hasAccounts(accounts)) {
+      const user = userForToken(accounts, typeof token === 'string' ? token : '')
+      if (user === null) {
+        state.authRejected += 1
+        return {
+          ok: false, status: 401, error: 'auth-required',
+          hint: '这台电脑上已经有账户了，先登录拿 token（请求头 X-Leion-Token）',
+        }
+      }
+      return { ok: true, user }
+    }
+    // 还没人注册：按旧规矩来，并**在日志里说一次**，免得以后忘了这条路还开着
+    if (state.legacyIdentityNoted !== true) {
+      state.legacyIdentityNoted = true
+      debug('[账户] 还没有任何账户 → 热词表暂时按自报用户名区分（迁移期行为）。'
+        + '在手机「设置 → 账户」注册一个之后，就必须登录才能读写热词表了。')
+    }
+    // 迁移期：旧客户端把 user 放在**请求体**里（PUT /terms），新客户端放在 query 里。
+    // 两条都接受 —— 但只在"这台机器还没有任何账户"时才走到这里。
+    const rawUser = url.searchParams.get('user') ?? bodyUser
+    const fallback = normalizeUser(rawUser)
+    if (fallback.ok !== true) {
+      return { ok: false, status: 400, error: 'bad-user', hint: fallback.error }
+    }
+    return { ok: true, user: fallback.user }
+  }
+
+  /**
    * 热词对照表的"校验 / 落盘"共用实现（`POST /terms/validate` 与 `PUT /terms`）。
    *
    * 两件事刻意分开，但**校验用同一个函数**：界面上的"预校验"和真正落盘时的校验
@@ -712,7 +767,7 @@ export async function startRelay(rawOptions = {}) {
    *
    * @param {{ write: boolean }} mode write=true 才落盘
    */
-  async function handleTermsWrite(response, request, mode) {
+  async function handleTermsWrite(response, request, url, mode) {
     let body
     try {
       body = await readBody(request, TERMS_LIMITS.maxBodyBytes)
@@ -721,11 +776,14 @@ export async function startRelay(rawOptions = {}) {
       sendAndClose(request, response, error.statusCode ?? 400, { ok: false, error: String(error.message) })
       return
     }
-    const who = normalizeUser(body.user)
-    if (who.ok !== true) {
-      send(response, 400, { ok: false, error: 'bad-user', hint: who.error })
+    // ⚠️ **身份只认 token**：请求体里的 `user` 一律不看。
+    //    原来按 `user` 分表等于没有权限 —— 改一个参数就能读写别人的表。
+    const identity = await resolveIdentity(request, url, body.user ?? null)
+    if (identity.ok !== true) {
+      send(response, identity.status, { ok: false, error: identity.error, hint: identity.hint })
       return
     }
+    const who = { ok: true, user: identity.user }
     const checked = validateTerms(body.entries)
     if (checked.ok !== true) {
       // 方案 C：一条不合法 → 整张表不落盘，并把**每一处**问题都指出来（带下标）
@@ -885,10 +943,11 @@ export async function startRelay(rawOptions = {}) {
       if (request.method === 'GET' && url.pathname === '/hello') {
         // 手机可以顺带报上"我是谁"：热词表按用户名区分（docs/15 §8.3）。
         // 报错了不拦握手 —— 连接是第一位的，用户名只影响"读哪张表"。
-        const who = normalizeUser(url.searchParams.get('user'))
-        if (who.ok === true && url.searchParams.get('user') !== null) {
-          state.termsUser = who.user
-          void saveActiveUser(options.dataDir, who.user).catch(error => {
+        // 手机可以带上 token 说明"我是谁"：优先用 token，解析不出来再看旧的 user 参数
+        const helloIdentity = await resolveIdentity(request, url)
+        if (helloIdentity.ok === true) {
+          state.termsUser = helloIdentity.user
+          void saveActiveUser(options.dataDir, helloIdentity.user).catch(error => {
             debug(`⚠️ 写 terms-active.json 失败：${error?.message ?? error}`)
           })
         }
@@ -1201,6 +1260,10 @@ export async function startRelay(rawOptions = {}) {
           audioChunks: state.audioChunks,
           audioRate: state.audioRateValue,
           audioLang: state.audioLangValue,
+          // 账户：这台电脑上有没有人注册过（手机据此决定显示"登录"还是"注册"）
+          accounts: hasAccounts(await loadAccounts(options.dataDir)),
+          authOk: state.authOk,
+          authRejected: state.authRejected,
           // 手机侧设置：校对现在是开还是关（手机端据此显示开关状态，而不是自以为）。
           settings: await readSettings(options.dataDir),
           settingsWrites: state.settingsWrites,
@@ -1210,6 +1273,71 @@ export async function startRelay(rawOptions = {}) {
           termsEntries: state.termsEntries,
           ...info(),
         })
+        return
+      }
+
+      // ── 账户：注册 / 登录 / 注销 / 我是谁 ───────────────────────────────────
+      //
+      // 为什么需要它：热词表原来靠客户端自报用户名（`?user=wu`），等于没有权限 ——
+      // 任何人改一个参数就能读写别人的表。现在：
+      //   注册/登录 → 拿 token → 之后**只认 token**，服务端从 token 反查用户。
+      // 密码用 scrypt + 每用户独立盐存哈希；token 也只存 sha256（库泄露不等于被登录）。
+      if (request.method === 'POST' && (url.pathname === '/auth/register' || url.pathname === '/auth/login')) {
+        let body
+        try {
+          body = await readBody(request, ACCOUNT_LIMITS.maxBodyBytes)
+        } catch (error) {
+          sendAndClose(request, response, error.statusCode ?? 400, { ok: false, error: String(error.message) })
+          return
+        }
+        // 同一 IP 的失败次数限制：局域网工具也值得防一下把密码试出来
+        const who = clientIp(request)
+        if (authLimiter.allow(who) === false) {
+          state.authRejected += 1
+          send(response, 429, { ok: false, error: 'too-many-attempts', hint: '密码试错太多次了，过几分钟再试' })
+          return
+        }
+        const doc = await loadAccounts(options.dataDir)
+        const isRegister = url.pathname === '/auth/register'
+        const result = isRegister
+          ? register(doc, body.username, body.password, typeof body.label === 'string' ? body.label : '')
+          : login(doc, body.username, body.password, typeof body.label === 'string' ? body.label : '')
+        if (result.ok !== true) {
+          // 失败也算一次尝试：连续试错会被上面的额度桶挡住（10 次 / 10 分钟）
+          state.authRejected += 1
+          debug(`[账户] ${isRegister ? '注册' : '登录'}失败（来自 ${who}）：${result.error}`)
+          send(response, isRegister && /已经被注册/.test(result.error) ? 409 : 401,
+            { ok: false, error: 'auth-failed', hint: result.error })
+          return
+        }
+        await saveAccounts(options.dataDir, result.doc)
+        state.authOk += 1
+        debug(`[账户] ${isRegister ? '注册' : '登录'}成功：${result.username}`)
+        send(response, 200, { ok: true, user: result.username, token: result.token })
+        return
+      }
+      if (request.method === 'POST' && url.pathname === '/auth/logout') {
+        const token = request.headers['x-leion-token'] ?? url.searchParams.get('token')
+        const doc = await loadAccounts(options.dataDir)
+        const result = revokeToken(doc, typeof token === 'string' ? token : '')
+        if (result.ok !== true) {
+          send(response, 401, { ok: false, error: 'auth-required', hint: result.error })
+          return
+        }
+        await saveAccounts(options.dataDir, result.doc)
+        debug('[账户] 已注销一个 token')
+        send(response, 200, { ok: true })
+        return
+      }
+      if (request.method === 'GET' && url.pathname === '/auth/whoami') {
+        const token = request.headers['x-leion-token'] ?? url.searchParams.get('token')
+        const doc = await loadAccounts(options.dataDir)
+        const user = userForToken(doc, typeof token === 'string' ? token : '')
+        if (user === null) {
+          send(response, 401, { ok: false, error: 'auth-required', hint: 'token 无效或已注销' })
+          return
+        }
+        send(response, 200, { ok: true, user, accounts: hasAccounts(doc) })
         return
       }
 
@@ -1253,19 +1381,20 @@ export async function startRelay(rawOptions = {}) {
       // 为什么"全有或全无"：部分落盘会造出"用户看到 ok:true、其实半张表没存上"
       // 的静默状态 —— 而我们的验收门槛是"误替换 = 0"，静默半生效正好能绕过所有判据。
       if (request.method === 'POST' && url.pathname === '/terms/validate') {
-        await handleTermsWrite(response, request, { write: false })
+        await handleTermsWrite(response, request, url, { write: false })
         return
       }
       if (request.method === 'PUT' && url.pathname === '/terms') {
-        await handleTermsWrite(response, request, { write: true })
+        await handleTermsWrite(response, request, url, { write: true })
         return
       }
       if (request.method === 'GET' && url.pathname === '/terms') {
-        const who = normalizeUser(url.searchParams.get('user'))
-        if (who.ok !== true) {
-          send(response, 400, { ok: false, error: 'bad-user', hint: who.error })
+        const identity = await resolveIdentity(request, url)
+        if (identity.ok !== true) {
+          send(response, identity.status, { ok: false, error: identity.error, hint: identity.hint })
           return
         }
+        const who = { ok: true, user: identity.user }
         const doc = await loadTerms(options.dataDir)
         const table = getTable(doc, who.user)
         send(response, 200, {
@@ -1275,7 +1404,7 @@ export async function startRelay(rawOptions = {}) {
         return
       }
 
-      send(response, 404, { ok: false, error: 'not-found', routes: ['/hello', '/say', '/audio', '/frame', '/status', '/terms', '/settings'] })
+      send(response, 404, { ok: false, error: 'not-found', routes: ['/hello', '/say', '/audio', '/frame', '/status', '/terms', '/settings', '/auth/register', '/auth/login', '/auth/logout', '/auth/whoami'] })
     })().catch(error => {
       if (!response.writableEnded) {
         send(response, 500, { ok: false, error: String(error && error.message ? error.message : error) })
