@@ -59,7 +59,6 @@ export async function runTermsSuite({ it, check, assert }) {
       [{ zh: '亮亮视野', pt: 'LLVision' }, null],            // 对照组：好条目
       [{ zh: 'X'.repeat(TERMS_LIMITS.maxTextChars + 1), pt: 'LLVision' }, 'TOO_LONG'],
       [{ zh: '亮亮\u200b视野', pt: 'LLVision' }, 'CONTROL_CHARS'],
-      [{ zh: 'LLVision', pt: '亮亮视野' }, 'LATIN_IN_ZH'],
       [{ zh: '亮亮视野', pt: 'LLVision亮' }, 'HAN_IN_PT'],
       [{ zh: '亮亮视野', pt: 'LLVision', direction: 'up' }, 'BAD_ENUM'],
       [{ zh: '亮亮视野', pt: 'LLVision', enforce: 'strict' }, 'BAD_ENUM'],
@@ -78,17 +77,53 @@ export async function runTermsSuite({ it, check, assert }) {
     }
   })
 
+  await it('中文侧写英文名**不拦**（「保留 Leion Pro」是正常需求，只给提醒）', () => {
+    const kept = validateTerms([{ zh: 'Leion Pro', pt: 'Leion Pro' }])
+    check('两侧同名原样保留 → 接受', kept.ok === true, JSON.stringify(kept.rejected))
+    check('给一条"中文侧没有汉字"的提醒',
+      kept.warnings.some(w => w.code === 'WARN_NO_HAN_ZH'), JSON.stringify(kept.warnings))
+    // 但"两侧写反"仍要拦：葡语侧出现汉字
+    const reversed = validateTerms([{ zh: 'Liangliang', pt: '亮亮视野' }])
+    check('两侧写反被拒', reversed.ok === false && reversed.rejected[0].code === 'HAN_IN_PT')
+  })
+
+  await it('别名冲突按**同一套折叠规则**查（冲突常藏在 variants / approved 里）', () => {
+    // A 的变体与 B 的 zh 撞车 → 匹配时会两个条目都命中，必须在上传时就拒
+    const clash = validateTerms([
+      { zh: '亮亮视野', pt: 'LLVision', variants: ['亮亮视野科技'] },
+      { zh: '亮亮视野科技', pt: 'LLVision Tech' },
+    ])
+    check('跨条目的变体冲突被拒', clash.ok === false && clash.rejected[0].code === 'ALIAS_CONFLICT',
+      JSON.stringify(clash.rejected))
+    const selfClash = validateTerms([{ zh: '亮亮视野', pt: 'LLVision', approved: ['llvision'] }])
+    check('同条目 pt 与 approved 仅大小写不同被判冲突',
+      selfClash.ok === false && selfClash.rejected[0].code === 'ALIAS_CONFLICT')
+  })
+
+  await it('有歧义的条目可以关掉折叠（docs/15 §5.3）', () => {
+    // secretária 与 secretaria 折叠后同一串，但它们是两个词 → 关掉折叠才能并存
+    const strict = validateTerms([{ zh: '秘书处', pt: 'secretaria' }, { zh: '秘书', pt: 'secretária', fold: false }])
+    check('关掉折叠后可以并存', strict.ok === true, JSON.stringify(strict.rejected))
+    const loose = validateTerms([{ zh: '秘书处', pt: 'secretaria' }, { zh: '秘书', pt: 'secretária' }])
+    check('不关折叠就按重复处理（宁可拦下，也不要静默互相覆盖）',
+      loose.ok === false && ['ALIAS_CONFLICT', 'DUPLICATE_SOURCE'].includes(loose.rejected[0].code),
+      JSON.stringify(loose.rejected))
+  })
+
   await it('重复与来回替换：同一源两种目标被拒、A→B 与 B→A 被拒', () => {
     const dup = validateTerms([{ zh: '亮亮视野', pt: 'LLVision' }, { zh: '亮亮视野', pt: 'Leion' }])
     check('同一源写法两个目标被拒', dup.ok === false && dup.rejected[0].code === 'DUPLICATE_SOURCE', JSON.stringify(dup.rejected))
     const exact = validateTerms([{ zh: '亮亮视野', pt: 'LLVision' }, { zh: '亮亮视野', pt: 'LLVision' }])
     check('完全重复被拒', exact.ok === false && exact.rejected[0].code === 'DUPLICATE_SOURCE')
-    const cycle = validateTerms([{ zh: '亮亮视野', pt: 'LLVision' }, { zh: 'LLVision', pt: '亮亮视野' }])
-    // 第二条会先被 LATIN_IN_ZH 拦下（中文侧没有汉字），所以这里验的是"它进不去"，
-    // 而不是一定报 CYCLE —— 两条路径都算正确，但不能静默放行。
-    check('来回替换的两条不会被同时接受',
-      cycle.ok === false && ['CYCLE', 'LATIN_IN_ZH'].includes(cycle.rejected[0].code),
-      JSON.stringify(cycle.rejected))
+    // 来回替换：这里必须让两侧**写法上能通过字符/长度检查**才测得到 CYCLE ——
+    // 中文↔葡语互倒会先被 HAN_IN_PT 拦下（"葡语侧含汉字"），那是另一条更早的闸。
+    const cycle = validateTerms([{ zh: 'Leion', pt: 'Lexcon' }, { zh: 'Lexcon', pt: 'Leion' }])
+    check('A→B 与 B→A 被拒', cycle.ok === false && cycle.rejected[0].code === 'CYCLE', JSON.stringify(cycle.rejected))
+    // 两侧写反的那种，仍然必须进不来（走的是 HAN_IN_PT）
+    const reversed = validateTerms([{ zh: '亮亮视野', pt: 'LLVision' }, { zh: 'LLVision', pt: '亮亮视野' }])
+    check('写反的两条不会被同时接受',
+      reversed.ok === false && ['CYCLE', 'HAN_IN_PT'].includes(reversed.rejected[0].code),
+      JSON.stringify(reversed.rejected))
   })
 
   await it('大小写/重音折叠后算同一个词（docs/15 §5.3 方案 D）', () => {
