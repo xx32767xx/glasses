@@ -30,6 +30,7 @@ import { runBenchSuite } from './bench-suite.mjs'
 import { runLintSuite } from './lint-suite.mjs'
 import { runTermsSuite } from './terms-suite.mjs'
 import { runTermsMatcherSuite } from './terms-matcher-suite.mjs'
+import { runTermsEvalSuite } from './terms-eval-suite.mjs'
 import { runAndroidOrderSuite } from './android-order-suite.mjs'
 import { runAsrPackSuite } from './asr-pack-suite.mjs'
 import { runLive } from './live/run.mjs'
@@ -212,6 +213,14 @@ await runTermsSuite(helpers)
 
 heading('热词匹配器（文件边界 / 实体重叠 / 中文边界 / 折叠 / 幂等 / 方向）')
 await runTermsMatcherSuite(helpers)
+
+// ── 7d4. 热词验收集与评分器（阶段 2.5）──────────────────────────────────────
+// 测的是**尺子本身**：验收集的卫生检查会不会真的报错、评分器能不能把
+// "缺失 / 写法错 / 保留中文 / 合法省略 / 可疑改动"分开。
+// 这五个数一旦混在一起，"该修哪里"就再也看不出来了。
+
+heading('热词验收集与评分器（三类句子 / 实体提及口径 / 五类结果分得开）')
+await runTermsEvalSuite(helpers)
 
 // ── 7e. 识别测试包（"这是朗读还是真实口语"这类标签）─────────────────────────
 // 这一节的由来很具体：测试包的语体标签原来是**猜**的，新语料一律被标成"朗读"；

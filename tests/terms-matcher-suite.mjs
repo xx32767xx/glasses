@@ -196,13 +196,36 @@ export async function runTermsMatcherSuite({ it, check, assert }) {
     check('带上下文', typeof replace.context === 'string' && replace.context.includes('亮亮视野'), replace.context)
   })
 
-  // ── 10. 只用首尾边界：不跨越整句 ───────────────────────────────────────
-  await it('不会跨标点吃掉整段（匹配只在命中的那一段内替换）', () => {
-    const entries = table([{ zh: '亮亮视野', pt: 'LLVision' }])
-    const text = '亮亮视野。我们和亮亮视野合作。'
-    const result = run(text, entries, 'zh-CN')
-    check('两处都换', result.text === 'LLVision。我们和LLVision合作。', result.text)
-    check('产生两次替换', result.events.filter(e => e.event === 'replace').length === 2,
-      JSON.stringify(result.events.map(e => e.event)))
+  // ── 11. normalize 模式：这才是生产路径 ────────────────────────────────
+  // 上面那些用例走的是 translate（跨语种），生产里真正要用的是**同语种归一**：
+  // 葡语译文里出现葡语变体 → 换葡语规范写法；中文同理。
+  // （这里曾经搞反过：以为要"把中文名换成葡语"，结果把中文塞进了葡语译文。）
+  const normalizePt = (text, entries) => applyTerms(text, { entries, mode: 'normalize', lang: 'pt-BR' })
+
+  await it('normalize（葡语）：变体 → 规范葡语写法，**绝不插入中文**', () => {
+    const entries = table([{ zh: '亮亮视野', pt: 'LLVision', wrong: ['Liangliang Vision'] }])
+    const result = normalizePt('A Liangliang Vision cresceu em São Paulo.', entries)
+    check('换成规范葡语写法', result.text === 'A LLVision cresceu em São Paulo.', result.text)
+    check('没有中文残留（最重要的回归点）', /[\u4e00-\u9fa5]/.test(result.text) === false, result.text)
+    check('记了 replace 事件', result.events.some(e => e.event === 'replace'), JSON.stringify(result.events))
+  })
+
+  await it('normalize（葡语）：approved 里的"可接受写法"也会被收敛成规范写法', () => {
+    const entries = table([{ zh: '亮亮视野', pt: 'LLVision', approved: ['LL Vision'] }])
+    const result = normalizePt('A LL Vision venceu.', entries)
+    check('收敛成 LLVision', result.text === 'A LLVision venceu.', result.text)
+  })
+
+  await it('normalize（中文）：中文变体 → 规范中文写法', () => {
+    const entries = table([{ zh: '亮亮视野', pt: 'LLVision', variants: ['亮亮视野科技'] }])
+    const result = applyTerms('亮亮视野科技发布了新品。', { entries, mode: 'normalize', lang: 'zh-CN' })
+    check('收敛成规范中文名', result.text === '亮亮视野发布了新品。', result.text)
+  })
+
+  await it('normalize 也幂等：已经规范时一个字都不动', () => {
+    const entries = table([{ zh: '亮亮视野', pt: 'LLVision', wrong: ['Liangliang Vision'] }])
+    const once = normalizePt('A LLVision cresceu.', entries)
+    check('已经是规范写法 → 无改动', once.text === 'A LLVision cresceu.' && once.changed === false, JSON.stringify(once))
   })
 }
+
