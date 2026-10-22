@@ -32,6 +32,7 @@ import { runTermsSuite } from './terms-suite.mjs'
 import { runAccountsSuite } from './accounts-suite.mjs'
 import { runTermsMatcherSuite } from './terms-matcher-suite.mjs'
 import { runTermsWatchSuite } from './terms-watch-suite.mjs'
+import { runRescueSuite } from './rescue-suite.mjs'
 import { runTermsEvalSuite } from './terms-eval-suite.mjs'
 import { runDiscoverSuite } from './discover-suite.mjs'
 import { runAndroidOrderSuite } from './android-order-suite.mjs'
@@ -226,6 +227,13 @@ await runTermsMatcherSuite(helpers)
 
 heading('热词观测（提到了但没写出规范写法 / 边界 / 方向 / 空输入）')
 await runTermsWatchSuite(helpers)
+
+// ── 7d3.6. 热词临时修正（方向一实验，默认关）──────────────────────────────
+// 只替换"可验证的片段"：像同一个名字被写错才换；译名/缩写/泛化一律拒绝（交给别名表）。
+// 人工标注集上的实测：8 改对 / 0 改错（见 docs/15 §18）。
+
+heading('热词临时修正（闸门：像不像 / 串台 / 长度 / 原样 / 已规范）')
+await runRescueSuite(helpers)
 
 // ── 7d4. 热词验收集与评分器（阶段 2.5）──────────────────────────────────────
 // 测的是**尺子本身**：验收集的卫生检查会不会真的报错、评分器能不能把

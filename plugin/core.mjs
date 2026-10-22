@@ -108,6 +108,26 @@ export const CONFIG_DEFAULTS = {
    * <p>`'off'` 时行为与加这个功能之前逐字一致（可回滚）。
    */
   termsWatch: 'on',
+  /**
+   * 热词临时修正（方向一实验，**默认关**）：观测到"提到了名字、译文没写出规范写法"时，
+   * 空闲时问一次模型"这个名字在这句里写成了什么"，只在**片段可验证**时把那一小段换成规范写法。
+   *
+   * <p>三条硬约束（用户定的，写在配置旁边免得以后忘了）：
+   *   · **不把"校对/下一帧把它改回来"当撤销依据** —— 两个机制不一致只能说明冲突，
+   *     不能证明谁正确；所以本功能不监听、不撤销，先落地的那个生效，后到的按"过期"丢弃；
+   *   · **绑定字幕帧与版本号**：结果回来时必须还是**同一帧**（displaySeq 未变 + 帧对象未换），
+   *     否则丢弃 —— 避免修错对象（"最后一句"本身一直在变）；
+   *   · 用户已经读到的错误不可能被"修对"完全消除影响，只能少一条。
+   *
+   * <p>只替换**可验证的片段**：答案必须原样出现在译文里、长度/字数有上限、
+   * 与规范写法共享足够多字符（看起来是同一个名字被写错，而不是被泛化成"这家公司"），
+   * 且不夹带别的表内名字。任何一关不过 → 拒绝（宁可不改，也不改坏）。
+   */
+  termsRescue: 'off',
+  /** 每场最多问几次（防"表配错 → 每句都问"）。 */
+  termsRescueLimit: 20,
+  /** 结果超过这个年龄就丢：屏幕早换页了。 */
+  termsRescueMaxAgeMs: 8000,
 
   /**
    * 大模型校对（讯飞那种"两遍"）：第一遍**快速出译文并立刻上屏**，
@@ -221,6 +241,15 @@ export function validateConfig(raw) {
   }
   if (!['on', 'off'].includes(config.termsWatch)) {
     throw new Error(`leion-pro: termsWatch 只能是 'on' / 'off'，收到 ${JSON.stringify(config.termsWatch)}`)
+  }
+  if (!['on', 'off'].includes(config.termsRescue)) {
+    throw new Error(`leion-pro: termsRescue 只能是 'on' / 'off'，收到 ${JSON.stringify(config.termsRescue)}`)
+  }
+  if (!Number.isInteger(config.termsRescueLimit) || config.termsRescueLimit <= 0) {
+    throw new Error(`leion-pro: termsRescueLimit 必须是正整数，收到 ${JSON.stringify(config.termsRescueLimit)}`)
+  }
+  if (!Number.isInteger(config.termsRescueMaxAgeMs) || config.termsRescueMaxAgeMs <= 0) {
+    throw new Error(`leion-pro: termsRescueMaxAgeMs 必须是正整数，收到 ${JSON.stringify(config.termsRescueMaxAgeMs)}`)
   }
   if (config.inboxPath !== '') {
     if (!Number.isInteger(config.inboxPollMs) || config.inboxPollMs < 100) {
@@ -1041,6 +1070,103 @@ export function detectTermsMiss(source, text, entries, from, to) {
   return events
 }
 
+/**
+ * 在文本里定位一个"片段"的**原始下标区间**（折叠 + 去空格，与匹配器同一套口径）。
+ *
+ * <p>为什么需要它：临时修正必须**只换那一小段**，不能像校对那样让模型重写整句
+ * （重写整句 = 把"可能改坏一句"的风险又请回来）。所以先定位、再手工拼回。
+ *
+ * @returns {{ start: number, end: number } | null} `null` = 原文里找不到这个片段
+ */
+export function locateTermSpan(text, needle) {
+  const src = String(text)
+  const foldedNeedle = foldForTerms(String(needle)).replace(/\s+/g, '')
+  if (foldedNeedle === '') return null
+  const compact = compactFold(src)
+  const at = compact.compact.indexOf(foldedNeedle)
+  if (at < 0) return null
+  const start = compact.map[at]
+  const end = compact.map[at + foldedNeedle.length - 1]
+  if (start === undefined || end === undefined) return null
+  return { start, end: end + 1 }
+}
+
+/** 两个串的字符二元组重合度（Dice）：用来判断"像不像同一个名字被写错"。 */
+export function sharedBigram(a, b) {
+  const left = foldForTerms(String(a)).replace(/\s+/g, '')
+  const right = foldForTerms(String(b)).replace(/\s+/g, '')
+  if (left.length < 2 || right.length < 2) return 0
+  const grams = new Map()
+  for (let index = 0; index < left.length - 1; index += 1) {
+    const gram = left.slice(index, index + 2)
+    grams.set(gram, (grams.get(gram) ?? 0) + 1)
+  }
+  let rightTotal = 0
+  let shared = 0
+  for (let index = 0; index < right.length - 1; index += 1) {
+    rightTotal += 1
+    const gram = right.slice(index, index + 2)
+    const available = grams.get(gram) ?? 0
+    if (available > 0) {
+      shared += 1
+      grams.set(gram, available - 1)
+    }
+  }
+  return rightTotal === 0 ? 0 : (2 * shared) / ((left.length - 1) + rightTotal)
+}
+
+/**
+ * 临时修正的**全部闸门**（纯函数）：给"草案、模型答案、规范写法、其它条目"，决定改不改。
+ *
+ * 任何一关不过就拒绝 —— 宁可少改一条，也不改坏一句。这是方向一实验的核心。
+ *
+ * 闸门（顺序即成本，先便宜的）：
+ *   ① 答案非空、不是规范写法本身（折叠后不同）；
+ *   ② 字数/长度上限（防止模型回半句）；
+ *   ③ 答案必须**原样出现在草案里**（verbatim；折叠/空格容忍）；
+ *   ④ 与规范写法共享足够多字符（≥ 0.25）—— 保证是"同一个名字被写错"，而不是"被泛化成这家公司"
+ *      （`这家公司`、`Beijing → Pequim` 这类**语义/译名选择**不在这里修，交给别名表）；
+ *   ⑤ 答案里不能夹带别的表内名字（防串台）；
+ *   ⑥ 拼回后的句子要过格式验收（行数/列数）。
+ *
+ * @returns {{ ok: true, text: string, from: string, to: string, entry: object } | { ok: false, reason: string }}
+ */
+export function planRescue({ draft, answer, canonical, entries, targetZh, cols, lines }) {
+  const text = String(draft === undefined || draft === null ? '' : draft)
+  const raw = String(answer === undefined || answer === null ? '' : answer).trim()
+  const canon = String(canonical === undefined || canonical === null ? '' : canonical)
+  if (text === '' || raw === '') return { ok: false, reason: '空输入' }
+  if (foldForTerms(raw) === foldForTerms(canon)) return { ok: false, reason: '与规范写法相同' }
+  const words = raw.split(/\s+/).filter(word => word !== '')
+  if (words.length > 6 || raw.length > 40) return { ok: false, reason: '片段太长（可能是一整句）' }
+  const span = locateTermSpan(text, raw)
+  if (span === null) return { ok: false, reason: '片段没有原样出现在译文里' }
+  if (sharedBigram(raw, canon) < 0.25) return { ok: false, reason: '片段与规范写法差别太大（疑似泛化或译名不同）' }
+  // ⑤ 不得夹带别的表内名字
+  for (const other of entries) {
+    if (other === null || typeof other !== 'object') continue
+    if (other.pt === canon || other.zh === canon) continue
+    const forms = targetZh
+      ? [other.zh, ...(other.variants ?? [])]
+      : [other.pt, ...(other.approved ?? [])]
+    const hitOther = forms.some(form => typeof form === 'string' && form !== ''
+      && mentionsForm(raw, form, targetZh, other.fold !== false, other.strictBoundary === true))
+    if (hitOther) return { ok: false, reason: '片段里夹带了别的名字（串台）' }
+  }
+  const replaced = text.slice(0, span.start) + canon + text.slice(span.end)
+  // ⑥ 格式验收：与校对共用同一道闸，避免"行数/列数放不下"的修正上屏
+  if (typeof cols === 'number' && typeof lines === 'number') {
+    const problem = revisionProblem(text, replaced, cols, lines)
+    if (problem !== null) return { ok: false, reason: '格式验收不过：' + problem }
+  }
+  return {
+    ok: true,
+    text: replaced,
+    from: text.slice(span.start, span.end),
+    to: canon,
+  }
+}
+
 export function createInterpreter(ctx, rawConfig, deps) {
   const config = validateConfig(rawConfig)
   if (deps === undefined || deps === null || deps.policy === undefined) {
@@ -1071,7 +1197,11 @@ export function createInterpreter(ctx, rawConfig, deps) {
     /** 校对统计。字段名直说结果，便于在自检和日志里一眼看出"校对到底有没有在干活"。 */
     proofread: { enqueued: 0, settled: 0, fixed: 0, same: 0, rejected: 0, dropped: 0, failed: 0, lastNote: null },
     /** 热词归一（docs/15 §7.1）：用了几条表、替换/命中/边界跳过各几次。 */
-    terms: { enabled: false, user: null, entries: 0, replace: 0, hit: 0, boundarySkip: 0, watch: 0, lastNote: null },
+    terms: {
+      enabled: false, user: null, entries: 0, replace: 0, hit: 0, boundarySkip: 0, watch: 0, lastNote: null,
+      /** 热词临时修正（方向一实验）：问了几次、改了几次、拒了几次、丢了几次。 */
+      rescue: { asked: 0, applied: 0, rejected: 0, dropped: 0, failed: 0, lastNote: null },
+    },
     /** 最近几句（原文+译文），给校对当上下文用。只留很少几条，避免把提示词撑大。 */
     recent: [],
   }
@@ -1490,6 +1620,166 @@ export function createInterpreter(ctx, rawConfig, deps) {
     }
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // 热词临时修正（方向一实验，docs/15 §18）
+  //
+  // 只在**观测到**"提到了名字、译文却没写出规范写法"之后才问模型：
+  // "这个名字在这句里写成了什么？" —— 拿到片段后走 planRescue 的全部闸门，
+  // 通过才把**那一小段**换成规范写法（不是让模型重写整句）。
+  //
+  // 三条约束（用户定的）：
+  //   ① 不把"校对/下一帧把它改回来"当撤销依据：不监听、不撤销，先落地者生效，
+  //      后到者按"过期"丢弃（displaySeq 变化 = 屏幕已经不是那一帧了，与"谁对"无关）；
+  //   ② 绑定字幕帧与版本：结果回来时必须 displaySeq 未变 **且** lastFrame 还是当初那一帧；
+  //   ③ 用户已经读到的错误无法完全消除影响 —— 只能把后续同一句的显示改对。
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /** 热词临时修正的待办队列（只留最新一条：屏幕上的"最后一句"只有一条）。 */
+  const rescueQueue = []
+  let rescuing = false
+
+  function rescueEnabled() {
+    if (config.terms !== 'on' || config.termsWatch !== 'on' || config.termsRescue !== 'on') return false
+    return state.terms.rescue.asked < config.termsRescueLimit
+  }
+
+  /** 把一句刚上屏的译文排进临时修正队列（只有观测到漏写时才会被调用）。 */
+  function enqueueRescue(item) {
+    if (rescueEnabled() === false) return false
+    rescueQueue.length = 0          // 只有"最后一句"有意义，新的顶掉旧的
+    rescueQueue.push(item)
+    return true
+  }
+
+  /** 从模型回答里抽出片段（容忍引号/句号；NONE → null）。 */
+  function parseRescueAnswer(raw) {
+    let text = String(raw === undefined || raw === null ? '' : raw).trim()
+    for (let pass = 0; pass < 4; pass += 1) {
+      const before = text
+      text = text
+        .replace(/^['"“”`「『（(]+/, '')
+        .replace(/[。.；;，,、!?！？]+$/, '')
+        .replace(/['"“”`」』）)]+$/, '')
+        .trim()
+      if (text === before) break
+    }
+    if (text === '' || /^NONE$/i.test(text)) return null
+    return text
+  }
+
+  /**
+   * 做一次临时修正。返回是否真的做了（调用方据此决定要不要继续。
+   *
+   * 与 `runOneProofread` 一样只在**空闲**时调用；一次只做一个。
+   */
+  async function runOneRescue() {
+    if (rescuing || rescueEnabled() === false) return false
+    const item = rescueQueue.shift()
+    if (item === undefined) return false
+    // 太老 / 已经不是那一帧：直接丢（与"谁对"无关，纯粹是过期）
+    if (Date.now() - item.at > config.termsRescueMaxAgeMs
+      || state.displaySeq !== item.seq || state.lastFrame !== item.draftFrame) {
+      state.terms.rescue.dropped += 1
+      state.terms.rescue.lastNote = '结果回来时屏幕已不是那一句，丢弃'
+      return true
+    }
+
+    rescuing = true
+    try {
+      const llm = ctx.get('llm')
+      const route = await resolveRoute(llm)
+      if (route.ok !== true) {
+        state.terms.rescue.failed += 1
+        state.terms.rescue.lastNote = route.failure
+        return true
+      }
+      state.callSeq += 1
+      const targetZh = String(item.to).toLowerCase().startsWith('zh')
+      const canonical = targetZh ? item.entry.zh : item.entry.pt
+      const system = '你在做术语片段核对。只输出片段本身或 NONE，不要解释。'
+      const prompt = [
+        item.to && targetZh ? '下面是一句葡语和它的中文译文。' : '下面是一句中文和它的葡语译文。',
+        '',
+        '原文：' + item.source,
+        '译文：' + item.draft,
+        '要核对的名字：' + item.entry.zh + '（规范写法：' + canonical + '）',
+        '',
+        '请找出译文里实际写这个名字的那一段文字（原样抄写，含冠词也可以）；',
+        '如果译文里根本没有它、或写成了"这家公司/这些眼镜"这类泛称，只回答 NONE。',
+      ].join('\n')
+      const messages = [{
+        id: 'leion-r' + state.callSeq,
+        role: 'user',
+        content: [{ type: 'text', text: prompt }],
+        source: { kind: 'user' },
+      }]
+      const result = await runStream(llm, {
+        provider: route.providerId,
+        model: route.modelId,
+        system,
+        messages,
+        maxTokens: 40,
+        temperature: 0,
+      }, undefined)
+      if (result.ok !== true) {
+        state.terms.rescue.failed += 1
+        state.terms.rescue.lastNote = '临时修正失败（已忽略）：' + result.failure
+        return true
+      }
+      state.terms.rescue.asked += 1
+      const answer = parseRescueAnswer(result.text)
+      if (answer === null) {
+        state.terms.rescue.rejected += 1
+        state.terms.rescue.lastNote = '回答 NONE（没有可替换的片段）'
+        return true
+      }
+      const plan = planRescue({
+        draft: item.draft,
+        answer,
+        canonical,
+        entries: termEntries,
+        targetZh,
+        cols: config.cols,
+        lines: config.lines,
+      })
+      if (plan.ok !== true) {
+        state.terms.rescue.rejected += 1
+        state.terms.rescue.lastNote = '临时修正被闸门拒绝：' + plan.reason
+        return true
+      }
+      // 关键：模型调用回来后**再**确认一次屏幕（调用期间可能已经出了下一句）。
+      if (state.displaySeq !== item.seq || state.lastFrame !== item.draftFrame) {
+        state.terms.rescue.dropped += 1
+        state.terms.rescue.lastNote = '修正期间屏幕已换页，丢弃（避免修错对象）'
+        return true
+      }
+      await logTermsEvents([{ event: 'rescue', id: item.entry.id, from: plan.from, to: plan.to }], 'final')
+      const frame = buildFrame({
+        text: plan.text, speaker: item.speaker, lang: item.to,
+        source: item.source, sourceLang: item.from,
+      })
+      await sendRaw(frame)
+      state.lastGoodFrame = frame
+      const last = state.frames.length - 1
+      if (last >= 0 && state.frames[last] === item.draftFrame) {
+        state.frames[last] = frame
+      } else {
+        state.frames.push(frame)
+        if (state.frames.length > HISTORY_CAP) state.frames.shift()
+      }
+      state.terms.rescue.applied += 1
+      state.terms.rescue.lastNote = '改了：' + plan.from + ' → ' + plan.to
+      console.log('[leion-pro] ✎ 术语修正：' + plan.from + ' → ' + plan.to)
+      return true
+    } catch (error) {
+      state.terms.rescue.failed += 1
+      state.terms.rescue.lastNote = '临时修正抛异常（已忽略）：' + String(error && error.message ? error.message : error)
+      return true
+    } finally {
+      rescuing = false
+    }
+  }
+
   /** 解析要用的 provider / model 路由，解析不出来时给出能照着做的报错。 */
   async function resolveRoute(llm) {
     const providers = llm.listProviders()
@@ -1780,6 +2070,9 @@ export function createInterpreter(ctx, rawConfig, deps) {
         // 一次只做一个（proofreading 标志在 runOneProofread 里管）。
         if (queue.length === 0 && !state.translating) {
           await runOneProofread()
+          // 临时修正与校对同一个空闲窗口：都不占"下一句的初译"。
+          // 两者不会互相撤销 —— 先落地的那个生效，后到的按"过期"丢弃（docs/15 §18）。
+          await runOneRescue()
         }
       })()
     }, config.inboxPollMs)
@@ -2115,6 +2408,24 @@ export function createInterpreter(ctx, rawConfig, deps) {
         at: Date.now(),
         context: previous !== null && previous.to === to ? previous : null,
       })
+      // ★ 热词临时修正（方向一实验，docs/15 §18）：只有**观测到漏写**时才排队；
+      //   空闲时问一次"这个名字写成了什么"，通过闸门才把那一小段换成规范写法。
+      if (missed.length > 0 && rescueEnabled()) {
+        const entry = termEntries.find(candidate => candidate.id === missed[0].id)
+        if (entry !== undefined) {
+          enqueueRescue({
+            source,
+            from,
+            to,
+            draft: normalized.text,
+            draftFrame: finalFrame,
+            seq: state.displaySeq,
+            at: Date.now(),
+            speaker: displaySpeaker,
+            entry,
+          })
+        }
+      }
       state.recent.push({ source, translation: normalized.text, to })
       if (state.recent.length > 4) state.recent.shift()
 

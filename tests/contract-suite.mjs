@@ -816,6 +816,87 @@ export async function runContractSuite(adapter, { it, check, assert }) {
     await box.tools.get('leion_inbox').execute({ action: 'stop' })
   })
 
+  await it('热词临时修正（方向一实验）：空闲时问一次、闸门通过才换那一小段', async () => {
+    const store = new Map()
+    const path = inboxPathOf('rescue.jsonl')
+    const termsPath = inboxPathOf('rescue.json')
+    const termsActivePath = inboxPathOf('rescue-active.json')
+    const sinkPath = inboxPathOf('rescue-bus.json')
+    store.set(termsPath, JSON.stringify({ version: 1, tables: { test: { entries: [
+      { id: 'e1', zh: '亮亮视野', pt: 'LLVision', approved: ['LLVision'] },
+    ] } } }))
+    store.set(termsActivePath, JSON.stringify({ user: 'test' }))
+    // 翻译返回"写错一点点的名字"（LLVisão）；被问"写成了什么"时原样回答 LLVisão
+    const llm = {
+      calls: [],
+      listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
+      listModels: async () => [{ id: 'deepseek-chat' }],
+      stream(options) {
+        this.calls.push(options)
+        const isRescue = String(options.system ?? '').includes('术语片段核对')
+        const text = isRescue ? 'LLVisão' : 'A LLVisão colabora com a nossa equipe.'
+        return (async function* () {
+          yield { type: 'text-delta', index: 0, text }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        })()
+      },
+    }
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: {
+        transport: 'file', sinkPath,
+        inboxPath: path, inboxPollMs: 100, proofread: 'off',
+        termsPath, termsActivePath, termsRescue: 'on',
+      },
+    })
+    store.set(path, '我们和亮亮视野合作。\n')
+    const applied = await waitFor(async () =>
+      (await box.tools.get('leion_inbox').execute({ action: 'status' })).terms.rescue.applied >= 1)
+    check('临时修正执行了', applied)
+    const status = await box.tools.get('leion_inbox').execute({ action: 'status' })
+    check('只问了一次', status.terms.rescue.asked === 1, JSON.stringify(status.terms.rescue))
+    const frame = JSON.parse(store.get(sinkPath))
+    check('只换了那一小段（其余逐字不动）', frame.text === 'A LLVision colabora com a nossa equipe.', frame.text)
+    // 只调了两次模型：初译 + 一次修正（没有整句重写）
+    check('只多了一次模型调用（不做整句重写）', llm.calls.length === 2, String(llm.calls.length))
+    await box.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
+  await it('热词临时修正：结果回来时屏幕已换句 → 丢弃（避免修错对象）', async () => {
+    const store = new Map()
+    const path = inboxPathOf('rescue-stale.jsonl')
+    const termsPath = inboxPathOf('rescue-stale.json')
+    store.set(termsPath, JSON.stringify({ version: 1, tables: { default: { entries: [
+      { id: 'e1', zh: '亮亮视野', pt: 'LLVision', approved: ['LLVision'] },
+    ] } } }))
+    const llm = {
+      listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
+      listModels: async () => [{ id: 'deepseek-chat' }],
+      stream(options) {
+        const isRescue = String(options.system ?? '').includes('术语片段核对')
+        const text = isRescue ? 'LLVisão' : 'A LLVisão colabora com a nossa equipe.'
+        return (async function* () {
+          yield { type: 'text-delta', index: 0, text }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        })()
+      },
+    }
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: { inboxPath: path, inboxPollMs: 100, proofread: 'off', termsRescue: 'on', termsPath },
+    })
+    // 两句话一起进来：第一句的修正回来时，屏幕上已经是第二句了
+    store.set(path, '我们和亮亮视野合作。\n今天的会议改到下午三点。\n')
+    const dropped = await waitFor(async () => {
+      const status = await box.tools.get('leion_inbox').execute({ action: 'status' })
+      return status.terms.rescue.dropped >= 1
+    })
+    check('结果被丢弃', dropped)
+    const status = await box.tools.get('leion_inbox').execute({ action: 'status' })
+    check('没有把修正用到错的句子上', status.terms.rescue.applied === 0, JSON.stringify(status.terms.rescue))
+    await box.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
   await it('热词归一可回滚：terms=off 时即使有表也不改字', async () => {
     const store = new Map()
     const path = inboxPathOf('terms-off.jsonl')
