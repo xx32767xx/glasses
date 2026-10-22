@@ -78,6 +78,12 @@ HALLUCINATION_SAMPLES = (
     # 一段几乎没内容的 2.0 秒碎片（电平 0.0359）被识别成「谢谢观看,下次见!」，
     # 而它当时混过了这道闸，直接当字幕发了出去 —— 假字幕比没有字幕糟得多。
     "谢谢观看",
+    # 2026-10-22 实测逮到的另一族：安静音频上 Whisper 吐出了**影视上传水印**
+    # 「优优独播剧场——YoYo Television Series Exclusive」（电平只有 0.0080，接近静音）。
+    # 这行水印在原视频里是常驻的，训练数据里出现得极多，于是静音时被"复读"出来。
+    # 它连英文名一起吐出来了，翻译模型再把它翻成「O que significa YoYo …」——
+    # 用户根本没说过这些字。所以把这段水印（中英两侧）都钉进幻听表。
+    "优优独播剧场", "YoYo Television Series Exclusive", "独播剧场",
     "amara.org", "legendas", "subtitles by", "subscribe",       # 葡/英常见幻听
 )
 
