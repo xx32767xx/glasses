@@ -11,7 +11,7 @@
  *   · 不记：`高通` 在 `高通量` 这种中文边界里（与匹配器同一套规则）；
  *   · 不记：方向不符（条目只做 zh→pt，却在 pt→zh 的句子上出现）。
  */
-import { detectTermsMiss } from '../plugin/core.mjs'
+import { detectTermsMiss, proofreadKeptNames } from '../plugin/core.mjs'
 import { validateTerms } from '../lib/terms.mjs'
 
 const ENTRIES = validateTerms([
@@ -67,5 +67,21 @@ export async function runTermsWatchSuite({ it, check }) {
     check('空原文', detectTermsMiss('', 'X', ENTRIES, 'zh-CN', 'pt-BR').length === 0)
     check('空译文', detectTermsMiss('我们和亮亮视野合作。', '', ENTRIES, 'zh-CN', 'pt-BR').length === 0)
     check('空表', detectTermsMiss('我们和亮亮视野合作。', 'X', [], 'zh-CN', 'pt-BR').length === 0)
+  })
+
+  await it('4b 强制执行闸：初稿里正确的规范写法，校对结果里消失 → 拦', () => {
+    // 实测：校对把 "óculos LLVision" 改成 "óculos Leion"、或把名字换掉/删掉。
+    // 初稿里已经正确的规范写法消失了 → 这次校对整条丢弃。
+    const draft = 'O time da LLVision disse: óculos LLVision.'
+    check('规范写法被换掉 → 拦',
+      proofreadKeptNames('O time da LLVision disse.', 'O time da empresa disse.', ENTRIES, false) !== null)
+    check('规范写法被删掉 → 拦',
+      proofreadKeptNames(draft, 'O time disse: óculos.', ENTRIES, false) !== null)
+    check('原样保留 → 不拦',
+      proofreadKeptNames(draft, 'O time da LLVision falou: óculos LLVision.', ENTRIES, false) === null)
+    // 校对把"未登记变体"换成规范写法是**正确方向**，初稿里没有规范写法，这道闸不拦
+    check('把变体改成规范写法（方向对）→ 不拦',
+      proofreadKeptNames('O time da Liangliang Vision.', 'O time da LLVision.', ENTRIES, false) === null)
+    check('空输入 → 不拦', proofreadKeptNames('', 'x', ENTRIES, false) === null)
   })
 }
