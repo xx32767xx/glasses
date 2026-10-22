@@ -1152,6 +1152,48 @@ export async function runContractSuite(adapter, { it, check, assert }) {
     await tools.get('leion_inbox').execute({ action: 'stop' })
   })
 
+  await it('校对**动了专名** → 整条丢弃（4b 强制执行闸，屏幕保持初稿）', async () => {
+    // 实测：校对提示词已写"专名不由你负责"，模型仍会把名字换掉/删掉。
+    // 这道闸的兜底是"初稿里正确的规范写法，校对结果里不许消失"。
+    // 方向选 pt→zh：目标语种是中文，初稿里出现中文规范写法「亮亮视野」，
+    // 校对把它换成"这家公司" → 必须丢弃。
+    const store = new Map()
+    const path = inboxPathOf('proofread-name.jsonl')
+    const termsPath = inboxPathOf('proofread-name-terms.json')
+    const sinkPath = inboxPathOf('proofread-name-bus.json')
+    store.set(termsPath, JSON.stringify({ version: 1, tables: { default: { entries: [
+      { id: 'e1', zh: '亮亮视野', pt: 'LLVision', approved: ['LLVision'] },
+    ] } } }))
+    const llm = {
+      listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
+      listModels: async () => [{ id: 'deepseek-chat' }],
+      stream(options) {
+        const isProofread = String(options.system ?? '').includes('校对')
+        const text = isProofread ? '这家公司今年扩大了。' : '亮亮视野今年扩大了。'
+        return (async function* () {
+          yield { type: 'text-delta', index: 0, text }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        })()
+      },
+    }
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: {
+        transport: 'file', sinkPath,
+        inboxPath: path, inboxPollMs: 100, proofread: 'idle', termsPath,
+      },
+    })
+    store.set(path, 'A reunião é às três da tarde.\n')
+    const rejected = await waitFor(async () => {
+      const s = await box.tools.get('leion_inbox').execute({ action: 'status' })
+      return s.proofread !== null && s.proofread.rejected >= 1
+    })
+    check('校对结果被丢弃', rejected)
+    const frame = JSON.parse(store.get(sinkPath))
+    check('屏幕保持初稿（名字没被改掉）', frame.text === '亮亮视野今年扩大了。', frame.text)
+    await box.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
   await it('校对回归闸：只在「中文→巴葡」方向跑（反方向不许误拦）', async () => {
     // ⚠️ 这条是**假阳性护栏**，来自一个真踩到的 bug：
     //    闸比的是「原文的数 ↔ 译文的数」，只有译成葡语时两边才可比。

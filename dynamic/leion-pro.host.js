@@ -1402,6 +1402,37 @@ function detectTermsMiss(source, text, entries, from, to) {
   return events
 }
 
+/**
+ * 4b 强制执行闸（纯函数）：**初稿里已经正确的规范写法，校对结果里不许消失**。
+ *
+ * <p>为什么需要它：`proofreadRules` 已经写明"专有名词不由你负责"，但实测模型**并不完全遵守**
+ * ——它仍会把 `óculos LLVision` 改成 `óculos Leion`、或把名字换成别的写法。
+ * 校对是**在归一之后**跑的，只有它有能力破坏归一结果；所以加一道本地检查：
+ * 任何表内条目的规范写法，只要在初稿里出现过、校对结果里却没有了 →
+ * 这次校对整条丢弃（屏幕保持初稿）。
+ *
+ * <p>注意：如果校对只是把*未登记变体*换成规范写法（方向是对的），初稿里**没有**规范写法，
+ * 这道闸不拦；如果校对把规范写法换成**已登记**的变体，前面的 `applyTerms` 会先换回来，也不拦。
+ *
+ * @returns {string | null} 有问题返回原因，没问题返回 null
+ */
+function proofreadKeptNames(draft, corrected, entries, targetZh) {
+  const before = String(draft === undefined || draft === null ? '' : draft)
+  const after = String(corrected === undefined || corrected === null ? '' : corrected)
+  if (before === '' || after === '') return null
+  for (const entry of entries ?? []) {
+    if (entry === null || typeof entry !== 'object') continue
+    const canonical = targetZh ? entry.zh : entry.pt
+    if (typeof canonical !== 'string' || canonical === '') continue
+    const foldEnabled = entry.fold !== false
+    const strict = entry.strictBoundary === true
+    if (mentionsForm(before, canonical, targetZh, foldEnabled, strict) === false) continue
+    if (mentionsForm(after, canonical, targetZh, foldEnabled, strict) === true) continue
+    return '「' + canonical + '」在初稿里是正确的，校对结果里没有了'
+  }
+  return null
+}
+
 function createInterpreter(ctx, rawConfig, deps) {
   const config = validateConfig(rawConfig)
   if (deps === undefined || deps === null || deps.policy === undefined) {
@@ -1813,6 +1844,18 @@ function createInterpreter(ctx, rawConfig, deps) {
         state.proofread.rejected += 1
         state.proofread.lastNote = '校对把初译改坏了（保持初译）：' + regression
         console.log('[leion-pro] ✗ 校对结果改坏了内容，已丢弃：' + regression)
+        return true
+      }
+      // ── 4b 强制执行闸（docs/15 §14.3）────────────────────────────────────
+      // 校对提示词已写明"专有名词不由你负责"，但**实测模型并不完全遵守**
+      // （它仍会把 "óculos LLVision" 改成 "óculos Leion" 之类）。
+      // 所以再加一道本地检查兜底：初稿里已经正确的规范写法、校对结果里消失 → 整条丢弃。
+      const nameProblem = proofreadKeptNames(
+        item.draft, corrected, termEntries, String(item.to).toLowerCase().startsWith('zh'))
+      if (nameProblem !== null) {
+        state.proofread.rejected += 1
+        state.proofread.lastNote = '校对动了专名（保持初译）：' + nameProblem
+        console.log('[leion-pro] ✗ 校对动了专名，已丢弃：' + nameProblem)
         return true
       }
       // 最后一道闸：重新确认屏幕没变过（模型调用期间可能已经出了下一句）。
