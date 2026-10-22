@@ -476,6 +476,15 @@ const CONFIG_DEFAULTS = {
    */
   termsWatch: 'on',
   /**
+   * 本句专名提示（docs/15 §18.9）：翻译时把"这句原文里出现的表内名字 + 规范写法"
+   * 追加进系统提示词，让模型**初译就写对**，而不是等事后修正。
+   *
+   * <p>实测（44 句 A/B 对照，见 §18.9）：规范写法出现率 53/56 → **56/56**，
+   * prompt 只多约 27 token，没有一句被写坏、没有数字丢失。
+   * 对空表 / 原文没提名字的句子**不追加任何东西**（行为与以前逐字一致）。
+   */
+  termsHint: 'on',
+  /**
    * 热词临时修正（方向一实验，**默认关**）：观测到"提到了名字、译文没写出规范写法"时，
    * 空闲时问一次模型"这个名字在这句里写成了什么"，只在**片段可验证**时把那一小段换成规范写法。
    *
@@ -608,6 +617,9 @@ function validateConfig(raw) {
   }
   if (!['on', 'off'].includes(config.termsWatch)) {
     throw new Error(`leion-pro: termsWatch 只能是 'on' / 'off'，收到 ${JSON.stringify(config.termsWatch)}`)
+  }
+  if (!['on', 'off'].includes(config.termsHint)) {
+    throw new Error(`leion-pro: termsHint 只能是 'on' / 'off'，收到 ${JSON.stringify(config.termsHint)}`)
   }
   if (!['on', 'off'].includes(config.termsRescue)) {
     throw new Error(`leion-pro: termsRescue 只能是 'on' / 'off'，收到 ${JSON.stringify(config.termsRescue)}`)
@@ -746,7 +758,7 @@ function opposite(lang) {
  *
  * @param policy 由 plugin/policy.generated.mjs（生成物）提供
  */
-function translationSystem(policy, from, to) {
+function translationSystem(policy, from, to, termsHint) {
   if (policy === undefined || policy === null) {
     throw new Error('translationSystem 需要 policy（见 policy/br-pt.json 与 plugin/policy.generated.mjs）')
   }
@@ -769,6 +781,15 @@ function translationSystem(policy, from, to) {
     lines.push('用词必须按巴葡（括号里是葡葡，不要用）：' + policy.terminology
       .map(entry => entry.br + '（不用 ' + entry.ptpt + '）')
       .join('、'))
+  }
+  // 本句专名提示（docs/15 §18.9）：只列**这句原文里真的出现了**的表内名字。
+  // 实测（44 句 A/B）：规范写法出现率 53/56 → 56/56，prompt 只多约 27 token，
+  // 没有一句被写坏、没有数字丢失。它把"模型写泛称/音译变体"这一类直接压掉，
+  // 比事后修正省一次模型调用。
+  if (Array.isArray(termsHint) && termsHint.length > 0) {
+    const pairs = termsHint.map(entry => (to === PT ? entry.zh : entry.pt)
+      + ' → ' + (to === PT ? entry.pt : entry.zh))
+    lines.push('本句原文出现了这些名字，译文必须保留下列写法（原文没出现的名字不要添加）：' + pairs.join('；'))
   }
   return lines.join('\n')
 }
@@ -1682,6 +1703,30 @@ function createInterpreter(ctx, rawConfig, deps) {
     return config.terms === 'on' && config.termsWatch === 'on'
   }
 
+  /**
+   * 本句专名提示（docs/15 §18.9）：找出"这句原文里真的出现了"的表内条目。
+   *
+   * <p>只列**本句出现**的名字 —— 不把整张表塞进提示词（那会稀释、浪费 token，
+   * 还可能让模型乱补名字）。空表 / 本句没提名字时返回 null，提示词一个字都不加。
+   */
+  function termsHintFor(source, from) {
+    if (config.terms !== 'on' || config.termsHint !== 'on') return null
+    if (termEntries.length === 0) return null
+    const text = String(source === undefined || source === null ? '' : source)
+    if (text === '') return null
+    const sourceZh = String(from).toLowerCase().startsWith('zh')
+    const hint = []
+    for (const entry of termEntries) {
+      const forms = sourceZh
+        ? [entry.zh, ...(entry.variants ?? [])]
+        : [entry.pt, ...(entry.approved ?? [])]
+      const mentioned = forms.some(form => typeof form === 'string' && form !== ''
+        && mentionsForm(text, form, sourceZh, entry.fold !== false, entry.strictBoundary === true))
+      if (mentioned) hint.push({ zh: entry.zh, pt: entry.pt })
+    }
+    return hint.length === 0 ? null : hint
+  }
+
   /** 每场只读一次表（快照）：运行中改表不影响正在跑的这一场（docs/15 §8.1）。 */
   let termEntries = []
   let termsLoaded = false
@@ -2352,7 +2397,7 @@ function createInterpreter(ctx, rawConfig, deps) {
    * 流式翻译一段话。
    * @param onDelta 每收到一段增量就回调（已按 partialThrottleMs 节流），用于「边说边显」。
    */
-  async function streamTranslation(llm, text, from, to, onDelta) {
+  async function streamTranslation(llm, text, from, to, onDelta, termsHint) {
     const route = await resolveRoute(llm)
     if (route.ok !== true) return { ok: false, failure: route.failure }
 
@@ -2369,7 +2414,7 @@ function createInterpreter(ctx, rawConfig, deps) {
     const base = {
       provider: route.providerId,
       model: route.modelId,
-      system: translationSystem(policy, from, to),
+      system: translationSystem(policy, from, to, termsHint),
       messages,
       maxTokens: config.maxTokens,
       temperature: config.temperature,
@@ -2707,7 +2752,8 @@ function createInterpreter(ctx, rawConfig, deps) {
               + '或者用 leion_display 自己翻译后推送',
           }
         }
-        return await streamTranslation(llm, args.text, args.from, args.to, args.onDelta)
+        return await streamTranslation(llm, args.text, args.from, args.to, args.onDelta,
+          termsHintFor(args.text, args.from))
       },
     }
   })()
