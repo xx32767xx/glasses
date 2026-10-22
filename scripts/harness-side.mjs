@@ -33,7 +33,7 @@ import { join, resolve } from 'node:path'
 import { CHECKOUT } from '../lib/real-tools.mjs'
 import { ensureLoaderLinks } from '../lib/loader-links.mjs'
 import { buildComposition, LIVE_DATA_DIR, repoFile } from '../lib/composition.mjs'
-import { TERMS_LOG_NAME, defaultBus, defaultInbox, defaultSettings, defaultTerms, defaultTermsActive } from '../lib/paths.mjs'
+import { TERMS_LOG_NAME, defaultBus, defaultInbox, defaultSettings, defaultTerms, defaultTermsActive, defaultTermsPending } from '../lib/paths.mjs'
 
 const HELP = `harness-side —— 常驻的 harness 侧进程（给手机 + 局域网转发用）
 
@@ -44,6 +44,10 @@ const HELP = `harness-side —— 常驻的 harness 侧进程（给手机 + 局�
   --proofread           打开大模型校对（第二遍）：**现在缺省就是开着的**，加它等于重申。
   --no-proofread        关掉大模型校对（少一次模型调用，牺牲"回头改错"的能力）。
                         只在 --live 下有实际意义（离线例句表认不出校对请求）
+  --terms-rescue        打开热词临时修正（**实验**，缺省关，见 docs/15 §18）：
+                        观测到"提到了名字、译文却没写出规范写法"时，空闲问一次模型
+                        "它写成了什么"；可验证才把那一小段换成规范写法。
+                        三条约束：不改字幕先落地者生效、过期按帧丢弃、不把校对当反证。
   --data-dir <path>     收件箱与字幕总线所在目录（缺省 var/live）
   --inbox <path>        收件箱文件（缺省 <data-dir>/asr-inbox.jsonl）
   --bus <path>          字幕总线文件（缺省 <data-dir>/subtitle-bus.json）
@@ -67,13 +71,14 @@ const HELP = `harness-side —— 常驻的 harness 侧进程（给手机 + 局�
 `
 
 export function parseArgs(argv) {
-  const options = { mode: 'live', dataDir: LIVE_DATA_DIR, cols: 40, lines: 3, pollMs: 150, keepInbox: false, proofread: true }
+  const options = { mode: 'live', dataDir: LIVE_DATA_DIR, cols: 40, lines: 3, pollMs: 150, keepInbox: false, proofread: true, termsRescue: false }
   const takesValue = new Set(['data-dir', 'inbox', 'bus', 'cols', 'lines', 'poll-ms'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (token === '--offline') { options.mode = 'offline'; continue }
     if (token === '--proofread') { options.proofread = true; continue }
   if (token === '--no-proofread') { options.proofread = false; continue }
+    if (token === '--terms-rescue') { options.termsRescue = true; continue }
     if (token === '--keep-inbox') { options.keepInbox = true; continue }
     if (token === '--help') { options.help = true; continue }
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -160,6 +165,11 @@ async function main() {
       termsPath: defaultTerms(options.dataDir).replace(/\\/g, '/'),
       termsActivePath: defaultTermsActive(options.dataDir).replace(/\\/g, '/'),
       termsLogPath: join(options.dataDir, TERMS_LOG_NAME).replace(/\\/g, '/'),
+      // 待入表队列（B 方案，docs/15 §18.2）：插件只追加，relay 在启动/每场开始时合并
+      termsPendingPath: defaultTermsPending(options.dataDir).replace(/\\/g, '/'),
+      // 热词临时修正（方向一实验，docs/15 §18，缺省关）：
+      // 观测到漏写时问一次模型，可验证才替换那一小段；不改整句、不把校对当反证。
+      termsRescue: options.termsRescue ? 'on' : 'off',
     },
     extraRows: [`- name: '${repoFile('lib', 'keepalive.mjs')}'`],
   })
@@ -184,6 +194,9 @@ async function main() {
       : '  大模型校对  已开启 ⚠️ 但离线例句表不认识校对请求，只会回一句演示提示；'
         + '那句会被验收闸拦住、保持初译。想看效果请去掉 --offline')
   }
+  console.log(`  临时修正    ${options.termsRescue
+    ? '已开启（实验：观测到漏写时问一次模型，可验证才换那一小段）'
+    : '关闭（缺省；加 --terms-rescue 打开，见 docs/15 §18）'}`)
   console.log(`  收件箱      ${options.inbox}`)
   if (options.keepInbox) {
     console.log('              （保留了旧内容：--keep-inbox，旧行会被重新翻译一遍）')

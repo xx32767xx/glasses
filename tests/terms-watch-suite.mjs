@@ -70,6 +70,8 @@ export async function runTermsWatchSuite({ it, check }) {
   })
 
   await it('4b 强制执行闸：初稿里正确的规范写法，校对结果里消失 → 拦', () => {
+    // 实测：校对把 "óculos LLVision" 改成 "óculos Leion"、或把名字换掉/删掉。
+    // 初稿里已经正确的规范写法消失了 → 这次校对整条丢弃。
     const draft = 'O time da LLVision disse: óculos LLVision.'
     check('规范写法被换掉 → 拦',
       proofreadKeptNames('O time da LLVision disse.', 'O time da empresa disse.', ENTRIES, false) !== null)

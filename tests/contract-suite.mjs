@@ -741,7 +741,7 @@ export async function runContractSuite(adapter, { it, check, assert }) {
   })
 
   await it('本句专名提示：只带"本句真出现过的名字"，空表/关掉时不带', async () => {
-    // docs/15 §11.2：提示词让初译就写对（实测 53/56 → 56/56），但**不能把整张表塞进去**，
+    // docs/15 §18.9：提示词让初译就写对（实测 53/56 → 56/56），但**不能把整张表塞进去**，
     // 也不能在"本句没提名字"时加一句话（那会改变所有句子、稀释注意力、浪费 token）。
     const store = new Map()
     const termsPath = inboxPathOf('terms-hint.json')
@@ -846,6 +846,188 @@ export async function runContractSuite(adapter, { it, check, assert }) {
     check('这句被处理了', processed)
     const status = await box.tools.get('leion_inbox').execute({ action: 'status' })
     check('关掉观测后 watch 为 0', status.terms !== undefined && status.terms.watch === 0, JSON.stringify(status.terms))
+    await box.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
+  await it('热词临时修正（方向一实验）：空闲时问一次、闸门通过才换那一小段', async () => {
+    const store = new Map()
+    const path = inboxPathOf('rescue.jsonl')
+    const termsPath = inboxPathOf('rescue.json')
+    const termsActivePath = inboxPathOf('rescue-active.json')
+    const sinkPath = inboxPathOf('rescue-bus.json')
+    store.set(termsPath, JSON.stringify({ version: 1, tables: { test: { entries: [
+      { id: 'e1', zh: '亮亮视野', pt: 'LLVision', approved: ['LLVision'] },
+    ] } } }))
+    store.set(termsActivePath, JSON.stringify({ user: 'test' }))
+    // 翻译返回"写错一点点的名字"（LLVisão）；被问"写成了什么"时原样回答 LLVisão
+    const llm = {
+      calls: [],
+      listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
+      listModels: async () => [{ id: 'deepseek-chat' }],
+      stream(options) {
+        this.calls.push(options)
+        const isRescue = String(options.system ?? '').includes('术语片段核对')
+        const text = isRescue ? 'LLVisão' : 'A LLVisão colabora com a nossa equipe.'
+        return (async function* () {
+          yield { type: 'text-delta', index: 0, text }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        })()
+      },
+    }
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: {
+        transport: 'file', sinkPath,
+        inboxPath: path, inboxPollMs: 100, proofread: 'off',
+        termsPath, termsActivePath, termsRescue: 'on',
+      },
+    })
+    store.set(path, '我们和亮亮视野合作。\n')
+    const applied = await waitFor(async () =>
+      (await box.tools.get('leion_inbox').execute({ action: 'status' })).terms.rescue.applied >= 1)
+    check('临时修正执行了', applied)
+    const status = await box.tools.get('leion_inbox').execute({ action: 'status' })
+    check('只问了一次', status.terms.rescue.asked === 1, JSON.stringify(status.terms.rescue))
+    const frame = JSON.parse(store.get(sinkPath))
+    check('只换了那一小段（其余逐字不动）', frame.text === 'A LLVision colabora com a nossa equipe.', frame.text)
+    // 只调了两次模型：初译 + 一次修正（没有整句重写）
+    check('只多了一次模型调用（不做整句重写）', llm.calls.length === 2, String(llm.calls.length))
+    await box.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
+  await it('热词临时修正（激进版）：译名式变体也改，并写待入表队列', async () => {
+    // 实测反馈复现：表里是 亮亮眼镜 → Leion，模型写成 "Liangliang Ótica"
+    //（音译+意译，与规范写法共享字符为 0）。激进版**接受**：
+    // 本句立即换成 Leion，同时把 `Liangliang Ótica` 追加进待入表队列（B 方案）。
+    const store = new Map()
+    const path = inboxPathOf('rescue-translit.jsonl')
+    const termsPath = inboxPathOf('rescue-translit.json')
+    const pendingPath = inboxPathOf('rescue-translit-pending.jsonl')
+    const sinkPath = inboxPathOf('rescue-translit-bus.json')
+    store.set(termsPath, JSON.stringify({ version: 1, tables: { default: { entries: [
+      { id: 'e1', zh: '亮亮眼镜', pt: 'Leion', approved: ['Leion'] },
+    ] } } }))
+    const llm = {
+      calls: [],
+      listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
+      listModels: async () => [{ id: 'deepseek-chat' }],
+      stream(options) {
+        this.calls.push(options)
+        const isRescue = String(options.system ?? '').includes('术语片段核对')
+        const text = isRescue ? 'Liangliang Ótica' : 'A Liangliang Ótica colabora com a nossa equipe.'
+        return (async function* () {
+          yield { type: 'text-delta', index: 0, text }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        })()
+      },
+    }
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: {
+        transport: 'file', sinkPath,
+        inboxPath: path, inboxPollMs: 100, proofread: 'off',
+        termsRescue: 'on', termsPath, termsPendingPath: pendingPath,
+      },
+    })
+    store.set(path, '我们和亮亮眼镜合作。\n')
+    const applied = await waitFor(async () =>
+      (await box.tools.get('leion_inbox').execute({ action: 'status' })).terms.rescue.applied >= 1)
+    check('改了', applied)
+    // 实测踩过的坑：修正请求漏传 reasoningEffort → 适配器默认 high，思考 token 吃光预算，
+    // 回答还没开始写就被截断（finish=max-tokens）。这条钉住"必须显式传"。
+    const rescueCall = llm.calls.find(call => String(call.system ?? '').includes('术语片段核对'))
+    check('修正请求显式传了推理强度（默认 off）',
+      rescueCall !== undefined && rescueCall.reasoningEffort === 'off',
+      JSON.stringify(rescueCall === undefined ? null : rescueCall.reasoningEffort))
+    const frame = JSON.parse(store.get(sinkPath))
+    check('本句换成规范写法', frame.text === 'A Leion colabora com a nossa equipe.', frame.text)
+    const pending = String(store.get(pendingPath) ?? '')
+    check('待入表队列有记录', pending.includes('"event":"pending"'), pending)
+    check('记录带中文名与候选变体', pending.includes('亮亮眼镜') && pending.includes('Liangliang Ótica'), pending)
+    // 再说一遍同一句：应再修正一次，但队列**不重复写**（实测：反复说会让队列膨胀）
+    // 注意要**追加**新行（收件箱按已消费偏移读，覆盖写会被当成"已读过"）
+    store.set(path, String(store.get(path) ?? '') + '我们和亮亮眼镜合作。\n')
+    const appliedAgain = await waitFor(async () =>
+      (await box.tools.get('leion_inbox').execute({ action: 'status' })).terms.rescue.applied >= 2)
+    check('第二次也修正了', appliedAgain)
+    const pendingAfter = String(store.get(pendingPath) ?? '')
+    check('队列去重：同一变体只有一行',
+      pendingAfter.split('\n').filter(line => line.includes('"event":"pending"')).length === 1,
+      pendingAfter)
+    await box.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
+  await it('热词临时修正：模型回答被 token 上限截断 → 判失败、不写表（实测踩过的坑）', async () => {
+    // 实测：`maxTokens: 40` 时 DeepSeek 垫了一句解释就撞上限（finish=max-tokens），
+    // 于是"修正永远不生效"而且用户只看到一行失败。这里钉住：
+    // 流没正常结束 → failed 计数 + 绝不拿半截回答去改字/写表。
+    const store = new Map()
+    const path = inboxPathOf('rescue-maxtok.jsonl')
+    const termsPath = inboxPathOf('rescue-maxtok.json')
+    const pendingPath = inboxPathOf('rescue-maxtok-pending.jsonl')
+    store.set(termsPath, JSON.stringify({ version: 1, tables: { default: { entries: [
+      { id: 'e1', zh: '亮亮眼镜', pt: 'Leion', approved: ['Leion'] },
+    ] } } }))
+    const llm = {
+      listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
+      listModels: async () => [{ id: 'deepseek-chat' }],
+      stream(options) {
+        const isRescue = String(options.system ?? '').includes('术语片段核对')
+        return (async function* () {
+          yield { type: 'text-delta', index: 0, text: isRescue
+            ? 'Liangliang Ótica（这是译文里写这个名字的一段文字，解释如下…'
+            : 'A Liangliang Ótica colabora com a nossa equipe.' }
+          // 修正那一次故意报"被截断"
+          yield { type: 'finish', reason: { kind: isRescue ? 'max-tokens' : 'stop' } }
+        })()
+      },
+    }
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: { inboxPath: path, inboxPollMs: 100, proofread: 'off', termsRescue: 'on', termsPath, termsPendingPath: pendingPath },
+    })
+    store.set(path, '我们和亮亮眼镜合作。\n')
+    const failed = await waitFor(async () =>
+      (await box.tools.get('leion_inbox').execute({ action: 'status' })).terms.rescue.failed >= 1)
+    check('记为失败', failed)
+    const status = await box.tools.get('leion_inbox').execute({ action: 'status' })
+    check('没有改字', status.terms.rescue.applied === 0, JSON.stringify(status.terms.rescue))
+    check('没有写待入表', String(store.get(pendingPath) ?? '') === '', String(store.get(pendingPath)))
+    await box.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
+  await it('热词临时修正：结果回来时屏幕已换句 → 丢弃（避免修错对象）', async () => {
+    const store = new Map()
+    const path = inboxPathOf('rescue-stale.jsonl')
+    const termsPath = inboxPathOf('rescue-stale.json')
+    store.set(termsPath, JSON.stringify({ version: 1, tables: { default: { entries: [
+      { id: 'e1', zh: '亮亮视野', pt: 'LLVision', approved: ['LLVision'] },
+    ] } } }))
+    const llm = {
+      listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
+      listModels: async () => [{ id: 'deepseek-chat' }],
+      stream(options) {
+        const isRescue = String(options.system ?? '').includes('术语片段核对')
+        const text = isRescue ? 'LLVisão' : 'A LLVisão colabora com a nossa equipe.'
+        return (async function* () {
+          yield { type: 'text-delta', index: 0, text }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        })()
+      },
+    }
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: { inboxPath: path, inboxPollMs: 100, proofread: 'off', termsRescue: 'on', termsPath },
+    })
+    // 两句话一起进来：第一句的修正回来时，屏幕上已经是第二句了
+    store.set(path, '我们和亮亮视野合作。\n今天的会议改到下午三点。\n')
+    const dropped = await waitFor(async () => {
+      const status = await box.tools.get('leion_inbox').execute({ action: 'status' })
+      return status.terms.rescue.dropped >= 1
+    })
+    check('结果被丢弃', dropped)
+    const status = await box.tools.get('leion_inbox').execute({ action: 'status' })
+    check('没有把修正用到错的句子上', status.terms.rescue.applied === 0, JSON.stringify(status.terms.rescue))
     await box.tools.get('leion_inbox').execute({ action: 'stop' })
   })
 
@@ -999,6 +1181,50 @@ export async function runContractSuite(adapter, { it, check, assert }) {
     const history = await box.tools.get('leion_history').execute({ limit: 10 })
     check('历史仍然只有一条（没改就不该多写一条）', history.entries.length === 1,
       JSON.stringify(history.entries.map(e => e.text)))
+    await box.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
+  await it('校对**动了专名** → 整条丢弃（4b 强制执行闸，屏幕保持初稿）', async () => {
+    // 实测：校对提示词已写"专名不由你负责"，模型仍会把名字换掉/删掉。
+    // 这道闸的兜底是"初稿里正确的规范写法，校对结果里不许消失"。
+    // 方向选 pt→zh：目标语种是中文，初稿里出现中文规范写法「亮亮视野」，
+    // 校对把它换成"这家公司" → 必须丢弃。
+    const store = new Map()
+    const path = inboxPathOf('proofread-name.jsonl')
+    const termsPath = inboxPathOf('proofread-name-terms.json')
+    const sinkPath = inboxPathOf('proofread-name-bus.json')
+    store.set(termsPath, JSON.stringify({ version: 1, tables: { default: { entries: [
+      { id: 'e1', zh: '亮亮视野', pt: 'LLVision', approved: ['LLVision'] },
+    ] } } }))
+    const llm = {
+      listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
+      listModels: async () => [{ id: 'deepseek-chat' }],
+      stream(options) {
+        const isProofread = String(options.system ?? '').includes('校对')
+        const text = isProofread
+          ? '这家公司今年扩大了。'                // 把名字换成了泛称
+          : '亮亮视野今年扩大了。'                 // 初稿里规范写法是对的
+        return (async function* () {
+          yield { type: 'text-delta', index: 0, text }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        })()
+      },
+    }
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: {
+        transport: 'file', sinkPath,
+        inboxPath: path, inboxPollMs: 100, proofread: 'idle', termsPath,
+      },
+    })
+    store.set(path, 'A reunião é às três da tarde.\n')
+    const rejected = await waitFor(async () => {
+      const s = await box.tools.get('leion_inbox').execute({ action: 'status' })
+      return s.proofread !== null && s.proofread.rejected >= 1
+    })
+    check('校对结果被丢弃', rejected)
+    const frame = JSON.parse(store.get(sinkPath))
+    check('屏幕保持初稿（名字没被改掉）', frame.text === '亮亮视野今年扩大了。', frame.text)
     await box.tools.get('leion_inbox').execute({ action: 'stop' })
   })
 
@@ -1183,48 +1409,6 @@ export async function runContractSuite(adapter, { it, check, assert }) {
       history.entries.length === 1 && history.entries[0].text === FIXED,
       JSON.stringify(history.entries.map(e => e.text)))
     await tools.get('leion_inbox').execute({ action: 'stop' })
-  })
-
-  await it('校对**动了专名** → 整条丢弃（4b 强制执行闸，屏幕保持初稿）', async () => {
-    // 实测：校对提示词已写"专名不由你负责"，模型仍会把名字换掉/删掉。
-    // 这道闸的兜底是"初稿里正确的规范写法，校对结果里不许消失"。
-    // 方向选 pt→zh：目标语种是中文，初稿里出现中文规范写法「亮亮视野」，
-    // 校对把它换成"这家公司" → 必须丢弃。
-    const store = new Map()
-    const path = inboxPathOf('proofread-name.jsonl')
-    const termsPath = inboxPathOf('proofread-name-terms.json')
-    const sinkPath = inboxPathOf('proofread-name-bus.json')
-    store.set(termsPath, JSON.stringify({ version: 1, tables: { default: { entries: [
-      { id: 'e1', zh: '亮亮视野', pt: 'LLVision', approved: ['LLVision'] },
-    ] } } }))
-    const llm = {
-      listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
-      listModels: async () => [{ id: 'deepseek-chat' }],
-      stream(options) {
-        const isProofread = String(options.system ?? '').includes('校对')
-        const text = isProofread ? '这家公司今年扩大了。' : '亮亮视野今年扩大了。'
-        return (async function* () {
-          yield { type: 'text-delta', index: 0, text }
-          yield { type: 'finish', reason: { kind: 'stop' } }
-        })()
-      },
-    }
-    const box = await adapter.create({
-      llm, fs: makeFakeFs(store),
-      config: {
-        transport: 'file', sinkPath,
-        inboxPath: path, inboxPollMs: 100, proofread: 'idle', termsPath,
-      },
-    })
-    store.set(path, 'A reunião é às três da tarde.\n')
-    const rejected = await waitFor(async () => {
-      const s = await box.tools.get('leion_inbox').execute({ action: 'status' })
-      return s.proofread !== null && s.proofread.rejected >= 1
-    })
-    check('校对结果被丢弃', rejected)
-    const frame = JSON.parse(store.get(sinkPath))
-    check('屏幕保持初稿（名字没被改掉）', frame.text === '亮亮视野今年扩大了。', frame.text)
-    await box.tools.get('leion_inbox').execute({ action: 'stop' })
   })
 
   await it('校对回归闸：只在「中文→巴葡」方向跑（反方向不许误拦）', async () => {
