@@ -239,6 +239,8 @@
     <string name="terms_batch_done">导入了 %1$d 条</string>
     <string name="terms_status_local_invalid">以下条目需要修改</string>
     <string name="terms_status_local_ok">格式检查通过：%1$d 条</string>
+    <!-- 热词观测（docs/15 §17）：电脑侧只给名字，文案在手机拼 -->
+    <string name="terms_watch_hint">%1$s 未按对照写法显示，已记录</string>
     <!-- 账户（注册 / 登录），热词表的身份来源 -->
     <string name="settings_account">账户</string>
     <string name="settings_account_title">账户</string>

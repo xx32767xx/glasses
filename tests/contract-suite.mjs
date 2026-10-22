@@ -689,6 +689,10 @@ export async function runContractSuite(adapter, { it, check, assert }) {
     check('变体被换成规范写法', replaced.text === 'A LLVision cresceu este ano.', replaced.text)
     check('记了 replace 事件', replaced.events.some(e => e.event === 'replace'), JSON.stringify(replaced.events))
 
+    // 只差大小写也属于"变体"：must = 命中可替换变体后必须输出规范写法（docs/15 §7.1）
+    const lower = normalizeTerms('A llvision cresceu.', 'pt-BR', TERMS_ENTRIES)
+    check('只差大小写也换成规范写法', lower.text === 'A LLVision cresceu.' && lower.changed === true, lower.text)
+
     const again = normalizeTerms(replaced.text, 'pt-BR', TERMS_ENTRIES)
     check('幂等：再归一一次不变', again.text === replaced.text && again.changed === false, JSON.stringify(again))
 
@@ -733,6 +737,82 @@ export async function runContractSuite(adapter, { it, check, assert }) {
       status.terms !== undefined && status.terms.entries === 1 && status.terms.user === 'test',
       JSON.stringify(status.terms))
     check('只调了一次模型（归一不额外花钱）', llm.calls.length === 1, String(llm.calls.length))
+    await box.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
+  await it('热词观测：提到名字但译文没写出规范写法 → 记 watch（不改字幕、帧里带 termsMiss）', async () => {
+    const store = new Map()
+    const path = inboxPathOf('terms-watch.jsonl')
+    const termsPath = inboxPathOf('terms-watch.json')
+    const termsActivePath = inboxPathOf('terms-watch-active.json')
+    const termsLogPath = inboxPathOf('terms-watch.jsonl.log')
+    const sinkPath = inboxPathOf('terms-watch-bus.json')
+    store.set(termsPath, JSON.stringify({ version: 1, tables: { test: { entries: TERMS_ENTRIES } } }))
+    store.set(termsActivePath, JSON.stringify({ user: 'test' }))
+    // 固定返回"写了变体、没写规范写法"的译文（不依赖假适配器的固定句型）
+    const llm = {
+      calls: [],
+      listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
+      listModels: async () => [{ id: 'deepseek-chat' }],
+      stream(options) {
+        this.calls.push(options)
+        return (async function* () {
+          yield { type: 'text-delta', index: 0, text: 'A Liangliang Visão colabora com a nossa equipe.' }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        })()
+      },
+    }
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: {
+        transport: 'file', sinkPath,
+        inboxPath: path, inboxPollMs: 100, proofread: 'off',
+        termsPath, termsActivePath, termsLogPath,
+      },
+    })
+    store.set(path, '我们和亮亮视野合作。\n')
+    const processed = await waitFor(async () =>
+      (await box.tools.get('leion_inbox').execute({ action: 'status' })).processed >= 1)
+    check('这句被处理了', processed)
+    const status = await box.tools.get('leion_inbox').execute({ action: 'status' })
+    check('状态里报出 watch 计数', status.terms !== undefined && status.terms.watch === 1, JSON.stringify(status.terms))
+    const frame = JSON.parse(store.get(sinkPath))
+    check('字幕帧里带 termsMiss（手机据此提示）',
+      Array.isArray(frame.termsMiss) && frame.termsMiss.length === 1 && frame.termsMiss[0].zh === '亮亮视野',
+      JSON.stringify(frame.termsMiss))
+    check('字幕本身没有被改（观测不改字幕）', frame.text === 'A Liangliang Visão colabora com a nossa equipe.', frame.text)
+    const log = String(store.get(termsLogPath) ?? '')
+    check('watch 事件落盘且带完整原文与译文',
+      log.includes('"event":"watch"') && log.includes('我们和亮亮视野合作。') && log.includes('A Liangliang Visão colabora com a nossa equipe.'),
+      log)
+    await box.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
+  await it('热词观测：termsWatch=off 时只记归一、不记 watch', async () => {
+    const store = new Map()
+    const path = inboxPathOf('terms-watch-off.jsonl')
+    const termsPath = inboxPathOf('terms-watch-off.json')
+    store.set(termsPath, JSON.stringify({ version: 1, tables: { default: { entries: TERMS_ENTRIES } } }))
+    const llm = {
+      listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
+      listModels: async () => [{ id: 'deepseek-chat' }],
+      stream() {
+        return (async function* () {
+          yield { type: 'text-delta', index: 0, text: 'A Liangliang Visão colabora com a nossa equipe.' }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        })()
+      },
+    }
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: { inboxPath: path, inboxPollMs: 100, proofread: 'off', termsWatch: 'off', termsPath },
+    })
+    store.set(path, '我们和亮亮视野合作。\n')
+    const processed = await waitFor(async () =>
+      (await box.tools.get('leion_inbox').execute({ action: 'status' })).processed >= 1)
+    check('这句被处理了', processed)
+    const status = await box.tools.get('leion_inbox').execute({ action: 'status' })
+    check('关掉观测后 watch 为 0', status.terms !== undefined && status.terms.watch === 0, JSON.stringify(status.terms))
     await box.tools.get('leion_inbox').execute({ action: 'stop' })
   })
 

@@ -93,9 +93,6 @@ export async function runTermsMatcherSuite({ it, check, assert }) {
   // ── 4. 折叠与关闭折叠 ──────────────────────────────────────────────────
   await it('折叠：大小写/重音/空格都算同一个名字，且输出永远是用户写的规范形式', () => {
     const entries = table([{ zh: '亮亮视野', pt: 'LLVision' }])
-    for (const variant of ['llvision', 'LEION PRO', 'LeionPro']) {
-      void variant
-    }
     const entries2 = table([{ zh: '亮亮眼镜', pt: 'Leion Pro' }])
     const cases = [
       ['leion pro', '亮亮眼镜'],
@@ -106,9 +103,26 @@ export async function runTermsMatcherSuite({ it, check, assert }) {
       const result = run(variant, entries2, 'pt-BR')
       check(`「${variant}」应被收敛成「${expected}」`, result.text === expected, result.text)
     }
+
+    // 同语种归一（生产路径）：折叠只负责"找得到"，must 要求"输出规范写法" ——
+    // 只差大小写/重音/空格的变体也必须改掉（`llvision` → `LLVision`），不能只记 hit。
+    const norm = (text, entries) => applyTerms(text, { entries, mode: 'normalize', lang: 'pt-BR' })
+    for (const variant of ['llvision', 'LLVISION']) {
+      const r = norm(variant, entries)
+      check(`归一「${variant}」→「LLVision」`, r.text === 'LLVision' && r.changed === true, r.text)
+    }
+    const spaced = norm('leion pro', entries2)
+    check('归一「leion pro」→「Leion Pro」', spaced.text === 'Leion Pro' && spaced.changed === true, spaced.text)
+    const joined = norm('LeionPro', entries2)
+    check('归一「LeionPro」→「Leion Pro」（连写也要补空格）', joined.text === 'Leion Pro' && joined.changed === true, joined.text)
+    const idem = norm('Leion Pro', entries2)
+    check('已经是规范写法 → 不改字（幂等）', idem.text === 'Leion Pro' && idem.changed === false, JSON.stringify(idem))
+    const accentEntries = table([{ zh: '圣保罗', pt: 'São Paulo' }])
+    const accent = norm('sao paulo', accentEntries)
+    check('归一「sao paulo」→「São Paulo」（重音也要补）', accent.text === 'São Paulo' && accent.changed === true, accent.text)
+
     check('折叠后长度不变（否则下标会错位）', foldForMatch('ação') === 'acao')
     check('折叠保留长度：São Paulo', foldForMatch('São Paulo').length === 'São Paulo'.length)
-    check('entries 正常可用', entries.length === 1)
   })
 
   await it('折叠可以按条目关掉（secretária / secretaria 是两个词）', () => {

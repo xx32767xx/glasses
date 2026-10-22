@@ -61,6 +61,17 @@
             android:visibility="gone" />
     </LinearLayout>
 
+    <!-- 热词观测旁注（docs/15 §17）：只在"这句提到了名字、但译文没写出规范写法"时显示。
+         它是旁注而不是正文：小字、警示色、不抢译文的注意力；没有时整行 GONE。 -->
+    <TextView
+        android:id="@+id/segNote"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:textColor="@color/warn"
+        android:textSize="12sp"
+        android:visibility="gone" />
+
     <View
         android:id="@+id/segDivider"
         android:layout_width="match_parent"

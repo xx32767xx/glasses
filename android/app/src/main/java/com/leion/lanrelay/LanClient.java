@@ -51,13 +51,15 @@ public class LanClient {
          * @param source     原文（对方说的话，或佩戴者自己说的话）；没有就是空串
          * @param sourceLang 原文语种；未知是 "unknown"
          * @param partial    true = 这一帧还是流式增量（界面要打「生成中」并**原位更新**）
+         * @param termsMissing 本句"提到了表内名字、但译文没写出规范写法"的中文名列表；
+         *                     空数组 = 没有（docs/15 §17，只提示、不改字幕）
          *
          * 为什么 source 和 partial 都要：界面按"原文在上、译文在下"成对显示，
          * 并且要把"增量 → 定稿 → 校对修订"落到**同一条**片段上。
          * 少了这两个字段，手机只能靠猜（猜错的表现是字幕永远挂着「生成中」）。
          */
         void onFrame(String speaker, String lang, String[] lines, String text,
-                     String source, String sourceLang, boolean partial);
+                     String source, String sourceLang, boolean partial, String[] termsMissing);
 
         /** 出错了（网络不通、密钥错、被拒绝等）。 */
         void onError(String message);
@@ -415,6 +417,14 @@ public class LanClient {
                         for (int i = 0; i < count; i++) {
                             out[i] = lines.optString(i, "");
                         }
+                        // 热词观测（docs/15 §17）：本句"提到了表内名字、但译文没写出规范写法"的条目。
+                        // 电脑侧只给中文名（zh），提示文案由手机拼 —— 这样文案改起来不用改电脑。
+                        JSONArray miss = frame.optJSONArray("termsMiss");
+                        String[] missing = new String[miss == null ? 0 : miss.length()];
+                        for (int i = 0; i < missing.length; i++) {
+                            JSONObject item = miss.optJSONObject(i);
+                            missing[i] = item == null ? "" : item.optString("zh", "");
+                        }
                         listener.onFrame(
                                 frame.optString("speaker", "them"),
                                 frame.optString("lang", "?"),
@@ -422,7 +432,8 @@ public class LanClient {
                                 frame.optString("text", ""),
                                 frame.optString("source", ""),
                                 frame.optString("sourceLang", "unknown"),
-                                frame.optBoolean("partial", false));
+                                frame.optBoolean("partial", false),
+                                missing);
                     }
                 }
             } catch (Exception error) {

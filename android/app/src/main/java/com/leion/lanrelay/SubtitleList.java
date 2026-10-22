@@ -42,15 +42,17 @@ public class SubtitleList {
         public final TextView sourceView;
         public final TextView targetView;
         public final TextView tagView;
+        public final TextView noteView;
 
         Segment(String time, String source, View view, TextView sourceView,
-                TextView targetView, TextView tagView) {
+                TextView targetView, TextView tagView, TextView noteView) {
             this.time = time;
             this.source = source;
             this.view = view;
             this.sourceView = sourceView;
             this.targetView = targetView;
             this.tagView = tagView;
+            this.noteView = noteView;
         }
     }
 
@@ -58,6 +60,7 @@ public class SubtitleList {
     private static final float BASE_SOURCE_SP = 16f;
     private static final float BASE_TARGET_SP = 22f;
     private static final float BASE_TIME_SP = 11f;
+    private static final float BASE_NOTE_SP = 12f;
 
     private final LayoutInflater inflater;
     private final ScrollView scroll;
@@ -134,6 +137,8 @@ public class SubtitleList {
     private void applyScale(Segment segment) {
         segment.sourceView.setTextSize(TypedValue.COMPLEX_UNIT_SP, BASE_SOURCE_SP * scale);
         segment.targetView.setTextSize(TypedValue.COMPLEX_UNIT_SP, BASE_TARGET_SP * scale);
+        // 观测提示不跟着放大那么多：它是旁注，不该抢正文的注意力
+        segment.noteView.setTextSize(TypedValue.COMPLEX_UNIT_SP, BASE_NOTE_SP * Math.min(scale, 1.2f));
         // 时间标记不跟着放大那么多，否则会喧宾夺主
         ((TextView) segment.view.findViewById(R.id.segTime))
                 .setTextSize(TypedValue.COMPLEX_UNIT_SP, BASE_TIME_SP * Math.min(scale, 1.3f));
@@ -154,8 +159,13 @@ public class SubtitleList {
      * @param source   原文；空串表示这一帧没有原文可用
      * @param target   给佩戴者看的那一侧
      * @param partial  true = 还在生成（打「生成中」标签）
+     * @param note     旁注（热词观测提示）；空串 = 不显示
      */
     public Segment submit(String time, String source, String target, boolean partial) {
+        return submit(time, source, target, partial, "");
+    }
+
+    public Segment submit(String time, String source, String target, boolean partial, String note) {
         Segment segment = find(source);
         if (segment == null) {
             segment = create(time, source);
@@ -165,6 +175,10 @@ public class SubtitleList {
         segment.target = target;
         segment.partial = partial;
         segment.targetView.setText(target);
+        // 热词观测旁注：跟着这一版译文走 —— 校对把名字补对时，提示会自动消失
+        segment.noteView.setText(note == null ? "" : note);
+        segment.noteView.setVisibility(
+                note == null || note.isEmpty() ? View.GONE : View.VISIBLE);
         // 「生成中」用略浅的字色 + 小标签，定稿后恢复正常深色
         segment.targetView.setTextColor(segment.targetView.getResources()
                 .getColor(partial ? R.color.ink_soft : R.color.ink, null));
@@ -199,12 +213,14 @@ public class SubtitleList {
         TextView sourceView = view.findViewById(R.id.segSource);
         TextView targetView = view.findViewById(R.id.segTarget);
         TextView tagView = view.findViewById(R.id.segTag);
+        TextView noteView = view.findViewById(R.id.segNote);
         TextView timeView = view.findViewById(R.id.segTime);
         timeView.setText(time);
         sourceView.setText(source);
         sourceView.setVisibility(bilingual ? View.VISIBLE : View.GONE);
         tagView.setVisibility(View.GONE);
-        return new Segment(time, source == null ? "" : source, view, sourceView, targetView, tagView);
+        noteView.setVisibility(View.GONE);
+        return new Segment(time, source == null ? "" : source, view, sourceView, targetView, tagView, noteView);
     }
 
     private void scrollToBottom() {

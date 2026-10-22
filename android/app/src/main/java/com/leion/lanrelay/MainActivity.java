@@ -888,7 +888,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     @Override
     public void onFrame(final String speaker, final String lang, final String[] lines,
                         final String text, final String source, final String sourceLang,
-                        final boolean partial) {
+                        final boolean partial, final String[] termsMissing) {
         main.post(() -> {
             framesSeen += 1;
             busSeen = true;
@@ -896,6 +896,10 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             lastFrameSource = source;
             lastFrameSpeaker = speaker;
             lastFramePartial = partial;
+            // 热词观测（docs/15 §17）：电脑侧发现"这句提到了表内名字、但译文里没写出规范写法"，
+            // 就随帧带一个中文名列表过来。这里只在**定稿帧**上拼一行小提示：
+            // 增量帧还在一句一句变长，挂提示只会闪；而且它本来就不该被评判。
+            final String watchNote = watchNote(partial, termsMissing);
             // ★ 真眼镜：把这一帧投上去。
             //
             //   眼镜上投的是**手机该显示的那一侧**，不是原始译文：如果佩戴者在看对方的字幕，
@@ -905,7 +909,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             pushToGlasses(text, source);
             if (session != null && session.active) {
                 String time = elapsedLabel();
-                SubtitleList.Segment segment = subtitles.submit(time, source, text, partial);
+                SubtitleList.Segment segment = subtitles.submit(time, source, text, partial, watchNote);
                 if (segment != null) {
                     // 同一片段（同原文）的增量/定稿/校对修订都落到同一条记录行上，
                     // 这样导出的记录里也是一条一句，而不是每次增量一行。
@@ -920,13 +924,26 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                     line.target = text == null ? "" : text;
                 }
                 if (fullscreenList != null) {
-                    fullscreenList.submit(time, source, text, partial);
+                    fullscreenList.submit(time, source, text, partial, watchNote);
                 }
             } else if (text != null && !text.isEmpty()) {
                 // 没在会话里也收到字幕（电脑侧自己在跑）→ 只更新眼镜预览，不污染记录
                 showNote(getString(R.string.processing));
             }
         });
+    }
+
+    /** 把"本句提到的表内名字"拼成一行小提示；没有就返回空串。 */
+    private String watchNote(boolean partial, String[] termsMissing) {
+        if (partial || termsMissing == null || termsMissing.length == 0) return "";
+        StringBuilder names = new StringBuilder();
+        for (String name : termsMissing) {
+            if (name == null || name.isEmpty()) continue;
+            if (names.length() > 0) names.append('、');
+            names.append(name);
+        }
+        if (names.length() == 0) return "";
+        return getString(R.string.terms_watch_hint, names.toString());
     }
 
     @Override

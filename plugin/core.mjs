@@ -97,6 +97,17 @@ export const CONFIG_DEFAULTS = {
   termsActivePath: '',
   /** 替换事件的落盘位置（一行一条 JSON）。留空 = 只打控制台。 */
   termsLogPath: '',
+  /**
+   * 热词观测（A 方案）：一句话里**提到了**表内名字、但译文里**没写出规范写法**时，
+   * 自动记一笔（`watch` 事件 + 手机端小提示），**本场不改字幕**。
+   *
+   * <p>为什么要它：热词表只能"把已知变体改对"；如果模型写了一个**没登记过**的新变体，
+   * 本场救不了（也不知道它写成了什么）。但我们可以**知道"这句话出问题了"**，
+   * 而且记下来的原文+译文正好是离线候选发现的输入 —— 下一场表就补上了。
+   *
+   * <p>`'off'` 时行为与加这个功能之前逐字一致（可回滚）。
+   */
+  termsWatch: 'on',
 
   /**
    * 大模型校对（讯飞那种"两遍"）：第一遍**快速出译文并立刻上屏**，
@@ -207,6 +218,9 @@ export function validateConfig(raw) {
     if (typeof config[key] !== 'string') {
       throw new Error(`leion-pro: ${key} 必须是字符串，收到 ${JSON.stringify(config[key])}`)
     }
+  }
+  if (!['on', 'off'].includes(config.termsWatch)) {
+    throw new Error(`leion-pro: termsWatch 只能是 'on' / 'off'，收到 ${JSON.stringify(config.termsWatch)}`)
   }
   if (config.inboxPath !== '') {
     if (!Number.isInteger(config.inboxPollMs) || config.inboxPollMs < 100) {
@@ -927,7 +941,10 @@ export function normalizeTerms(text, lang, entries) {
     const original = source.slice(match.start, match.end)
     const replacement = match.item.replacement
     out += source.slice(position, match.start)
-    if (foldForTerms(original) === foldForTerms(replacement)) {
+    // 只有**逐字相同**才算"已经是规范写法"。仅大小写/重音/空格不同也属于变体 ——
+    // must 的口径是"命中变体就必须输出规范写法"：`llvision` 必须变成 `LLVision`。
+    // 折叠只负责"找得到"，不负责"不用改"。
+    if (original === replacement) {
       out += original
       events.push({ event: 'hit', id: match.item.entry.id })
     } else {
@@ -941,6 +958,87 @@ export function normalizeTerms(text, lang, entries) {
     if (match.skipped === true) events.push({ event: 'boundary_skip', id: match.item.entry.id })
   }
   return { text: out, events, changed: out !== source }
+}
+
+/**
+ * 在一段文本里"找得到"某个写法（与匹配器同一套折叠与边界规则）。
+ *
+ * <p>为什么不复用 `normalizeTerms`：它按键值找"要替换的变体"，而这里要回答的是
+ * "这段文本里**有没有出现**这个写法（任意已知写法）"—— 关心的是存在性，不是替换。
+ * 规则必须一致，否则会出现"归一认为没出现、观测认为出现了"这种自相矛盾的日志。
+ */
+function mentionsForm(text, form, isZh, foldEnabled, strictBoundary) {
+  const folded = foldForTerms(text)
+  const compact = compactFold(text)
+  // 中文不折叠空格（中文名字里不会有空格），拉丁则连写也算同一个名字（与匹配器一致）
+  const needle = foldEnabled
+    ? (isZh ? foldForTerms(form) : foldForTerms(form).replace(/\s+/g, ''))
+    : form
+  const haystack = foldEnabled ? (isZh ? folded : compact.compact) : text
+  if (needle === '') return false
+  let from = 0
+  for (;;) {
+    const at = haystack.indexOf(needle, from)
+    if (at < 0) return false
+    from = at + 1
+    const start = foldEnabled && isZh === false ? compact.map[at] : at
+    const end = foldEnabled && isZh === false ? compact.map[at + needle.length - 1] + 1 : at + needle.length
+    if (start === undefined || end === undefined) continue
+    if (isZh) {
+      const mustCheck = hanCountOf(form) === 2 || strictBoundary === true
+      if (mustCheck) {
+        if (dangerousZhNeighbor(text.charAt(start - 1)) || dangerousZhNeighbor(text.charAt(end))) continue
+      }
+    } else {
+      if (start > 0 && isWordChar(text.charAt(start - 1))) continue
+      if (end < text.length && isWordChar(text.charAt(end))) continue
+    }
+    return true
+  }
+}
+
+/**
+ * 热词观测（A 方案，docs/15 §17）：找出"源文提到了表内名字、译文里却没有规范写法"的条目。
+ *
+ * <p>纯字符串、零模型调用 —— 它**不判断**模型写得对不对，只判断"规范写法出现了没有"。
+ * 所以它不知道模型写成了什么（那是离线候选发现干的事），但足够回答"这句话有没有问题"。
+ *
+ * @param {string} source 原文
+ * @param {string} text 译文
+ * @param {object[]} entries 已校验的条目
+ * @param {string} from 源语种（zh-CN / pt-BR）
+ * @param {string} to 目标语种
+ * @returns {object[]} `[{ event: 'watch', id, zh, source, translation }]`
+ */
+export function detectTermsMiss(source, text, entries, from, to) {
+  const src = String(source === undefined || source === null ? '' : source)
+  const tgt = String(text === undefined || text === null ? '' : text)
+  if (src === '' || tgt === '' || Array.isArray(entries) !== true || entries.length === 0) return []
+  const sourceZh = String(from).toLowerCase().startsWith('zh')
+  const targetZh = String(to).toLowerCase().startsWith('zh')
+  // 同语种（只会是异常配置）或方向不明 → 不做观测，宁缺勿错
+  if (sourceZh === targetZh) return []
+  const events = []
+  for (const entry of entries) {
+    const direction = entry.direction ?? 'auto'
+    if (direction === 'zh-to-pt' && (sourceZh === false || targetZh === true)) continue
+    if (direction === 'pt-to-zh' && (sourceZh === true || targetZh === false)) continue
+    const foldEnabled = entry.fold !== false
+    const forms = sourceZh
+      ? [entry.zh, ...(entry.variants ?? [])]
+      : [entry.pt, ...(entry.approved ?? [])]
+    const canonical = targetZh ? entry.zh : entry.pt
+    const mentioned = forms.some(form => typeof form === 'string' && form !== ''
+      && mentionsForm(src, form, sourceZh, foldEnabled, entry.strictBoundary === true))
+    if (mentioned === false) continue
+    const canonicalPresent = mentionsForm(tgt, canonical, targetZh, foldEnabled, entry.strictBoundary === true)
+    if (canonicalPresent) continue
+    events.push({
+      event: 'watch', id: entry.id, zh: entry.zh,
+      source: src, translation: tgt,
+    })
+  }
+  return events
 }
 
 export function createInterpreter(ctx, rawConfig, deps) {
@@ -973,7 +1071,7 @@ export function createInterpreter(ctx, rawConfig, deps) {
     /** 校对统计。字段名直说结果，便于在自检和日志里一眼看出"校对到底有没有在干活"。 */
     proofread: { enqueued: 0, settled: 0, fixed: 0, same: 0, rejected: 0, dropped: 0, failed: 0, lastNote: null },
     /** 热词归一（docs/15 §7.1）：用了几条表、替换/命中/边界跳过各几次。 */
-    terms: { enabled: false, user: null, entries: 0, replace: 0, hit: 0, boundarySkip: 0, lastNote: null },
+    terms: { enabled: false, user: null, entries: 0, replace: 0, hit: 0, boundarySkip: 0, watch: 0, lastNote: null },
     /** 最近几句（原文+译文），给校对当上下文用。只留很少几条，避免把提示词撑大。 */
     recent: [],
   }
@@ -1016,6 +1114,12 @@ export function createInterpreter(ctx, rawConfig, deps) {
        */
       partial: input.partial === true,
       lines: fitSubtitle(text, config.cols, config.lines),
+      // 热词观测（docs/15 §17）：本句"提到了表内名字但译文没写出规范写法"的条目。
+      // 手机端据此在字幕下打一行小字（本场不改字幕，只是告诉用户"已记录"）。
+      // 没有就**不放这个字段** —— 帧结构和加这个功能之前逐字一致。
+      ...(Array.isArray(input.termsMiss) && input.termsMiss.length > 0
+        ? { termsMiss: input.termsMiss }
+        : {}),
       // 把显示预算也放进帧里：这样任何下游（真机桥、局域网转发、手机 App）
       // 都能从数据本身知道"眼镜有多大"，不必各自硬编码或各自配一份。
       cols: config.cols,
@@ -1073,6 +1177,11 @@ export function createInterpreter(ctx, rawConfig, deps) {
       return { text: typeof text === 'string' ? text : '', events: [], changed: false }
     }
     return normalizeTerms(text, lang, termEntries)
+  }
+
+  /** 热词观测开关：归一总开关与观测开关**都为 on** 才做（docs/15 §17）。 */
+  function watchEnabled() {
+    return config.terms === 'on' && config.termsWatch === 'on'
   }
 
   /** 每场只读一次表（快照）：运行中改表不影响正在跑的这一场（docs/15 §8.1）。 */
@@ -1140,6 +1249,11 @@ export function createInterpreter(ctx, rawConfig, deps) {
         state.terms.hit += 1
       } else if (event.event === 'boundary_skip') {
         state.terms.boundarySkip += 1
+      } else if (event.event === 'watch') {
+        // 热词观测：本句提到了名字、译文却没写出规范写法 → 记下来（不改字幕）。
+        // 记的是**完整原文+译文**：离线候选发现要拿它们去问"写成了什么"。
+        state.terms.watch += 1
+        console.log('[leion-pro] ◌ 术语观测：' + event.zh + ' 未按对照写法出现（已记录）')
       }
       termsLogLines.push(JSON.stringify({
         t: new Date().toISOString(), where, ...event,
@@ -1336,13 +1450,21 @@ export function createInterpreter(ctx, rawConfig, deps) {
         return true
       }
 
+      // 热词观测（校对后重算）：校对可能把名字补对（那就不该再有提示），
+      // 也可能把名字写坏。放在所有闸之后：只有真要上屏的那一版才值得提示。
+      const correctedWatch = watchEnabled()
+        ? detectTermsMiss(item.source, corrected, termEntries, item.from, item.to)
+        : []
+      await logTermsEvents(correctedWatch, 'proofread')
+
       const frame = buildFrame({ text: corrected, speaker: item.displaySpeaker, lang: item.to,
         // ⚠️ 必须带上**原文**。这是个真踩过的坑：这一行原本没传 source，于是修订帧的
         //    source 退化成译文本身，而手机端是**按原文认"这是同一条字幕"**的 ——
         //    结果"校对改正"到了屏幕上不是原地替换，而是**多出一行**
         //    （那一行的"原文"位置还会显示成译文）。它是合并两个分支时才暴露的：
         //    写校对那会儿，帧里还没有 source 这个字段。
-        source: item.source, sourceLang: item.from })
+        source: item.source, sourceLang: item.from,
+        termsMiss: correctedWatch.map(event => ({ id: event.id, zh: event.zh })) })
       await sendRaw(frame)
       state.lastGoodFrame = frame
       // 历史里那一条要**替换**，不能追加 —— 否则双语历史会多出一条重复的话，
@@ -1961,8 +2083,15 @@ export function createInterpreter(ctx, rawConfig, deps) {
       //   零模型调用、纯字符串；没有表或开关关着时原样返回（行为逐字不变）。
       const normalized = applyTerms(result.text, to)
       await logTermsEvents(normalized.events, 'final')
+      // ★ 热词观测（docs/15 §17）：提到了名字、译文却没写出规范写法 → 记一笔（不改字幕）。
+      //   它回答的是"这句话有没有问题"，不回答"写成了什么"（那由离线候选发现去问模型）。
+      const missed = watchEnabled()
+        ? detectTermsMiss(source, normalized.text, termEntries, from, to)
+        : []
+      await logTermsEvents(missed, 'final')
       const finalFrame = buildFrame({ text: normalized.text, speaker: displaySpeaker, lang: to,
-        source, sourceLang: from })
+        source, sourceLang: from,
+        termsMiss: missed.map(event => ({ id: event.id, zh: event.zh })) })
       await pushFrame(finalFrame)
 
       // ── 排进「校对」队列（第二遍）────────────────────────────────────────

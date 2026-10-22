@@ -31,7 +31,9 @@ import { runLintSuite } from './lint-suite.mjs'
 import { runTermsSuite } from './terms-suite.mjs'
 import { runAccountsSuite } from './accounts-suite.mjs'
 import { runTermsMatcherSuite } from './terms-matcher-suite.mjs'
+import { runTermsWatchSuite } from './terms-watch-suite.mjs'
 import { runTermsEvalSuite } from './terms-eval-suite.mjs'
+import { runDiscoverSuite } from './discover-suite.mjs'
 import { runAndroidOrderSuite } from './android-order-suite.mjs'
 import { runAsrPackSuite } from './asr-pack-suite.mjs'
 import { runLive } from './live/run.mjs'
@@ -218,6 +220,13 @@ await runTermsSuite(helpers)
 heading('热词匹配器（文件边界 / 实体重叠 / 中文边界 / 折叠 / 幂等 / 方向）')
 await runTermsMatcherSuite(helpers)
 
+// ── 7d3.5. 热词观测（"提到了但没写出规范写法" → 记一笔）────────────────────
+// 这是"自动记录"的唯一实现：纯字符串、零模型调用、不改字幕。
+// 测的是"该记的记、不该记的不记"—— 误记会让用户看到假提示，漏记等于功能没做。
+
+heading('热词观测（提到了但没写出规范写法 / 边界 / 方向 / 空输入）')
+await runTermsWatchSuite(helpers)
+
 // ── 7d4. 热词验收集与评分器（阶段 2.5）──────────────────────────────────────
 // 测的是**尺子本身**：验收集的卫生检查会不会真的报错、评分器能不能把
 // "缺失 / 写法错 / 保留中文 / 合法省略 / 可疑改动"分开。
@@ -225,6 +234,14 @@ await runTermsMatcherSuite(helpers)
 
 heading('热词验收集与评分器（三类句子 / 实体提及口径 / 五类结果分得开）')
 await runTermsEvalSuite(helpers)
+
+// ── 7d5. 离线候选变体发现工具（清单生成/解析 + 合并后仍合法）──────────────────
+// 不跑网络：模型定位质量在 docs/15 §15.5 的对照实验里测过。这里守的是
+// "清单格式能被自己的 --apply 解析回去"和"合并后表仍通过校验"这两件事 ——
+// 格式一漂移，候选会被静默丢掉；合并不校验，写进表就是坏表。
+
+heading('离线候选变体发现（清单↔apply 往返 / 合并校验 / 跳过原因）')
+await runDiscoverSuite(helpers)
 
 // ── 7e. 识别测试包（"这是朗读还是真实口语"这类标签）─────────────────────────
 // 这一节的由来很具体：测试包的语体标签原来是**猜**的，新语料一律被标成"朗读"；

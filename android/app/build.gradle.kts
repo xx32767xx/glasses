@@ -33,8 +33,10 @@ android {
     //      热词表页不再让用户填用户名（那等于自报身份、能改别人的表）。
     // 4.8：热词表页去掉重复的「未登录」；账户注册遇到旧版进程时直说（不再只报 not-found）。
     // 4.9：文案收紧（去掉括号里的解释、去掉口语腔、删掉冗余小字），界面只留必要信息。
-    versionCode = 38
-    versionName = "4.9"
+    // 4.10：热词观测 —— 电脑发现"提到了名字但译文没写出规范写法"时，字幕下打一行小字
+    //       （本场不改字幕，只提示"已记录"，下一场比对生效；docs/15 §17）。
+    versionCode = 39
+    versionName = "4.10"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

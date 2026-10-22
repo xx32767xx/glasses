@@ -52,3 +52,6 @@ docs/**/*.pdf
 # `android/app/libs/*.aar` 是**要提交的**（22 MB，编译必需品），
 # 脚本 scripts/build-apk.mjs 会在它缺失时明确报错并给出上面这行命令。
 LeionProDemo_SDK/
+
+# ����װ�Ĵʶ���ʵ��ֿ⣨awesome-align Դ�룬�Ǳ���Ŀ���
+awesome-align-master/
