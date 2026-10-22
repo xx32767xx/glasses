@@ -110,7 +110,9 @@ for (const item of items) {
       const gold = foldForTerms(item.goldSpan).replace(/\s+/g, '')
       const correct = gold !== '' && (from === gold || from.includes(gold) || gold.includes(from))
       const unchangedElsewhere = plan.text.length === item.translation.length - plan.from.length + canonical.length
-      verdict = correct && unchangedElsewhere ? '改对' : (correct ? '改对但长度异常' : '改错')
+      verdict = correct && unchangedElsewhere
+        ? '与人工标注一致'
+        : (correct ? '与人工标注一致（长度异常）' : '会改但不符合人工标注（见 docs/15 §18.4）')
       detail = 'from=' + plan.from + ' gold=' + (item.goldSpan || '(泛称)')
       // 兜底断言：改完必须真的含规范写法
       if (!foldForTerms(plan.text).includes(foldForTerms(canonical))) detail += ' | 结果不含规范写法!'

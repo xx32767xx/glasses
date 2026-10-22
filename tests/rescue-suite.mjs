@@ -1,21 +1,21 @@
 /**
- * rescue-suite.mjs —— 热词临时修正（方向一实验）的纯函数闸门
+ * rescue-suite.mjs —— 热词临时修正（方向一实验，**激进版**）的纯函数闸门
  * ============================================================================
  *
- * 方向一的风险只有一个：**改错**。所以这里全部是"该改就改、不该改一定拒"的成对测试，
- * 覆盖 planRescue 的每一道闸：
+ * 激进版（用户定）：不再要求"与规范写法形状相似" —— 译名/缩写类（`Liangliang Ótica`
+ * vs `Leion`）也允许改；靠下面这组"最小可信闸门"兜底：
  *
  *   ① 范围闸：只换那一小段（其余文字逐字不动）；
- *   ② 相似闸：片段与规范写法要"像同一个名字"（`Liangliang` vs `LLVision` 这类
- *      译名/缩写差异会被拒 —— 那是别名表的活，不是自动修正的活）；
+ *   ② 原样闸：片段必须**原样出现在译文里**（防模型编造）；
  *   ③ 串台闸：片段里夹带别的表内名字 → 拒；
- *   ④ 长度闸：像整句的回答 → 拒；
- *   ⑤ 原样闸：片段没有原样出现在译文里 → 拒；
+ *   ④ 长度闸：≤6 词 / ≤40 字符（防整句）；
+ *   ⑤ 已规范闸：折叠后与规范写法相同 → 拒（无事可做）；
  *   ⑥ 格式闸：改完行数/列数放不下 → 拒。
  *
- * 这组测试同时在 `eval-rescue.mjs`（人工标注集）上被验证过：8 改对 / 0 改错。
+ * 只靠这四条"不猜语义"的前提，所以它不能在标注集上"证明安全"——
+ * 安全靠的是"只改最后一句 + 过期丢弃 + 写表前人工/合闸"（docs/15 §18）。
  */
-import { locateTermSpan, planRescue, sharedBigram } from '../plugin/core.mjs'
+import { locateTermSpan, planRescue } from '../plugin/core.mjs'
 
 const ENTRIES = [
   { id: 'e1', zh: '亮亮视野', pt: 'LLVision', approved: ['LLVision'] },
@@ -53,19 +53,20 @@ export async function runRescueSuite({ it, check }) {
     check('拒掉整句', plan.ok === false, JSON.stringify(plan))
   })
 
-  await it('闸门：与规范写法不像（译名/缩写/泛化）→ 拒', () => {
-    for (const answer of ['Liangliang', '这家公司', 'Beijing']) {
-      const canonical = answer === 'Beijing' ? 'Pequim' : 'LLVision'
-      const plan = planRescue({
-        draft: 'A ' + answer + ' colabora.', answer, canonical, entries: ENTRIES, targetZh: false, cols: 40, lines: 3,
-      })
-      check(`「${answer}」被拒（交给别名表）`, plan.ok === false, JSON.stringify(plan))
-    }
-    // 反例：真的像（拼写只差一点）
-    const ok = planRescue({
-      draft: 'A LLVsion cresceu.', answer: 'LLVsion', canonical: 'LLVision', entries: ENTRIES, targetZh: false, cols: 40, lines: 3,
+  await it('闸门：不像规范写法的译名/缩写也允许（激进版，实测反馈）', () => {
+    // 实测：表里 亮亮眼镜 → Leion，模型写 "Liangliang Ótica"。
+    // 保守版会被"形状相似"拒绝；激进版**允许**（由模型判断它写成了什么），
+    // 靠"原样出现 + 不串台 + 长度 + 格式"兜底。
+    const draft = 'O time de São Paulo fez essa apresentação junto com a Liangliang Ótica.'
+    const plan = planRescue({
+      draft, answer: 'Liangliang Ótica', canonical: 'Leion', entries: ENTRIES, targetZh: false, cols: 40, lines: 3,
     })
-    check('「LLVsion」通过（拼写差一点）', ok.ok === true, JSON.stringify(ok))
+    check('译名类允许通过', plan.ok === true, JSON.stringify(plan))
+    check('只换那一小段（句首冠词不被动）', plan.text === 'O time de São Paulo fez essa apresentação junto com a Leion.', plan.text)
+    const pinyin = planRescue({
+      draft: 'A Liangliang colabora.', answer: 'Liangliang', canonical: 'LLVision', entries: ENTRIES, targetZh: false, cols: 40, lines: 3,
+    })
+    check('音译名也允许通过', pinyin.ok === true, JSON.stringify(pinyin))
   })
 
   await it('闸门：片段里夹带别的表内名字 → 拒（串台）', () => {
@@ -88,11 +89,5 @@ export async function runRescueSuite({ it, check }) {
       draft: 'A LLVision cresceu.', answer: 'LLVision', canonical: 'LLVision', entries: ENTRIES, targetZh: false, cols: 40, lines: 3,
     })
     check('拒（相同）', plan.ok === false, JSON.stringify(plan))
-  })
-
-  await it('共享二元组：同名字高、泛化/译名低（阈值 0.25 的依据）', () => {
-    check('llvision vs LLVision 很高', sharedBigram('llvision', 'LLVision') > 0.9)
-    check('Liangliang Visão vs LLVision 低', sharedBigram('Liangliang Visão', 'LLVision') < 0.25)
-    check('这家公司 vs LLVision 为 0', sharedBigram('这家公司', 'LLVision') === 0)
   })
 }

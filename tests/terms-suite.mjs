@@ -18,8 +18,8 @@ import { join } from 'node:path'
 import { startRelay } from '../relay/lan-relay.mjs'
 import { VAR_DIR } from '../lib/paths.mjs'
 import {
-  DEFAULT_USER, TERMS_LIMITS, foldKey, getTable, loadActiveUser, loadTerms, normalizeUser,
-  saveActiveUser, saveTerms, validateTerms,
+  DEFAULT_USER, TERMS_LIMITS, foldKey, getTable, loadActiveUser, loadTerms, mergePending, normalizeUser,
+  saveActiveUser, saveTerms, termsPendingPath, validateTerms,
 } from '../lib/terms.mjs'
 
 const TMP = join(VAR_DIR, 'test', 'terms-suite')
@@ -331,4 +331,52 @@ export async function runTermsSuite({ it, check, assert }) {
   } finally {
     await relay.close()
   }
+
+  // ── 5. 待入表队列（B 方案：插件追加、relay 合并，docs/15 §18.2）────────
+  await it('待入表合并：合法的进 wrong、队列被清空、能原样读回', async () => {
+    const dir = join(TMP, 'pending-merge')
+    await rm(dir, { recursive: true, force: true })
+    await mkdir(dir, { recursive: true })
+    const checked = validateTerms([{ zh: '亮亮眼镜', pt: 'Leion', approved: ['Leion'] }])
+    await saveTerms(dir, { version: 1, updatedAt: null, tables: { default: { updatedAt: null, entries: checked.entries } } })
+    const line = JSON.stringify({ t: 'now', event: 'pending', user: 'default', zh: '亮亮眼镜', candidate: 'Liangliang Ótica', canonical: 'Leion' })
+    await writeFile(termsPendingPath(dir), line + '\n', 'utf-8')
+
+    const result = await mergePending(dir)
+    check('合入一条', result.merged === 1, JSON.stringify(result))
+    const doc = await loadTerms(dir)
+    const entry = getTable(doc, 'default').entries.find(item => item.zh === '亮亮眼镜')
+    check('变体进了 wrong', JSON.stringify(entry.wrong) === JSON.stringify(['Liangliang Ótica']), JSON.stringify(entry.wrong))
+    check('队列被清空', (await readFile(termsPendingPath(dir), 'utf-8').catch(() => '')) === '', '队列还在')
+  })
+
+  await it('待入表合并：已登记/与规范写法相同 → 跳过；表里没有 → 拒绝并留证据', async () => {
+    const dir = join(TMP, 'pending-skip')
+    await rm(dir, { recursive: true, force: true })
+    await mkdir(dir, { recursive: true })
+    const checked = validateTerms([{ zh: '亮亮眼镜', pt: 'Leion', approved: ['Leion'], wrong: ['Liangliang Ótica'] }])
+    await saveTerms(dir, { version: 1, updatedAt: null, tables: { default: { updatedAt: null, entries: checked.entries } } })
+    const lines = [
+      { event: 'pending', user: 'default', zh: '亮亮眼镜', candidate: 'Liangliang Ótica', canonical: 'Leion' },  // 已登记
+      { event: 'pending', user: 'default', zh: '亮亮眼镜', candidate: 'leion', canonical: 'Leion' },               // 与规范写法相同
+      { event: 'pending', user: 'default', zh: '不存在的名字', candidate: 'Xxx', canonical: 'Leion' },              // 表里没有
+      '坏行不是 JSON',
+    ]
+    await writeFile(termsPendingPath(dir), lines.map(item => (typeof item === 'string' ? item : JSON.stringify(item))).join('\n') + '\n', 'utf-8')
+    const result = await mergePending(dir)
+    check('合入 0 条', result.merged === 0, JSON.stringify(result))
+    check('跳过 2 条（已登记 + 相同）', result.skipped === 2, JSON.stringify(result))
+    check('拒绝 2 条（表里没有 + 坏行）', result.rejected.length === 2, JSON.stringify(result.rejected))
+    check('拒绝明细落盘（可查为什么没合进去）',
+      result.rejectedFile !== null && (await readFile(result.rejectedFile, 'utf-8')).includes('不存在的名字'),
+      String(result.rejectedFile))
+  })
+
+  await it('待入表合并：没有队列文件 → 什么都不做，不报错', async () => {
+    const dir = join(TMP, 'pending-none')
+    await rm(dir, { recursive: true, force: true })
+    await mkdir(dir, { recursive: true })
+    const result = await mergePending(dir)
+    check('返回 0', result.merged === 0 && result.rejected.length === 0, JSON.stringify(result))
+  })
 }

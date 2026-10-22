@@ -862,13 +862,15 @@ export async function runContractSuite(adapter, { it, check, assert }) {
     await box.tools.get('leion_inbox').execute({ action: 'stop' })
   })
 
-  await it('热词临时修正：模型答"译名式"变体 → 闸门拒绝（不改字、不静默）', async () => {
+  await it('热词临时修正（激进版）：译名式变体也改，并写待入表队列', async () => {
     // 实测反馈复现：表里是 亮亮眼镜 → Leion，模型写成 "Liangliang Ótica"
-    //（`Liangliang` 音译 + `Ótica` 意译）。它和规范写法共享字符二元组为 0，
-    // 必须被闸门拒绝 —— 这类"译名/缩写"只能靠别名表，不能靠自动修正。
+    //（音译+意译，与规范写法共享字符为 0）。激进版**接受**：
+    // 本句立即换成 Leion，同时把 `Liangliang Ótica` 追加进待入表队列（B 方案）。
     const store = new Map()
     const path = inboxPathOf('rescue-translit.jsonl')
     const termsPath = inboxPathOf('rescue-translit.json')
+    const pendingPath = inboxPathOf('rescue-translit-pending.jsonl')
+    const sinkPath = inboxPathOf('rescue-translit-bus.json')
     store.set(termsPath, JSON.stringify({ version: 1, tables: { default: { entries: [
       { id: 'e1', zh: '亮亮眼镜', pt: 'Leion', approved: ['Leion'] },
     ] } } }))
@@ -886,18 +888,21 @@ export async function runContractSuite(adapter, { it, check, assert }) {
     }
     const box = await adapter.create({
       llm, fs: makeFakeFs(store),
-      config: { inboxPath: path, inboxPollMs: 100, proofread: 'off', termsRescue: 'on', termsPath },
+      config: {
+        transport: 'file', sinkPath,
+        inboxPath: path, inboxPollMs: 100, proofread: 'off',
+        termsRescue: 'on', termsPath, termsPendingPath: pendingPath,
+      },
     })
     store.set(path, '我们和亮亮眼镜合作。\n')
-    const rejected = await waitFor(async () =>
-      (await box.tools.get('leion_inbox').execute({ action: 'status' })).terms.rescue.rejected >= 1)
-    check('被闸门拒绝', rejected)
-    const status = await box.tools.get('leion_inbox').execute({ action: 'status' })
-    check('问了但没改', status.terms.rescue.asked === 1 && status.terms.rescue.applied === 0,
-      JSON.stringify(status.terms.rescue))
-    check('拒绝原因写进了状态（可查）',
-      typeof status.terms.rescue.lastNote === 'string' && status.terms.rescue.lastNote.includes('差别太大'),
-      status.terms.rescue.lastNote)
+    const applied = await waitFor(async () =>
+      (await box.tools.get('leion_inbox').execute({ action: 'status' })).terms.rescue.applied >= 1)
+    check('改了', applied)
+    const frame = JSON.parse(store.get(sinkPath))
+    check('本句换成规范写法', frame.text === 'A Leion colabora com a nossa equipe.', frame.text)
+    const pending = String(store.get(pendingPath) ?? '')
+    check('待入表队列有记录', pending.includes('"event":"pending"'), pending)
+    check('记录带中文名与候选变体', pending.includes('亮亮眼镜') && pending.includes('Liangliang Ótica'), pending)
     await box.tools.get('leion_inbox').execute({ action: 'stop' })
   })
 

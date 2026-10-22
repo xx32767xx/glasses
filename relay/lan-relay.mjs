@@ -43,7 +43,7 @@ import {
 } from '../lib/paths.mjs'
 import { lintTranslation } from '../lib/translation-lint.mjs'
 import {
-  TERMS_LIMITS, getTable, loadTerms, normalizeUser, putTable, saveActiveUser, saveTerms, validateTerms,
+  TERMS_LIMITS, getTable, loadTerms, mergePending, normalizeUser, putTable, saveActiveUser, saveTerms, validateTerms,
 } from '../lib/terms.mjs'
 import {
   ACCOUNT_LIMITS, hasAccounts, loadAccounts, login, register, revokeToken, saveAccounts, userForToken,
@@ -484,6 +484,30 @@ export async function startRelay(rawOptions = {}) {
     : (...args) => console.log(`[${new Date().toTimeString().slice(0, 8)}]`, ...args)
   /** 音频按秒汇总，避免每秒好几行把终端刷爆 */
   let audioLogAt = 0
+
+  /**
+   * 合并"待入表"队列（B 方案，docs/15 §18.2）。
+   *
+   * <p>只在两个时点做：relay **启动时**、手机请求 `/hello`（= 一场的开始）时。
+   * 这样"表更新"永远发生在**场与场之间**，不会打断正在跑的会话（插件每场读一次快照）；
+   * 而 relay 是正式表唯一的写者，插件只追加队列 —— 没有并发写者。
+   * 失败绝不影响转发：它是旁路学习，不是字幕的必要条件。
+   */
+  async function mergePendingTerms(where) {
+    try {
+      const result = await mergePending(options.dataDir)
+      if (result.merged > 0 || result.rejected.length > 0 || result.skipped > 0) {
+        const extra = result.rejected.length === 0 ? '' : `，拒绝 ${result.rejected.length}`
+        const detail = result.rejectedFile === null ? '' : `（明细见 ${result.rejectedFile}）`
+        debug(`🗂 待入表合并（${where}）：合入 ${result.merged} 条，跳过 ${result.skipped}${extra}${detail}`)
+      }
+      return result
+    } catch (error) {
+      debug(`⚠️ 待入表合并失败（已忽略）：${error?.message ?? error}`)
+      return null
+    }
+  }
+  await mergePendingTerms('启动')
 
   const state = {
     /** 已读到的字幕总线原始内容（内容变了才算新帧） */
@@ -961,6 +985,8 @@ export async function startRelay(rawOptions = {}) {
             debug(`⚠️ 写 terms-active.json 失败：${error?.message ?? error}`)
           })
         }
+        // 一场开始：先把上一场攒下的"待入表"合并进正式表（插件在**下一场**读快照时才生效）
+        await mergePendingTerms('hello')
         send(response, 200, { ok: true, ...info() })
         return
       }

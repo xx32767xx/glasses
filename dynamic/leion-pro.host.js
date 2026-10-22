@@ -458,6 +458,12 @@ const CONFIG_DEFAULTS = {
   /** 替换事件的落盘位置（一行一条 JSON）。留空 = 只打控制台。 */
   termsLogPath: '',
   /**
+   * "待入表"队列（B 方案，docs/15 §18）：临时修正成功时追一条记录到这里，
+   * 由 relay 在**启动 / 每场开始时**合并进 `terms.json`（插件仍然**只读**正式表）。
+   * 留空 = 不写队列（实验可关）。
+   */
+  termsPendingPath: '',
+  /**
    * 热词观测（A 方案）：一句话里**提到了**表内名字、但译文里**没写出规范写法**时，
    * 自动记一笔（`watch` 事件 + 手机端小提示），**本场不改字幕**。
    *
@@ -594,7 +600,7 @@ function validateConfig(raw) {
   if (!['on', 'off'].includes(config.terms)) {
     throw new Error(`leion-pro: terms 只能是 'on' / 'off'，收到 ${JSON.stringify(config.terms)}`)
   }
-  for (const key of ['termsPath', 'termsActivePath', 'termsLogPath']) {
+  for (const key of ['termsPath', 'termsActivePath', 'termsLogPath', 'termsPendingPath']) {
     if (typeof config[key] !== 'string') {
       throw new Error(`leion-pro: ${key} 必须是字符串，收到 ${JSON.stringify(config[key])}`)
     }
@@ -1451,45 +1457,15 @@ function locateTermSpan(text, needle) {
   return { start, end: end + 1 }
 }
 
-/** 两个串的字符二元组重合度（Dice）：用来判断"像不像同一个名字被写错"。 */
-function sharedBigram(a, b) {
-  const left = foldForTerms(String(a)).replace(/\s+/g, '')
-  const right = foldForTerms(String(b)).replace(/\s+/g, '')
-  if (left.length < 2 || right.length < 2) return 0
-  const grams = new Map()
-  for (let index = 0; index < left.length - 1; index += 1) {
-    const gram = left.slice(index, index + 2)
-    grams.set(gram, (grams.get(gram) ?? 0) + 1)
-  }
-  let rightTotal = 0
-  let shared = 0
-  for (let index = 0; index < right.length - 1; index += 1) {
-    rightTotal += 1
-    const gram = right.slice(index, index + 2)
-    const available = grams.get(gram) ?? 0
-    if (available > 0) {
-      shared += 1
-      grams.set(gram, available - 1)
-    }
-  }
-  return rightTotal === 0 ? 0 : (2 * shared) / ((left.length - 1) + rightTotal)
-}
-
 /**
  * 临时修正的**全部闸门**（纯函数）：给"草案、模型答案、规范写法、其它条目"，决定改不改。
  *
- * 任何一关不过就拒绝 —— 宁可少改一条，也不改坏一句。这是方向一实验的核心。
+ * **激进版（实验分支，docs/15 §18）**：去掉了"与规范写法形状相似"这一道 ——
+ * 译名/缩写类（`Liangliang Ótica` vs `Leion`）不再被拒，由模型判断"它写成了什么"。
+ * 代价与护栏：片段必须**原样出现在译文里**、不夹带别的表名、长度受限、
+ * 改完必须过格式验收；而且**只改最后一句**、过期丢弃 —— 不靠"形状像不像"兜底。
  *
- * 闸门（顺序即成本，先便宜的）：
- *   ① 答案非空、不是规范写法本身（折叠后不同）；
- *   ② 字数/长度上限（防止模型回半句）；
- *   ③ 答案必须**原样出现在草案里**（verbatim；折叠/空格容忍）；
- *   ④ 与规范写法共享足够多字符（≥ 0.25）—— 保证是"同一个名字被写错"，而不是"被泛化成这家公司"
- *      （`这家公司`、`Beijing → Pequim` 这类**语义/译名选择**不在这里修，交给别名表）；
- *   ⑤ 答案里不能夹带别的表内名字（防串台）；
- *   ⑥ 拼回后的句子要过格式验收（行数/列数）。
- *
- * @returns {{ ok: true, text: string, from: string, to: string, entry: object } | { ok: false, reason: string }}
+ * @returns {{ ok: true, text: string, from: string, to: string } | { ok: false, reason: string }}
  */
 function planRescue({ draft, answer, canonical, entries, targetZh, cols, lines }) {
   const text = String(draft === undefined || draft === null ? '' : draft)
@@ -1501,8 +1477,8 @@ function planRescue({ draft, answer, canonical, entries, targetZh, cols, lines }
   if (words.length > 6 || raw.length > 40) return { ok: false, reason: '片段太长（可能是一整句）' }
   const span = locateTermSpan(text, raw)
   if (span === null) return { ok: false, reason: '片段没有原样出现在译文里' }
-  if (sharedBigram(raw, canon) < 0.25) return { ok: false, reason: '片段与规范写法差别太大（疑似泛化或译名不同）' }
-  // ⑤ 不得夹带别的表内名字
+  // 激进版不再要求"与规范写法形状相似"——译名/缩写类也允许；靠下面两条兜底。
+  // ② 不得夹带别的表内名字
   for (const other of entries) {
     if (other === null || typeof other !== 'object') continue
     if (other.pt === canon || other.zh === canon) continue
@@ -1514,7 +1490,7 @@ function planRescue({ draft, answer, canonical, entries, targetZh, cols, lines }
     if (hitOther) return { ok: false, reason: '片段里夹带了别的名字（串台）' }
   }
   const replaced = text.slice(0, span.start) + canon + text.slice(span.end)
-  // ⑥ 格式验收：与校对共用同一道闸，避免"行数/列数放不下"的修正上屏
+  // ③ 格式验收：与校对共用同一道闸，避免"行数/列数放不下"的修正上屏
   if (typeof cols === 'number' && typeof lines === 'number') {
     const problem = revisionProblem(text, replaced, cols, lines)
     if (problem !== null) return { ok: false, reason: '格式验收不过：' + problem }
@@ -2028,6 +2004,43 @@ function createInterpreter(ctx, rawConfig, deps) {
   }
 
   /**
+   * 把"这次学到的变体"追加到**待入表队列**（B 方案，docs/15 §18.2）。
+   *
+   * <p>插件**不写正式表**（那是 relay 的职责，避免和手机上传抢同一个文件）：
+   * 只追加一行记录；relay 在启动 / 每场开始时把队列合并进 `terms.json`。
+   * 追加方式只能"读全文 + 整体重写"（fs 服务没有 append），
+   * 而 relay 合并前会先把文件**原子挪走**，所以并发时最多丢一条新增，不会写坏队列。
+   */
+  async function queuePendingLearn(entry, from, to) {
+    if (config.termsPendingPath === '') return false
+    const fs = ctx.get('fs')
+    if (fs === undefined) return false
+    try {
+      const target = await fs.resolve(config.termsPendingPath)
+      let old = ''
+      try {
+        old = await fs.readText(target)
+      } catch {
+        /* 第一次写：队列还不存在 */
+      }
+      const line = JSON.stringify({
+        t: new Date().toISOString(),
+        event: 'pending',
+        user: state.terms.user === null ? 'default' : state.terms.user,
+        zh: entry.zh,
+        candidate: from,
+        canonical: to,
+      })
+      await fs.writeText(target, (old === '' ? '' : old.replace(/\n*$/, '\n')) + line + '\n')
+      console.log('[leion-pro] + 待入表：' + entry.zh + ' ← ' + from)
+      return true
+    } catch (error) {
+      state.terms.lastNote = '待入表写入失败（已忽略）：' + String(error && error.message ? error.message : error)
+      return false
+    }
+  }
+
+  /**
    * 做一次临时修正。返回是否真的做了（调用方据此决定要不要继续。
    *
    * 与 `runOneProofread` 一样只在**空闲**时调用；一次只做一个。
@@ -2138,6 +2151,9 @@ function createInterpreter(ctx, rawConfig, deps) {
       state.terms.rescue.applied += 1
       state.terms.rescue.lastNote = '改了：' + plan.from + ' → ' + plan.to
       console.log('[leion-pro] ✎ 术语修正：' + plan.from + ' → ' + plan.to)
+      // B 方案：本场已改对；同时把"这次学到的变体"追加到待入表队列，
+      // relay 在下一场开始前合并进正式表 —— 这样下一场不靠模型也知道怎么写。
+      await queuePendingLearn(item.entry, plan.from, plan.to)
       return true
     } catch (error) {
       state.terms.rescue.failed += 1

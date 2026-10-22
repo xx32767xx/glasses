@@ -33,7 +33,7 @@ import { join, resolve } from 'node:path'
 import { CHECKOUT } from '../lib/real-tools.mjs'
 import { ensureLoaderLinks } from '../lib/loader-links.mjs'
 import { buildComposition, LIVE_DATA_DIR, repoFile } from '../lib/composition.mjs'
-import { TERMS_LOG_NAME, defaultBus, defaultInbox, defaultSettings, defaultTerms, defaultTermsActive } from '../lib/paths.mjs'
+import { TERMS_LOG_NAME, defaultBus, defaultInbox, defaultSettings, defaultTerms, defaultTermsActive, defaultTermsPending } from '../lib/paths.mjs'
 
 const HELP = `harness-side —— 常驻的 harness 侧进程（给手机 + 局域网转发用）
 
@@ -165,6 +165,8 @@ async function main() {
       termsPath: defaultTerms(options.dataDir).replace(/\\/g, '/'),
       termsActivePath: defaultTermsActive(options.dataDir).replace(/\\/g, '/'),
       termsLogPath: join(options.dataDir, TERMS_LOG_NAME).replace(/\\/g, '/'),
+      // 待入表队列（B 方案，docs/15 §18.2）：插件只追加，relay 在启动/每场开始时合并
+      termsPendingPath: defaultTermsPending(options.dataDir).replace(/\\/g, '/'),
       // 热词临时修正（方向一实验，docs/15 §18，缺省关）：
       // 观测到漏写时问一次模型，可验证才替换那一小段；不改整句、不把校对当反证。
       termsRescue: options.termsRescue ? 'on' : 'off',
