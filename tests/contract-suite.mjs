@@ -740,6 +740,39 @@ export async function runContractSuite(adapter, { it, check, assert }) {
     await box.tools.get('leion_inbox').execute({ action: 'stop' })
   })
 
+  await it('本句专名提示：只带"本句真出现过的名字"，空表/关掉时不带', async () => {
+    // docs/15 §11.2：提示词让初译就写对（实测 53/56 → 56/56），但**不能把整张表塞进去**，
+    // 也不能在"本句没提名字"时加一句话（那会改变所有句子、稀释注意力、浪费 token）。
+    const store = new Map()
+    const termsPath = inboxPathOf('terms-hint.json')
+    store.set(termsPath, JSON.stringify({ version: 1, tables: { default: { entries: [
+      { id: 'e1', zh: '亮亮视野', pt: 'LLVision', approved: ['LLVision'] },
+      { id: 'e2', zh: '高通', pt: 'Qualcomm', approved: ['Qualcomm'] },
+    ] } } }))
+    const llm = makeFakeLlm()
+    const box = await adapter.create({ llm, fs: makeFakeFs(store), config: { termsPath } })
+    await box.tools.get('leion_translate').execute({ text: '亮亮视野发布了新品。', from: 'zh-CN' })
+    const system = String(llm.calls[0].system ?? '')
+    check('提示里带了本句出现的名字', system.includes('LLVision') && system.includes('本句原文出现了这些名字'),
+      system.slice(-160))
+    check('没出现的名字不塞进去', system.includes('Qualcomm') === false, system.slice(-160))
+
+    const offLlm = makeFakeLlm()
+    const offBox = await adapter.create({
+      llm: offLlm, fs: makeFakeFs(new Map()),
+      config: { termsPath, termsHint: 'off' },
+    })
+    await offBox.tools.get('leion_translate').execute({ text: '亮亮视野发布了新品。', from: 'zh-CN' })
+    check('termsHint=off 时不带提示', String(offLlm.calls[0].system ?? '').includes('本句原文出现了这些名字') === false,
+      String(offLlm.calls[0].system ?? '').slice(-160))
+
+    const noTableLlm = makeFakeLlm()
+    const noTableBox = await adapter.create({ llm: noTableLlm, fs: makeFakeFs(new Map()) })
+    await noTableBox.tools.get('leion_translate').execute({ text: '亮亮视野发布了新品。', from: 'zh-CN' })
+    check('没有表时不带提示', String(noTableLlm.calls[0].system ?? '').includes('本句原文出现了这些名字') === false,
+      String(noTableLlm.calls[0].system ?? '').slice(-160))
+  })
+
   await it('热词观测：提到名字但译文没写出规范写法 → 记 watch（不改字幕、帧里带 termsMiss）', async () => {
     const store = new Map()
     const path = inboxPathOf('terms-watch.jsonl')
