@@ -875,9 +875,11 @@ export async function runContractSuite(adapter, { it, check, assert }) {
       { id: 'e1', zh: '亮亮眼镜', pt: 'Leion', approved: ['Leion'] },
     ] } } }))
     const llm = {
+      calls: [],
       listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
       listModels: async () => [{ id: 'deepseek-chat' }],
       stream(options) {
+        this.calls.push(options)
         const isRescue = String(options.system ?? '').includes('术语片段核对')
         const text = isRescue ? 'Liangliang Ótica' : 'A Liangliang Ótica colabora com a nossa equipe.'
         return (async function* () {
@@ -898,6 +900,12 @@ export async function runContractSuite(adapter, { it, check, assert }) {
     const applied = await waitFor(async () =>
       (await box.tools.get('leion_inbox').execute({ action: 'status' })).terms.rescue.applied >= 1)
     check('改了', applied)
+    // 实测踩过的坑：修正请求漏传 reasoningEffort → 适配器默认 high，思考 token 吃光预算，
+    // 回答还没开始写就被截断（finish=max-tokens）。这条钉住"必须显式传"。
+    const rescueCall = llm.calls.find(call => String(call.system ?? '').includes('术语片段核对'))
+    check('修正请求显式传了推理强度（默认 off）',
+      rescueCall !== undefined && rescueCall.reasoningEffort === 'off',
+      JSON.stringify(rescueCall === undefined ? null : rescueCall.reasoningEffort))
     const frame = JSON.parse(store.get(sinkPath))
     check('本句换成规范写法', frame.text === 'A Leion colabora com a nossa equipe.', frame.text)
     const pending = String(store.get(pendingPath) ?? '')

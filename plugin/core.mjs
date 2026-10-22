@@ -1503,7 +1503,7 @@ export function createInterpreter(ctx, rawConfig, deps) {
       }]
       // 刻意**不流式上屏**：校对要么整句替换，要么不动。
       // 边校边显只会让屏幕来回跳，反而更难读。
-      const result = await runStream(llm, {
+      const proofreadOptions = {
         provider: route.providerId,
         model: route.modelId,
         system: proofreadSystem(policy, item.from, item.to),
@@ -1511,7 +1511,16 @@ export function createInterpreter(ctx, rawConfig, deps) {
         maxTokens: config.maxTokens,
         // 温度比翻译再低一点：校对要的是"稳定地判对错"，不是发挥。
         temperature: Math.min(config.temperature, 0.2),
-      }, undefined)
+      }
+      // 与翻译同一套推理强度配置：不显式传的话，适配器默认 high 会拿思考 token 吃预算
+      if (config.reasoningEffort !== '') proofreadOptions.reasoningEffort = config.reasoningEffort
+      let result = await runStream(llm, proofreadOptions, undefined)
+      if (result.ok !== true && config.reasoningEffort !== ''
+        && /REASONING/i.test(String(result.failure))) {
+        const retryOptions = { ...proofreadOptions }
+        delete retryOptions.reasoningEffort
+        result = await runStream(llm, retryOptions, undefined)
+      }
 
       if (result.ok !== true) {
         state.proofread.failed += 1
@@ -1729,20 +1738,33 @@ export function createInterpreter(ctx, rawConfig, deps) {
         content: [{ type: 'text', text: prompt }],
         source: { kind: 'user' },
       }]
-      const result = await runStream(llm, {
+      const streamOptions = {
         provider: route.providerId,
         model: route.modelId,
         system,
         messages,
-        // ⚠️ 这里原来给 40，实测 DeepSeek 会先铺垫一句解释就撞上限（finish=max-tokens），
-        //    整段被当"不完整"丢弃 —— 修正永远不生效。答案只是一个片段，200 足够且不贵。
-        maxTokens: 200,
+        // 实测两连击：① 40 个 token 太小 → 撞上限；② 更大也不够，因为**没传推理强度**，
+        //    DeepSeek 适配器默认 high，思考 token 直接把预算吃光（finish=max-tokens）。
+        //    所以这里：显式传 reasoningEffort（与翻译同一套配置；默认 'off'）+ 给到 600。
+        maxTokens: 600,
         temperature: 0,
-      }, undefined)
+      }
+      if (config.reasoningEffort !== '') streamOptions.reasoningEffort = config.reasoningEffort
+      let result = await runStream(llm, streamOptions, undefined)
+      // 有的路由不接受显式推理强度（UNSUPPORTED_REASONING_EFFORT）：去掉它重试一次
+      if (result.ok !== true && config.reasoningEffort !== ''
+        && /REASONING/i.test(String(result.failure))) {
+        const retryOptions = { ...streamOptions }
+        delete retryOptions.reasoningEffort
+        result = await runStream(llm, retryOptions, undefined)
+      }
       if (result.ok !== true) {
         state.terms.rescue.failed += 1
         state.terms.rescue.lastNote = '临时修正失败（已忽略）：' + result.failure
-        console.log('[leion-pro] – 术语修正失败：' + result.failure)
+        const partial = typeof result.partial === 'string' && result.partial !== ''
+          ? '（已收到的开头：' + result.partial.slice(0, 30) + '…）'
+          : ''
+        console.log('[leion-pro] – 术语修正失败：' + result.failure + partial)
         return true
       }
       state.terms.rescue.asked += 1
