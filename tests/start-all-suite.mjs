@@ -101,6 +101,16 @@ export async function runStartAllSuite({ it, check, assert }) {
     assert.deepEqual(steps.map(s => s.key), ['relay', 'brain'])
   })
 
+  await it('--terms-rescue：实验开关必须真的传到大脑（缺省关，别"以为开了"）', async () => {
+    // 热词临时修正（docs/15 §18）默认关；开了却漏传参数，表现就是
+    // "改了配置、什么都没发生" —— 这条钉住"参数确实落到 brain 命令行"。
+    const plain = buildSteps(parseArgs([])).find(s => s.key === 'brain')
+    check('缺省不带 --terms-rescue', argsOf(plain).includes('--terms-rescue') === false, argsOf(plain))
+    const on = buildSteps(parseArgs(['--terms-rescue'])).find(s => s.key === 'brain')
+    check('带了 --terms-rescue 就传给大脑', argsOf(on).includes('--terms-rescue'), argsOf(on))
+    check('原有参数没被挤掉', argsOf(on).includes('--data-dir') && argsOf(on).includes('--cols'), argsOf(on))
+  })
+
   // ── 2. 参数校验：拼错了要立刻报错，而不是起一半 ─────────────────────────────
 
   await it('非法端口/行列数立刻报错', async () => {
@@ -271,6 +281,7 @@ export async function runStartAllSuite({ it, check, assert }) {
     check('打印了模型缓存位置（上次事故就是这里用了未初始化变量）',
       output.includes('模型缓存'), output.slice(0, 400))
     check('打印了下载源', output.includes('下载源'), output.slice(0, 400))
+    check('打印了临时修正的开关状态（缺省关）', output.includes('临时修正'), output.slice(0, 500))
     check('说明是 dry-run、没真的启动', output.includes('--dry-run'), output.slice(-120))
   })
 

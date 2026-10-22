@@ -50,6 +50,10 @@ const HELP = `start-all —— 一条命令起齐整条链路
   --offline             大脑用离线例句表（不联网、零成本，只认得剧本那 14 句）
   --proofread           打开大模型校对（第二遍）：初译先上屏，空闲时回头改这一句。
                         代价是每句多一次模型调用，但**不占**下一句的初译时间（见 docs/07）
+  --terms-rescue        打开热词临时修正（**实验**，缺省关）：热词观测到"提到了名字、
+                        但译文没写出规范写法"时，空闲时问一次模型"它写成了什么"；
+                        只有片段能验证（原样出现、与规范写法形似、不夹带别的名字）才换那一小段。
+                        见 docs/15 §18（实验分支 exp/rescue-quarantine）
   --public              公网部署（服务器上）：转发进程开强密钥 + 限流 + 音频上限，
                         并绑到 0.0.0.0。**绑公网地址时必须加**，见 docs/10
   --no-transcriber      只起转发 + 大脑（手输文字那条路不需要识别）
@@ -89,6 +93,7 @@ export function parseArgs(argv) {
     lines: 3,
     offline: false,
     proofread: false,
+    termsRescue: false,
     transcriber: true,
     whisperModel: null,          // null = 按设备自动选（见下）
     device: 'cuda',
@@ -109,6 +114,7 @@ export function parseArgs(argv) {
     if (key === 'cpu') { options.device = 'cpu'; options.computeType = 'int8'; continue }
     if (key === 'offline') { options.offline = true; continue }
     if (key === 'proofread') { options.proofread = true; continue }
+    if (key === 'terms-rescue') { options.termsRescue = true; continue }
     if (key === 'no-transcriber') { options.transcriber = false; continue }
     if (key === 'public') { options.public = true; continue }
     if (key === 'open-window') { options.openWindow = true; continue }
@@ -218,6 +224,8 @@ export function buildSteps(options) {
   const brainArgs = ['--data-dir', options.dataDir, '--cols', String(options.cols), '--lines', String(options.lines)]
   if (options.offline) brainArgs.push('--offline')
   if (options.proofread) brainArgs.push('--proofread')
+  // 热词临时修正（实验）：必须真的传到大脑，否则"以为开了"而实际没开
+  if (options.termsRescue) brainArgs.push('--terms-rescue')
   steps.push({
     key: 'brain',
     ...STEPS.brain,
@@ -478,6 +486,11 @@ export async function main(argv = process.argv.slice(2)) {
       ? '想开，但离线例句表不认识校对请求 → 实际不会生效（去掉 --offline 才有意义）'
       : '已开启（初译先上屏，空闲时回头改）')
     : '关闭（加 --proofread 打开）'}`)
+  console.log(`  临时修正    ${options.termsRescue
+    ? (options.offline
+      ? '想开，但离线例句表答不出"写成了什么" → 实际不会生效（去掉 --offline 才有意义）'
+      : '已开启（实验：观测到漏写时问一次模型，可验证才换那一小段）')
+    : '关闭（缺省；加 --terms-rescue 打开，见 docs/15 §18）'}`)
   console.log(`  识别模型    ${options.transcriber ? `${options.whisperModel} / ${options.device} / ${options.computeType}` : '未启动（--no-transcriber）'}`)
   console.log(`  数据目录    ${options.dataDir}`)
   for (const note of envNotes) console.log(`  ${note}`)
