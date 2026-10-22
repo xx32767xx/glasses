@@ -2041,6 +2041,7 @@ function createInterpreter(ctx, rawConfig, deps) {
       || state.displaySeq !== item.seq || state.lastFrame !== item.draftFrame) {
       state.terms.rescue.dropped += 1
       state.terms.rescue.lastNote = '结果回来时屏幕已不是那一句，丢弃'
+      console.log('[leion-pro] – 术语修正丢弃（' + item.entry.zh + '）：屏幕已不是那一句')
       return true
     }
 
@@ -2051,6 +2052,7 @@ function createInterpreter(ctx, rawConfig, deps) {
       if (route.ok !== true) {
         state.terms.rescue.failed += 1
         state.terms.rescue.lastNote = route.failure
+        console.log('[leion-pro] – 术语修正失败：' + route.failure)
         return true
       }
       state.callSeq += 1
@@ -2084,6 +2086,7 @@ function createInterpreter(ctx, rawConfig, deps) {
       if (result.ok !== true) {
         state.terms.rescue.failed += 1
         state.terms.rescue.lastNote = '临时修正失败（已忽略）：' + result.failure
+        console.log('[leion-pro] – 术语修正失败：' + result.failure)
         return true
       }
       state.terms.rescue.asked += 1
@@ -2091,6 +2094,7 @@ function createInterpreter(ctx, rawConfig, deps) {
       if (answer === null) {
         state.terms.rescue.rejected += 1
         state.terms.rescue.lastNote = '回答 NONE（没有可替换的片段）'
+        console.log('[leion-pro] – 术语修正未采纳：模型回答 NONE（没有可替换的片段）')
         return true
       }
       const plan = planRescue({
@@ -2105,12 +2109,16 @@ function createInterpreter(ctx, rawConfig, deps) {
       if (plan.ok !== true) {
         state.terms.rescue.rejected += 1
         state.terms.rescue.lastNote = '临时修正被闸门拒绝：' + plan.reason
+        // ⚠️ 拒绝必须**说出来**（这是实测反馈：拒绝时什么都不打，用户只看到
+        //    "开了开关却什么都没发生"，会以为是开关没生效或代码坏了）。
+        console.log('[leion-pro] – 术语修正未采纳（' + item.entry.zh + '）：' + plan.reason)
         return true
       }
       // 关键：模型调用回来后**再**确认一次屏幕（调用期间可能已经出了下一句）。
       if (state.displaySeq !== item.seq || state.lastFrame !== item.draftFrame) {
         state.terms.rescue.dropped += 1
         state.terms.rescue.lastNote = '修正期间屏幕已换页，丢弃（避免修错对象）'
+        console.log('[leion-pro] – 术语修正丢弃（' + item.entry.zh + '）：修正期间屏幕已换页')
         return true
       }
       await logTermsEvents([{ event: 'rescue', id: item.entry.id, from: plan.from, to: plan.to }], 'final')
