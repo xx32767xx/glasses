@@ -1720,6 +1720,7 @@ export function createInterpreter(ctx, rawConfig, deps) {
         '要核对的名字：' + item.entry.zh + '（规范写法：' + canonical + '）',
         '',
         '请找出译文里实际写这个名字的那一段文字（原样抄写，含冠词也可以）；',
+        '只输出那段文字本身：不要解释、不要引号、不要加"译文里写的是"之类的前缀；',
         '如果译文里根本没有它、或写成了"这家公司/这些眼镜"这类泛称，只回答 NONE。',
       ].join('\n')
       const messages = [{
@@ -1733,7 +1734,9 @@ export function createInterpreter(ctx, rawConfig, deps) {
         model: route.modelId,
         system,
         messages,
-        maxTokens: 40,
+        // ⚠️ 这里原来给 40，实测 DeepSeek 会先铺垫一句解释就撞上限（finish=max-tokens），
+        //    整段被当"不完整"丢弃 —— 修正永远不生效。答案只是一个片段，200 足够且不贵。
+        maxTokens: 200,
         temperature: 0,
       }, undefined)
       if (result.ok !== true) {

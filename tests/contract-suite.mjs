@@ -906,6 +906,45 @@ export async function runContractSuite(adapter, { it, check, assert }) {
     await box.tools.get('leion_inbox').execute({ action: 'stop' })
   })
 
+  await it('热词临时修正：模型回答被 token 上限截断 → 判失败、不写表（实测踩过的坑）', async () => {
+    // 实测：`maxTokens: 40` 时 DeepSeek 垫了一句解释就撞上限（finish=max-tokens），
+    // 于是"修正永远不生效"而且用户只看到一行失败。这里钉住：
+    // 流没正常结束 → failed 计数 + 绝不拿半截回答去改字/写表。
+    const store = new Map()
+    const path = inboxPathOf('rescue-maxtok.jsonl')
+    const termsPath = inboxPathOf('rescue-maxtok.json')
+    const pendingPath = inboxPathOf('rescue-maxtok-pending.jsonl')
+    store.set(termsPath, JSON.stringify({ version: 1, tables: { default: { entries: [
+      { id: 'e1', zh: '亮亮眼镜', pt: 'Leion', approved: ['Leion'] },
+    ] } } }))
+    const llm = {
+      listProviders: () => [{ id: 'deepseek', name: 'DeepSeek' }],
+      listModels: async () => [{ id: 'deepseek-chat' }],
+      stream(options) {
+        const isRescue = String(options.system ?? '').includes('术语片段核对')
+        return (async function* () {
+          yield { type: 'text-delta', index: 0, text: isRescue
+            ? 'Liangliang Ótica（这是译文里写这个名字的一段文字，解释如下…'
+            : 'A Liangliang Ótica colabora com a nossa equipe.' }
+          // 修正那一次故意报"被截断"
+          yield { type: 'finish', reason: { kind: isRescue ? 'max-tokens' : 'stop' } }
+        })()
+      },
+    }
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: { inboxPath: path, inboxPollMs: 100, proofread: 'off', termsRescue: 'on', termsPath, termsPendingPath: pendingPath },
+    })
+    store.set(path, '我们和亮亮眼镜合作。\n')
+    const failed = await waitFor(async () =>
+      (await box.tools.get('leion_inbox').execute({ action: 'status' })).terms.rescue.failed >= 1)
+    check('记为失败', failed)
+    const status = await box.tools.get('leion_inbox').execute({ action: 'status' })
+    check('没有改字', status.terms.rescue.applied === 0, JSON.stringify(status.terms.rescue))
+    check('没有写待入表', String(store.get(pendingPath) ?? '') === '', String(store.get(pendingPath)))
+    await box.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
   await it('热词临时修正：结果回来时屏幕已换句 → 丢弃（避免修错对象）', async () => {
     const store = new Map()
     const path = inboxPathOf('rescue-stale.jsonl')
