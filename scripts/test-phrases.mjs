@@ -51,9 +51,21 @@ export const PHRASES = [
     text: '去年我们的营收是 2.7 亿，今年上半年的增长是 18.6%，其中海外市场贡献了差不多三分之一。',
     why: '小数、百分数、分数 → 三类数字写法都容易出现偏差' },
 
-  { group: 'C 专有名词（不翻译）',
+  { group: 'C 专有名词（表内名字：LLVision / Leion / Qualcomm / Snapdragon 8 Gen 3 / Android / São Paulo）',
     text: '我们和亮亮视野合作开发的这款 Leion Pro，用的是高通的芯片，系统版本是安卓十二。',
-    why: '公司名/产品名要保持原文，安卓十二要译成 Android 12 而不是"十二"' },
+    why: '四个表内名字都要出现规范写法；安卓十二要译成 Android 12 而不是"十二"' },
+  { group: 'C 专有名词（表内名字：LLVision / Leion / Qualcomm / Snapdragon 8 Gen 3 / Android / São Paulo）',
+    text: '亮亮眼镜这条产品线在圣保罗的团队，也在用骁龙 8 Gen 3 的方案。',
+    why: '亮亮眼镜→Leion、圣保罗→São Paulo（approved 写法 Sao Paulo 也算）、骁龙 8 Gen 3→Snapdragon 8 Gen 3' },
+  { group: 'C 专有名词（表内名字：LLVision / Leion / Qualcomm / Snapdragon 8 Gen 3 / Android / São Paulo）',
+    text: '我们和亮亮视野合作开发的这款 Leion Pro，用的是骁龙 8 Gen 3，系统版本是安卓十二。',
+    why: '带空格+数字的型号名：规范写法必须在译文里出现，连写/大小写也要被折叠收敛' },
+  { group: 'C 专有名词（表内名字：LLVision / Leion / Qualcomm / Snapdragon 8 Gen 3 / Android / São Paulo）',
+    text: '亮亮视野的人说，Leion Pro 会在下个季度更新固件，高通那边也会同步。',
+    why: '已登记的错误写法（Liangliang Vision）应当场改成 LLVision；表里没有的变体会在手机字幕下出现"未按对照写法显示，已记录"（§17）' },
+  { group: 'C 专有名词（表内名字：LLVision / Leion / Qualcomm / Snapdragon 8 Gen 3 / Android / São Paulo）',
+    text: '圣保罗的团队和亮亮眼镜一起做了这次演示。',
+    why: 'approved 写法 Sao Paulo → São Paulo；亮亮眼镜 → Leion' },
 
   { group: 'D 巴葡 vs 葡葡（术语表陷阱）',
     text: '从酒店出来，你可以坐公交车或者地铁，在第三个站下车，然后换乘火车，车票在手机应用上买就行。',
@@ -361,7 +373,12 @@ async function main() {
       console.log('')
       console.log('朗读提示：')
       console.log('  · 每句**一口气念完**，只在逗号处停 0.6~1 秒 —— 这才压得出静音判定的问题')
-      console.log('  · 第 16 条（极长句）请**尽量少停**，它专门用来撞 15 秒强制断句')
+      const extreme = PHRASES.findIndex(phrase => phrase.group.startsWith('H'))
+      if (extreme >= 0) {
+        console.log(`  · 第 ${extreme + 1} 条（极长句）请**尽量少停**，它专门用来撞 15 秒强制断句`)
+      }
+      console.log('  · C 组是热词表相关的句子：先跑 `node scripts/test-account.mjs` 备好表，'
+        + '再看译文里是否出现 LLVision / Snapdragon 8 Gen 3 / Android 12 / São Paulo 这些规范写法')
       console.log('  · 念完一句停 2 秒，给屏幕上字幕的时间；再念下一句')
     }
     console.log('')
