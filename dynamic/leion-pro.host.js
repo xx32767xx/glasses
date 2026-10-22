@@ -1758,7 +1758,7 @@ function createInterpreter(ctx, rawConfig, deps) {
       }]
       // 刻意**不流式上屏**：校对要么整句替换，要么不动。
       // 边校边显只会让屏幕来回跳，反而更难读。
-      const result = await runStream(llm, {
+      const proofreadOptions = {
         provider: route.providerId,
         model: route.modelId,
         system: proofreadSystem(policy, item.from, item.to),
@@ -1766,7 +1766,18 @@ function createInterpreter(ctx, rawConfig, deps) {
         maxTokens: config.maxTokens,
         // 温度比翻译再低一点：校对要的是"稳定地判对错"，不是发挥。
         temperature: Math.min(config.temperature, 0.2),
-      }, undefined)
+      }
+      // ⚠️ 与翻译同一套推理强度配置：不显式传的话，适配器默认 high ——
+      //    思考 token 会把 maxTokens 吃光，回答还没开始写就被截断（实测过 rescue 那条路）。
+      //    proofread 走的是同一条适配器，所以同样要显式传。
+      if (config.reasoningEffort !== '') proofreadOptions.reasoningEffort = config.reasoningEffort
+      let result = await runStream(llm, proofreadOptions, undefined)
+      if (result.ok !== true && config.reasoningEffort !== ''
+        && /REASONING/i.test(String(result.failure))) {
+        const retryOptions = { ...proofreadOptions }
+        delete retryOptions.reasoningEffort
+        result = await runStream(llm, retryOptions, undefined)
+      }
 
       if (result.ok !== true) {
         state.proofread.failed += 1
