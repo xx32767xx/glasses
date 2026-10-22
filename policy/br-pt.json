@@ -3,10 +3,12 @@
     "code": "pt-BR",
     "name": "巴西葡萄牙语",
     "fullName": "巴西葡萄牙语（português do Brasil）",
-    "counterpart": { "code": "zh-CN", "name": "简体中文" },
+    "counterpart": {
+      "code": "zh-CN",
+      "name": "简体中文"
+    },
     "why": "用户要的是巴西葡语，不是葡萄牙本土葡语。这是硬约束，不是风格偏好。"
   },
-
   "translationRules": [
     "只输出译文本身。不要解释、不要加引号、不要标注语种、不要重复原文。",
     "数字、时间、金额、人名、公司名、产品名必须原样保留 —— 译错数字比译错语法严重得多。",
@@ -14,37 +16,90 @@
     "AR 屏幕只有 3 行，译文要简洁：可以省掉客套话和重复，但不许做摘要式改写（那会丢信息）。",
     "原文若有口误或语气词，按最合理的意图翻译。"
   ],
-
   "proofreadRules": [
     "你是中巴同传的**校对员**。用户会给你：这一句的原文（语音识别结果，可能有听错）、已经上屏的译文、以及上一句的原文与译文（可能没有）。",
-    "只修**错误**，分三类：① 语音听错导致译文跑偏（用上下文推断说话人真正想说的意思）；② 巴葡用词或语序不地道（尤其别用葡葡的说法）；③ 数字、时间、人名、公司名译错或漏译。",
+    "只修**错误**，分三类：① 语音听错导致译文跑偏（用上下文推断说话人真正想说的意思）；② 巴葡用词或语序不地道（尤其别用葡葡的说法）；③ 数字、时间译错或漏译。",
+    "**专有名词不由你负责**：人名、公司名、产品名的写法由后处理按用户对照表保证。不要改动、替换、音译或意译这些名词（写成别的写法也不行）；只有它在译文里彻底消失、而你确信原文点名了，才补回 —— 补也只用原文里的写法。",
     "**不要做无谓的改动**：译文已经正确、自然，就原样输出。不要润色、不要换同义词、不要调整语序偏好。",
     "只输出校对后的译文本身。不要解释、不要加引号、不要写「已修改」、不要输出原文。",
     "**不许比原译文更长**：屏幕只有 3 行，变长会把开头挤掉。可以更简洁，不可以扩写。",
     "拿不准就不改 —— 同传里把对的改错，比不改严重得多。"
   ],
-
   "ptBrRules": [
     "使用巴西葡语的自然口语表达；不要使用葡萄牙本土（欧洲葡语）的用词和语序。"
   ],
-
   "terminology": [
-    { "zh": "公交车", "br": "ônibus", "ptpt": "autocarro" },
-    { "zh": "地铁", "br": "metrô", "ptpt": "metro" },
-    { "zh": "火车", "br": "trem", "ptpt": "comboio" },
-    { "zh": "车票", "br": "passagem", "ptpt": "bilhete" },
-    { "zh": "高速公路", "br": "rodovia", "ptpt": "autoestrada" },
-    { "zh": "摩托车", "br": "moto", "ptpt": "mota" },
-    { "zh": "手机", "br": "celular", "ptpt": "telemóvel" },
-    { "zh": "冰箱", "br": "geladeira", "ptpt": "frigorífico" },
-    { "zh": "果汁", "br": "suco", "ptpt": "sumo" },
-    { "zh": "冰淇淋", "br": "sorvete", "ptpt": "gelado" },
-    { "zh": "早餐", "br": "café da manhã", "ptpt": "pequeno-almoço" },
-    { "zh": "团队", "br": "time", "ptpt": "equipa" },
-    { "zh": "计划（动词）", "br": "planejar", "ptpt": "planear" },
-    { "zh": "你", "br": "você", "ptpt": "tu" }
+    {
+      "zh": "公交车",
+      "br": "ônibus",
+      "ptpt": "autocarro"
+    },
+    {
+      "zh": "地铁",
+      "br": "metrô",
+      "ptpt": "metro"
+    },
+    {
+      "zh": "火车",
+      "br": "trem",
+      "ptpt": "comboio"
+    },
+    {
+      "zh": "车票",
+      "br": "passagem",
+      "ptpt": "bilhete"
+    },
+    {
+      "zh": "高速公路",
+      "br": "rodovia",
+      "ptpt": "autoestrada"
+    },
+    {
+      "zh": "摩托车",
+      "br": "moto",
+      "ptpt": "mota"
+    },
+    {
+      "zh": "手机",
+      "br": "celular",
+      "ptpt": "telemóvel"
+    },
+    {
+      "zh": "冰箱",
+      "br": "geladeira",
+      "ptpt": "frigorífico"
+    },
+    {
+      "zh": "果汁",
+      "br": "suco",
+      "ptpt": "sumo"
+    },
+    {
+      "zh": "冰淇淋",
+      "br": "sorvete",
+      "ptpt": "gelado"
+    },
+    {
+      "zh": "早餐",
+      "br": "café da manhã",
+      "ptpt": "pequeno-almoço"
+    },
+    {
+      "zh": "团队",
+      "br": "time",
+      "ptpt": "equipa"
+    },
+    {
+      "zh": "计划（动词）",
+      "br": "planejar",
+      "ptpt": "planear"
+    },
+    {
+      "zh": "你",
+      "br": "você",
+      "ptpt": "tu"
+    }
   ],
-
   "speakingFeatures": [
     "日常会话用 **você**，不用 tu（除非南部/特定地区）。",
     "复数第一人称常用 **a gente** 代替 nós：「我们去」→ *a gente vai*。",
@@ -52,7 +107,6 @@
     "属格用 **de**：「你的书」→ *o seu livro*，不用 *o livro de ti*。",
     "语序偏 SVO，口语常省略主语代词。"
   ],
-
   "subtitleDiscipline": [
     "**一条话一帧**：不要把一个长句拆成多次推送，也不要合并两句话。",
     "**宁可简洁**：译文超过约 90 个字符时，优先保留核心信息 + 数字，删掉客套话。",
@@ -60,79 +114,217 @@
     "**专有名词不翻译**：人名、公司名、产品名、地址路名保持原文（可加注音）。",
     "不要为了塞进 3 行而做二次摘要——**摘要会丢数字**，这是同传事故。"
   ],
-
   "properNouns": [
     {
       "zh": "亮亮视野",
-      "approved": ["LLVision", "亮亮视野"],
-      "soundsLike": ["Liangliang", "Liang Liang"],
-      "sourceForms": ["亮亮视野", "LLVision", "Liangliang", "Liang Liang"],
+      "approved": [
+        "LLVision",
+        "亮亮视野"
+      ],
+      "soundsLike": [
+        "Liangliang",
+        "Liang Liang"
+      ],
+      "sourceForms": [
+        "亮亮视野",
+        "LLVision",
+        "Liangliang",
+        "Liang Liang"
+      ],
       "warnWhenApproved": true,
       "mustKeep": true,
       "why": "公司英文名是 LLVision。实测 Hunyuan-MT 与 Qwen2.5 都音译成 Liangliang Vision / Liang Liang Vision —— 对方看到这个写法认不出是哪家公司。warnWhenApproved：这个名气大到模型能自己想起来，所以它写对时也要提示一句（那是先验知识，不是从原文推的）。mustKeep：对方必须能认出是哪家公司，所以**整段丢掉**也要报。"
     },
     {
       "zh": "亮亮眼镜",
-      "approved": ["Leion", "亮亮眼镜"],
+      "approved": [
+        "Leion",
+        "亮亮眼镜"
+      ],
       "soundsLike": [],
-      "sourceForms": ["亮亮眼镜", "Leion", "Leion Pro"],
+      "sourceForms": [
+        "亮亮眼镜",
+        "Leion",
+        "Leion Pro"
+      ],
       "mustKeep": true,
       "why": "产品线名 Leion。sourceForms 里放「Leion Pro」是**真机实测逼出来的**：那句「…合作开发的这款 Leion Pro…」译成了 `Esses óculos que desenvolvemos…`，产品名整个消失，而旧判据一声不响 —— 因为第一关是「原文含 entry.zh」，而 entry.zh 是「亮亮眼镜」，原文写的是 Leion Pro，**这条 entry 压根没进入检查**。mustKeep：说话人专门点了型号，听的人却不知道是哪个产品。⚠️ soundsLike **故意留空**：原来这里跟着写了「Liangliang」，但那是**公司名**（亮亮视野）的音译，不是产品名的 —— 同一个错拼会被两条 entry 各判一次「新造」，一句话报两条同样的错。产品名要防的是**丢掉**，那条路走 mustKeep。"
     },
     {
       "zh": "高通",
-      "approved": ["Qualcomm", "高通"],
-      "soundsLike": ["Gaotong", "Qualcom"],
-      "sourceForms": ["高通", "Qualcomm"],
+      "approved": [
+        "Qualcomm",
+        "高通"
+      ],
+      "soundsLike": [
+        "Gaotong",
+        "Qualcom"
+      ],
+      "sourceForms": [
+        "高通",
+        "Qualcomm"
+      ],
       "mustKeep": true,
       "why": "芯片厂商。实测各家都译对了（Qualcomm）—— 这是**正常翻译**，所以不设 warnWhenApproved：每次都报会变成噪音，而噪音会让人开始忽略警告。soundsLike 里的 Qualcom 是**少一个 m 的常见写法**（此时认可写法不成立，所以能命中）；Gaotong 是音译，留着防将来。"
     },
     {
       "zh": "安卓",
-      "approved": ["Android", "安卓"],
-      "sourceForms": ["安卓", "Android"],
+      "approved": [
+        "Android",
+        "安卓"
+      ],
+      "sourceForms": [
+        "安卓",
+        "Android"
+      ],
       "mustKeep": true,
       "why": "操作系统名。实测各家都译对（Android 12）。留着防的是**整个丢掉**（只留版本号「12」的话，听的人不知道是什么系统的 12）。⚠️ soundsLike **故意留空**：曾想加「Androide」，但那是葡语里对 Android 的**正常写法**（不是错），加了就会假报 —— 这正是「宁可不报」要挡住的那类误报。"
     },
     {
       "zh": "GLXSS ME",
-      "approved": ["GLXSS ME", "GLXSS"],
-      "sourceForms": ["GLXSS ME", "GLXSS"],
+      "approved": [
+        "GLXSS ME",
+        "GLXSS"
+      ],
+      "sourceForms": [
+        "GLXSS ME",
+        "GLXSS"
+      ],
       "mustKeep": true,
       "why": "并列型号（README：「目标型号：Leion Pro（并列 GLXSS ME）」）。⚠️ 它的 sourceForms **只认拉丁写法**，故意不含「亮亮眼镜」—— 否则一句话里提到产品线就会同时命中 Leion 和 GLXSS 两条 entry，而译文只能写一个，另一条必然假报「丢失」。soundsLike 留空：没有实测证据说模型会把它写成什么样，编几个变体就是在赌假报。"
     }
   ],
-
   "nounGenders": {
-    "sala": "f", "reunião": "f", "reunioes": "f", "andar": "m", "quarto": "m",
-    "auditório": "m", "auditorio": "m", "escritório": "m", "escritorio": "m",
-    "casa": "f", "cidade": "f", "rua": "f", "avenida": "f", "porta": "f", "janela": "f",
-    "mesa": "f", "cadeira": "f", "hora": "f", "tarde": "f", "manhã": "f", "manha": "f",
-    "noite": "f", "semana": "f", "empresa": "f", "equipe": "f", "time": "m",
-    "recepção": "f", "recepcao": "f", "fábrica": "f", "fabrica": "f", "feira": "f",
-    "passagem": "f", "estação": "f", "estacao": "f", "parada": "f", "loja": "f",
-    "conta": "f", "receita": "f", "taxa": "f", "meta": "f", "pessoa": "f",
-    "gente": "f", "parte": "f", "legenda": "f", "legendas": "f",
-    "tradução": "f", "traducao": "f", "versão": "f", "versao": "f",
-    "função": "f", "funcao": "f", "linguagem": "f", "língua": "f", "lingua": "f",
-    "gravação": "f", "gravacao": "f", "cadeia": "f", "exibição": "f", "exibicao": "f",
-    "captação": "f", "captacao": "f", "latência": "f", "latencia": "f",
-    "precisão": "f", "precisao": "f", "demonstração": "f", "demonstracao": "f",
-    "colaboração": "f", "colaboracao": "f",
-    "problema": "m", "sistema": "m", "plano": "m", "projeto": "m", "produto": "m",
-    "preço": "m", "preco": "m", "desconto": "m", "contrato": "m", "orçamento": "m",
-    "orcamento": "m", "mercado": "m", "crescimento": "m", "resultado": "m",
-    "trabalho": "m", "tempo": "m", "lugar": "m", "local": "m", "hotel": "m",
-    "aplicativo": "m", "celular": "m", "carregador": "m", "microfone": "m",
-    "dispositivo": "m", "usuário": "m", "usuario": "m", "chip": "m", "plugin": "m",
-    "idioma": "m", "parâmetro": "m", "parametro": "m", "texto": "m", "trem": "m",
-    "ônibus": "m", "onibus": "m", "metrô": "m", "metro": "m", "suco": "m",
-    "sorvete": "m", "café": "m", "cafe": "m", "almoço": "m", "almoco": "m",
-    "ano": "m", "dia": "m", "trimestre": "m", "semestre": "m", "lado": "m",
-    "jeito": "m", "coração": "m", "coracao": "m", "teste": "m", "erro": "m",
-    "áudio": "m", "audio": "m", "vídeo": "m", "video": "m", "grupo": "m",
-    "objetivo": "m", "atraso": "m", "ritmo": "m"
+    "sala": "f",
+    "reunião": "f",
+    "reunioes": "f",
+    "andar": "m",
+    "quarto": "m",
+    "auditório": "m",
+    "auditorio": "m",
+    "escritório": "m",
+    "escritorio": "m",
+    "casa": "f",
+    "cidade": "f",
+    "rua": "f",
+    "avenida": "f",
+    "porta": "f",
+    "janela": "f",
+    "mesa": "f",
+    "cadeira": "f",
+    "hora": "f",
+    "tarde": "f",
+    "manhã": "f",
+    "manha": "f",
+    "noite": "f",
+    "semana": "f",
+    "empresa": "f",
+    "equipe": "f",
+    "time": "m",
+    "recepção": "f",
+    "recepcao": "f",
+    "fábrica": "f",
+    "fabrica": "f",
+    "feira": "f",
+    "passagem": "f",
+    "estação": "f",
+    "estacao": "f",
+    "parada": "f",
+    "loja": "f",
+    "conta": "f",
+    "receita": "f",
+    "taxa": "f",
+    "meta": "f",
+    "pessoa": "f",
+    "gente": "f",
+    "parte": "f",
+    "legenda": "f",
+    "legendas": "f",
+    "tradução": "f",
+    "traducao": "f",
+    "versão": "f",
+    "versao": "f",
+    "função": "f",
+    "funcao": "f",
+    "linguagem": "f",
+    "língua": "f",
+    "lingua": "f",
+    "gravação": "f",
+    "gravacao": "f",
+    "cadeia": "f",
+    "exibição": "f",
+    "exibicao": "f",
+    "captação": "f",
+    "captacao": "f",
+    "latência": "f",
+    "latencia": "f",
+    "precisão": "f",
+    "precisao": "f",
+    "demonstração": "f",
+    "demonstracao": "f",
+    "colaboração": "f",
+    "colaboracao": "f",
+    "problema": "m",
+    "sistema": "m",
+    "plano": "m",
+    "projeto": "m",
+    "produto": "m",
+    "preço": "m",
+    "preco": "m",
+    "desconto": "m",
+    "contrato": "m",
+    "orçamento": "m",
+    "orcamento": "m",
+    "mercado": "m",
+    "crescimento": "m",
+    "resultado": "m",
+    "trabalho": "m",
+    "tempo": "m",
+    "lugar": "m",
+    "local": "m",
+    "hotel": "m",
+    "aplicativo": "m",
+    "celular": "m",
+    "carregador": "m",
+    "microfone": "m",
+    "dispositivo": "m",
+    "usuário": "m",
+    "usuario": "m",
+    "chip": "m",
+    "plugin": "m",
+    "idioma": "m",
+    "parâmetro": "m",
+    "parametro": "m",
+    "texto": "m",
+    "trem": "m",
+    "ônibus": "m",
+    "onibus": "m",
+    "metrô": "m",
+    "metro": "m",
+    "suco": "m",
+    "sorvete": "m",
+    "café": "m",
+    "cafe": "m",
+    "almoço": "m",
+    "almoco": "m",
+    "ano": "m",
+    "dia": "m",
+    "trimestre": "m",
+    "semestre": "m",
+    "lado": "m",
+    "jeito": "m",
+    "coração": "m",
+    "coracao": "m",
+    "teste": "m",
+    "erro": "m",
+    "áudio": "m",
+    "audio": "m",
+    "vídeo": "m",
+    "video": "m",
+    "grupo": "m",
+    "objetivo": "m",
+    "atraso": "m",
+    "ritmo": "m"
   },
-
   "lintNote": "properNouns / nounGenders 是**译文质检**的判据数据，见 lib/translation-lint.mjs 与 docs/08。质检**已经接进产线**（转发进程对每个定稿帧跑，只报不改），但**这两张表仍然不进提示词** —— nounGenders 要靠原文比对才判得出来，而产线那一层只看当前这一句。⚠️ 但 properNouns.approved 是另一回事：它和上面的术语表性质相同（都是「这个词必须这么写」），所以**「要不要把认可的英文名写进提示词」是一个还没做的决定** —— 目前模型不知道「亮亮视野 → LLVision」，只能靠先验知识猜或音译，这正是「专名新造」那类错的来源。没做的原因：改提示词等于改模型行为，会让 docs/08 那批横评数字失去可比性，得先量一版再上。"
 }
