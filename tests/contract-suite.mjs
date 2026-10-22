@@ -911,6 +911,16 @@ export async function runContractSuite(adapter, { it, check, assert }) {
     const pending = String(store.get(pendingPath) ?? '')
     check('待入表队列有记录', pending.includes('"event":"pending"'), pending)
     check('记录带中文名与候选变体', pending.includes('亮亮眼镜') && pending.includes('Liangliang Ótica'), pending)
+    // 再说一遍同一句：应再修正一次，但队列**不重复写**（实测：反复说会让队列膨胀）
+    // 注意要**追加**新行（收件箱按已消费偏移读，覆盖写会被当成"已读过"）
+    store.set(path, String(store.get(path) ?? '') + '我们和亮亮眼镜合作。\n')
+    const appliedAgain = await waitFor(async () =>
+      (await box.tools.get('leion_inbox').execute({ action: 'status' })).terms.rescue.applied >= 2)
+    check('第二次也修正了', appliedAgain)
+    const pendingAfter = String(store.get(pendingPath) ?? '')
+    check('队列去重：同一变体只有一行',
+      pendingAfter.split('\n').filter(line => line.includes('"event":"pending"')).length === 1,
+      pendingAfter)
     await box.tools.get('leion_inbox').execute({ action: 'stop' })
   })
 

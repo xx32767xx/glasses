@@ -2033,10 +2033,24 @@ function createInterpreter(ctx, rawConfig, deps) {
       } catch {
         /* 第一次写：队列还不存在 */
       }
+      const user = state.terms.user === null ? 'default' : state.terms.user
+      // 去重：同一个（用户 + 中文名 + 候选变体）已经在队列里就不重复写。
+      // 实测：同一句话反复说、或同一变体反复出现时，队列会一条条膨胀；
+      // 而且合并时它们本来也会按"已登记"跳过，写了没意义。
+      const alreadyQueued = old.split(/\r?\n/).some(line => {
+        try {
+          const record = JSON.parse(line)
+          return record !== null && record.event === 'pending' && record.user === user
+            && record.zh === entry.zh && record.candidate === from
+        } catch {
+          return false
+        }
+      })
+      if (alreadyQueued) return false
       const line = JSON.stringify({
         t: new Date().toISOString(),
         event: 'pending',
-        user: state.terms.user === null ? 'default' : state.terms.user,
+        user,
         zh: entry.zh,
         candidate: from,
         canonical: to,
