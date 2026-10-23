@@ -102,6 +102,20 @@ def _error_of(thunk):
     return ""
 
 
+def _exit_message_of(thunk):
+    """命令行工具里有几处用 SystemExit 报错（对用户就是一句提示）。
+
+    ⚠️ 它是 BaseException 的子类，`_error_of`（只接 ValueError）接不住 ——
+    直接把 lambda 传给 `_error_of` 会让整个测试进程退出、退出码 1，
+    看起来像"整套失败了"，实际只是那条断言没被这条路径覆盖到。
+    """
+    try:
+        thunk()
+    except SystemExit as error:
+        return str(error)
+    return ""
+
+
 def _partial_payload():
     """造一份"只跑了 C1,T2"的最小 payload，用来验证报告有没有如实标注。"""
     row = {
@@ -1728,6 +1742,91 @@ def main():
     limited["config"] = {**partial["config"], "limit": 3}
     check("--limit 的结果在报告里标明**不是完整结果**",
           "不能当基线读" in ov.render_report(limited))
+
+    # ⑭ 收音质量量化（mic_eval）：指标算法本身必须先在合成信号上对过
+    #
+    # 这些检查为什么必须有：报告里会出现"眼镜比手机 SNR 高 X dB"这样的结论，
+    # 而一旦指标算法本身错了（比如分位数取反、削波门槛写错），
+    # 结论会**看起来完全正常**却是假的。所以先用已知答案的合成信号钉住算法。
+    import mic_eval as mic
+
+    heading("收音质量量化 · 指标算法（合成信号，已知答案）")
+    probe_rate = 16000
+    probe_seconds = 6
+    probe_t = np.arange(probe_rate * probe_seconds) / probe_rate
+    probe_tone = 0.2 * np.sin(2 * np.pi * 440 * probe_t)
+    probe_tone[probe_rate: 2 * probe_rate] = 0.0
+    probe_tone[3 * probe_rate: 4 * probe_rate] = 0.0
+    rng = np.random.default_rng(7)
+    synthetic = probe_tone + rng.normal(0, 0.002, probe_tone.size)   # 语音档 0.1414 / 噪声 0.002 → 约 37 dB
+
+    stats = mic.si_snr_like(synthetic, probe_rate)
+    check("信噪比：合成信号约 37 dB，算法算出来要落在这个区间",
+          30 <= stats["snrDb"] <= 45, stats["snrDb"])
+    check("噪声底取自静音段（不是被说话声抬高）",
+          abs(stats["noise"] - 0.002) < 0.001, stats["noise"])
+    check("干净信号不报削波", mic.clipping(synthetic) == 0, mic.clipping(synthetic))
+    check("人为放大到削波后必须检出", mic.clipping(np.clip(synthetic * 8, -1, 1)) > 0,
+          mic.clipping(np.clip(synthetic * 8, -1, 1)))
+    check("直流偏置能检出", abs(mic.dc_offset(synthetic + 0.05) - 0.05) < 1e-3,
+          mic.dc_offset(synthetic + 0.05))
+    check("纯噪声段不报削波",
+          mic.clipping(np.zeros(probe_rate * 2, dtype=np.float32)
+                       + rng.normal(0, 0.0005, probe_rate * 2)) == 0)
+
+    spectrum = mic.ltas(synthetic, probe_rate)
+    check("频带能量占比合计应接近 100%（缺频带会让百分比失真）",
+          abs(sum(value for key, value in spectrum.items() if not key.startswith("_")) - 100) < 1,
+          sum(value for key, value in spectrum.items() if not key.startswith("_")))
+    check("440 Hz 的能量必须落进 250–1k 两个带里（频带边界写错会跑到别处）",
+          spectrum["250"] + spectrum["500"] > 60, f"250={spectrum['250']} 500={spectrum['500']}")
+    check("高于 Nyquist/2 的频带对 16k 音频必须是 0（否则说明带边界算错）",
+          spectrum["_above8k"] == 0, spectrum["_above8k"])
+
+    check("平静信号不应被报成块接缝咔哒",
+          mic.block_clicks(np.tile(probe_tone[:probe_rate], 3), probe_rate)["ratio"] == 0,
+          mic.block_clicks(np.tile(probe_tone[:probe_rate], 3), probe_rate))
+    clicky = np.tile(np.zeros(probe_rate, dtype=np.float32) + 0.001, 3)
+    clicky[probe_rate] = 0.9
+    clicky[2 * probe_rate] = 0.9
+    check("人为加了周期性跳变时必须检出", mic.block_clicks(clicky, probe_rate)["count"] >= 1,
+          mic.block_clicks(clicky, probe_rate))
+
+    check("CER：完全相同为 0",
+          mic.cer("亮亮眼镜这条产品线", "亮亮眼镜这条产品线") == 0)
+    check("CER：错一个字 = 1/字数（亮亮眼镜→亮亮眼睛 是 1/4）",
+          abs(mic.cer("亮亮眼镜", "亮亮眼睛") - 0.25) < 1e-9, mic.cer("亮亮眼镜", "亮亮眼睛"))
+    check("CER 会先去掉标点（否则标点差异会被算成错字）",
+          mic.cer("你好，世界。", "你好世界") == 0)
+    check("裸 PCM 没给采样率时必须报错（猜错采样率会让指标全错）",
+          "必须给 --rate" in _exit_message_of(lambda: mic.read_audio(
+              ROOT / "var" / "asr-eval" / "__nope__.pcm")))
+
+    # 8-bit wav 必须被**明确拒绝**，而不是被当成 16-bit 读成乱码；
+    # 16-bit 的读回来必须与写入一致 —— 这两条一起锁住"读音频"这一层。
+    probe_dir = ROOT / "var" / "tmp"
+    probe_dir.mkdir(parents=True, exist_ok=True)
+    bad_wav = probe_dir / "mic-eval-probe-8bit.wav"
+    with wave.open(str(bad_wav), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(1)
+        handle.setframerate(16000)
+        handle.writeframes(b"\x80" * 1600)
+    check("8-bit wav 明确拒绝（不静默读成乱码）",
+          "只支持 16-bit" in _exit_message_of(lambda: mic.read_audio(bad_wav)))
+    good_wav = probe_dir / "mic-eval-probe-16bit.wav"
+    payload = (np.sin(np.arange(1600) / 20) * 8000).astype("<i2")
+    with wave.open(str(good_wav), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16000)
+        handle.writeframes(payload.tobytes())
+    loaded, loaded_rate, _fmt = mic.read_audio(good_wav)
+    check("16-bit wav 读回来的采样值与采样率都与写入一致",
+          loaded_rate == 16000 and int(round(loaded[10] * 32768)) == int(payload[10]),
+          f"rate={loaded_rate} value={loaded[10]}")
+    bad_wav.unlink()
+    good_wav.unlink()
 
     # ── 结果 ────────────────────────────────────────────────────────────────
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
