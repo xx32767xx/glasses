@@ -3,133 +3,179 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>术语库管理台（管理员）</title>
+<title>术语库管理控制台</title>
 <style>
-  :root { --bg:#f6f8fa; --card:#fff; --line:#e2e8f0; --ink:#1e293b; --muted:#64748b;
-          --brand:#0e7490; --ok:#15803d; --bad:#be123c; --warn:#b45309; }
+  :root {
+    --bg:#0b1220; --panel:#151f30; --panel2:#1b2739; --line:#26344a;
+    --ink:#e8eef7; --muted:#93a4bb; --brand:#38bdf8; --ok:#34d399; --bad:#fb7185; --warn:#fbbf24;
+  }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
-  header { display:flex; align-items:center; gap:12px; padding:12px 20px; background:#fff; border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5; }
-  header h1 { font-size:16px; margin:0; }
-  .pill { font-size:12px; padding:2px 10px; border-radius:999px; border:1px solid var(--line); color:var(--muted); }
-  .pill.on { color:var(--ok); border-color:#bbf7d0; background:#f0fdf4; }
-  .pill.off { color:var(--muted); }
-  .spacer { flex:1; }
-  main { max-width:1180px; margin:0 auto; padding:16px 20px 60px; display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-  @media (max-width:1000px){ main { grid-template-columns:1fr; } }
-  section { background:var(--card); border:1px solid var(--line); border-radius:12px; overflow:hidden; }
-  section > h2 { margin:0; padding:10px 14px; font-size:13px; background:#f8fafc; border-bottom:1px solid var(--line); display:flex; gap:8px; align-items:center; }
-  .body { padding:12px 14px; }
+  html,body { height:100%; }
+  body { margin:0; background:radial-gradient(1200px 600px at 50% -10%, #16324a 0%, var(--bg) 55%); color:var(--ink);
+         font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
+
+  /* ── 全屏登录 ─────────────────────────────────────────── */
+  #loginView { min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
+  .card { width:min(420px,100%); background:linear-gradient(180deg,var(--panel2),var(--panel));
+          border:1px solid var(--line); border-radius:18px; padding:28px 26px 22px;
+          box-shadow:0 30px 80px rgba(0,0,0,.45); }
+  .card h1 { margin:0 0 4px; font-size:20px; letter-spacing:.4px; }
+  .card p.sub { margin:0 0 18px; color:var(--muted); font-size:12.5px; }
+  .field { margin-bottom:12px; }
+  .field label { display:block; font-size:12px; color:var(--muted); margin-bottom:6px; }
+  .field input { width:100%; padding:11px 12px; border-radius:10px; border:1px solid var(--line);
+                 background:#0d1622; color:var(--ink); outline:none; font:inherit; }
+  .field input:focus { border-color:var(--brand); box-shadow:0 0 0 3px rgba(56,189,248,.15); }
+  .btn { padding:11px 14px; border-radius:10px; border:none; font:inherit; font-weight:600; cursor:pointer;
+         background:linear-gradient(135deg,#0ea5e9,#22d3ee); color:#06202b; }
+  .btn.block { width:100%; }
+  .btn:disabled { opacity:.5; cursor:not-allowed; }
+  .btn.ghost { background:transparent; border:1px solid var(--line); color:var(--muted); font-weight:500; padding:7px 12px; }
+  .btn.ok { background:var(--ok); color:#052e20; padding:6px 12px; font-weight:600; }
+  .btn.bad { background:var(--bad); color:#2b0b12; padding:6px 12px; font-weight:600; }
+  .msg { margin-top:12px; font-size:12.5px; min-height:18px; color:var(--muted); }
+  .msg.err { color:var(--bad); }
+
+  /* ── 控制台 ───────────────────────────────────────────── */
+  #consoleView { display:none; min-height:100vh; }
+  header.top { position:sticky; top:0; z-index:10; display:flex; align-items:center; gap:12px;
+               padding:12px 20px; background:rgba(11,18,32,.92); border-bottom:1px solid var(--line); }
+  header.top h1 { font-size:15px; margin:0; }
+  .who { margin-left:auto; font-size:12.5px; color:var(--muted); }
+  .pill { font-size:11.5px; padding:2px 9px; border-radius:999px; border:1px solid var(--line); color:var(--muted); }
+  .pill.on { color:var(--ok); border-color:#1c4b3a; background:#0d2620; }
+  main.wrap { max-width:1180px; margin:0 auto; padding:18px 20px 60px; display:grid; gap:16px; grid-template-columns:1fr 1fr; }
+  @media (max-width:980px) { main.wrap { grid-template-columns:1fr; } }
+  section.panel { background:var(--panel); border:1px solid var(--line); border-radius:14px; overflow:hidden; }
+  section.panel h2 { margin:0; padding:11px 14px; font-size:13px; background:var(--panel2);
+                     border-bottom:1px solid var(--line); display:flex; align-items:center; gap:8px; }
+  section.panel .body { padding:12px 14px; }
   table { width:100%; border-collapse:collapse; font-size:13px; }
-  th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th,td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
   th { color:var(--muted); font-weight:600; font-size:12px; }
-  input,select,textarea { font:inherit; padding:7px 9px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--ink); }
-  textarea { width:100%; min-height:120px; font-family:ui-monospace,Consolas,monospace; font-size:12.5px; }
-  button { font:inherit; padding:7px 13px; border-radius:8px; border:1px solid transparent; background:var(--brand); color:#fff; cursor:pointer; }
-  button.ghost { background:#fff; color:var(--muted); border-color:var(--line); }
-  button.ok { background:var(--ok); }
-  button.bad { background:var(--bad); }
-  button:disabled { opacity:.5; cursor:not-allowed; }
-  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:8px 0; }
-  .muted { color:var(--muted); font-size:12.5px; }
-  .mono { font-family:ui-monospace,Consolas,monospace; font-size:12px; word-break:break-all; }
-  .empty { color:var(--muted); padding:10px 0; }
-  .toast { position:fixed; right:18px; bottom:18px; background:#0f1720; color:#fff; padding:10px 14px; border-radius:10px; opacity:0; transition:.2s; }
+  tr.click { cursor:pointer; }
+  tr.click:hover { background:#182335; }
+  .mono { font-family:ui-monospace,Consolas,monospace; font-size:12px; word-break:break-all; color:var(--muted); }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:7px 0; }
+  .row input { padding:8px 10px; border-radius:9px; border:1px solid var(--line); background:#0d1622; color:var(--ink); font:inherit; }
+  textarea { width:100%; min-height:110px; padding:10px; border-radius:9px; border:1px solid var(--line);
+             background:#0d1622; color:var(--ink); font-family:ui-monospace,Consolas,monospace; font-size:12.5px; }
+  .empty { color:var(--muted); font-size:13px; padding:8px 0; }
+  .toast { position:fixed; right:18px; bottom:18px; background:#101a28; border:1px solid var(--line);
+           border-radius:12px; padding:11px 15px; font-size:13px; opacity:0; transition:.2s; pointer-events:none; }
   .toast.show { opacity:1; }
-  details summary { cursor:pointer; color:var(--brand); }
+  #modal { position:fixed; inset:0; background:rgba(4,8,14,.72); display:none; align-items:center; justify-content:center; padding:20px; z-index:50; }
+  #modal.show { display:flex; }
+  #modal .sheet { width:min(680px,100%); max-height:80vh; overflow:auto; background:var(--panel);
+                  border:1px solid var(--line); border-radius:16px; }
+  #modal .sheet h3 { margin:0; padding:13px 16px; border-bottom:1px solid var(--line); font-size:14px; }
+  #modal .sheet .body { padding:12px 16px 18px; }
+  .entry { padding:7px 0; border-bottom:1px dashed var(--line); font-size:13px; }
+  .entry:last-child { border-bottom:none; }
+  .tag { font-size:11px; color:var(--muted); margin-left:6px; }
 </style>
 </head>
 <body>
-<header>
-  <h1>术语库管理台</h1>
-  <span class="pill" id="whoami">未登录</span>
-  <span class="spacer"></span>
-  <input id="secretInput" placeholder="共享密钥（relay 启动横幅里那个）" style="width:260px" onkeydown="if(event.key==='Enter')saveSecret()">
-  <button class="ghost" onclick="saveSecret()">保存密钥</button>
-  <span class="muted">连的是 relay 的真实接口（/org/*）</span>
-</header>
 
-<main>
-  <section>
-    <h2>① 登录 <span class="muted" id="loginHint"></span></h2>
-    <div class="body">
-      <div class="row">
-        <input id="email" placeholder="邮箱（如 boss@example.com）" style="flex:1">
-        <button class="ghost" onclick="requestCode()">获取验证码</button>
-      </div>
-      <div class="row">
-        <input id="code" placeholder="6 位验证码" style="flex:1">
-        <button onclick="login()">登录</button>
-      </div>
-      <div class="muted">验证码打印在电脑端 relay 控制台（本机工具，不接邮件服务）。</div>
-      <div class="mono" id="tokenLine"></div>
+<div id="loginView">
+  <div class="card">
+    <h1>术语库管理控制台</h1>
+    <p class="sub">管理员登录 · 用户名 + 密码</p>
+
+    <div class="field">
+      <label>共享密钥（relay 启动横幅里那串；本机浏览器会记住）</label>
+      <input id="secret" autocomplete="off" placeholder="例如 ee4b42190b9a">
     </div>
-  </section>
-
-  <section>
-    <h2>② 库列表</h2>
-    <div class="body">
-      <div class="row"><button class="ghost" onclick="loadLibraries()">刷新</button></div>
-      <div id="libs" class="empty">（登录后加载）</div>
+    <div class="field">
+      <label>用户名</label>
+      <input id="username" autocomplete="username" placeholder="管理员账号">
     </div>
-  </section>
-
-  <section>
-    <h2>③ 批量导入</h2>
-    <div class="body">
-      <div class="muted">粘贴 JSON 数组；每条一个库。<code>id</code> 可省略（省略则新建）。</div>
-      <textarea id="importText"></textarea>
-      <div class="row">
-        <button class="ghost" onclick="fillSample()">填入示例</button>
-        <button onclick="doImport()">导入</button>
-      </div>
-      <div class="mono" id="importOut"></div>
+    <div class="field">
+      <label>密码</label>
+      <input id="password" type="password" autocomplete="current-password" placeholder="密码"
+             onkeydown="if(event.key==='Enter')login()">
     </div>
-  </section>
+    <button class="btn block" id="loginBtn" onclick="login()">登录</button>
+    <div class="msg" id="loginMsg"></div>
+  </div>
+</div>
 
-  <section>
-    <h2>④ 账号（管理员可手动加测试账号）</h2>
-    <div class="body">
-      <div class="row">
-        <input id="acUser" placeholder="用户名（登录用）" style="flex:1">
-        <input id="acPass" placeholder="密码（≥6 位）" style="flex:1">
-      </div>
-      <div class="row">
-        <input id="acEmail" placeholder="邮箱（可空）" style="flex:1">
-        <input id="acDays" placeholder="有效天数（测试账号）" style="width:150px">
-        <button onclick="createAccount()">添加</button>
-      </div>
-      <div class="muted">注册用「邮箱+用户名+密码+验证码」；这里加的是**测试账号**（dev，只读、默认 7 天过期、不发验证码）。</div>
-      <div class="row"><button class="ghost" onclick="loadAccounts()">刷新账号</button></div>
-      <div id="accounts" class="empty">（登录后加载）</div>
-    </div>
-  </section>
+<div id="consoleView">
+  <header class="top">
+    <h1>术语库管理控制台</h1>
+    <span class="pill" id="rolePill">—</span>
+    <span class="who" id="who">—</span>
+    <button class="btn ghost" onclick="logout()">退出登录</button>
+  </header>
 
-  <section>
-    <h2>④ 待审申请 <span class="muted" id="pendingCount"></span></h2>
-    <div class="body"><div id="pending" class="empty">（登录后加载）</div></div>
-  </section>
-</main>
+  <main class="wrap">
+    <section class="panel">
+      <h2>当前会议术语 <span class="pill" id="meetingPill">—</span></h2>
+      <div class="body" id="meetingBody"><div class="empty">加载中…</div></div>
+    </section>
+
+    <section class="panel">
+      <h2>账号 <span class="pill" id="accountCount">—</span></h2>
+      <div class="body">
+        <div class="row">
+          <input id="acUser" placeholder="用户名" style="flex:1">
+          <input id="acPass" placeholder="密码（≥6 位）" style="flex:1">
+        </div>
+        <div class="row">
+          <input id="acEmail" placeholder="邮箱（可空）" style="flex:1">
+          <input id="acDays" placeholder="有效期天数（默认 7）" style="width:170px">
+          <button class="btn ok" onclick="createAccount()">添加测试账号</button>
+        </div>
+        <div class="mono">加的是 dev 测试账号：只读、默认 7 天过期、不发验证码。用户自己注册走「邮箱+用户名+密码+验证码」。</div>
+        <div id="accounts"><div class="empty">加载中…</div></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>库 <span class="pill" id="libCount">—</span></h2>
+      <div class="body">
+        <div class="row"><button class="btn ghost" onclick="loadLibraries()">刷新</button>
+          <span class="mono">点某一行查看它里面的词条</span></div>
+        <div id="libs"><div class="empty">加载中…</div></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>待审申请 <span class="pill" id="pendingCount">—</span></h2>
+      <div class="body"><div id="pending"><div class="empty">加载中…</div></div></div>
+    </section>
+
+    <section class="panel" style="grid-column:1/-1">
+      <h2>批量导入库</h2>
+      <div class="body">
+        <div class="mono">粘贴 JSON 数组；每条一个库（<code>id</code> 可省，省了就是新建）。</div>
+        <textarea id="importText"></textarea>
+        <div class="row">
+          <button class="btn ghost" onclick="fillSample()">填入示例</button>
+          <button class="btn ok" onclick="doImport()">导入</button>
+        </div>
+        <div class="mono" id="importOut"></div>
+      </div>
+    </section>
+  </main>
+</div>
 
 <div class="toast" id="toast"></div>
+<div id="modal" onclick="if(event.target===this)closeModal()">
+  <div class="sheet">
+    <h3 id="modalTitle">词条</h3>
+    <div class="body" id="modalBody"></div>
+  </div>
+</div>
 
 <script>
-let token = localStorage.getItem('leion-admin-token') || '';
-// 共享密钥：relay 的所有接口都要它（否则就是 401 unauthorized）。
-// 优先从 URL 的 ?secret= 读（方便直接发链接），其次用上次保存的。
-// 为什么不把它写死进页面：这个文件是**静态的**，写死等于把密钥交给任何能打开 /admin 的人。
-let secret = new URLSearchParams(location.search).get('secret') || localStorage.getItem('leion-secret') || '';
-
-function saveSecret() {
-  const input = document.getElementById('secretInput');
-  const value = (input?.value || '').trim();
-  if (!value) { toast('先填共享密钥'); return; }
-  secret = value;
-  localStorage.setItem('leion-secret', secret);
-  document.getElementById('secretInput').value = '';
-  toast('密钥已保存');
-  refreshWho();
-}
+const stored = {
+  get secret() { return localStorage.getItem('leion-secret') || ''; },
+  set secret(v) { localStorage.setItem('leion-secret', v); },
+  get token() { return localStorage.getItem('leion-token') || ''; },
+  set token(v) { localStorage.setItem('leion-token', v); },
+};
+let me = null;
 
 function toast(text) {
   const el = document.getElementById('toast');
@@ -139,107 +185,169 @@ function toast(text) {
 
 async function api(path, options = {}) {
   const headers = { 'content-type': 'application/json', ...(options.headers || {}) };
-  if (secret) headers['x-leion-secret'] = secret;
-  if (token) headers['x-leion-token'] = token;
+  if (stored.secret) headers['x-leion-secret'] = stored.secret;
+  if (stored.token) headers['x-leion-token'] = stored.token;
   const response = await fetch(path, { ...options, headers });
   const data = await response.json().catch(() => ({ ok: false, error: '响应不是 JSON' }));
-  if (response.status === 401) {
-    setWho('未登录', false);
-    if ((data.hint || '').includes('X-Leion-Secret')) {
-      document.getElementById('secretInput')?.focus();
-      toast('先填共享密钥：relay 启动横幅里那串（也可用 /admin?secret=xxx 打开本页）');
-    }
+  if (response.status === 401 && (data.hint || '').includes('X-Leion-Secret')) {
+    showLogin('共享密钥不对或没填：看电脑上 start-all 横幅里的那串');
+    throw new Error('需要共享密钥');
   }
-  if (data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+  if (data.ok === false) throw new Error(data.error || ('HTTP ' + response.status));
   return data;
 }
 
-function setWho(text, ok) {
-  const el = document.getElementById('whoami');
-  el.textContent = text;
-  el.className = 'pill ' + (ok ? 'on' : 'off');
-}
-
-async function refreshWho() {
-  if (!token) { setWho('未登录', false); return; }
-  try {
-    const data = await api('/auth/whoami');
-    setWho(`${data.user} · ${data.role}`, true);
-  } catch { setWho('token 失效', false); }
-}
-
-async function requestCode() {
-  const email = document.getElementById('email').value.trim();
-  try {
-    const data = await api('/auth/code', { method: 'POST', body: JSON.stringify({ email }) });
-    document.getElementById('loginHint').textContent = data.code ? `验证码：${data.code}` : data.hint;
-    toast('验证码已发出（看 relay 控制台）');
-  } catch (error) { toast(error.message); }
+function showLogin(message) {
+  document.getElementById('loginView').style.display = 'flex';
+  document.getElementById('consoleView').style.display = 'none';
+  const msg = document.getElementById('loginMsg');
+  msg.textContent = message || '';
+  msg.className = message ? 'msg err' : 'msg';
+  document.getElementById('username').focus();
 }
 
 async function login() {
-  const email = document.getElementById('email').value.trim();
-  const code = document.getElementById('code').value.trim();
+  const secret = document.getElementById('secret').value.trim();
+  const username = document.getElementById('username').value.trim();
+  const password = document.getElementById('password').value;
+  const msg = document.getElementById('loginMsg');
+  if (!secret) { msg.className = 'msg err'; msg.textContent = '先填共享密钥（relay 启动横幅里那串）'; return; }
+  if (!username || !password) { msg.className = 'msg err'; msg.textContent = '用户名和密码都要填'; return; }
+  stored.secret = secret;
+  document.getElementById('loginBtn').disabled = true;
+  msg.className = 'msg'; msg.textContent = '正在登录…';
   try {
-    const data = await api('/auth/login-email', { method: 'POST', body: JSON.stringify({ email, code }) });
-    token = data.token;
-    localStorage.setItem('leion-admin-token', token);
-    document.getElementById('tokenLine').textContent = 'token 已保存到本机浏览器';
-    setWho(`${data.user} · ${data.role}`, true);
-    toast(data.created ? '首次登录：账户已创建（普通用户）' : '登录成功');
-    await Promise.all([loadLibraries(), loadPending(), loadAccounts()]);
-  } catch (error) { toast(error.message); }
+    const result = await api('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) });
+    stored.token = result.token;
+    me = { user: result.user, role: result.role };
+    document.getElementById('password').value = '';
+    msg.textContent = '';
+    enterConsole();
+  } catch (error) {
+    msg.className = 'msg err';
+    msg.textContent = String(error.message || error);
+  } finally {
+    document.getElementById('loginBtn').disabled = false;
+  }
+}
+
+async function logout() {
+  try { await api('/auth/logout', { method: 'POST', body: '{}' }); } catch { /* 本地清掉即可 */ }
+  localStorage.removeItem('leion-token');
+  me = null;
+  showLogin('已退出登录');
+}
+
+function enterConsole() {
+  document.getElementById('loginView').style.display = 'none';
+  document.getElementById('consoleView').style.display = 'block';
+  const pill = document.getElementById('rolePill');
+  pill.textContent = me.role;
+  pill.className = 'pill ' + (me.role === 'admin' ? 'on' : '');
+  document.getElementById('who').textContent = me.user + (me.role === 'admin' ? '' : '（非管理员：只能看库，改不了）');
+  loadMeeting(); loadLibraries(); loadPending(); loadAccounts();
+}
+
+async function loadMeeting() {
+  const body = document.getElementById('meetingBody');
+  const pill = document.getElementById('meetingPill');
+  try {
+    const data = await api('/org/meeting/current');
+    pill.textContent = data.meetingId;
+    pill.className = 'pill on';
+    body.innerHTML = '<div class="row"><b>' + data.entries + ' 条术语</b>'
+      + '<span class="mono">库 ' + (data.libraryIds || []).length + ' 个 · '
+      + (data.createdAt ? data.createdAt.slice(0, 19).replace('T', ' ') : '') + '</span></div>'
+      + '<div class="mono">库：' + ((data.libraries || []).map((l) => l.name + '(' + l.entries + ')').join('、') || '（无）') + '</div>'
+      + ((data.conflicts || []).length
+        ? '<div class="mono" style="color:#fbbf24">⚠ ' + data.conflicts.length + ' 条跨库冲突未纳入：'
+          + data.conflicts.map((c) => c.zh).join('、') + '</div>'
+        : '');
+  } catch (error) {
+    pill.textContent = '无'; pill.className = 'pill';
+    body.innerHTML = '<div class="empty">还没有会议术语：手机点一次「开始同传」就会生成（' + String(error.message || error) + '）</div>';
+  }
 }
 
 async function loadLibraries() {
+  const box = document.getElementById('libs');
   try {
     const data = await api('/org/libraries');
-    document.getElementById('libs').className = '';
-    document.getElementById('libs').innerHTML = data.libraries.length === 0
-      ? '<div class="empty">还没有库：用下面「批量导入」建一个</div>'
-      : '<table><thead><tr><th>库</th><th>分类</th><th>优先级</th><th>条目</th><th>更新时间</th></tr></thead><tbody>'
-        + data.libraries.map((lib) =>
-            `<tr><td><b>${lib.name}</b><div class="mono">${lib.id}</div></td>`
-            + `<td>${lib.categoryName ?? '—'}</td><td>${lib.priority}</td><td>${lib.entries}</td>`
-            + `<td class="muted">${(lib.updatedAt || '').slice(0, 19).replace('T', ' ')}</td></tr>`).join('')
+    const rows = data.libraries || [];
+    document.getElementById('libCount').textContent = rows.length + ' 个';
+    box.innerHTML = rows.length === 0
+      ? '<div class="empty">还没有库：用下面的「批量导入」建一个</div>'
+      : '<table><thead><tr><th>库</th><th>分类</th><th>优先级</th><th>条目</th></tr></thead><tbody>'
+        + rows.map((lib) => '<tr class="click" onclick="openLibrary(\'' + lib.id + '\')">'
+            + '<td><b>' + lib.name + '</b><div class="mono">' + lib.id + '</div></td>'
+            + '<td>' + (lib.categoryName || '未分类') + '</td><td>' + lib.priority + '</td><td>' + lib.entries + '</td></tr>').join('')
         + '</tbody></table>';
-  } catch (error) { toast(error.message); }
+  } catch (error) { box.innerHTML = '<div class="empty">' + String(error.message || error) + '</div>'; }
 }
 
+async function openLibrary(id) {
+  try {
+    const data = await api('/org/libraries/' + id);
+    const library = data.library;
+    const entries = library.entries || [];
+    document.getElementById('modalTitle').textContent = library.name + '（' + entries.length + ' 条，只读）';
+    document.getElementById('modalBody').innerHTML = entries.length === 0
+      ? '<div class="empty">这个库是空的</div>'
+      : entries.map((entry, index) => {
+          const extra = (entry.approved || []).filter((f) => f !== entry.pt);
+          return '<div class="entry">' + (index + 1) + '. <b>' + entry.zh + '</b> → ' + entry.pt
+            + (extra.length ? '<span class="tag">可接受：' + extra.join('、') + '</span>' : '')
+            + ((entry.variants || []).length ? '<span class="tag">中文变体：' + entry.variants.join('、') + '</span>' : '')
+            + '</div>';
+        }).join('');
+    document.getElementById('modal').classList.add('show');
+  } catch (error) { toast(String(error.message || error)); }
+}
+
+function closeModal() { document.getElementById('modal').classList.remove('show'); }
+
 async function loadPending() {
+  const box = document.getElementById('pending');
   try {
     const data = await api('/org/requests/pending');
-    document.getElementById('pendingCount').textContent = data.requests.length + ' 条';
-    document.getElementById('pending').className = data.requests.length ? '' : 'empty';
-    document.getElementById('pending').innerHTML = data.requests.length === 0
-      ? '（没有待审申请）'
-      : data.requests.map((item) =>
-          `<div style="border:1px solid var(--line);border-radius:9px;padding:8px 10px;margin-bottom:8px">
-             <div><b>${item.type === 'add' ? '新增' : item.type === 'update' ? '修改' : '删除'}</b>
-               「${item.entry ? item.entry.zh : item.targetKey}」${item.entry ? ' → ' + item.entry.pt : ''}</div>
-             <div class="muted">${item.libraryId} · 申请人 ${item.applicant}</div>
-             <div class="muted">理由：${item.reason}</div>
-             <div class="row">
-               <button class="ok" onclick="decide('${item.id}','approve')">通过</button>
-               <button class="bad" onclick="decide('${item.id}','reject')">驳回</button>
-             </div>
-           </div>`).join('');
-  } catch (error) { toast(error.message); }
+    const rows = data.requests || [];
+    document.getElementById('pendingCount').textContent = rows.length + ' 条';
+    box.innerHTML = rows.length === 0 ? '<div class="empty">没有待审申请</div>'
+      : rows.map((item) => '<div style="border:1px solid var(--line);border-radius:10px;padding:9px 11px;margin-bottom:8px">'
+          + '<div><b>' + (item.type === 'add' ? '新增' : item.type === 'update' ? '修改' : '删除') + '</b>'
+          + '「' + (item.entry ? item.entry.zh : item.targetKey) + '」'
+          + (item.entry ? ' → ' + item.entry.pt : '') + '</div>'
+          + '<div class="mono">' + item.libraryId + ' · 申请人 ' + item.applicant + ' · 理由：' + item.reason + '</div>'
+          + '<div class="row"><button class="btn ok" onclick="decide(\'' + item.id + '\',\'approve\')">通过</button>'
+          + '<button class="btn bad" onclick="decide(\'' + item.id + '\',\'reject\')">驳回</button></div></div>').join('');
+  } catch (error) { box.innerHTML = '<div class="empty">' + String(error.message || error) + '</div>'; }
+}
+
+async function decide(id, decision) {
+  try {
+    const data = await api('/org/requests/' + id + '/decide', {
+      method: 'POST', body: JSON.stringify({ decision, note: '' }),
+    });
+    toast(decision === 'approve'
+      ? '已通过（库现在 ' + data.entries + ' 条）· 手机重新开始同传后生效'
+      : '已驳回');
+    loadPending(); loadLibraries();
+  } catch (error) { toast(String(error.message || error)); }
 }
 
 async function loadAccounts() {
+  const box = document.getElementById('accounts');
   try {
     const data = await api('/org/accounts');
-    const rows = data.accounts ?? [];
-    document.getElementById('accounts').className = rows.length ? '' : 'empty';
-    document.getElementById('accounts').innerHTML = rows.length === 0 ? '（还没有账号）'
+    const rows = data.accounts || [];
+    document.getElementById('accountCount').textContent = rows.length + ' 个';
+    box.innerHTML = rows.length === 0 ? '<div class="empty">还没有账号</div>'
       : '<table><thead><tr><th>用户名</th><th>邮箱</th><th>角色</th><th>状态</th><th>过期</th></tr></thead><tbody>'
-        + rows.map((a) =>
-            '<tr><td><b>' + a.username + '</b></td><td>' + (a.email || '—') + '</td>'
+        + rows.map((a) => '<tr><td><b>' + a.username + '</b></td><td>' + (a.email || '—') + '</td>'
             + '<td>' + a.role + '</td><td>' + (a.usable ? a.status : a.status + '（不可用）') + '</td>'
-            + '<td class="muted">' + (a.expiresAt ? a.expiresAt.slice(0, 10) : '—') + '</td></tr>').join('')
+            + '<td class="mono">' + (a.expiresAt ? a.expiresAt.slice(0, 10) : '—') + '</td></tr>').join('')
         + '</tbody></table>';
-  } catch (error) { toast(error.message); }
+  } catch (error) { box.innerHTML = '<div class="empty">' + String(error.message || error) + '</div>'; }
 }
 
 async function createAccount() {
@@ -250,20 +358,17 @@ async function createAccount() {
   try {
     const data = await api('/org/accounts', {
       method: 'POST',
-      body: JSON.stringify({ username, password, email: email || undefined, role: 'dev',
-        expiresInDays: days ? Number(days) : undefined }),
+      body: JSON.stringify({
+        username, password, email: email || undefined, role: 'dev',
+        expiresInDays: days ? Number(days) : undefined,
+      }),
     });
-    toast('已添加测试账号：' + data.username + '（' + data.role + '）');
-    await loadAccounts();
-  } catch (error) { toast(error.message); }
-}
-
-async function decide(id, decision) {
-  try {
-    const data = await api(`/org/requests/${id}/decide`, { method: 'POST', body: JSON.stringify({ decision, note: '' }) });
-    toast(decision === 'approve' ? `已通过（库现在 ${data.entries} 条）` : '已驳回');
-    await Promise.all([loadLibraries(), loadPending()]);
-  } catch (error) { toast(error.message); }
+    toast('已添加：' + data.username + '（' + data.role + '）');
+    document.getElementById('acUser').value = '';
+    document.getElementById('acPass').value = '';
+    document.getElementById('acEmail').value = '';
+    loadAccounts();
+  } catch (error) { toast(String(error.message || error)); }
 }
 
 function fillSample() {
@@ -283,19 +388,25 @@ async function doImport() {
   try {
     const data = await api('/org/libraries/import', { method: 'POST', body: JSON.stringify({ items }) });
     document.getElementById('importOut').textContent =
-      `新建 ${data.created} · 更新 ${data.updated} · 被拒 ${data.rejected.length}`
-      + (data.rejected.length ? '\n' + data.rejected.map((item) => `第 ${item.index} 项：${item.error}`).join('\n') : '');
+      '新建 ' + data.created + ' · 更新 ' + data.updated + ' · 被拒 ' + data.rejected.length
+      + (data.rejected.length ? '\n' + data.rejected.map((item) => '第 ' + item.index + ' 项：' + item.error).join('\n') : '');
     toast('导入完成');
-    await loadLibraries();
-  } catch (error) { toast(error.message); }
+    loadLibraries();
+  } catch (error) { toast(String(error.message || error)); }
 }
 
-(async () => {
-  const secretBox = document.getElementById('secretInput');
-  if (secretBox && secret) secretBox.placeholder = '共享密钥已设置（可重新填）';
-  await refreshWho();
-  if (token) { await Promise.all([loadLibraries(), loadPending(), loadAccounts()]); }
-  fillSample();
+(function boot() {
+  const fromUrl = new URLSearchParams(location.search).get('secret');
+  if (fromUrl) stored.secret = fromUrl;
+  document.getElementById('secret').value = stored.secret;
+  if (!stored.token) { showLogin(''); return; }
+  api('/auth/whoami').then((who) => {
+    me = { user: who.user, role: who.role };
+    enterConsole();
+  }).catch(() => {
+    localStorage.removeItem('leion-token');
+    showLogin('登录已过期，请重新登录');
+  });
 })();
 </script>
 </body>
