@@ -34,6 +34,7 @@ import { runTermsMatcherSuite } from './terms-matcher-suite.mjs'
 import { runTermsWatchSuite } from './terms-watch-suite.mjs'
 import { runRescueSuite } from './rescue-suite.mjs'
 import { runTermsEvalSuite } from './terms-eval-suite.mjs'
+import { runLibrarySuite } from './library-suite.mjs'
 import { runDiscoverSuite } from './discover-suite.mjs'
 import { runAndroidOrderSuite } from './android-order-suite.mjs'
 import { runAsrPackSuite } from './asr-pack-suite.mjs'
@@ -212,6 +213,13 @@ await runAccountsSuite(helpers)
 
 heading('用户热词对照表（校验拒绝码 / 原子落盘 / PUT 全有或全无）')
 await runTermsSuite(helpers)
+
+// ── 7d. 库 / 申请审批 / 快照 / 两套数据隔离（会议 APP 这一期新增）───────────────
+// 这一层守的是"**谁能改什么**"以及"**别人看到的是哪一份**"：
+// 用户改不了库（只能提申请）、审批通过才写库、生产与测试两套数据永不互串、
+// 快照是冻结的（会后改库不影响已开始的会议）、并且产物必须是插件能直接读的形状。
+heading('术语库与审批（管理员建库 / 用户提申请 / 快照冻结 / 生产与测试两套数据）')
+await runLibrarySuite(helpers)
 
 // ── 7d3. 热词匹配器（"已知变体 → 规范写法"，纯字符串、零模型调用）────────────
 // 这是全功能里唯一能改字幕文字的地方，所以每条规则都配成对的负对照：
