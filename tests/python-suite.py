@@ -1750,6 +1750,37 @@ def main():
     # 结论会**看起来完全正常**却是假的。所以先用已知答案的合成信号钉住算法。
     import mic_eval as mic
 
+    # 解码前的静音闸（2026-10-23）：实测在 RMS 0.001~0.005 的安静段上，
+    # 归一化把噪声放大后 Whisper 吐出「中文字幕提供 / 中文字幕志愿者 李宗盛」并当字幕发了出去。
+    # 这里钉住"什么该拦、什么不该拦"两侧 —— 判严了会吃真字幕，判松了幻听照旧。
+    heading("解码前的静音闸（安静段不喂模型 / 小声人声照常识别）")
+    import whisper_stream as _ws
+
+    quiet = (np.random.default_rng(3).normal(0, 0.002, 16000 * 2)).astype(np.float32)
+    check("近乎静音（RMS≈0.002）会被判为丢弃并给出原因",
+          _ws.silence_skip_reason(quiet) is not None, str(_ws.silence_skip_reason(quiet)))
+    check("原因里写清了电平与阈值（日志能直接看出为什么丢）",
+          "电平" in str(_ws.silence_skip_reason(quiet)))
+
+    # 真实说话电平（RMS≈0.03）必须放行 —— 这是"sorry 别吃真字幕"那一侧
+    speechy = (np.random.default_rng(4).normal(0, 0.03, 16000 * 2)).astype(np.float32)
+    check("正常人声电平（RMS≈0.03）必须放行",
+          _ws.silence_skip_reason(speechy) is None, str(_ws.silence_skip_reason(speechy)))
+    # 大声与小音量之间：0.008 阈值附近两侧都要有断言（阈值本身就是契约）
+    check("阈值下沿（0.0079）拦、上沿（0.0081）放",
+          _ws.silence_skip_reason(np.full(16000, 0.0079, dtype=np.float32)) is not None
+          and _ws.silence_skip_reason(np.full(16000, 0.0081, dtype=np.float32)) is None)
+
+    check("空音频直接判丢弃，不会送给模型", _ws.silence_skip_reason(np.zeros(0, dtype=np.float32)) is not None)
+    # 归一化本身会把静音放大 —— 这正是"闸必须放在归一化之前"的原因
+    boosted = _ws.normalize_peak(quiet)
+    check("归一化确实会把静音抬到正常电平（所以静音闸必须在它之前）",
+          float(np.abs(boosted).max()) > 0.5, float(np.abs(boosted).max()))
+    check("幻听表新增了实测到的两条水印短语",
+          _ws.looks_like_hallucination("中文字幕提供") and _ws.looks_like_hallucination("中文字幕志愿者 李宗盛"))
+    check("但不把「中文字幕」这种短词一并钉死（用户真说时不能被吃）",
+          _ws.looks_like_hallucination("请打开中文字幕") is False)
+
     heading("收音质量量化 · 指标算法（合成信号，已知答案）")
     probe_rate = 16000
     probe_seconds = 6

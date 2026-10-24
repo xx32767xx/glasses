@@ -84,6 +84,10 @@ HALLUCINATION_SAMPLES = (
     # 它连英文名一起吐出来了，翻译模型再把它翻成「O que significa YoYo …」——
     # 用户根本没说过这些字。所以把这段水印（中英两侧）都钉进幻听表。
     "优优独播剧场", "YoYo Television Series Exclusive", "独播剧场",
+    # 2026-10-23 实测逮到的第三族：安静音频上吐「中文字幕提供」/「中文字幕志愿者 李宗盛」。
+    # 这两条是**字幕组/志愿者的水印**，与上一族同源（训练数据里常驻）。
+    # 只钉完整短语、不钉「中文字幕」这种短词 —— 否则用户真说"中文字幕"也会被吃掉。
+    "中文字幕提供", "中文字幕志愿者",
     "amara.org", "legendas", "subtitles by", "subscribe",       # 葡/英常见幻听
 )
 
@@ -640,6 +644,37 @@ def looks_like_hallucination(text: str) -> bool:
     return any(sample in lowered for sample in HALLUCINATION_SAMPLES)
 
 
+# ── 解码前的静音闸（2026-10-23 加：实测又出了一次幻听）──────────────────────
+#
+# 现场日志（电平是 relay 记的原始值）：
+#   RMS 0.0012 / 0.0019 / 0.0025 / 0.0028 / 0.0033 / 0.0038 / 0.0043 / 0.0049
+#   人声一般 ≥ 0.02（SPEECH_RMS_FLOOR）
+#   → 这些段被识别成「中文字幕提供」「中文字幕志愿者 李宗盛」，还当成真字幕发了出去。
+#
+# 机制：`normalize_peak()` 会把**峰值低于 0.3** 的音频抬到 0.9 附近。
+#   "说话声偏小"时这是好事（实测过），但"几乎没声音"时它等于**把噪声放大上百倍**再喂模型，
+#   模型于是一定会"听出"点东西。幻听词表只能事后拦，拦不住新花样。
+#
+# 所以正确做法是**在解码之前**按原始电平丢掉：不出幻听，还省一次识别。
+# 阈值 0.008 = 人声门槛（0.02）的四成，给"小声说话"留足余量；
+# 判据用**归一化之前**的电平 —— 归一化之后就没有"安静"可言了。
+SILENCE_SKIP_RMS = 0.008
+
+
+def silence_skip_reason(audio) -> str | None:
+    """明显不是人声就返回丢弃原因（None = 照常解码）。
+
+    单独成函数是为了能被测试直接钉住：这个闸判错一次，要么吃真字幕、要么放幻听进来。
+    """
+    if audio is None or len(audio) == 0:
+        return "空音频"
+    level = rms_of(audio)
+    if level < SILENCE_SKIP_RMS:
+        return (f"近乎静音（原始电平 {level:.4f} < {SILENCE_SKIP_RMS}）"
+                f"→ 解码前丢弃：不花识别时间，也不给幻听机会")
+    return None
+
+
 # ── initial_prompt：关于它的一波三折，值得完整记下来 ──────────────────────────
 #
 # 1) 起初我默认发一句「以下是普通话的句子，请用简体中文输出。」，想压掉繁体输出。
@@ -987,7 +1022,13 @@ def transcribe(model, audio, language, min_logprob, no_speech_prob,
     **根本没有任何重复片段**，报的就是"用户自己重复用了几个字"。
     那在产线上就是**把一句真字幕吃掉**，而且日志上看不出原因。
     """
+    # ⚠️ 静音闸必须在 normalize_peak **之前**判：归一化会把近乎静音的段放大到正常电平，
+    #    之后再判就没有"安静"可言了（实战中正是它把噪声喂成了「中文字幕志愿者 李宗盛」）。
+    skip = silence_skip_reason(audio)
+    if skip is not None:
+        return "", True, skip, False, "silence"
     data = normalize_peak(audio) if do_normalize else audio
+
     # 拼给模型的提示词：指令在前、上文在后（顺序与实验一致）。
     # `initial_prompt` 显式给了就用它（那是调用方直接指定的指令），否则由两段拼出来。
     prompt = initial_prompt if initial_prompt is not None else (

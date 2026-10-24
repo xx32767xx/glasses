@@ -35,7 +35,7 @@
  */
 
 import { spawn } from 'node:child_process'
-import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, copyFileSync, unlinkSync, statSync, writeFileSync } from 'node:fs'
+import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, copyFileSync, unlinkSync, statSync, writeFileSync } from 'node:fs'
 import { connect } from 'node:net'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -52,6 +52,45 @@ import { writeMeetingSnapshot } from '../lib/snapshot.mjs'
  * `--libraries none`/空 = 显式不启用（此时仍会生成一份空快照，语义是"这一场没有术语"）。
  * 不写旧的全局 terms.json —— 那条路只留给没给 `--libraries` 的向后兼容场景。
  */
+/**
+ * 用旧全局表时，把"到底有多少条"说清楚（并在他明明有库、却读到 0 条时报警）。
+ *
+ * 为什么值得单独一段：实测踩过 —— 库里有 8 条，但手机登录的是 `anqi`，
+ * 而 8 条记在 `test` 名下，于是插件读到「热词表：0 条（user=anqi）」，
+ * 热词归一与专名提示全部静默失效，字幕里就出现 `Liangliang` 这种错译。
+ * 日志虽然打了，但那一行太平常，很难联想到"换了个用户"。
+ * 所以在**启动横幅**上直接点出来，并给出可以照抄的修法。
+ */
+function describeLegacyTerms(dataDir) {
+  try {
+    const activeRaw = readFileSync(join(dataDir, 'terms-active.json'), 'utf-8')
+    const activeUser = JSON.parse(activeRaw).user ?? null
+    const doc = JSON.parse(readFileSync(join(dataDir, 'terms.json'), 'utf-8'))
+    const tables = doc && typeof doc.tables === 'object' && doc.tables !== null ? doc.tables : {}
+    const chosen = activeUser !== null && tables[activeUser] !== undefined ? activeUser : 'default'
+    const entries = Array.isArray(tables[chosen]?.entries) ? tables[chosen].entries.length : 0
+    let libraryCount = 0
+    try {
+      libraryCount = readdirSync(join(dataDir, 'libraries')).filter(name => name.endsWith('.json')).length
+    } catch { /* 没有 libraries 目录 = 0 个库 */ }
+    const text = `旧的全局表：user=${chosen}，${entries} 条`
+      + `（加 --libraries all 改用会议快照）`
+    if (entries === 0 && libraryCount > 0) {
+      return {
+        text,
+        warning: `旧表里当前用户（${chosen}）名下 0 条，但库里有 ${libraryCount} 个库 —— `
+          + `这一场的术语/专名提示会全部失效。加 --libraries all 再启动一次（或改用 --libraries <库id>）。`,
+      }
+    }
+    return { text, warning: null }
+  } catch {
+    return {
+      text: '旧的全局表（<data-dir>/terms.json；加 --libraries all 改用会议快照）',
+      warning: null,
+    }
+  }
+}
+
 async function prepareMeetingTerms(options) {
   const libraries = await listLibraries(options.dataDir)
   if (libraries.length === 0) {
@@ -564,8 +603,13 @@ export async function main(argv = process.argv.slice(2)) {
     : '关闭（缺省；加 --terms-rescue 打开，见 docs/15 §18）'}`)
   // 术语来源：说清楚这一场用的是"会议快照"还是"旧的全局表" —— 两者效果完全不同，
   // 而界面上看不出区别（都是"字幕里出现了规范写法"）。
-  console.log(`  术语来源    ${options.termSummary
-    ?? '旧的全局表（<data-dir>/terms.json；加 --libraries all 或 --libraries id1,id2 改用会议快照）'}`)
+  if (options.termSummary) {
+    console.log(`  术语来源    ${options.termSummary}`)
+  } else {
+    const legacy = describeLegacyTerms(options.dataDir)
+    console.log(`  术语来源    ${legacy.text}`)
+    if (legacy.warning) console.log(`  ⚠️ ${legacy.warning}`)
+  }
   console.log(`  识别模型    ${options.transcriber ? `${options.whisperModel} / ${options.device} / ${options.computeType}` : '未启动（--no-transcriber）'}`)
   console.log(`  数据目录    ${options.dataDir}`)
   for (const note of envNotes) console.log(`  ${note}`)
