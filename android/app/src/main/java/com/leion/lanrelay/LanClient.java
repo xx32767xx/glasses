@@ -350,12 +350,18 @@ public class LanClient {
     }
 
     /**
-     * 冻结这一场的术语快照（插件只认快照，所以选库改完要重新冻结一次）。
-     * <p>失败不致命：下一场开始前还会再生成一次。
+     * 发布"这一场的会议术语"（docs/19）：服务端按当前勾选重建一份，插件下一句就用上。
+     * <p>为什么不再用"/org/meeting/<id>/snapshot"：那份是按"场次"存的旧路径，
+     * 而现在的语义是"开始同传 → 服务端发布一份当前会议术语"，插件只读固定路径。
+     * <p>失败不致命：手机每次开始同传时 relay 也会自动发布一次。
      */
-    public JSONObject orgSnapshot(String meetingId) throws IOException, org.json.JSONException {
-        JSONObject body = new JSONObject();
-        return unwrap(requestWithCode("/org/meeting/" + meetingId + "/snapshot", "POST", body, 12000));
+    public JSONObject orgPublishMeetingTerms() throws IOException, org.json.JSONException {
+        return unwrap(requestWithCode("/org/meeting/publish", "POST", new JSONObject(), 12000));
+    }
+
+    /** 当前这一场的会议术语（会议 id + 条数 + 冲突），用于界面显示状态。 */
+    public JSONObject orgCurrentMeetingTerms() throws IOException, org.json.JSONException {
+        return unwrap(requestWithCode("/org/meeting/current", "GET", null, 8000));
     }
 
     /**

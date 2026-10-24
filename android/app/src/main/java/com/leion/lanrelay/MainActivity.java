@@ -2328,11 +2328,16 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                     return;
                 }
                 main.post(() -> setLibStatus(getString(R.string.terms_libs_saved, ids.length())));
-                // 选库变了 → 重新冻结快照（插件只认快照）。失败不影响选择本身。
+                // 选库变了 → 立刻让服务端发布一份"当前会议术语"（插件下一句就用上）；
+                // 失败不影响选择本身：每次开始同传时 relay 也会自动发布一次。
                 try {
-                    lan.orgSnapshot(ORG_MEETING_ID);
+                    JSONObject published = lan.orgPublishMeetingTerms();
+                    if (published.optBoolean("ok", false)) {
+                        main.post(() -> setLibStatus(getString(R.string.terms_libs_saved, ids.length())
+                                + " · 本场会议术语 " + published.optInt("entries", 0) + " 条"));
+                    }
                 } catch (Exception ignored) {
-                    // 下一场开始前还会再生成一次；这里不打扰用户
+                    // 下一场开始前还会再发布一次；这里不打扰用户
                 }
             } catch (Exception error) {
                 main.post(() -> setLibStatus("保存失败：" + describeError(error)));

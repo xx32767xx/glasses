@@ -44,6 +44,7 @@ import { DEFAULT_DATA_DIR } from '../relay/lan-relay.mjs'
 import { listLibraries, loadLibrary } from '../lib/libraries.mjs'
 import { loadSelection, selectionPath } from '../relay/org-api.mjs'
 import { writeMeetingSnapshot } from '../lib/snapshot.mjs'
+import { currentTermsPaths, readCurrentMeeting } from '../lib/meeting-terms.mjs'
 
 /**
  * 生成"这一场"的术语快照（`--libraries` 的落地实现）。
@@ -546,17 +547,15 @@ export async function main(argv = process.argv.slice(2)) {
     options.termSummary = `会议快照 ${prepared.entries} 条`
       + `（命令行 --libraries，库 ${prepared.libraryIds.length} 个，场次 ${options.meeting}）`
   } else {
-    const selection = await loadSelection(options.dataDir, options.meeting)
-    if (Array.isArray(selection.libraryIds) && selection.updatedAt) {
-      const prepared = await prepareMeetingTerms(options, { libraryIds: selection.libraryIds })
-      if (prepared.ok !== true) {
-        console.error(`❌ ${prepared.error}`)
-        return 1
-      }
-      options.termsPath = prepared.termsPath
-      options.termsActivePath = prepared.activePath
-      options.termSummary = `会议快照 ${prepared.entries} 条`
-        + `（来自界面选择，库 ${prepared.libraryIds.length} 个，场次 ${options.meeting}）`
+    // 不给 --libraries 时，看 relay 有没有发布过"这一场的会议术语"（手机开始同传时自动发布）。
+    // 有就直接让插件读那份固定路径 —— **不需要任何启动参数**，也不会被"上次的选择"残留影响。
+    const published = await readCurrentMeeting(options.dataDir)
+    if (published !== null) {
+      const paths = currentTermsPaths(options.dataDir)
+      options.termsPath = paths.termsPath
+      options.termsActivePath = paths.activePath
+      options.termSummary = `会议术语 ${published.entries} 条（会议 ${published.meetingId}，`
+        + `库 ${(published.libraryIds ?? []).length} 个；手机开始同传时自动发布）`
     }
   }
 

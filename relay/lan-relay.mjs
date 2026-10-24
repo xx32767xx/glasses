@@ -43,6 +43,8 @@ import {
 } from '../lib/paths.mjs'
 import { lintTranslation } from '../lib/translation-lint.mjs'
 import { handleOrg } from './org-api.mjs'
+import { publishMeetingTerms, readCurrentMeeting } from '../lib/meeting-terms.mjs'
+import { loadSelection } from './org-api.mjs'
 import {
   TERMS_LIMITS, getTable, loadTerms, mergePending, normalizeUser, putTable, saveActiveUser, saveTerms, validateTerms,
 } from '../lib/terms.mjs'
@@ -1115,6 +1117,27 @@ export async function startRelay(rawOptions = {}) {
 
         state.audioChain = state.audioChain.then(async () => {
           await mkdir(dirname(options.audio), { recursive: true })
+          // ── 新一次录音 = 新一场同传：把"这一场用哪些库"发布成会议术语（docs/19）────
+          //
+          // 时机选在这里而不是"手机点了保存选择"：保存选择只是**改了意愿**，
+          // 真正开始说话才算"这一场开始"。而且这样**不需要手机端配合**（旧 APK 也能用）。
+          // 发布会：按 selection.json 里的勾选 → 合并各库 → 处理跨库冲突 →
+          //   写一份"当前会议术语"到固定路径（插件每句都读它），并归档到 meetings/<会议id>/。
+          // 失败一律不影响音频落盘（拿不到术语最多是"这一场没有术语"）。
+          if (fresh === true && typeof publishMeetingTerms === 'function') {
+            try {
+              const selection = await loadSelection(options.dataDir, options.meetingId ?? 'current')
+              const published = await publishMeetingTerms(options.dataDir, {
+                libraryIds: selection.libraryIds, owner: selection.selectedBy ?? null,
+              })
+              debug(`[术语] 新一场与会：会议 ${published.meetingId}，${published.entries} 条`
+                + (published.conflicts.length > 0
+                  ? `，${published.conflicts.length} 条跨库冲突已排除（${published.conflicts.map((item) => item.zh).join('、')}）`
+                  : ''))
+            } catch (termError) {
+              debug(`[术语] 发布会话术语失败（不影响字幕）：${termError && termError.message ? termError.message : termError}`)
+            }
+          }
           // ⚠️ 这里**刻意不再清空文件**，即使 fresh=1。
           //
           // 原来 fresh=1 会把 audio-in.pcm 截断成 0，本意是"新一次录音，旧音频别管了"。
@@ -1482,6 +1505,24 @@ export async function startRelay(rawOptions = {}) {
         return
       }
 
+      // ── 当前会议术语（docs/19）：插件读的那份，可查也可手动重新发布 ──────────
+      if (request.method === 'GET' && url.pathname === '/org/meeting/current') {
+        const current = await readCurrentMeeting(options.dataDir)
+        if (current === null) { send(response, 404, { ok: false, error: '还没有任何一场会议术语（手机开始同传后会自动生成）' }); return }
+        send(response, 200, { ok: true, ...current })
+        return
+      }
+      if (request.method === 'POST' && url.pathname === '/org/meeting/publish') {
+        const body = await readBody(request)
+        const selection = await loadSelection(options.dataDir, options.meetingId ?? 'current')
+        const published = await publishMeetingTerms(options.dataDir, {
+          libraryIds: Array.isArray(body.libraryIds) ? body.libraryIds : selection.libraryIds,
+          owner: selection.selectedBy ?? null,
+        })
+        debug(`[术语] 手动发布：会议 ${published.meetingId}，${published.entries} 条`)
+        send(response, 200, { ok: true, meetingId: published.meetingId, entries: published.entries, conflicts: published.conflicts })
+        return
+      }
       // ── 组织接口：库 / 会议选库 / 申请审批（docs/19）──────────────────────────
       //
       // 这一层的特点：**权限在服务端**（用户调管理员接口拿 403），

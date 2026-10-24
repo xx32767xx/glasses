@@ -1753,13 +1753,22 @@ function createInterpreter(ctx, rawConfig, deps) {
     return hint.length === 0 ? null : hint
   }
 
-  /** 每场只读一次表（快照）：运行中改表不影响正在跑的这一场（docs/15 §8.1）。 */
+  /**
+   * 读热词表 / 会议术语。
+   *
+   * <p>**每句都会调用**（2026-10-24 改）。为什么不再"每场只读一次"：
+   * "这一场用哪些库"现在是**手机开始同传时由 relay 发布**到固定路径的（docs/19），
+   * 而大脑进程往往在"开始同传"之前就起来了 —— 只读一次的话，这一场永远用上一场的表，
+   * 实测表现就是"取消勾选、重启之后旧词表还在生效"。
+   *
+   * <p>代价控制：读的是**一份冻结好的会议术语文件**（几 KB），每个句子读一次可忽略；
+   * 而且用**内容指纹**比对，没变就不重新解析（避免每句都 JSON.parse）。
+   * 这也保留了原来的好处：同一场里文件不变 → 行为稳定。
+   */
   let termEntries = []
-  let termsLoaded = false
+  let termsFingerprint = null
 
   async function refreshTerms() {
-    if (termsLoaded === true) return
-    termsLoaded = true
     if (config.terms !== 'on' || config.termsPath === '') return
     const fs = ctx.get('fs')
     if (fs === undefined) {
@@ -1793,6 +1802,11 @@ function createInterpreter(ctx, rawConfig, deps) {
       const chosen = user !== null && tables[user] !== undefined ? user : 'default'
       const table = tables[chosen]
       const entries = table !== null && table !== undefined && Array.isArray(table.entries) ? table.entries : []
+      // 内容指纹：文件没变就不重复解析/刷日志（每句都会调这个函数）
+      const fingerprint = chosen + '|' + entries.length + '|'
+        + (table && typeof table.updatedAt === 'string' ? table.updatedAt : '')
+      if (fingerprint === termsFingerprint) return
+      termsFingerprint = fingerprint
       termEntries = entries
       state.terms.enabled = config.terms === 'on'
       state.terms.user = chosen
