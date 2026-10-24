@@ -44,6 +44,8 @@
   <h1>术语库管理台</h1>
   <span class="pill" id="whoami">未登录</span>
   <span class="spacer"></span>
+  <input id="secretInput" placeholder="共享密钥（relay 启动横幅里那个）" style="width:260px" onkeydown="if(event.key==='Enter')saveSecret()">
+  <button class="ghost" onclick="saveSecret()">保存密钥</button>
   <span class="muted">连的是 relay 的真实接口（/org/*）</span>
 </header>
 
@@ -113,6 +115,21 @@
 
 <script>
 let token = localStorage.getItem('leion-admin-token') || '';
+// 共享密钥：relay 的所有接口都要它（否则就是 401 unauthorized）。
+// 优先从 URL 的 ?secret= 读（方便直接发链接），其次用上次保存的。
+// 为什么不把它写死进页面：这个文件是**静态的**，写死等于把密钥交给任何能打开 /admin 的人。
+let secret = new URLSearchParams(location.search).get('secret') || localStorage.getItem('leion-secret') || '';
+
+function saveSecret() {
+  const input = document.getElementById('secretInput');
+  const value = (input?.value || '').trim();
+  if (!value) { toast('先填共享密钥'); return; }
+  secret = value;
+  localStorage.setItem('leion-secret', secret);
+  document.getElementById('secretInput').value = '';
+  toast('密钥已保存');
+  refreshWho();
+}
 
 function toast(text) {
   const el = document.getElementById('toast');
@@ -122,10 +139,17 @@ function toast(text) {
 
 async function api(path, options = {}) {
   const headers = { 'content-type': 'application/json', ...(options.headers || {}) };
+  if (secret) headers['x-leion-secret'] = secret;
   if (token) headers['x-leion-token'] = token;
   const response = await fetch(path, { ...options, headers });
   const data = await response.json().catch(() => ({ ok: false, error: '响应不是 JSON' }));
-  if (response.status === 401) { setWho('未登录', false); }
+  if (response.status === 401) {
+    setWho('未登录', false);
+    if ((data.hint || '').includes('X-Leion-Secret')) {
+      document.getElementById('secretInput')?.focus();
+      toast('先填共享密钥：relay 启动横幅里那串（也可用 /admin?secret=xxx 打开本页）');
+    }
+  }
   if (data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
   return data;
 }
@@ -267,6 +291,8 @@ async function doImport() {
 }
 
 (async () => {
+  const secretBox = document.getElementById('secretInput');
+  if (secretBox && secret) secretBox.placeholder = '共享密钥已设置（可重新填）';
   await refreshWho();
   if (token) { await Promise.all([loadLibraries(), loadPending(), loadAccounts()]); }
   fillSample();

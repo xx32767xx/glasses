@@ -28,7 +28,7 @@ import { join } from 'node:path'
 import { VAR_DIR } from '../lib/paths.mjs'
 import { resolveDataDir, ENVS } from '../lib/store.mjs'
 import {
-  createAccount, issueCode, loadAccounts, loginWithEmail, saveAccounts,
+  createAccountWithPassword, issueCode, listAccounts, loadAccounts, saveAccounts,
 } from '../lib/accounts.mjs'
 import {
   addCategory, emptyCategories, importLibraries, listLibraries, loadCategories,
@@ -61,10 +61,11 @@ const USAGE = `用法：node scripts/terms-admin.mjs <命令> --env prod|test [�
 
 命令：
   init        建目录（幂等）
-  admin       建管理员账户        --email
+  admin       建管理员账户        --username --password [--email]
   code        发一个验证码（本地打印，不真发邮件）  --email
   login       用验证码登录（返回 token）            --email --code
-  dev         建测试账号（默认 7 天过期）          --email [--days]
+  dev         建测试账号（默认 7 天过期）          --username --password [--email] [--days]
+  accounts    列出账号（用户名/角色/状态/过期）
   category    建分类              --name
   import      批量导入库          --file <json 数组>
   list        列出库
@@ -114,11 +115,20 @@ async function main() {
       return 0
     }
     case 'admin': {
+      // 管理员也是"人建的"，但**登录要用户名+密码**（docs/19），所以这里必须有密码。
+      // 以前只收 --email，建出来的账号根本没法登录 —— 那是个死路，已修。
       const doc = await loadAccounts(root)
-      const result = createAccount(doc, need(options, 'email'), { role: 'admin', now: Date.now() })
+      const result = createAccountWithPassword(doc, {
+        username: need(options, 'username'),
+        password: need(options, 'password'),
+        email: options.email,
+        role: 'admin',
+        note: '管理员（CLI 创建）',
+        now: Date.now(),
+      })
       if (result.ok !== true) throw new Error(result.error)
       await saveAccounts(root, result.doc)
-      console.log(`管理员已建：${options.email}（环境 ${env}）`)
+      console.log(`管理员已建：${options.username}（环境 ${env}；用用户名+密码登录）`)
       return 0
     }
     case 'code': {
@@ -140,10 +150,26 @@ async function main() {
     case 'dev': {
       const doc = await loadAccounts(root)
       const days = typeof options.days === 'string' ? Number(options.days) : undefined
-      const result = createAccount(doc, need(options, 'email'), { role: 'dev', now: Date.now(), expiresInDays: days })
+      const result = createAccountWithPassword(doc, {
+        username: need(options, 'username'),
+        password: need(options, 'password'),
+        email: options.email,
+        role: 'dev',
+        note: '测试账号（CLI 创建）',
+        expiresInDays: days,
+        now: Date.now(),
+      })
       if (result.ok !== true) throw new Error(result.error)
       await saveAccounts(root, result.doc)
-      console.log(`测试账号已建：${options.email}（${days ?? 7} 天后过期，环境 ${env}）`)
+      console.log(`测试账号已建：${options.username}（${days ?? 7} 天后过期，环境 ${env}；用用户名+密码登录）`)
+      return 0
+    }
+    case 'accounts': {
+      const doc = await loadAccounts(root)
+      for (const item of listAccounts(doc)) {
+        console.log(`${item.username.padEnd(12)} ${item.role.padEnd(6)} ${item.status.padEnd(9)} `
+          + `${item.expiresAt ? '过期 ' + item.expiresAt.slice(0, 10) : '长期'}  ${item.email || '—'}`)
+      }
       return 0
     }
     case 'category': {
