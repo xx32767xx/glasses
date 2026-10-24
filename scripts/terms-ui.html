@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>术语库演示台</title>
+<style>
+  :root {
+    --bg:#0f1720; --panel:#16212c; --panel-2:#1d2b38; --line:#27384a;
+    --text:#e6edf3; --muted:#8fa3b6; --accent:#22c55e; --accent-2:#38bdf8;
+    --warn:#f59e0b; --danger:#f43f5e; --ok:#22c55e;
+    --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--text); font-size:14px; line-height:1.6;
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  header {
+    display:flex; align-items:center; gap:12px; padding:14px 20px;
+    border-bottom:1px solid var(--line); background:var(--panel);
+    position:sticky; top:0; z-index:10;
+  }
+  header h1 { font-size:16px; margin:0; font-weight:700; }
+  .badge { font-size:12px; padding:2px 10px; border-radius:999px; border:1px solid var(--line); color:var(--muted); }
+  .badge.test { color:var(--accent-2); border-color:#1e4b63; background:#0b2733; }
+  .badge.prod { color:var(--warn); border-color:#5a4415; background:#2a2110; }
+  .spacer { flex:1; }
+  .hint { font-size:12px; color:var(--muted); }
+  main { display:grid; grid-template-columns: 380px 1fr; gap:16px; padding:16px 20px 40px; align-items:start; }
+  @media (max-width: 1000px) { main { grid-template-columns: 1fr; } }
+  section.panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+  .panel h2 { font-size:13px; margin:0; padding:10px 14px; background:var(--panel-2); border-bottom:1px solid var(--line); font-weight:600; display:flex; gap:8px; align-items:center; }
+  .panel .body { padding:12px 14px; }
+  .lib { border:1px solid var(--line); border-radius:9px; padding:8px 10px; margin-bottom:8px; background:#141e28; }
+  .lib .row1 { display:flex; align-items:center; gap:8px; }
+  .lib .name { font-weight:600; }
+  .lib .meta { font-size:12px; color:var(--muted); }
+  .lib .prio { margin-left:auto; font-size:11px; color:var(--accent-2); font-family:var(--mono); }
+  .entries { margin-top:6px; font-size:12px; color:var(--muted); font-family:var(--mono); }
+  details summary { cursor:pointer; color:var(--accent-2); }
+  textarea {
+    width:100%; min-height:88px; resize:vertical; background:#0c141c; color:var(--text);
+    border:1px solid var(--line); border-radius:8px; padding:10px; font-size:14px; font-family:var(--mono);
+  }
+  input[type=text], select {
+    background:#0c141c; color:var(--text); border:1px solid var(--line);
+    border-radius:8px; padding:7px 9px; font-size:13px;
+  }
+  button {
+    background:var(--accent-2); color:#04212e; border:none; border-radius:8px;
+    padding:8px 14px; font-size:13px; font-weight:600; cursor:pointer;
+  }
+  button.ghost { background:transparent; color:var(--muted); border:1px solid var(--line); }
+  button.ok { background:var(--ok); color:#052e16; }
+  button.bad { background:var(--danger); color:#2b0509; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:8px 0; }
+  .out { background:#0c141c; border:1px solid var(--line); border-radius:8px; padding:10px; font-family:var(--mono); font-size:13px; white-space:pre-wrap; word-break:break-word; min-height:52px; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+  .chip { font-size:12px; padding:3px 9px; border-radius:999px; border:1px solid var(--line); color:var(--muted); font-family:var(--mono); }
+  .chip.hit { border-color:#1e4b63; color:var(--accent-2); background:#0b2733; }
+  .chip.rep { border-color:#14532d; color:var(--accent); background:#08231a; }
+  .chip.warn { border-color:#5a4415; color:var(--warn); background:#2a2110; }
+  .tabs { display:flex; gap:6px; }
+  .tab { padding:6px 12px; border-radius:8px; border:1px solid var(--line); cursor:pointer; font-size:13px; color:var(--muted); }
+  .tab.active { background:var(--panel-2); color:var(--text); border-color:#31506a; }
+  .req { border:1px solid var(--line); border-radius:9px; padding:8px 10px; margin-bottom:8px; background:#141e28; }
+  .req .t { font-size:12px; color:var(--muted); }
+  .empty { color:var(--muted); font-size:13px; padding:6px 0; }
+  .kv { font-size:12px; color:var(--muted); font-family:var(--mono); margin-top:6px; word-break:break-all; }
+  .toast { position:fixed; right:18px; bottom:18px; background:var(--panel-2); border:1px solid var(--line); border-radius:10px; padding:10px 14px; font-size:13px; opacity:0; transition:opacity .2s; pointer-events:none; }
+  .toast.show { opacity:1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>术语库演示台</h1>
+  <span class="badge" id="envBadge">env</span>
+  <span class="spacer"></span>
+  <div class="tabs">
+    <div class="tab active" data-role="admin">管理员</div>
+    <div class="tab" data-role="user">用户</div>
+  </div>
+  <span class="hint">只监听 127.0.0.1 · 演示用</span>
+</header>
+
+<main>
+  <!-- 左：库与快照 -->
+  <div>
+    <section class="panel">
+      <h2>① 库（管理员维护） <span class="hint" id="libCount"></span></h2>
+      <div class="body">
+        <div id="libs"></div>
+        <div class="row">
+          <button onclick="makeSnapshot()">生成会议快照</button>
+          <span class="hint" id="snapHint">勾选要启用的库，再生成</span>
+        </div>
+        <div id="snap"></div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top:16px">
+      <h2>会议编号</h2>
+      <div class="body">
+        <input type="text" id="meetingId" value="room-001" style="width:100%">
+        <div class="kv" id="snapPaths"></div>
+      </div>
+    </section>
+  </div>
+
+  <!-- 右：效果 + 审批/申请 -->
+  <div>
+    <section class="panel">
+      <h2>② 效果演示：库里改一条，字幕会怎么变</h2>
+      <div class="body">
+        <div class="row">
+          <select id="lang">
+            <option value="pt-BR">葡语译文（pt → 规范葡语）</option>
+            <option value="zh-CN">中文原文（变体 → 规范中文）</option>
+          </select>
+          <button class="ghost" onclick="fillSample()">填入示例</button>
+          <span class="hint">用上面勾选的库；改库后重新生成快照再点"跑一次"</span>
+        </div>
+        <textarea id="input"></textarea>
+        <div class="row"><button onclick="runNormalize()">跑一次（归一 + 专名提示）</button></div>
+        <div class="out" id="out">（还没跑）</div>
+        <div class="chips" id="chips"></div>
+        <div class="kv" id="hintOut"></div>
+      </div>
+    </section>
+
+    <!-- 管理员：待审申请 + 批量导入 -->
+    <section class="panel" style="margin-top:16px" id="adminPanel">
+      <h2>③ 申请审批（管理员）</h2>
+      <div class="body">
+        <div id="pending"></div>
+        <details style="margin-top:10px">
+          <summary>批量导入（粘贴 JSON 数组）</summary>
+          <textarea id="importText" style="margin-top:8px"></textarea>
+          <div class="row"><button class="ghost" onclick="fillImport()">填入示例</button><button onclick="doImport()">导入</button></div>
+          <div class="kv" id="importOut"></div>
+        </details>
+      </div>
+    </section>
+
+    <!-- 用户：提申请 -->
+    <section class="panel" style="margin-top:16px; display:none" id="userPanel">
+      <h2>③ 提交申请（用户只能申请，不能直接改库）</h2>
+      <div class="body">
+        <div class="row">
+          <select id="reqType">
+            <option value="add">新增</option>
+            <option value="update">修改</option>
+            <option value="delete">删除</option>
+          </select>
+          <select id="reqLib"></select>
+        </div>
+        <div class="row">
+          <input type="text" id="reqZh" placeholder="中文名（如 骁龙 8 Gen 3）" style="flex:1">
+          <input type="text" id="reqPt" placeholder="目标写法（删除时留空）" style="flex:1">
+        </div>
+        <div class="row">
+          <input type="text" id="reqReason" placeholder="申请理由（必填，审批要看）" style="flex:1">
+          <button onclick="submitRequest()">提交申请</button>
+        </div>
+        <div class="kv" id="reqOut"></div>
+        <div style="margin-top:10px" class="hint">提交后在管理员那一栏会出现「待审」；管理员通过后，重新生成快照才会进入字幕。</div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let STATE = { libraries: [], categories: [], pending: [], env: '', role: 'admin', selected: new Set() };
+
+function toast(text) {
+  const el = document.getElementById('toast');
+  el.textContent = text;
+  el.classList.add('show');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove('show'), 2200);
+}
+
+async function api(path, options) {
+  const response = await fetch(path, options);
+  const data = await response.json();
+  if (data.ok === false) throw new Error(data.error || '请求失败');
+  return data;
+}
+
+function el(id) { return document.getElementById(id); }
+
+function renderState() {
+  const badge = el('envBadge');
+  badge.textContent = STATE.env === 'prod' ? '生产库 prod' : '测试库 test';
+  badge.className = 'badge ' + (STATE.env === 'prod' ? 'prod' : 'test');
+  el('libCount').textContent = STATE.libraries.length + ' 个库 · ' + STATE.categories.length + ' 个分类';
+
+  el('libs').innerHTML = STATE.libraries.length === 0
+    ? '<div class="empty">还没有库：用下面的「批量导入」建一个</div>'
+    : STATE.libraries.map((lib) => {
+        const checked = STATE.selected.has(lib.id) ? 'checked' : '';
+        const entries = lib.entries.map((entry) =>
+          `${entry.zh} → ${entry.pt}` +
+          (entry.approved && entry.approved.length ? ` · 可接受[${entry.approved.join('|')}]` : '') +
+          (entry.variants && entry.variants.length ? ` · 变体[${entry.variants.join('|')}]` : '')
+        ).join('<br>');
+        return `<div class="lib">
+          <div class="row1">
+            <input type="checkbox" ${checked} data-lib="${lib.id}" onchange="toggleLib(this)">
+            <span class="name">${lib.name}</span>
+            <span class="prio">prio ${lib.priority}</span>
+          </div>
+          <div class="meta">${lib.categoryName || '未分类'} · ${lib.entries.length} 条</div>
+          <details><summary>看条目</summary><div class="entries">${entries}</div></details>
+        </div>`;
+      }).join('');
+
+  el('reqLib').innerHTML = STATE.libraries.map((lib) => `<option value="${lib.id}">${lib.name}</option>`).join('');
+
+  const pending = STATE.pending;
+  el('pending').innerHTML = pending.length === 0
+    ? '<div class="empty">没有待审申请</div>'
+    : pending.map((item) => `<div class="req">
+        <div><b>${item.type === 'add' ? '新增' : item.type === 'update' ? '修改' : '删除'}</b>
+          「${item.entry ? item.entry.zh : item.targetKey}」${item.entry ? ' → ' + item.entry.pt : ''}</div>
+        <div class="t">${item.libraryId} · 申请人 ${item.applicant} · ${item.reason}</div>
+        <div class="row">
+          <button class="ok" onclick="decide('${item.id}','approve')">通过</button>
+          <button class="bad" onclick="decide('${item.id}','reject')">驳回</button>
+        </div>
+      </div>`).join('');
+}
+
+function toggleLib(box) {
+  if (box.checked) STATE.selected.add(box.dataset.lib);
+  else STATE.selected.delete(box.dataset.lib);
+  el('snapHint').textContent = STATE.selected.size === 0 ? '勾选要启用的库，再生成' : `已选 ${STATE.selected.size} 个库`;
+}
+
+async function refresh() {
+  const data = await api('/api/state');
+  STATE = { ...STATE, ...data, selected: new Set(data.libraries.map((lib) => lib.id)) };
+  renderState();
+}
+
+function meetingId() { return el('meetingId').value.trim() || 'room-001'; }
+
+async function makeSnapshot() {
+  const ids = [...STATE.selected];
+  const data = await api('/api/snapshot', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ meetingId: meetingId(), libraryIds: ids }),
+  });
+  el('snap').innerHTML = `<div class="kv">快照 ${data.entries.length} 条（user=${data.user}）`
+    + (data.conflicts.length ? `<br><span style="color:#f59e0b">⚠ ${data.conflicts.length} 条跨库冲突未纳入：${data.conflicts.map((item) => item.zh).join('、')}</span>` : '')
+    + `</div>`;
+  el('snapPaths').textContent = 'termsPath: ' + data.termsPath;
+  toast('快照已生成');
+}
+
+function fillSample() {
+  const lang = el('lang').value;
+  el('input').value = lang === 'zh-CN'
+    ? '亮亮眼睛这条产品线在圣保罗的团队也在用骁龙 8 Gen 3 的方案。'
+    : 'A linha de óculos Liangliang Ótica em São Paulo também usa o Snapdragon 8-3.';
+}
+
+async function runNormalize() {
+  const text = el('input').value;
+  if (!text.trim()) { toast('先填一段文本'); return; }
+  const data = await api('/api/normalize', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text, lang: el('lang').value, libraryIds: [...STATE.selected], meetingId: meetingId() }),
+  });
+  el('out').textContent = '原文：' + text + '\n\n' + '结果：' + data.after;
+  el('chips').innerHTML = data.events.map((event) => event.event === 'replace'
+    ? `<span class="chip rep">${event.from} → ${event.to}</span>`
+    : `<span class="chip hit">命中 ${event.id}</span>`).join('')
+    + (data.changed ? '' : '<span class="chip">没有改动</span>');
+  el('hintOut').textContent = data.hint !== null
+    ? '本句专名提示（进翻译提示词）：' + data.hint.map((item) => `${item.zh} → ${item.pt}`).join('；')
+    : '本句专名提示：不加（原文里没有表内名字）';
+}
+
+async function decide(id, decision) {
+  await api('/api/decision', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id, decision, by: 'boss@example.com', note: decision === 'approve' ? '演示通过' : '演示驳回' }),
+  });
+  toast(decision === 'approve' ? '已通过（重新生成快照后生效）' : '已驳回');
+  await refresh();
+}
+
+function fillImport() {
+  el('importText').value = JSON.stringify([
+    { name: '出口贸易', priority: 10, entries: [
+      { zh: '亮亮眼镜', pt: 'Leion', approved: ['Liangliang Ótica', 'Liangliang Glasses'], variants: ['亮亮眼睛'] },
+      { zh: '高通', pt: 'Qualcomm', approved: ['Qualcomm Inc'] },
+    ] },
+  ], null, 2);
+}
+
+async function doImport() {
+  let items;
+  try { items = JSON.parse(el('importText').value); } catch (error) { toast('JSON 解析失败：' + error.message); return; }
+  const data = await api('/api/import', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ items }),
+  });
+  el('importOut').textContent = `新建 ${data.created} · 更新 ${data.updated} · 被拒 ${data.rejected}`
+    + (data.errors.length ? '\n' + data.errors.join('\n') : '');
+  toast('导入完成');
+  await refresh();
+}
+
+async function submitRequest() {
+  const type = el('reqType').value;
+  const data = await api('/api/request', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      type, libraryId: el('reqLib').value,
+      zh: el('reqZh').value, pt: el('reqPt').value,
+      reason: el('reqReason').value, applicant: 'alice@example.com',
+    }),
+  });
+  el('reqOut').textContent = '已提交：' + data.id + '（待管理员审批）';
+  toast('申请已提交');
+  await refresh();
+}
+
+document.querySelectorAll('.tab').forEach((tab) => {
+  tab.onclick = () => {
+    document.querySelectorAll('.tab').forEach((item) => item.classList.remove('active'));
+    tab.classList.add('active');
+    STATE.role = tab.dataset.role;
+    el('adminPanel').style.display = STATE.role === 'admin' ? '' : 'none';
+    el('userPanel').style.display = STATE.role === 'user' ? '' : 'none';
+  };
+});
+
+refresh().then(() => { fillSample(); }).catch((error) => toast(error.message));
+</script>
+</body>
+</html>

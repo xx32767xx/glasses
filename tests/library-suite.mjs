@@ -365,5 +365,77 @@ export async function runLibrarySuite({ it, check, assert }) {
       String(ignored.text ?? '').includes('Liangliang Ótica'), JSON.stringify(ignored.text ?? '').slice(0, 60))
   })
 
+  /* ── 演示台（本机网页）：只能绑回环、环境启动时定、演示链路三个接口可用 ────── */
+  await it('演示台：只监听回环、环境不可被请求改、归一/快照接口与插件一致', async () => {
+    const { startTermsUi } = await import('../scripts/terms-ui.mjs')
+    const ui = await startTermsUi({ env: 'test', port: 0, base: BASE })
+    try {
+      check('只绑 127.0.0.1（不做鉴权的演示台不能暴露到局域网）',
+        ui.server.address().address === '127.0.0.1', String(ui.server.address().address))
+
+      const state = await (await fetch(`${ui.url}api/state`)).json()
+      check('状态接口返回环境与库', state.ok === true && state.env === 'test' && Array.isArray(state.libraries))
+
+      const pages = await fetch(ui.url)
+      const html = await pages.text()
+      check('首页能取到（HTML，不是 404 JSON）', pages.status === 200 && html.includes('术语库演示台'))
+
+      // 归一：用**自己造的库**（沙箱库/演示库里的 approved），证明演示台与插件同一套逻辑
+      await (await fetch(`${ui.url}api/save-library`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          library: { name: '演示台库', priority: 200, entries: [
+            { zh: '亮亮眼镜', pt: 'Leion', approved: ['Liangliang Ótica'], variants: ['亮亮眼睛'] },
+          ] },
+        }),
+      })).json()
+      const normalized = await (await fetch(`${ui.url}api/normalize`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'A linha de óculos Liangliang Ótica cresceu.', lang: 'pt-BR' }),
+      })).json()
+      check('归一接口把 approved 写法换成规范葡语（与插件同一函数）',
+        normalized.ok === true && String(normalized.after).includes('Leion'), JSON.stringify(normalized.after))
+
+      // ⚠️ 这条守的是"演示台与产线不能分叉"：原文说的是**变体**（亮亮眼睛），
+      //    简化成 text.includes(entry.zh) 会漏掉它，演示就会误导成"本句不加提示"。
+      const hinted = await (await fetch(`${ui.url}api/normalize`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: '亮亮眼睛这条产品线在圣保罗的团队也在用骁龙 8 Gen 3 的方案。', lang: 'zh-CN' }),
+      })).json()
+      const hintedZh = (hinted.hint ?? []).map((item) => item.zh)
+      check('专名提示用产线的 mentionedEntries：变体也算"提到了"',
+        hintedZh.includes('亮亮眼镜'), JSON.stringify(hintedZh))
+      check('专名提示里带上了表内的规范写法',
+        (hinted.hint ?? []).some((item) => item.pt === 'Leion'), JSON.stringify(hinted.hint))
+
+      const snapshot = await (await fetch(`${ui.url}api/snapshot`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ meetingId: 'room-ui', libraryIds: [] }),
+      })).json()
+      // 语义：**空选择就是空表**（不是"默认全部"）。演示台上没勾任何库时应该什么都不生效，
+      // 而不是悄悄把所有库都启用 —— 后者会让演示结论失真。
+      check('空选择 → 0 条（不做"默认全部"这种隐式行为）',
+        snapshot.ok === true && snapshot.entries.length === 0, String(snapshot.entries?.length))
+      const allLibs = await (await fetch(`${ui.url}api/state`)).json()
+      const picked = await (await fetch(`${ui.url}api/snapshot`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ meetingId: 'room-ui', libraryIds: allLibs.libraries.map((library) => library.id) }),
+      })).json()
+      check('选了库就有条目', picked.entries.length > 0, String(picked.entries?.length))
+      check('快照仍落在 meetings/<场次>/ 下（不是旧的全局单表）',
+        String(picked.termsPath).includes('meetings'), picked.termsPath)
+
+      // 跨环境请求必须写不进生产：演示台把环境固定在启动参数里
+      const prodProbe = await (await fetch(`${ui.url}api/snapshot`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ meetingId: 'room-ui', libraryIds: [], env: 'prod' }),
+      })).json()
+      check('请求里塞 env=prod 不会改变写入环境',
+        String(prodProbe.termsPath).includes('live-test'), prodProbe.termsPath)
+    } finally {
+      await ui.close()
+    }
+  })
+
   await rm(BASE, { recursive: true, force: true })
 }

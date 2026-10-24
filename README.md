@@ -38,6 +38,8 @@ node scripts/build-apk.mjs             # 构建安卓 App → android/README.md 
 node scripts/test-account.mjs          # 备好测试账户 + 预置热词表（验证热词表/账户时用）
 node scripts/terms-admin.mjs --help    # 术语库 / 申请审批 / 会议快照（管理员建库→用户申请→审批→快照）
                                        # 先 --env test 跑一遍：生产与测试两套数据，永不互串
+node scripts/terms-ui.mjs --env test   # 术语库演示台（本机网页 http://127.0.0.1:8789）
+                                       # 库/快照/归一效果/申请审批，管理员与用户两个页签
 node scripts/debug-window.mjs          # 另开一个终端：实时显示断在哪一环（只读，不影响链路）
 
 # 没有手机也能验整条路：

@@ -1384,6 +1384,36 @@ function normalizeTerms(text, lang, entries) {
  * "这段文本里**有没有出现**这个写法（任意已知写法）"—— 关心的是存在性，不是替换。
  * 规则必须一致，否则会出现"归一认为没出现、观测认为出现了"这种自相矛盾的日志。
  */
+/**
+ * "这句原文里出现了哪些表内条目" —— **唯一实现**。
+ *
+ * <p>产线（`termsHintFor`）与演示台/评测脚本都必须用它。为什么不允许各自实现：
+ * 判断"是否提及"要同时考虑**变体**（原文说「亮亮眼睛」、条目写「亮亮眼镜」）、
+ * **可接受写法**（葡语侧 `approved`）、折叠（大小写/重音/空格）与边界（中文危险邻接）。
+ * 自己写个 `text.includes(entry.zh)` 会漏掉前两条 —— 演示台给出"本句不会加提示"，
+ * 而产线其实会加，这种分叉比直接报错更难发现。
+ *
+ * @param {string} text 原文
+ * @param {object[]} entries 表内条目
+ * @param {boolean} sourceZh 原文是中文（用 zh+variants）/ 否（用 pt+approved）
+ * @returns {{zh: string, pt: string}[]} 命中的条目（顺序同入参）
+ */
+function mentionedEntries(text, entries, sourceZh) {
+  const source = String(text === undefined || text === null ? '' : text)
+  if (source === '' || Array.isArray(entries) !== true) return []
+  const hint = []
+  for (const entry of entries) {
+    if (entry === null || typeof entry !== 'object') continue
+    const forms = sourceZh === true
+      ? [entry.zh, ...(entry.variants ?? [])]
+      : [entry.pt, ...(entry.approved ?? [])]
+    const mentioned = forms.some(form => typeof form === 'string' && form !== ''
+      && mentionsForm(source, form, sourceZh === true, entry.fold !== false, entry.strictBoundary === true))
+    if (mentioned) hint.push({ zh: entry.zh, pt: entry.pt })
+  }
+  return hint
+}
+
 function mentionsForm(text, form, isZh, foldEnabled, strictBoundary) {
   const folded = foldForTerms(text)
   const compact = compactFold(text)
@@ -1708,22 +1738,18 @@ function createInterpreter(ctx, rawConfig, deps) {
    *
    * <p>只列**本句出现**的名字 —— 不把整张表塞进提示词（那会稀释、浪费 token，
    * 还可能让模型乱补名字）。空表 / 本句没提名字时返回 null，提示词一个字都不加。
+   *
+   * <p>⚠️ 判断"提到"这件事只有这一份实现（下面 `mentionedEntries`）。演示台/评测脚本
+   * 如果要展示"本句会不会加提示"，必须调它，不能自己写 `text.includes(entry.zh)` ——
+   * 那样会漏掉**变体**（原文说「亮亮眼睛」、条目写「亮亮眼镜」，简化判断会漏），
+   * 于是演示与产线给出不同结论，而这种分叉最难发现。
    */
   function termsHintFor(source, from) {
     if (config.terms !== 'on' || config.termsHint !== 'on') return null
     if (termEntries.length === 0) return null
     const text = String(source === undefined || source === null ? '' : source)
     if (text === '') return null
-    const sourceZh = String(from).toLowerCase().startsWith('zh')
-    const hint = []
-    for (const entry of termEntries) {
-      const forms = sourceZh
-        ? [entry.zh, ...(entry.variants ?? [])]
-        : [entry.pt, ...(entry.approved ?? [])]
-      const mentioned = forms.some(form => typeof form === 'string' && form !== ''
-        && mentionsForm(text, form, sourceZh, entry.fold !== false, entry.strictBoundary === true))
-      if (mentioned) hint.push({ zh: entry.zh, pt: entry.pt })
-    }
+    const hint = mentionedEntries(text, termEntries, String(from).toLowerCase().startsWith('zh'))
     return hint.length === 0 ? null : hint
   }
 
