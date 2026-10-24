@@ -1,13 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  热词表页（底部导航第 4 个栏位）。
+  术语库页（底部导航第 4 个栏位）。
 
-  ⚠️ 这里是**表格**，不是「中文 = 葡语」的要求用户手打的文本框 —— 原因很实际：
-    · 用户手上本来就有一张表（Excel/Word/微信里），让他按分隔符手打等于让他重录一遍；
-    · 手打的格式错误（少个等号、中文逗号、全角空格）会变成"校验失败"而他看不出错在哪；
-    · 拉回来时如果只有一堆文本，他也对不上自己原来那张表。
-  所以：一行一条、两列可编辑、可删；「新增」弹一个小表格式对话框；
-  「批量导入」直接吃粘贴来的 Tab / 逗号分隔内容。
+  2026-10-23 起，用户端只做两件事：**选库** 与 **提申请**（docs/19）。
+  旧模型的"自己编辑一张表 + 上传"整块**已隐藏**（不是删除）：
+    · id 与对应的 Java 代码都还在 —— 删掉要连带改 MainActivity 十几处引用，
+      迁移期保留可回滚；
+    · 等管理员网页被信任、录入完全走管理端之后，再一次性删干净。
+  想确认它确实藏起来了：本文件里三个容器的第一行属性是 android:visibility="gone"
+  （表头+新增/批量导入、表格本体、底部校验/上传/拉取）。
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
@@ -177,6 +178,7 @@
 
     <!-- 表头 + 两个按钮（新增 / 批量导入） -->
     <LinearLayout
+        android:visibility="gone"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginStart="16dp"
@@ -241,6 +243,7 @@
       而 RecyclerView 要多写一个 Adapter + ViewHolder，收益为零。
     -->
     <ScrollView
+        android:visibility="gone"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_marginTop="8dp"
@@ -274,6 +277,7 @@
 
     <!-- 底部动作：校验 / 上传 / 从电脑拉取 -->
     <LinearLayout
+        android:visibility="gone"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:background="@color/surface"

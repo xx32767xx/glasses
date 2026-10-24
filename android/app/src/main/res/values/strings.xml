@@ -193,7 +193,7 @@
     <string name="settings_terms">热词表</string>
     <string name="settings_terms_title">热词对照表</string>
     <string name="settings_terms_hint">上传「中文 = 葡语」的名字对照，下一次同传开始时生效</string>
-    <string name="terms_title">热词对照表</string>
+    <string name="terms_title">术语库</string>
     <string name="terms_intro">一行一条，用等号隔开：左边中文，右边葡语。这些名字在译文里会被强制写成右边的写法。</string>
     <string name="terms_user_label">用户名</string>
     <string name="terms_user_hint">用户名</string>
@@ -223,7 +223,7 @@
     <string name="settings_proofread_failed">设置没送到电脑：%1$s</string>
     <string name="settings_proofread_saved">已保存：校对%1$s · 下一场同传生效</string>
     <!-- 热词表页（底部导航第 4 个栏位，表格形式） -->
-    <string name="nav_terms">热词表</string>
+    <string name="nav_terms">术语库</string>
     <string name="terms_add">新增</string>
     <string name="terms_libs_title">本次同传启用的库</string>
     <string name="terms_libs_hint">勾选要启用的术语库（只影响本次同传；库内容由管理员维护）</string>
