@@ -1736,6 +1736,13 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         return accountToken().isEmpty() == false;
     }
 
+    // 邮箱 + 验证码登录（docs/19）。刻意**不动**旧的用户名+密码入口：
+    // 老的 anqi/test 账号就是那么建的，留着能继续登；新用户走上面这条。
+    private EditText accountEmailField;
+    private EditText accountCodeField;
+    private TextView accountGetCodeView;
+    private TextView accountEmailLoginView;
+
     private void openAccountPage() {
         View view = pushOverlay(R.layout.overlay_account);
         accountStateView = view.findViewById(R.id.accountState);
@@ -1750,6 +1757,14 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         view.findViewById(R.id.accountRegister).setOnClickListener(v -> runAccountAction("register"));
         view.findViewById(R.id.accountLogin).setOnClickListener(v -> runAccountAction("login"));
         accountLogoutView.setOnClickListener(v -> runAccountAction("logout"));
+
+        // 邮箱 + 验证码（推荐路径）
+        accountEmailField = view.findViewById(R.id.accountEmail);
+        accountCodeField = view.findViewById(R.id.accountCode);
+        accountGetCodeView = view.findViewById(R.id.accountGetCode);
+        accountEmailLoginView = view.findViewById(R.id.accountEmailLogin);
+        accountGetCodeView.setOnClickListener(v -> requestEmailCode());
+        accountEmailLoginView.setOnClickListener(v -> loginWithEmailCode());
 
         accountUsernameField.setText(accountUser());
         renderAccount();
@@ -1788,6 +1803,113 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                     ? getString(R.string.account_state_some, accountUser().isEmpty() ? "?" : accountUser())
                     : getString(R.string.settings_account_none));
         }
+    }
+
+    /**
+     * 取验证码。码**打印在电脑端 start-all 的窗口里**（本机工具不接邮件服务），
+     * 局域网模式下接口也会把码回给手机，于是这里顺手自动填入 —— 省一次手抄。
+     * 公网模式（--public）服务端不会回码，那时只能看电脑窗口。
+     */
+    private void requestEmailCode() {
+        final LanClient lan = client;
+        if (lan == null) {
+            if (accountStatusView != null) accountStatusView.setText(R.string.account_need_connect);
+            return;
+        }
+        final String email = accountEmailField == null ? "" : accountEmailField.getText().toString().trim();
+        if (email.isEmpty()) {
+            if (accountStatusView != null) accountStatusView.setText(R.string.account_email_need);
+            return;
+        }
+        if (accountStatusView != null) accountStatusView.setText(R.string.terms_status_working);
+        new Thread(() -> {
+            String status;
+            int color = R.color.brand;
+            String code = "";
+            try {
+                JSONObject result = lan.authRequestCode(email);
+                if (result.optBoolean("ok", false)) {
+                    code = result.optString("code", "");
+                    status = code.isEmpty()
+                            ? getString(R.string.account_code_sent)
+                            : getString(R.string.account_code_sent) + "（已自动填入）";
+                } else {
+                    status = getString(R.string.account_failed, result.optString("error", "未知原因"));
+                    color = R.color.err;
+                }
+            } catch (Exception error) {
+                status = getString(R.string.account_failed, describeError(error));
+                color = R.color.err;
+            }
+            final String finalStatus = status;
+            final int finalColor = color;
+            final String finalCode = code;
+            main.post(() -> {
+                if (!finalCode.isEmpty() && accountCodeField != null) {
+                    accountCodeField.setText(finalCode);
+                }
+                if (accountStatusView != null) {
+                    accountStatusView.setText(finalStatus);
+                    accountStatusView.setTextColor(getColor(finalColor));
+                }
+            });
+        }, "email-code").start();
+    }
+
+    /** 用邮箱 + 验证码登录（首次即注册，服务端按邮箱是否已存在自动分流）。 */
+    private void loginWithEmailCode() {
+        final LanClient lan = client;
+        if (lan == null) {
+            if (accountStatusView != null) accountStatusView.setText(R.string.account_need_connect);
+            return;
+        }
+        final String email = accountEmailField == null ? "" : accountEmailField.getText().toString().trim();
+        final String code = accountCodeField == null ? "" : accountCodeField.getText().toString().trim();
+        if (email.isEmpty() || code.isEmpty()) {
+            if (accountStatusView != null) accountStatusView.setText(R.string.account_need_fields);
+            return;
+        }
+        if (accountStatusView != null) accountStatusView.setText(R.string.terms_status_working);
+        new Thread(() -> {
+            String status;
+            int color = R.color.brand;
+            String token = null;
+            String user = null;
+            String role = "";
+            try {
+                JSONObject json = lan.authLoginEmail(email, code);
+                if (json.optBoolean("ok", false)) {
+                    token = json.optString("token", "");
+                    user = json.optString("user", email);
+                    role = json.optString("role", "");
+                    status = getString(R.string.account_ok, "登录成功：" + user
+                            + (role.isEmpty() ? "" : "（" + role + "）")
+                            + (json.optBoolean("created", false) ? " · 新账户已创建" : ""));
+                } else {
+                    status = getString(R.string.account_failed, json.optString("error", "未知原因"));
+                    color = R.color.err;
+                }
+            } catch (Exception error) {
+                status = getString(R.string.account_failed, describeError(error));
+                color = R.color.err;
+            }
+            final String finalStatus = status;
+            final int finalColor = color;
+            final String finalToken = token;
+            final String finalUser = user;
+            main.post(() -> {
+                if (finalToken != null && !finalToken.isEmpty()) {
+                    prefs.edit().putString(KEY_TOKEN, finalToken).putString(KEY_USER, finalUser).apply();
+                    if (client != null) client.setToken(finalToken);
+                    if (accountCodeField != null) accountCodeField.setText("");
+                    renderAccount();
+                }
+                if (accountStatusView != null) {
+                    accountStatusView.setText(finalStatus);
+                    accountStatusView.setTextColor(getColor(finalColor));
+                }
+            });
+        }, "email-login").start();
     }
 
     /** 注册 / 登录 / 注销：都要经过电脑（账户存在电脑上）。 */

@@ -9,7 +9,8 @@
  *   · 快照的产物必须是插件能直接读的形状（插件零改动，这是不炸的关键）。
  */
 
-import { mkdir, readFile, rm } from 'node:fs/promises'
+import { access, mkdir, readFile, rm } from 'node:fs/promises'
+import { readJson as readJsonFile } from '../lib/store.mjs'
 import { join } from 'node:path'
 import { VAR_DIR } from '../lib/paths.mjs'
 import { foldKey } from '../lib/terms.mjs'
@@ -435,6 +436,58 @@ export async function runLibrarySuite({ it, check, assert }) {
     } finally {
       await ui.close()
     }
+  })
+
+  /* ── 会议术语：开会即发布的"当前这一场"（docs/19）────────────────────────── */
+  await it('会议术语：发布 = 分配会议 id + 合并选中库 + 归档；换选择立刻生效', async () => {
+    const { publishMeetingTerms, readCurrentMeeting, currentTermsPaths } = await import('../lib/meeting-terms.mjs')
+    const normalizer = await import('../lib/terms-matcher.mjs')
+
+    // 两个库：A 给 Leion（priority 10），B 给 Liangliang Ótica（priority 20）
+    await saveLibrary(prod, { id: 'lib-mt-a', name: 'MT-A', priority: 10, entries: [ENTRY('亮亮眼镜', 'Leion')] }, {})
+    await saveLibrary(prod, { id: 'lib-mt-b', name: 'MT-B', priority: 20, entries: [ENTRY('亮亮眼镜', 'Liangliang Ótica')] }, {})
+    const libraries = await listLibraries(prod)
+
+    const first = await publishMeetingTerms(prod, { libraryIds: ['lib-mt-a'], owner: 'alice@example.com', libraries })
+    check('发布会话返回会议 id（人眼可读）', /^m-\d{14}-[a-z0-9]{4}$/.test(first.meetingId), first.meetingId)
+    check('只选 A 时只有 A 的条目', first.entries === 1 && first.meta.libraryIds.length === 1, JSON.stringify(first.meta.libraryIds))
+    const paths = currentTermsPaths(prod)
+    const doc = await readJson(first.termsPath, null)
+    check('插件读的固定路径是 meeting-terms/terms.json', paths.termsPath === first.termsPath, first.termsPath)
+    check('产物是插件形状（tables[user].entries）',
+      Array.isArray(Object.values(doc?.tables ?? {})[0]?.entries), JSON.stringify(Object.keys(doc?.tables ?? {})))
+    check('归档目录里也有一份（meetings/<会议id>/）',
+      await (async () => { try { await access(first.termsPath.replace(/meeting-terms/, `meetings/${first.meetingId}`)); return true } catch { return false } })(), '归档缺失')
+
+    // 换选择：只选 B → 立刻变成 B 的写法（这就是"换表生效"的证据）
+    const second = await publishMeetingTerms(prod, { libraryIds: ['lib-mt-b'], owner: 'alice@example.com', libraries })
+    const entriesB = Object.values((await readJson(second.termsPath, null)).tables)[0].entries
+    const replaced = normalizer.applyTerms('A linha de óculos Liangliang Ótica cresceu.', {
+      lang: 'pt-BR', mode: 'normalize', entries: entriesB,
+    })
+    check('换到 B 后，B 的变体被归一到 B 的规范写法',
+      String(replaced.text).includes('Liangliang Ótica'), JSON.stringify(replaced.text))
+
+    // 选 A + B：priority 高的 B 赢
+    const both = await publishMeetingTerms(prod, { libraryIds: ['lib-mt-a', 'lib-mt-b'], libraries })
+    const entriesBoth = Object.values((await readJson(both.termsPath, null)).tables)[0].entries
+    const win = entriesBoth.find((entry) => entry.zh === '亮亮眼镜')
+    check('跨库同词不同写法：priority 高的库赢（B, prio 20）', win.pt === 'Liangliang Ótica', win.pt)
+
+    // 空选择 = 空表（取消勾选必须立刻失效）
+    const empty = await publishMeetingTerms(prod, { libraryIds: [], libraries })
+    check('空选择发布出 0 条（取消勾选立刻失效）', empty.entries === 0, String(empty.entries))
+    const current = await readCurrentMeeting(prod)
+    check('meta 读回的是最后一次发布的会议', current.meetingId === empty.meetingId, current.meetingId)
+  })
+
+  await it('平级冲突：同优先级不同写法 → 该条目不进入本场（宁可少一条）', async () => {
+    const { aggregateLibraries } = await import('../lib/snapshot.mjs')
+    const left = { id: 'lib-x', name: 'X', priority: 7, entries: [{ zh: '圣保罗', pt: 'São Paulo' }] }
+    const right = { id: 'lib-y', name: 'Y', priority: 7, entries: [{ zh: '圣保罗', pt: 'Sao Paulo City' }] }
+    const result = aggregateLibraries([left, right])
+    check('条目被排除', result.entries.every((entry) => entry.zh !== '圣保罗'), JSON.stringify(result.entries))
+    check('并且报告为冲突（界面要能提示）', result.conflicts.length === 1 && result.conflicts[0].zh === '圣保罗')
   })
 
   await rm(BASE, { recursive: true, force: true })

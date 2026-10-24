@@ -273,6 +273,15 @@
     <string name="account_state_none">未登录</string>
     <string name="account_state_some">已登录：%1$s</string>
     <string name="account_token_title">当前 token</string>
+    <string name="account_email_title">邮箱 + 验证码（推荐）</string>
+    <string name="account_email_note">验证码会打印在电脑端 start-all 的窗口里（本机工具，不发邮件）</string>
+    <string name="account_email_hint">邮箱（如 you@example.com）</string>
+    <string name="account_code_hint">6 位验证码</string>
+    <string name="account_get_code">获取验证码</string>
+    <string name="account_email_login">用验证码登录</string>
+    <string name="account_email_need">先填邮箱</string>
+    <string name="account_code_sent">验证码已发送：看电脑端窗口（10 分钟内有效）</string>
+    <string name="account_code_filled">验证码已自动填入</string>
     <string name="account_need_fields">请填写用户名与密码</string>
     <string name="account_need_connect">未连接电脑</string>
     <string name="account_ok">成功：%1$s</string>
