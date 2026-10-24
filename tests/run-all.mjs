@@ -36,6 +36,7 @@ import { runRescueSuite } from './rescue-suite.mjs'
 import { runTermsEvalSuite } from './terms-eval-suite.mjs'
 import { runLibrarySuite } from './library-suite.mjs'
 import { runOrgApiSuite } from './org-api-suite.mjs'
+import { runOrgRelaySuite } from './org-relay-suite.mjs'
 import { runDiscoverSuite } from './discover-suite.mjs'
 import { runAndroidOrderSuite } from './android-order-suite.mjs'
 import { runAsrPackSuite } from './asr-pack-suite.mjs'
@@ -225,6 +226,10 @@ await runLibrarySuite(helpers)
 // ── 7e. 组织接口：库 / 选库 / 申请审批（重点在权限，不在功能）──────────────────
 heading('组织接口（用户不能调管理员接口 / 身份来自 token / 挡目录穿越 / 空选择=空表）')
 await runOrgApiSuite(helpers)
+
+// ── 7f. 同一批接口走真实 HTTP：token / 角色 / 验证码登录 / 管理页 ───────────────
+heading('组织接口·HTTP（邮箱验证码登录 / 无 token 401 / 用户 403 / 申请→审批闭环）')
+await runOrgRelaySuite(helpers)
 
 // ── 7d3. 热词匹配器（"已知变体 → 规范写法"，纯字符串、零模型调用）────────────
 // 这是全功能里唯一能改字幕文字的地方，所以每条规则都配成对的负对照：

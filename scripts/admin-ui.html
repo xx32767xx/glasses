@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>术语库管理台（管理员）</title>
+<style>
+  :root { --bg:#f6f8fa; --card:#fff; --line:#e2e8f0; --ink:#1e293b; --muted:#64748b;
+          --brand:#0e7490; --ok:#15803d; --bad:#be123c; --warn:#b45309; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
+  header { display:flex; align-items:center; gap:12px; padding:12px 20px; background:#fff; border-bottom:1px solid var(--line); position:sticky; top:0; z-index:5; }
+  header h1 { font-size:16px; margin:0; }
+  .pill { font-size:12px; padding:2px 10px; border-radius:999px; border:1px solid var(--line); color:var(--muted); }
+  .pill.on { color:var(--ok); border-color:#bbf7d0; background:#f0fdf4; }
+  .pill.off { color:var(--muted); }
+  .spacer { flex:1; }
+  main { max-width:1180px; margin:0 auto; padding:16px 20px 60px; display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media (max-width:1000px){ main { grid-template-columns:1fr; } }
+  section { background:var(--card); border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+  section > h2 { margin:0; padding:10px 14px; font-size:13px; background:#f8fafc; border-bottom:1px solid var(--line); display:flex; gap:8px; align-items:center; }
+  .body { padding:12px 14px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; font-size:12px; }
+  input,select,textarea { font:inherit; padding:7px 9px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--ink); }
+  textarea { width:100%; min-height:120px; font-family:ui-monospace,Consolas,monospace; font-size:12.5px; }
+  button { font:inherit; padding:7px 13px; border-radius:8px; border:1px solid transparent; background:var(--brand); color:#fff; cursor:pointer; }
+  button.ghost { background:#fff; color:var(--muted); border-color:var(--line); }
+  button.ok { background:var(--ok); }
+  button.bad { background:var(--bad); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:8px 0; }
+  .muted { color:var(--muted); font-size:12.5px; }
+  .mono { font-family:ui-monospace,Consolas,monospace; font-size:12px; word-break:break-all; }
+  .empty { color:var(--muted); padding:10px 0; }
+  .toast { position:fixed; right:18px; bottom:18px; background:#0f1720; color:#fff; padding:10px 14px; border-radius:10px; opacity:0; transition:.2s; }
+  .toast.show { opacity:1; }
+  details summary { cursor:pointer; color:var(--brand); }
+</style>
+</head>
+<body>
+<header>
+  <h1>术语库管理台</h1>
+  <span class="pill" id="whoami">未登录</span>
+  <span class="spacer"></span>
+  <span class="muted">连的是 relay 的真实接口（/org/*）</span>
+</header>
+
+<main>
+  <section>
+    <h2>① 登录 <span class="muted" id="loginHint"></span></h2>
+    <div class="body">
+      <div class="row">
+        <input id="email" placeholder="邮箱（如 boss@example.com）" style="flex:1">
+        <button class="ghost" onclick="requestCode()">获取验证码</button>
+      </div>
+      <div class="row">
+        <input id="code" placeholder="6 位验证码" style="flex:1">
+        <button onclick="login()">登录</button>
+      </div>
+      <div class="muted">验证码打印在电脑端 relay 控制台（本机工具，不接邮件服务）。</div>
+      <div class="mono" id="tokenLine"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>② 库列表</h2>
+    <div class="body">
+      <div class="row"><button class="ghost" onclick="loadLibraries()">刷新</button></div>
+      <div id="libs" class="empty">（登录后加载）</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>③ 批量导入</h2>
+    <div class="body">
+      <div class="muted">粘贴 JSON 数组；每条一个库。<code>id</code> 可省略（省略则新建）。</div>
+      <textarea id="importText"></textarea>
+      <div class="row">
+        <button class="ghost" onclick="fillSample()">填入示例</button>
+        <button onclick="doImport()">导入</button>
+      </div>
+      <div class="mono" id="importOut"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>④ 待审申请 <span class="muted" id="pendingCount"></span></h2>
+    <div class="body"><div id="pending" class="empty">（登录后加载）</div></div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let token = localStorage.getItem('leion-admin-token') || '';
+
+function toast(text) {
+  const el = document.getElementById('toast');
+  el.textContent = text; el.classList.add('show');
+  clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('show'), 2400);
+}
+
+async function api(path, options = {}) {
+  const headers = { 'content-type': 'application/json', ...(options.headers || {}) };
+  if (token) headers['x-leion-token'] = token;
+  const response = await fetch(path, { ...options, headers });
+  const data = await response.json().catch(() => ({ ok: false, error: '响应不是 JSON' }));
+  if (response.status === 401) { setWho('未登录', false); }
+  if (data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
+  return data;
+}
+
+function setWho(text, ok) {
+  const el = document.getElementById('whoami');
+  el.textContent = text;
+  el.className = 'pill ' + (ok ? 'on' : 'off');
+}
+
+async function refreshWho() {
+  if (!token) { setWho('未登录', false); return; }
+  try {
+    const data = await api('/auth/whoami');
+    setWho(`${data.user} · ${data.role}`, true);
+  } catch { setWho('token 失效', false); }
+}
+
+async function requestCode() {
+  const email = document.getElementById('email').value.trim();
+  try {
+    const data = await api('/auth/code', { method: 'POST', body: JSON.stringify({ email }) });
+    document.getElementById('loginHint').textContent = data.code ? `验证码：${data.code}` : data.hint;
+    toast('验证码已发出（看 relay 控制台）');
+  } catch (error) { toast(error.message); }
+}
+
+async function login() {
+  const email = document.getElementById('email').value.trim();
+  const code = document.getElementById('code').value.trim();
+  try {
+    const data = await api('/auth/login-email', { method: 'POST', body: JSON.stringify({ email, code }) });
+    token = data.token;
+    localStorage.setItem('leion-admin-token', token);
+    document.getElementById('tokenLine').textContent = 'token 已保存到本机浏览器';
+    setWho(`${data.user} · ${data.role}`, true);
+    toast(data.created ? '首次登录：账户已创建（普通用户）' : '登录成功');
+    await Promise.all([loadLibraries(), loadPending()]);
+  } catch (error) { toast(error.message); }
+}
+
+async function loadLibraries() {
+  try {
+    const data = await api('/org/libraries');
+    document.getElementById('libs').className = '';
+    document.getElementById('libs').innerHTML = data.libraries.length === 0
+      ? '<div class="empty">还没有库：用下面「批量导入」建一个</div>'
+      : '<table><thead><tr><th>库</th><th>分类</th><th>优先级</th><th>条目</th><th>更新时间</th></tr></thead><tbody>'
+        + data.libraries.map((lib) =>
+            `<tr><td><b>${lib.name}</b><div class="mono">${lib.id}</div></td>`
+            + `<td>${lib.categoryName ?? '—'}</td><td>${lib.priority}</td><td>${lib.entries}</td>`
+            + `<td class="muted">${(lib.updatedAt || '').slice(0, 19).replace('T', ' ')}</td></tr>`).join('')
+        + '</tbody></table>';
+  } catch (error) { toast(error.message); }
+}
+
+async function loadPending() {
+  try {
+    const data = await api('/org/requests/pending');
+    document.getElementById('pendingCount').textContent = data.requests.length + ' 条';
+    document.getElementById('pending').className = data.requests.length ? '' : 'empty';
+    document.getElementById('pending').innerHTML = data.requests.length === 0
+      ? '（没有待审申请）'
+      : data.requests.map((item) =>
+          `<div style="border:1px solid var(--line);border-radius:9px;padding:8px 10px;margin-bottom:8px">
+             <div><b>${item.type === 'add' ? '新增' : item.type === 'update' ? '修改' : '删除'}</b>
+               「${item.entry ? item.entry.zh : item.targetKey}」${item.entry ? ' → ' + item.entry.pt : ''}</div>
+             <div class="muted">${item.libraryId} · 申请人 ${item.applicant}</div>
+             <div class="muted">理由：${item.reason}</div>
+             <div class="row">
+               <button class="ok" onclick="decide('${item.id}','approve')">通过</button>
+               <button class="bad" onclick="decide('${item.id}','reject')">驳回</button>
+             </div>
+           </div>`).join('');
+  } catch (error) { toast(error.message); }
+}
+
+async function decide(id, decision) {
+  try {
+    const data = await api(`/org/requests/${id}/decide`, { method: 'POST', body: JSON.stringify({ decision, note: '' }) });
+    toast(decision === 'approve' ? `已通过（库现在 ${data.entries} 条）` : '已驳回');
+    await Promise.all([loadLibraries(), loadPending()]);
+  } catch (error) { toast(error.message); }
+}
+
+function fillSample() {
+  document.getElementById('importText').value = JSON.stringify([
+    { name: '出口贸易', priority: 10, entries: [
+      { zh: '亮亮眼镜', pt: 'Leion', approved: ['Liangliang Ótica'], variants: ['亮亮眼睛'] },
+      { zh: '高通', pt: 'Qualcomm', approved: ['Qualcomm Inc'] },
+    ] },
+    { name: '法务术语', priority: 20, entries: [{ zh: '安卓', pt: 'Android' }] },
+  ], null, 2);
+}
+
+async function doImport() {
+  let items;
+  try { items = JSON.parse(document.getElementById('importText').value); }
+  catch (error) { toast('JSON 解析失败：' + error.message); return; }
+  try {
+    const data = await api('/org/libraries/import', { method: 'POST', body: JSON.stringify({ items }) });
+    document.getElementById('importOut').textContent =
+      `新建 ${data.created} · 更新 ${data.updated} · 被拒 ${data.rejected.length}`
+      + (data.rejected.length ? '\n' + data.rejected.map((item) => `第 ${item.index} 项：${item.error}`).join('\n') : '');
+    toast('导入完成');
+    await loadLibraries();
+  } catch (error) { toast(error.message); }
+}
+
+(async () => {
+  await refreshWho();
+  if (token) { await Promise.all([loadLibraries(), loadPending()]); }
+  fillSample();
+})();
+</script>
+</body>
+</html>

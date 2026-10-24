@@ -42,11 +42,13 @@ import {
   defaultSettings,
 } from '../lib/paths.mjs'
 import { lintTranslation } from '../lib/translation-lint.mjs'
+import { handleOrg } from './org-api.mjs'
 import {
   TERMS_LIMITS, getTable, loadTerms, mergePending, normalizeUser, putTable, saveActiveUser, saveTerms, validateTerms,
 } from '../lib/terms.mjs'
 import {
-  ACCOUNT_LIMITS, hasAccounts, loadAccounts, login, register, revokeToken, saveAccounts, userForToken,
+  ACCOUNT_LIMITS, hasAccounts, issueCode, loadAccounts, login, loginWithEmail, register, revokeToken,
+  roleOf, saveAccounts, userForToken, verifyCode,
 } from '../lib/accounts.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
@@ -58,7 +60,7 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
  * **电脑上跑的还是旧版进程**（没有 `/auth/*` 端点）。与其让人对着 404 猜，
  * 不如让这一端把自己的能力报出来，手机据此说人话。
  */
-export const RELAY_FEATURES = ['hello', 'say', 'audio', 'frame', 'status', 'diag', 'lint', 'terms', 'settings', 'auth']
+export const RELAY_FEATURES = ['hello', 'say', 'audio', 'frame', 'status', 'diag', 'lint', 'terms', 'settings', 'auth', 'org']
 
 /**
  * 默认数据目录：和 scripts/harness-side.mjs 指向同一对文件，两边靠它对接。
@@ -1375,7 +1377,45 @@ export async function startRelay(rawOptions = {}) {
           send(response, 401, { ok: false, error: 'auth-required', hint: 'token 无效或已注销' })
           return
         }
-        send(response, 200, { ok: true, user, accounts: hasAccounts(doc) })
+        send(response, 200, { ok: true, user, role: roleOf(doc, user), accounts: hasAccounts(doc) })
+        return
+      }
+
+      // ── 邮箱 + 验证码（docs/19）：管理员/用户都用这一条路 ─────────────────────
+      //
+      // 本地工具，不接邮件服务：验证码**打印在 relay 的控制台**上。
+      // 局域网模式下也把码回给调用方（否则没有邮件通道就没法登录），
+      // 但 --public 模式**不回**（公网绝不能在响应里带码）。
+      if (request.method === 'POST' && url.pathname === '/auth/code') {
+        const body = await readBody(request)
+        const doc = await loadAccounts(options.dataDir)
+        const issued = issueCode(doc, String(body.email ?? ''))
+        if (issued.ok !== true) {
+          send(response, 400, { ok: false, error: 'bad-email', hint: issued.error })
+          return
+        }
+        await saveAccounts(options.dataDir, issued.doc)
+        console.log(`[账户] 给 ${body.email} 的验证码：${issued.code}（10 分钟有效）`)
+        send(response, 200, {
+          ok: true,
+          hint: '验证码已打印在电脑端的 relay 控制台',
+          ...(options.public === true ? {} : { code: issued.code }),
+        })
+        return
+      }
+      if (request.method === 'POST' && url.pathname === '/auth/login-email') {
+        const body = await readBody(request)
+        const doc = await loadAccounts(options.dataDir)
+        const result = loginWithEmail(doc, String(body.email ?? ''), String(body.code ?? ''))
+        if (result.ok !== true) {
+          send(response, 401, { ok: false, error: 'auth-failed', hint: result.error })
+          return
+        }
+        await saveAccounts(options.dataDir, result.doc)
+        send(response, 200, {
+          ok: true, user: result.user, role: result.role, token: result.token,
+          created: result.created === true,
+        })
         return
       }
 
@@ -1442,7 +1482,38 @@ export async function startRelay(rawOptions = {}) {
         return
       }
 
-      send(response, 404, { ok: false, error: 'not-found', routes: ['/hello', '/say', '/audio', '/frame', '/status', '/terms', '/settings', '/auth/register', '/auth/login', '/auth/logout', '/auth/whoami'] })
+      // ── 组织接口：库 / 会议选库 / 申请审批（docs/19）──────────────────────────
+      //
+      // 这一层的特点：**权限在服务端**（用户调管理员接口拿 403），
+      // 身份只认 token 解出来的 user（请求体里自报的 applicant 不采信）。
+      // 具体语义都在 relay/org-api.mjs（纯函数，能被逐条测），这里只做三件事：
+      // 解 token → 取角色 → 转交。
+      if (url.pathname.startsWith('/org/')) {
+        const doc = await loadAccounts(options.dataDir)
+        const token = request.headers['x-leion-token'] ?? url.searchParams.get('token')
+        const user = userForToken(doc, typeof token === 'string' ? token : '')
+        const role = user === null ? null : roleOf(doc, user)
+        let body = {}
+        if (request.method === 'POST' || request.method === 'PUT') {
+          // readBody 已经解析好 JSON 并返回对象（解析失败会抛 400），别再 JSON.parse 一次
+          body = await readBody(request)
+        }
+        const result = await handleOrg({
+          method: request.method, path: url.pathname, body, user, role, root: options.dataDir,
+        })
+        send(response, result.status, result.json)
+        return
+      }
+
+      // 管理员网页：**直接由 relay 提供**（不另起一个服务器），这样它访问的就是真实接口。
+      if (request.method === 'GET' && (url.pathname === '/admin' || url.pathname === '/admin/')) {
+        const html = await readFile(join(ROOT, 'scripts', 'admin-ui.html'))
+        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+        response.end(html)
+        return
+      }
+
+      send(response, 404, { ok: false, error: 'not-found', routes: ['/hello', '/say', '/audio', '/frame', '/status', '/terms', '/settings', '/auth/register', '/auth/login', '/auth/logout', '/auth/whoami', '/org/libraries', '/org/meeting/<id>/libraries', '/org/requests', '/admin'] })
     })().catch(error => {
       if (!response.writableEnded) {
         send(response, 500, { ok: false, error: String(error && error.message ? error.message : error) })
