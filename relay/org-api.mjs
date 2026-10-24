@@ -1,0 +1,221 @@
+/**
+ * org-api.mjs —— 术语库 / 会议选库 / 申请审批的 HTTP 接口层（纯函数）
+ * ============================================================================
+ *
+ * 为什么写成纯函数而不直接塞进 relay：
+ *   ① 权限判断必须能被**逐条测**（用户调管理员接口要 403），而塞进 relay 就只能在
+ *      "起一个服务器再发请求"里测，慢且容易漏；
+ *   ② 以后房间服务要复用同一批接口（同一套语义），不该被 relay 的启动方式绑死；
+ *   ③ relay 只负责"把 token 解成 user + role，然后调这里"，职责边界清楚。
+ *
+ * 权限一律查 `ROLE_PERMISSIONS`（lib/accounts.mjs），**不在各处写 if (role === 'admin')**：
+ * 界面隐藏按钮只是体验，真正的门在这里。
+ *
+ * 路径（都由 relay 转进来，relay 负责鉴权前解析 token）：
+ *   GET  /org/libraries                     列出可见库
+ *   GET  /org/libraries/<id>                单个库详情
+ *   GET  /org/meeting/<id>/libraries        这一场选了哪些库
+ *   PUT  /org/meeting/<id>/libraries        设置这一场选哪些库
+ *   POST /org/meeting/<id>/snapshot         冻结快照（返回条目数与冲突）
+ *   POST /org/requests                      提交申请
+ *   GET  /org/requests/mine                 我的申请
+ *   GET  /org/requests/pending              待审列表（管理员）
+ *   POST /org/requests/<id>/decide          审批（管理员）
+ */
+
+import { join } from 'node:path'
+import { allowed } from '../lib/accounts.mjs'
+import { readJson, writeJsonAtomic } from '../lib/store.mjs'
+import { listLibraries, loadLibrary, loadCategories, saveLibrary, importLibraries } from '../lib/libraries.mjs'
+import { createRequest, decideRequest, loadRequests, pendingOf, withdrawRequest } from '../lib/requests.mjs'
+import { writeMeetingSnapshot } from '../lib/snapshot.mjs'
+
+export function selectionPath(root, meetingId) {
+  // 会议 id 会被拼进路径，所以只允许安全字符（防目录穿越）
+  const safe = String(meetingId).replace(/[^A-Za-z0-9_-]/g, '')
+  if (safe === '' || safe !== String(meetingId)) {
+    throw new Error('会议 id 只能包含字母、数字、下划线、连字符')
+  }
+  return join(root, 'meetings', safe, 'selection.json')
+}
+
+export async function loadSelection(root, meetingId) {
+  const doc = await readJson(selectionPath(root, meetingId), null)
+  if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) {
+    return { meetingId, libraryIds: [], selectedBy: null, updatedAt: null }
+  }
+  return {
+    meetingId,
+    libraryIds: Array.isArray(doc.libraryIds) ? doc.libraryIds : [],
+    selectedBy: doc.selectedBy ?? null,
+    updatedAt: doc.updatedAt ?? null,
+  }
+}
+
+function bad(status, error) {
+  return { status, json: { ok: false, error } }
+}
+
+function deny(role, action) {
+  return bad(403, `当前角色（${role ?? '未登录'}）不能做 ${action}`)
+}
+
+/**
+ * 处理一次请求。
+ * @param {{ method: string, path: string, body?: object, user: string|null, role: string|null,
+ *           root: string, now?: string }} input
+ * @returns {Promise<{ status: number, json: object }>}
+ */
+export async function handleOrg(input) {
+  const { method, root, user, role } = input
+  const now = input.now ?? new Date().toISOString()
+  const body = input.body ?? {}
+  const path = String(input.path ?? '')
+  const segments = path.split('/').filter(Boolean).map((item) => decodeURIComponent(item))
+
+  if (user === null || user === undefined) return bad(401, '需要登录（缺少有效 token）')
+
+  // ── 库列表 / 详情 ────────────────────────────────────────────────────────
+  if (method === 'GET' && segments[0] === 'org' && segments[1] === 'libraries' && segments.length === 2) {
+    if (allowed(role, 'library.read') !== true) return deny(role, 'library.read')
+    const [libraries, categories] = await Promise.all([listLibraries(root), loadCategories(root)])
+    const categoryName = new Map(categories.categories.map((item) => [item.id, item.name]))
+    return {
+      status: 200,
+      json: {
+        ok: true,
+        libraries: libraries.map((library) => ({
+          id: library.id, name: library.name, categoryId: library.categoryId,
+          categoryName: categoryName.get(library.categoryId) ?? null,
+          priority: library.priority, visibility: library.visibility,
+          entries: (library.entries ?? []).length, updatedAt: library.updatedAt,
+        })),
+      },
+    }
+  }
+
+  if (method === 'GET' && segments[1] === 'libraries' && segments.length === 3) {
+    if (allowed(role, 'library.read') !== true) return deny(role, 'library.read')
+    const library = await loadLibrary(root, segments[2])
+    if (library === null) return bad(404, '没有这个库')
+    return { status: 200, json: { ok: true, library } }
+  }
+
+  // ── 会议选库 ─────────────────────────────────────────────────────────────
+  if (segments[1] === 'meeting' && segments[3] === 'libraries' && segments.length === 4) {
+    const meetingId = segments[2]
+    if (method === 'GET') {
+      if (allowed(role, 'meeting.configure') !== true) return deny(role, 'meeting.configure')
+      const selection = await loadSelection(root, meetingId)
+      const libraries = await listLibraries(root)
+      const picked = libraries.filter((library) => selection.libraryIds.includes(library.id))
+      return {
+        status: 200,
+        json: {
+          ok: true, ...selection,
+          entries: picked.reduce((sum, library) => sum + (library.entries ?? []).length, 0),
+        },
+      }
+    }
+    if (method === 'PUT') {
+      if (allowed(role, 'meeting.configure') !== true) return deny(role, 'meeting.configure')
+      const wanted = Array.isArray(body.libraryIds) ? body.libraryIds.map((item) => String(item)) : null
+      if (wanted === null) return bad(400, 'libraryIds 必须是数组（可以为空数组）')
+      const libraries = await listLibraries(root)
+      const unknown = wanted.filter((id) => libraries.every((library) => library.id !== id))
+      if (unknown.length > 0) return bad(400, `有库不存在：${unknown.join(', ')}`)
+      const doc = { meetingId, libraryIds: wanted, selectedBy: user, updatedAt: now }
+      await writeJsonAtomic(selectionPath(root, meetingId), doc)
+      return { status: 200, json: { ok: true, ...doc } }
+    }
+  }
+
+  // ── 冻结快照 ─────────────────────────────────────────────────────────────
+  if (method === 'POST' && segments[1] === 'meeting' && segments[3] === 'snapshot' && segments.length === 4) {
+    if (allowed(role, 'meeting.configure') !== true) return deny(role, 'meeting.configure')
+    const meetingId = segments[2]
+    const selection = await loadSelection(root, meetingId)
+    const libraryIds = Array.isArray(body.libraryIds) ? body.libraryIds.map(String) : selection.libraryIds
+    const libraries = await listLibraries(root)
+    const snapshot = await writeMeetingSnapshot(root, meetingId, { libraryIds, libraries, now })
+    return {
+      status: 200,
+      json: {
+        ok: true, meetingId, user: snapshot.user, entries: snapshot.entries,
+        conflicts: snapshot.conflicts, termsPath: snapshot.termsPath, activePath: snapshot.activePath,
+      },
+    }
+  }
+
+  // ── 申请 ─────────────────────────────────────────────────────────────────
+  if (method === 'POST' && segments[1] === 'requests' && segments.length === 2) {
+    if (allowed(role, 'request.create') !== true) return deny(role, 'request.create')
+    const created = await createRequest(root, {
+      type: body.type,
+      libraryId: body.libraryId,
+      entry: body.type === 'delete' ? null : { zh: body.zh, pt: body.pt },
+      targetKey: body.type === 'delete' ? body.zh : null,
+      reason: body.reason,
+      applicant: user, // ⚠️ 申请人是**服务端从 token 解出来的**，不信请求体里的 applicant
+    }, { now })
+    if (created.ok !== true) return bad(400, created.error)
+    return { status: 200, json: { ok: true, id: created.id, status: created.status } }
+  }
+
+  if (method === 'GET' && segments[1] === 'requests' && segments[2] === 'mine') {
+    const { items } = await loadRequests(root)
+    const mine = [...items.values()].filter((item) => item.applicant === user)
+    return { status: 200, json: { ok: true, requests: mine } }
+  }
+
+  if (method === 'GET' && segments[1] === 'requests' && segments[2] === 'pending') {
+    if (allowed(role, 'request.decide') !== true) return deny(role, 'request.decide')
+    const { items, badLines } = await loadRequests(root)
+    return { status: 200, json: { ok: true, requests: pendingOf(items), badLines } }
+  }
+
+  if (method === 'POST' && segments[1] === 'requests' && segments[3] === 'decide' && segments.length === 4) {
+    if (allowed(role, 'request.decide') !== true) return deny(role, 'request.decide')
+    const decided = await decideRequest(root, segments[2], {
+      decision: body.decision === 'approve' ? 'approve' : 'reject',
+      by: user, // 审批人同样来自 token
+      note: typeof body.note === 'string' ? body.note : '',
+      now,
+    })
+    if (decided.ok !== true) return bad(400, decided.error)
+    return {
+      status: 200,
+      json: { ok: true, id: decided.id, status: decided.status,
+        entries: decided.library ? decided.library.entries.length : null },
+    }
+  }
+
+  if (method === 'POST' && segments[1] === 'requests' && segments[3] === 'withdraw' && segments.length === 4) {
+    const withdrawn = await withdrawRequest(root, segments[2], { applicant: user, now })
+    if (withdrawn.ok !== true) return bad(400, withdrawn.error)
+    return { status: 200, json: { ok: true, id: withdrawn.id, status: withdrawn.status } }
+  }
+
+  // ── 管理员：直接改库 / 批量导入（界面上只在管理端出现，但门在服务端）────────
+  if (method === 'PUT' && segments[1] === 'libraries' && segments.length === 3) {
+    if (allowed(role, 'library.write') !== true) return deny(role, 'library.write')
+    const saved = await saveLibrary(root, { ...body.library, id: segments[2] }, { by: user, now, source: 'api' })
+    if (saved.ok !== true) return bad(400, saved.error)
+    return { status: 200, json: { ok: true, id: saved.library.id, created: saved.created, entries: saved.library.entries.length } }
+  }
+
+  if (method === 'POST' && segments[1] === 'libraries' && segments[2] === 'import' && segments.length === 3) {
+    if (allowed(role, 'library.write') !== true) return deny(role, 'library.write')
+    const report = await importLibraries(root, body.items, { by: user, now })
+    return {
+      status: 200,
+      json: {
+        ok: true,
+        created: report.report.created.length, updated: report.report.updated.length,
+        rejected: report.report.rejected,
+      },
+    }
+  }
+
+  return bad(404, `没有这个接口：${method} ${path}`)
+}

@@ -35,6 +35,7 @@ import { runTermsWatchSuite } from './terms-watch-suite.mjs'
 import { runRescueSuite } from './rescue-suite.mjs'
 import { runTermsEvalSuite } from './terms-eval-suite.mjs'
 import { runLibrarySuite } from './library-suite.mjs'
+import { runOrgApiSuite } from './org-api-suite.mjs'
 import { runDiscoverSuite } from './discover-suite.mjs'
 import { runAndroidOrderSuite } from './android-order-suite.mjs'
 import { runAsrPackSuite } from './asr-pack-suite.mjs'
@@ -220,6 +221,10 @@ await runTermsSuite(helpers)
 // 快照是冻结的（会后改库不影响已开始的会议）、并且产物必须是插件能直接读的形状。
 heading('术语库与审批（管理员建库 / 用户提申请 / 快照冻结 / 生产与测试两套数据）')
 await runLibrarySuite(helpers)
+
+// ── 7e. 组织接口：库 / 选库 / 申请审批（重点在权限，不在功能）──────────────────
+heading('组织接口（用户不能调管理员接口 / 身份来自 token / 挡目录穿越 / 空选择=空表）')
+await runOrgApiSuite(helpers)
 
 // ── 7d3. 热词匹配器（"已知变体 → 规范写法"，纯字符串、零模型调用）────────────
 // 这是全功能里唯一能改字幕文字的地方，所以每条规则都配成对的负对照：
