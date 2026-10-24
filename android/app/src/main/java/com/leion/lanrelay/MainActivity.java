@@ -2136,6 +2136,18 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         new Thread(() -> {
             try {
                 JSONObject libraries = lan.orgLibraries();
+                // ⚠️ 关键：服务端失败（401 未登录 / 404 旧版 relay 没有 /org 路由 / 403）时
+                //    返回的是 `{ok:false, error}`，**不是**空列表。
+                //    第一版没查 ok 就把"没有 libraries 字段"当成"还没建库"，
+                //    于是旧 relay 上永远显示"（电脑上还没有库）"—— 看着像数据问题，其实是路由不存在。
+                if (!libraries.optBoolean("ok", false)) {
+                    String reason = libraries.optString("error", "未知原因");
+                    String hint = libraries.optString("hint", "");
+                    main.post(() -> setLibStatus("读取库失败：" + reason + (hint.isEmpty() ? "" : "（" + hint + "）")
+                            + (reason.contains("not-found") ? "\n→ 电脑上的 relay 是旧版：重启一次 start-all" : "")
+                            + (reason.contains("auth") || reason.contains("登录") ? "\n→ 先在「设置 → 账户」登录" : "")));
+                    return;
+                }
                 JSONObject selection = lan.orgMeetingLibraries(ORG_MEETING_ID);
                 org.json.JSONArray picked = selection.optJSONArray("libraryIds");
                 java.util.Set<String> pickedIds = new java.util.LinkedHashSet<>();
@@ -2368,14 +2380,17 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         renderTermsTable();
         if (client == null) {
             showTermsReport(getString(R.string.terms_status_need_connect), R.color.err, null, null);
+            setLibStatus(getString(R.string.terms_status_need_connect));
             return;
         }
         if (loggedIn() == false) {
             showTermsReport(getString(R.string.terms_need_login), R.color.err, null, null);
+            // 没登录时**明确说出来**，别让"看不到库"被误读成"还没有库"
+            setLibStatus("未登录：先到「设置 → 账户」用邮箱验证码登录，再回来刷新");
             return;
         }
         runTermsAction("load");
-        // 库与申请：和旧热词表并排显示（旧的"自己编辑上传"仍在，迁移期不强行下线）
+        // 库与申请：和旧热词表并排显示（旧的"自己编辑上传"已隐藏，迁移期保留代码）
         refreshOrgLibraries();
         refreshMyRequests();
     }
