@@ -20,13 +20,7 @@
  *
  * 常用参数
  *   --cpu                 识别用 CPU（缺省 cuda/float16；没有 N 卡时用这个）
- * --libraries <id|all|none>
-                        启用**会议级术语库**（docs/19）：起服务前把选中的库冻结成一份快照，
-                        让大脑读快照而不是旧的全局表。all=全部库，none=这一场不启用术语。
-                        不给这个参数就沿用旧的全局表（<data-dir>/terms.json），行为不变。
-  --meeting <场次>      快照落在 <data-dir>/meetings/<场次>/，缺省 current。
-                        同一场次重复启动会**重新冻结**（改了库要重启一次才生效，这是刻意的）。
-  --offline             大脑用离线例句表（不联网、零成本，只认得剧本那 14 句）
+ * --offline             大脑用离线例句表（不联网、零成本，只认得剧本那 14 句）
  *   --no-transcriber      只起转发 + 大脑（用手输文字那条路时够用）
  *   --data-dir <path>     数据目录（缺省 var/live）
  *   --port <n>            转发端口（缺省 8788）
@@ -41,18 +35,8 @@ import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { ROOT, LOGS_DIR, WHISPER_CACHE_DIR, defaultAudioIn, defaultBus, defaultInbox, defaultSecret } from '../lib/paths.mjs'
 import { DEFAULT_DATA_DIR } from '../relay/lan-relay.mjs'
-import { listLibraries, loadLibrary } from '../lib/libraries.mjs'
-import { loadSelection, selectionPath } from '../relay/org-api.mjs'
-import { writeMeetingSnapshot } from '../lib/snapshot.mjs'
 import { currentTermsPaths, readCurrentMeeting } from '../lib/meeting-terms.mjs'
 
-/**
- * 生成"这一场"的术语快照（`--libraries` 的落地实现）。
- *
- * `--libraries all` = 启用全部可见库；`--libraries a,b` = 指定几个；
- * `--libraries none`/空 = 显式不启用（此时仍会生成一份空快照，语义是"这一场没有术语"）。
- * 不写旧的全局 terms.json —— 那条路只留给没给 `--libraries` 的向后兼容场景。
- */
 /**
  * 用旧全局表时，把"到底有多少条"说清楚（并在他明明有库、却读到 0 条时报警）。
  *
@@ -75,12 +59,12 @@ function describeLegacyTerms(dataDir) {
       libraryCount = readdirSync(join(dataDir, 'libraries')).filter(name => name.endsWith('.json')).length
     } catch { /* 没有 libraries 目录 = 0 个库 */ }
     const text = `旧的全局表：user=${chosen}，${entries} 条`
-      + `（加 --libraries all 改用会议快照）`
+      + `（手机开始同传时会自动发布会议术语，届时以那份为准）`
     if (entries === 0 && libraryCount > 0) {
       return {
         text,
         warning: `旧表里当前用户（${chosen}）名下 0 条，但库里有 ${libraryCount} 个库 —— `
-          + `这一场的术语/专名提示会全部失效。加 --libraries all 再启动一次（或改用 --libraries <库id>）。`,
+          + `这一场的术语/专名提示会全部失效。在手机上勾选库并点一次"开始同传"，服务端就会发布会议术语。`,
       }
     }
     return { text, warning: null }
@@ -89,38 +73,6 @@ function describeLegacyTerms(dataDir) {
       text: '旧的全局表（<data-dir>/terms.json；加 --libraries all 改用会议快照）',
       warning: null,
     }
-  }
-}
-
-/** 把 `--libraries` 的值解析成 id 数组（`all`/`*` 与 `none`/空 由 prepare 处理）。 */
-function parseLibraryIds(raw) {
-  const text = String(raw).trim()
-  if (text === 'all' || text === '*' || text === 'none' || text === '') return null
-  return text.split(',').map((item) => item.trim()).filter(Boolean)
-}
-
-async function prepareMeetingTerms(options, plan = {}) {
-  const libraries = await listLibraries(options.dataDir)
-  const wanted = typeof options.libraries === 'string' ? String(options.libraries).trim() : ''
-  let libraryIds
-  if (Array.isArray(plan.libraryIds)) {
-    libraryIds = plan.libraryIds
-  } else if (wanted === 'none' || wanted === '') {
-    libraryIds = []
-  } else if (wanted === 'all' || wanted === '*') {
-    libraryIds = libraries.map((library) => library.id)
-  } else {
-    libraryIds = wanted.split(',').map((item) => item.trim()).filter(Boolean)
-  }
-  const unknown = libraryIds.filter((id) => libraries.every((library) => library.id !== id))
-  if (unknown.length > 0) {
-    return { ok: false, error: `这些库不存在：${unknown.join(', ')}（可用：${libraries.map((library) => library.id).join(', ') || '无'}）` }
-  }
-  const snapshot = await writeMeetingSnapshot(options.dataDir, options.meeting, { libraryIds, libraries })
-  return {
-    ok: true, entries: snapshot.entries, libraryIds,
-    termsPath: snapshot.termsPath, activePath: snapshot.activePath,
-    conflicts: snapshot.conflicts,
   }
 }
 
@@ -135,12 +87,6 @@ const HELP = `start-all —— 一条命令起齐整条链路
                           small 18.9% / medium 7.4% / large-v3 3.9% 的字错率
                         —— 模型大小是影响准确率**最大**的那个变量，比调切句/beam/提示词加起来都大。
                         large-v3 在 GPU 上每段约 0.6 秒（延迟仍在 1.3 秒量级），所以 GPU 上直接用大的。
---libraries <id|all|none>
-                        启用**会议级术语库**（docs/19）：起服务前把选中的库冻结成一份快照，
-                        让大脑读快照而不是旧的全局表。all=全部库，none=这一场不启用术语。
-                        不给这个参数就沿用旧的全局表（<data-dir>/terms.json），行为不变。
-  --meeting <场次>      快照落在 <data-dir>/meetings/<场次>/，缺省 current。
-                        同一场次重复启动会**重新冻结**（改了库要重启一次才生效，这是刻意的）。
   --offline             大脑用离线例句表（不联网、零成本，只认得剧本那 14 句）
   --proofread           打开大模型校对（第二遍）：初译先上屏，空闲时回头改这一句。
                         代价是每句多一次模型调用，但**不占**下一句的初译时间（见 docs/07）
@@ -188,9 +134,6 @@ export function parseArgs(argv) {
     offline: false,
     proofread: false,
     termsRescue: false,
-    // 会议级术语库（docs/19）：给了就生成快照并让大脑读它；不给则沿用旧的全局表
-    libraries: null,
-    meeting: 'current',
     transcriber: true,
     whisperModel: null,          // null = 按设备自动选（见下）
     device: 'cuda',
@@ -202,7 +145,7 @@ export function parseArgs(argv) {
     from: null,
     to: null,
   }
-  const takesValue = new Set(['data-dir', 'inbox', 'bus', 'audio', 'port', 'cols', 'lines', 'whisper-model', 'from', 'to', 'libraries', 'meeting'])
+  const takesValue = new Set(['data-dir', 'inbox', 'bus', 'audio', 'port', 'cols', 'lines', 'whisper-model', 'from', 'to'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -526,29 +469,13 @@ export async function main(argv = process.argv.slice(2)) {
   // 为什么冻结成"快照"而不是让插件直接读库：插件只认两个文件 + 一个 user 键（docs/19）。
   // 快照的好处是"这一场开始后改库不影响正在进行的会议"，而且插件侧零改动。
   // 不给 --libraries 就什么都不做，沿用旧的全局表（向后兼容）。
-  // ── 会议级术语库：决定"这一场用哪些库" ────────────────────────────────────
+  // ── 术语来源只有一条路：relay 在"手机开始同传"时发布的**当前会议术语** ─────────
   //
-  // 三种来源，优先级从上到下：
-  //   ① `--libraries all|id1,id2|none`：命令行显式指定（最高优先）
-  //   ② `meetings/<场次>/selection.json`：**手机/管理端选的那几个库**
-  //   ③ 都没有：沿用旧的全局表（向后兼容）
-  //
-  // ⚠️ ② 这条是踩出来的：第一版只认 `--libraries`，于是用户在界面上取消勾选、重启，
-  //    却因为还带着 `--libraries all` 而**照样启用全部库** —— 表现就是"换表不生效"、
-  //    "取消了还出现正确译名"。界面上做的选择必须能生效，否则那个开关就是假的。
-  if (options.libraries) {
-    const prepared = await prepareMeetingTerms(options, { libraryIds: parseLibraryIds(options.libraries) })
-    if (prepared.ok !== true) {
-      console.error(`❌ ${prepared.error}`)
-      return 1
-    }
-    options.termsPath = prepared.termsPath
-    options.termsActivePath = prepared.activePath
-    options.termSummary = `会议快照 ${prepared.entries} 条`
-      + `（命令行 --libraries，库 ${prepared.libraryIds.length} 个，场次 ${options.meeting}）`
-  } else {
-    // 不给 --libraries 时，看 relay 有没有发布过"这一场的会议术语"（手机开始同传时自动发布）。
-    // 有就直接让插件读那份固定路径 —— **不需要任何启动参数**，也不会被"上次的选择"残留影响。
+  // 为什么不留 --libraries / --meeting：那两个参数会和"界面上的勾选"打架 ——
+  // 实测就出过"取消勾选、重启之后旧词表还生效"（其实是 --libraries all 又启用了全部库）。
+  // 现在只有一份真相：发布在 <data-dir>/meeting-terms/ 的那份，插件每句都读它。
+  // 没有发布过（还没开始过同传）就退回旧的全局表，并在横幅上明确警告。
+  {
     const published = await readCurrentMeeting(options.dataDir)
     if (published !== null) {
       const paths = currentTermsPaths(options.dataDir)
