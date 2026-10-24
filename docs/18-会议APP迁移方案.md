@@ -1,6 +1,6 @@
 # 会议 APP 迁移方案（原型 V0.3 → 现状系统的差距与路线）
 
-> 原型：`E:\translation-app-prototype\translation-app-prototype.html`（译连 TransLink，V0.3，8 页 + 完整规则）
+> 原型：`prototype/translation-app-prototype.html`（**已存档进仓库**，见 `prototype/README.md`；V0.3，8 页 + 完整规则）
 > 现状：本仓库（单麦 → 电脑识别 → 翻译 → 眼镜字幕）
 > 本文只做**差距盘点 + 迁移路线 + 待确认问题**，不含实施代码。
 

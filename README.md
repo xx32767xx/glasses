@@ -63,6 +63,7 @@ node scripts/fake-phone.mjs --wav var/audio/zh/short-16k.wav --url http://127.0.
 
 | 路径 | 是什么 |
 |---|---|
+| `prototype/translation-app-prototype.html` | **老师发的会议 APP 原型 V0.3（产品规格，不是我们的代码）**：单文件离线可看，右侧页签含 8 个功能块与全部业务规则。后续开发的验收依据，**别改它**（新版本另存新文件）。我们与它的差距见 `docs/18` |
 | `plugin/core.mjs` | **业务逻辑唯一来源**：排版、语种判定、翻译管线、ASR 收件箱、两个接缝、7 个工具规格 |
 | `plugin/index.mjs` | **正式插件**入口：`export name / inject / apply(ctx, config)`，零第三方依赖 |
 | `policy/br-pt.json` | **巴葡口径唯一来源**：术语表、口语特征、字幕纪律（提示词与技能文档都从它生成） |
