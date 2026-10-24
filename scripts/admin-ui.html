@@ -86,6 +86,24 @@
   </section>
 
   <section>
+    <h2>④ 账号（管理员可手动加测试账号）</h2>
+    <div class="body">
+      <div class="row">
+        <input id="acUser" placeholder="用户名（登录用）" style="flex:1">
+        <input id="acPass" placeholder="密码（≥6 位）" style="flex:1">
+      </div>
+      <div class="row">
+        <input id="acEmail" placeholder="邮箱（可空）" style="flex:1">
+        <input id="acDays" placeholder="有效天数（测试账号）" style="width:150px">
+        <button onclick="createAccount()">添加</button>
+      </div>
+      <div class="muted">注册用「邮箱+用户名+密码+验证码」；这里加的是**测试账号**（dev，只读、默认 7 天过期、不发验证码）。</div>
+      <div class="row"><button class="ghost" onclick="loadAccounts()">刷新账号</button></div>
+      <div id="accounts" class="empty">（登录后加载）</div>
+    </div>
+  </section>
+
+  <section>
     <h2>④ 待审申请 <span class="muted" id="pendingCount"></span></h2>
     <div class="body"><div id="pending" class="empty">（登录后加载）</div></div>
   </section>
@@ -145,7 +163,7 @@ async function login() {
     document.getElementById('tokenLine').textContent = 'token 已保存到本机浏览器';
     setWho(`${data.user} · ${data.role}`, true);
     toast(data.created ? '首次登录：账户已创建（普通用户）' : '登录成功');
-    await Promise.all([loadLibraries(), loadPending()]);
+    await Promise.all([loadLibraries(), loadPending(), loadAccounts()]);
   } catch (error) { toast(error.message); }
 }
 
@@ -185,6 +203,37 @@ async function loadPending() {
   } catch (error) { toast(error.message); }
 }
 
+async function loadAccounts() {
+  try {
+    const data = await api('/org/accounts');
+    const rows = data.accounts ?? [];
+    document.getElementById('accounts').className = rows.length ? '' : 'empty';
+    document.getElementById('accounts').innerHTML = rows.length === 0 ? '（还没有账号）'
+      : '<table><thead><tr><th>用户名</th><th>邮箱</th><th>角色</th><th>状态</th><th>过期</th></tr></thead><tbody>'
+        + rows.map((a) =>
+            '<tr><td><b>' + a.username + '</b></td><td>' + (a.email || '—') + '</td>'
+            + '<td>' + a.role + '</td><td>' + (a.usable ? a.status : a.status + '（不可用）') + '</td>'
+            + '<td class="muted">' + (a.expiresAt ? a.expiresAt.slice(0, 10) : '—') + '</td></tr>').join('')
+        + '</tbody></table>';
+  } catch (error) { toast(error.message); }
+}
+
+async function createAccount() {
+  const username = document.getElementById('acUser').value.trim();
+  const password = document.getElementById('acPass').value;
+  const email = document.getElementById('acEmail').value.trim();
+  const days = document.getElementById('acDays').value.trim();
+  try {
+    const data = await api('/org/accounts', {
+      method: 'POST',
+      body: JSON.stringify({ username, password, email: email || undefined, role: 'dev',
+        expiresInDays: days ? Number(days) : undefined }),
+    });
+    toast('已添加测试账号：' + data.username + '（' + data.role + '）');
+    await loadAccounts();
+  } catch (error) { toast(error.message); }
+}
+
 async function decide(id, decision) {
   try {
     const data = await api(`/org/requests/${id}/decide`, { method: 'POST', body: JSON.stringify({ decision, note: '' }) });
@@ -219,7 +268,7 @@ async function doImport() {
 
 (async () => {
   await refreshWho();
-  if (token) { await Promise.all([loadLibraries(), loadPending()]); }
+  if (token) { await Promise.all([loadLibraries(), loadPending(), loadAccounts()]); }
   fillSample();
 })();
 </script>

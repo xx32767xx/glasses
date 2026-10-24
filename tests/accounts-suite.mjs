@@ -23,6 +23,20 @@ import {
 const TMP = join(VAR_DIR, 'test', 'accounts-suite')
 
 export async function runAccountsSuite({ it, check, assert }) {
+  /**
+   * 注册助手（2026-10-24 新模型）：先取验证码，再走 /auth/register-email。
+   * 为什么不再直接 POST /auth/register：那条"用户名+密码"的注册路由已经删掉 ——
+   * 用户要求注册必须带邮箱验证码（docs/19），留两个注册口等于留一个绕过验证的后门。
+   */
+  const registerViaEmail = async (call, username, password) => {
+    const email = `${username}@example.com`
+    const issued = await call('/auth/code', { method: 'POST', body: { email } })
+    return call('/auth/register-email', {
+      method: 'POST',
+      body: { email, username, password, code: String(issued.json?.code ?? '') },
+    })
+  }
+
   await rm(TMP, { recursive: true, force: true })
   await mkdir(TMP, { recursive: true })
 
@@ -135,7 +149,7 @@ export async function runAccountsSuite({ it, check, assert }) {
     })
 
     await it('注册：给 token；密码与 token 都不以明文落盘', async () => {
-      const reg = await call('/auth/register', { method: 'POST', body: { username: 'alice', password: 'secret12' } })
+      const reg = await registerViaEmail(call, 'alice', 'secret12')
       check('200', reg.status === 200, reg.text)
       check('给了 token', typeof reg.json.token === 'string' && reg.json.token.length === 64, reg.text)
       check('回显用户名', reg.json.user === 'alice')
@@ -154,7 +168,7 @@ export async function runAccountsSuite({ it, check, assert }) {
     })
 
     await it('越权：A 的 token 只能读写 A 的表，改不动 B 的', async () => {
-      const bob = await call('/auth/register', { method: 'POST', body: { username: 'bob', password: 'secret12' } })
+      const bob = await registerViaEmail(call, 'bob', 'secret12')
       check('bob 注册成功', bob.status === 200, bob.text)
       const alice = await call('/auth/login', { method: 'POST', body: { username: 'alice', password: 'secret12' } })
       check('alice 登录成功', alice.status === 200, alice.text)

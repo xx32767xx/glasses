@@ -379,11 +379,18 @@ public class LanClient {
         return unwrap(requestWithCode("/auth/code", "POST", body, 8000));
     }
 
-    public JSONObject authLoginEmail(String email, String code) throws IOException, org.json.JSONException {
+    /**
+     * 注册：邮箱 + 用户名 + 密码 + 验证码（docs/19）。
+     * <p>登录不用这个 —— 登录走 authLogin（用户名 + 密码）。
+     */
+    public JSONObject authRegisterEmail(String email, String username, String password, String code)
+            throws IOException, org.json.JSONException {
         JSONObject body = new JSONObject();
         body.put("email", email);
+        body.put("username", username);
+        body.put("password", password);
         body.put("code", code);
-        return unwrap(requestWithCode("/auth/login-email", "POST", body, 8000));
+        return unwrap(requestWithCode("/auth/register-email", "POST", body, 8000));
     }
 
     /**

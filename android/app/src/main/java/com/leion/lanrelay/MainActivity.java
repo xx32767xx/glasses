@@ -1764,7 +1764,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         accountGetCodeView = view.findViewById(R.id.accountGetCode);
         accountEmailLoginView = view.findViewById(R.id.accountEmailLogin);
         accountGetCodeView.setOnClickListener(v -> requestEmailCode());
-        accountEmailLoginView.setOnClickListener(v -> loginWithEmailCode());
+        accountEmailLoginView.setOnClickListener(v -> registerWithEmailCode());
 
         accountUsernameField.setText(accountUser());
         renderAccount();
@@ -1856,8 +1856,12 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         }, "email-code").start();
     }
 
-    /** 用邮箱 + 验证码登录（首次即注册，服务端按邮箱是否已存在自动分流）。 */
-    private void loginWithEmailCode() {
+    /**
+     * 注册：邮箱 + 用户名 + 密码 + 验证码（docs/19）。
+     * <p>用户名与密码取下面那两个既有输入框 —— 不另开一对，免得用户在两处填同样的东西。
+     * <p>登录不走这里：登录是「用户名 + 密码」，点下面的「登录」按钮（/auth/login）。
+     */
+    private void registerWithEmailCode() {
         final LanClient lan = client;
         if (lan == null) {
             if (accountStatusView != null) accountStatusView.setText(R.string.account_need_connect);
@@ -1865,7 +1869,9 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         }
         final String email = accountEmailField == null ? "" : accountEmailField.getText().toString().trim();
         final String code = accountCodeField == null ? "" : accountCodeField.getText().toString().trim();
-        if (email.isEmpty() || code.isEmpty()) {
+        final String username = accountUsernameField == null ? "" : accountUsernameField.getText().toString().trim();
+        final String password = accountPasswordField == null ? "" : accountPasswordField.getText().toString();
+        if (email.isEmpty() || code.isEmpty() || username.isEmpty() || password.isEmpty()) {
             if (accountStatusView != null) accountStatusView.setText(R.string.account_need_fields);
             return;
         }
@@ -1877,14 +1883,13 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             String user = null;
             String role = "";
             try {
-                JSONObject json = lan.authLoginEmail(email, code);
+                JSONObject json = lan.authRegisterEmail(email, username, password, code);
                 if (json.optBoolean("ok", false)) {
                     token = json.optString("token", "");
-                    user = json.optString("user", email);
+                    user = json.optString("user", username);
                     role = json.optString("role", "");
-                    status = getString(R.string.account_ok, "登录成功：" + user
-                            + (role.isEmpty() ? "" : "（" + role + "）")
-                            + (json.optBoolean("created", false) ? " · 新账户已创建" : ""));
+                    status = getString(R.string.account_ok, "注册成功：" + user
+                            + (role.isEmpty() ? "" : "（" + role + "）"));
                 } else {
                     status = getString(R.string.account_failed, json.optString("error", "未知原因"));
                     color = R.color.err;
@@ -1902,6 +1907,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                     prefs.edit().putString(KEY_TOKEN, finalToken).putString(KEY_USER, finalUser).apply();
                     if (client != null) client.setToken(finalToken);
                     if (accountCodeField != null) accountCodeField.setText("");
+                    if (accountPasswordField != null) accountPasswordField.setText("");
                     renderAccount();
                 }
                 if (accountStatusView != null) {
@@ -1909,7 +1915,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                     accountStatusView.setTextColor(getColor(finalColor));
                 }
             });
-        }, "email-login").start();
+        }, "email-register").start();
     }
 
     /** 注册 / 登录 / 注销：都要经过电脑（账户存在电脑上）。 */

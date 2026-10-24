@@ -49,7 +49,7 @@ import {
   TERMS_LIMITS, getTable, loadTerms, mergePending, normalizeUser, putTable, saveActiveUser, saveTerms, validateTerms,
 } from '../lib/terms.mjs'
 import {
-  ACCOUNT_LIMITS, hasAccounts, issueCode, loadAccounts, login, loginWithEmail, register, revokeToken,
+  ACCOUNT_LIMITS, hasAccounts, issueCode, loadAccounts, login, registerWithEmail, revokeToken,
   roleOf, saveAccounts, userForToken, verifyCode,
 } from '../lib/accounts.mjs'
 
@@ -1345,40 +1345,6 @@ export async function startRelay(rawOptions = {}) {
       // 任何人改一个参数就能读写别人的表。现在：
       //   注册/登录 → 拿 token → 之后**只认 token**，服务端从 token 反查用户。
       // 密码用 scrypt + 每用户独立盐存哈希；token 也只存 sha256（库泄露不等于被登录）。
-      if (request.method === 'POST' && (url.pathname === '/auth/register' || url.pathname === '/auth/login')) {
-        let body
-        try {
-          body = await readBody(request, ACCOUNT_LIMITS.maxBodyBytes)
-        } catch (error) {
-          sendAndClose(request, response, error.statusCode ?? 400, { ok: false, error: String(error.message) })
-          return
-        }
-        // 同一 IP 的失败次数限制：局域网工具也值得防一下把密码试出来
-        const who = clientIp(request)
-        if (authLimiter.allow(who) === false) {
-          state.authRejected += 1
-          send(response, 429, { ok: false, error: 'too-many-attempts', hint: '密码试错太多次了，过几分钟再试' })
-          return
-        }
-        const doc = await loadAccounts(options.dataDir)
-        const isRegister = url.pathname === '/auth/register'
-        const result = isRegister
-          ? register(doc, body.username, body.password, typeof body.label === 'string' ? body.label : '')
-          : login(doc, body.username, body.password, typeof body.label === 'string' ? body.label : '')
-        if (result.ok !== true) {
-          // 失败也算一次尝试：连续试错会被上面的额度桶挡住（10 次 / 10 分钟）
-          state.authRejected += 1
-          debug(`[账户] ${isRegister ? '注册' : '登录'}失败（来自 ${who}）：${result.error}`)
-          send(response, isRegister && /已经被注册/.test(result.error) ? 409 : 401,
-            { ok: false, error: 'auth-failed', hint: result.error })
-          return
-        }
-        await saveAccounts(options.dataDir, result.doc)
-        state.authOk += 1
-        debug(`[账户] ${isRegister ? '注册' : '登录'}成功：${result.username}`)
-        send(response, 200, { ok: true, user: result.username, token: result.token })
-        return
-      }
       if (request.method === 'POST' && url.pathname === '/auth/logout') {
         const token = request.headers['x-leion-token'] ?? url.searchParams.get('token')
         const doc = await loadAccounts(options.dataDir)
@@ -1426,19 +1392,36 @@ export async function startRelay(rawOptions = {}) {
         })
         return
       }
-      if (request.method === 'POST' && url.pathname === '/auth/login-email') {
+      if (request.method === 'POST' && url.pathname === '/auth/register-email') {
+        // 注册：邮箱 + 用户名 + 密码 + 验证码（docs/19）。登录仍走 /auth/login（用户名+密码）。
         const body = await readBody(request)
         const doc = await loadAccounts(options.dataDir)
-        const result = loginWithEmail(doc, String(body.email ?? ''), String(body.code ?? ''))
+        const result = registerWithEmail(doc, {
+          email: String(body.email ?? ''), username: String(body.username ?? ''),
+          password: String(body.password ?? ''), code: String(body.code ?? ''),
+          label: typeof body.label === 'string' ? body.label : '',
+        })
+        if (result.ok !== true) {
+          send(response, 400, { ok: false, error: 'register-failed', hint: result.error })
+          return
+        }
+        await saveAccounts(options.dataDir, result.doc)
+        debug(`[账户] 邮箱注册成功：${result.username}（${result.email}）`)
+        send(response, 200, { ok: true, user: result.username, role: result.role, token: result.token })
+        return
+      }
+      if (request.method === 'POST' && url.pathname === '/auth/login') {
+        // 登录：用户名 + 密码（不要求邮箱）。与 /auth/register-email 配套。
+        const body = await readBody(request)
+        const doc = await loadAccounts(options.dataDir)
+        const result = login(doc, String(body.username ?? ''), String(body.password ?? ''),
+          typeof body.label === 'string' ? body.label : '')
         if (result.ok !== true) {
           send(response, 401, { ok: false, error: 'auth-failed', hint: result.error })
           return
         }
         await saveAccounts(options.dataDir, result.doc)
-        send(response, 200, {
-          ok: true, user: result.user, role: result.role, token: result.token,
-          created: result.created === true,
-        })
+        send(response, 200, { ok: true, user: result.username, role: roleOf(result.doc, result.username), token: result.token })
         return
       }
 

@@ -196,8 +196,10 @@
                 android:layout_marginTop="12dp"
                 android:orientation="horizontal">
 
+                <!-- 旧的「注册」按钮隐藏：注册现在必须带邮箱验证码（docs/19） -->
                 <TextView
                     android:id="@+id/accountRegister"
+                    android:visibility="gone"
                     android:layout_width="0dp"
                     android:layout_height="44dp"
                     android:layout_weight="1"

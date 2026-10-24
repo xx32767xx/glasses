@@ -24,7 +24,7 @@
  */
 
 import { join } from 'node:path'
-import { allowed } from '../lib/accounts.mjs'
+import { allowed, createAccountWithPassword, listAccounts, loadAccounts, saveAccounts } from '../lib/accounts.mjs'
 import { readJson, writeJsonAtomic } from '../lib/store.mjs'
 import { listLibraries, loadLibrary, loadCategories, saveLibrary, importLibraries } from '../lib/libraries.mjs'
 import { createRequest, decideRequest, loadRequests, pendingOf, withdrawRequest } from '../lib/requests.mjs'
@@ -217,6 +217,29 @@ export async function handleOrg(input) {
         created: report.report.created.length, updated: report.report.updated.length,
         rejected: report.report.rejected,
       },
+    }
+  }
+
+  // ── 管理员：账号管理（docs/19：管理员可手动添加测试账号）───────────────────
+  if (segments[1] === 'accounts' && segments.length === 2) {
+    if (allowed(role, 'account.manage') !== true) return deny(role, 'account.manage')
+    if (method === 'GET') {
+      const doc = await loadAccounts(root)
+      return { status: 200, json: { ok: true, accounts: listAccounts(doc) } }
+    }
+    if (method === 'POST') {
+      const doc = await loadAccounts(root)
+      const created = createAccountWithPassword(doc, {
+        username: body.username, password: body.password,
+        email: body.email, role: body.role === undefined ? 'dev' : body.role,
+        note: body.note, expiresInDays: body.expiresInDays,
+      })
+      if (created.ok !== true) return bad(400, created.error)
+      await saveAccounts(root, created.doc)
+      return {
+        status: 200,
+        json: { ok: true, username: String(body.username), role: created.role },
+      }
     }
   }
 
