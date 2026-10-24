@@ -127,7 +127,7 @@ export async function runOrgRelaySuite({ it, check, assert }) {
 
       const adminPage = await get('/admin')
       const html = await adminPage.text()
-      check('/admin 返回 HTML（不是 JSON 404）', adminPage.status === 200 && html.includes('术语库管理台'),
+      check('/admin 返回 HTML（不是 JSON 404）', adminPage.status === 200 && html.includes('术语库管理控制台'),
         String(adminPage.status))
     })
 
