@@ -1913,6 +1913,39 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private TextView termsRejectTitleView;
     private TextView termsRejectBodyView;
 
+    // ── 库与申请（docs/19：用户只能"选库"和"提申请"，不能改库内容）──────────────
+    //
+    // 为什么单机会话用一个固定 meeting id：现在还只有"一场同传"（没有房间概念），
+    // 选库本来就是"这一次同传用哪些库"。等房间模块上来，把这里换成真实 roomId 即可 ——
+    // 服务端接口形状不变（都带 meetingId）。
+    private static final String ORG_MEETING_ID = "current";
+
+    private LinearLayout termsLibrariesBox;
+    private LinearLayout termsRequestsBox;
+    private TextView termsLibStatusView;
+    private TextView termsLibHintView;
+
+    /** 库列表（服务端返回的摘要）+ 本次勾选了哪些。 */
+    private final List<OrgLibrary> orgLibraries = new ArrayList<>();
+    private final java.util.Set<String> orgPicked = new java.util.LinkedHashSet<>();
+
+    /** 库摘要：只留界面要用的字段（避免把整份 JSON 到处传）。 */
+    private static final class OrgLibrary {
+        final String id;
+        final String name;
+        final String categoryName;
+        final int priority;
+        final int entries;
+
+        OrgLibrary(String id, String name, String categoryName, int priority, int entries) {
+            this.id = id;
+            this.name = name;
+            this.categoryName = categoryName;
+            this.priority = priority;
+            this.entries = entries;
+        }
+    }
+
     /**
      * 表格里的数据：每项 `{zh, pt}`。
      *
@@ -2058,6 +2091,15 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
         termsPage.findViewById(R.id.termsAdd).setOnClickListener(v -> showAddTermDialog());
         termsPage.findViewById(R.id.termsBatch).setOnClickListener(v -> showBatchImportDialog());
+
+        // 库与申请（docs/19）
+        termsLibrariesBox = termsPage.findViewById(R.id.termsLibraries);
+        termsRequestsBox = termsPage.findViewById(R.id.termsRequests);
+        termsLibStatusView = termsPage.findViewById(R.id.termsLibStatus);
+        termsLibHintView = termsPage.findViewById(R.id.termsLibHint);
+        termsPage.findViewById(R.id.termsLibRefresh).setOnClickListener(v -> refreshOrgLibraries());
+        termsPage.findViewById(R.id.termsLibSave).setOnClickListener(v -> saveOrgSelection());
+        termsPage.findViewById(R.id.termsReqNew).setOnClickListener(v -> showNewRequestDialog());
         // ⚠️ 没有「校验」按钮了：校验在**改完 / 上传前**自动跑（用户要求）。
         //    留一个按钮等于逼用户记得点它 —— 而校验本来就是"随时该有的反馈"。
         termsPage.findViewById(R.id.termsUpload).setOnClickListener(v -> runTermsAction("upload"));
@@ -2065,6 +2107,259 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
         loadTermsDraft();
         renderTermsTable();
+    }
+
+    // ── 库与申请（docs/19）─────────────────────────────────────────────────────
+    //
+    // 三条设计约束：
+    //   ① 用户**不能改库**：这里只有"勾选 + 保存"和"提申请"，没有编辑条目；
+    //   ② 选库是**会议级**的（`PUT /org/meeting/<id>/libraries`），空选择就是空表；
+    //   ③ 申请人不从界面传：服务端按 token 认定，界面就算传了也会被忽略。
+
+    private void setLibStatus(String text) {
+        if (termsLibStatusView != null) termsLibStatusView.setText(text);
+    }
+
+    private static String describeError(Exception error) {
+        String message = error == null ? "" : String.valueOf(error.getMessage());
+        return message.isEmpty() ? "（没有更多信息）" : message;
+    }
+
+    /** 拉库列表 + 这一场已选哪些（两个请求都成功才刷新界面，避免显示半份状态）。 */
+    private void refreshOrgLibraries() {
+        final LanClient lan = client;
+        if (lan == null) {
+            setLibStatus(getString(R.string.terms_status_need_connect));
+            return;
+        }
+        setLibStatus("正在读取库…");
+        new Thread(() -> {
+            try {
+                JSONObject libraries = lan.orgLibraries();
+                JSONObject selection = lan.orgMeetingLibraries(ORG_MEETING_ID);
+                org.json.JSONArray picked = selection.optJSONArray("libraryIds");
+                java.util.Set<String> pickedIds = new java.util.LinkedHashSet<>();
+                if (picked != null) {
+                    for (int i = 0; i < picked.length(); i += 1) pickedIds.add(picked.optString(i));
+                }
+                List<OrgLibrary> loaded = new ArrayList<>();
+                org.json.JSONArray array = libraries.optJSONArray("libraries");
+                if (array != null) {
+                    for (int i = 0; i < array.length(); i += 1) {
+                        JSONObject item = array.optJSONObject(i);
+                        if (item == null) continue;
+                        loaded.add(new OrgLibrary(
+                                item.optString("id"), item.optString("name"),
+                                item.optString("categoryName", ""),
+                                item.optInt("priority", 0), item.optInt("entries", 0)));
+                    }
+                }
+                main.post(() -> {
+                    orgLibraries.clear();
+                    orgLibraries.addAll(loaded);
+                    orgPicked.clear();
+                    orgPicked.addAll(pickedIds);
+                    renderOrgLibraries();
+                    setLibStatus(loaded.isEmpty()
+                            ? getString(R.string.terms_libs_empty)
+                            : ("已选 " + orgPicked.size() + " / " + loaded.size() + " 个库"));
+                });
+            } catch (Exception error) {
+                main.post(() -> setLibStatus("读取库失败：" + describeError(error)));
+            }
+        }).start();
+    }
+
+    private void renderOrgLibraries() {
+        if (termsLibrariesBox == null) return;
+        termsLibrariesBox.removeAllViews();
+        for (final OrgLibrary library : orgLibraries) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(0, dp(2), 0, dp(2));
+
+            final android.widget.CheckBox box = new android.widget.CheckBox(this);
+            box.setChecked(orgPicked.contains(library.id));
+            box.setOnCheckedChangeListener((button, checked) -> {
+                if (checked) orgPicked.add(library.id);
+                else orgPicked.remove(library.id);
+                setLibStatus("已选 " + orgPicked.size() + " / " + orgLibraries.size() + " 个库（记得保存）");
+            });
+            row.addView(box);
+
+            TextView label = new TextView(this);
+            String meta = (library.categoryName == null || library.categoryName.isEmpty() ? "未分类" : library.categoryName)
+                    + " · " + library.entries + " 条 · 优先级 " + library.priority;
+            label.setText(library.name + "\n" + meta);
+            label.setTextSize(13f);
+            label.setTextColor(ContextCompat.getColor(this, R.color.ink));
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            params.setMarginStart(dp(4));
+            label.setLayoutParams(params);
+            row.addView(label);
+
+            termsLibrariesBox.addView(row);
+        }
+    }
+
+    /** 保存"这一场启用哪些库"。空选择是合法状态（= 不启用术语库）。 */
+    private void saveOrgSelection() {
+        final LanClient lan = client;
+        if (lan == null) {
+            setLibStatus(getString(R.string.terms_status_need_connect));
+            return;
+        }
+        new Thread(() -> {
+            try {
+                // JSONArray.put 会抛 JSONException（受检异常），所以整段放进 try
+                org.json.JSONArray ids = new org.json.JSONArray();
+                for (String id : orgPicked) ids.put(id);
+                JSONObject result = lan.orgSaveMeetingLibraries(ORG_MEETING_ID, ids);
+                if (!result.optBoolean("ok", false)) {
+                    main.post(() -> setLibStatus("保存失败：" + result.optString("error", "未知原因")));
+                    return;
+                }
+                main.post(() -> setLibStatus(getString(R.string.terms_libs_saved, ids.length())));
+                // 选库变了 → 重新冻结快照（插件只认快照）。失败不影响选择本身。
+                try {
+                    lan.orgSnapshot(ORG_MEETING_ID);
+                } catch (Exception ignored) {
+                    // 下一场开始前还会再生成一次；这里不打扰用户
+                }
+            } catch (Exception error) {
+                main.post(() -> setLibStatus("保存失败：" + describeError(error)));
+            }
+        }).start();
+    }
+
+    private void refreshMyRequests() {
+        final LanClient lan = client;
+        if (lan == null || termsRequestsBox == null) return;
+        new Thread(() -> {
+            try {
+                JSONObject result = lan.orgMyRequests();
+                org.json.JSONArray array = result.optJSONArray("requests");
+                main.post(() -> {
+                    termsRequestsBox.removeAllViews();
+                    if (array == null || array.length() == 0) {
+                        TextView empty = new TextView(this);
+                        empty.setText(R.string.terms_req_empty);
+                        empty.setTextSize(12f);
+                        empty.setTextColor(ContextCompat.getColor(this, R.color.ink_soft));
+                        termsRequestsBox.addView(empty);
+                        return;
+                    }
+                    for (int i = 0; i < array.length(); i += 1) {
+                        JSONObject item = array.optJSONObject(i);
+                        if (item == null) continue;
+                        JSONObject entry = item.optJSONObject("entry");
+                        String zh = entry != null ? entry.optString("zh") : item.optString("targetKey");
+                        String pt = entry != null ? entry.optString("pt") : "（删除）";
+                        String status = item.optString("status", "pending");
+                        TextView line = new TextView(this);
+                        line.setText(typeLabel(item.optString("type")) + "「" + zh + "」→ " + pt
+                                + " · " + statusLabel(status));
+                        line.setTextSize(12.5f);
+                        line.setTextColor(ContextCompat.getColor(this, R.color.ink));
+                        line.setPadding(0, dp(3), 0, dp(3));
+                        termsRequestsBox.addView(line);
+                    }
+                });
+            } catch (Exception error) {
+                main.post(() -> {
+                    TextView line = new TextView(this);
+                    line.setText("读取申请失败：" + describeError(error));
+                    line.setTextSize(12f);
+                    line.setTextColor(ContextCompat.getColor(this, R.color.err));
+                    termsRequestsBox.removeAllViews();
+                    termsRequestsBox.addView(line);
+                });
+            }
+        }).start();
+    }
+
+    private String typeLabel(String type) {
+        if ("update".equals(type)) return "修改";
+        if ("delete".equals(type)) return "删除";
+        return "新增";
+    }
+
+    private String statusLabel(String status) {
+        if ("approved".equals(status)) return getString(R.string.terms_req_status_approved);
+        if ("rejected".equals(status)) return getString(R.string.terms_req_status_rejected);
+        if ("withdrawn".equals(status)) return getString(R.string.terms_req_status_withdrawn);
+        return getString(R.string.terms_req_status_pending);
+    }
+
+    /** 提申请：只做"新增一条"（修改/删除等有真实需求再加，避免一上来堆三个表单）。 */
+    private void showNewRequestDialog() {
+        final LanClient lan = client;
+        if (lan == null) {
+            toast(getString(R.string.terms_status_need_connect));
+            return;
+        }
+        if (orgLibraries.isEmpty()) {
+            toast("先刷新库列表：申请要落到某个库里");
+            return;
+        }
+        if (orgPicked.isEmpty()) {
+            toast("先勾选一个库：申请要说明加到哪个库");
+            return;
+        }
+        final String libraryId = orgPicked.iterator().next();
+
+        LinearLayout form = new LinearLayout(this);
+        form.setOrientation(LinearLayout.VERTICAL);
+        form.setPadding(dp(16), dp(8), dp(16), dp(4));
+        final EditText zhField = new EditText(this);
+        zhField.setHint(R.string.terms_col_zh);
+        final EditText ptField = new EditText(this);
+        ptField.setHint(R.string.terms_col_pt);
+        final EditText reasonField = new EditText(this);
+        reasonField.setHint(R.string.terms_req_reason);
+        form.addView(zhField);
+        form.addView(ptField);
+        form.addView(reasonField);
+
+        new AlertDialog.Builder(this)
+                .setTitle(R.string.terms_req_dialog_title)
+                .setView(form)
+                .setNegativeButton(android.R.string.cancel, null)
+                .setPositiveButton(R.string.terms_req_submit, (dialog, which) -> {
+                    submitOrgRequest(lan, libraryId, zhField.getText().toString().trim(),
+                            ptField.getText().toString().trim(), reasonField.getText().toString().trim());
+                })
+                .show();
+    }
+
+    private void submitOrgRequest(final LanClient lan, final String libraryId,
+                                  final String zh, final String pt, final String reason) {
+        if (zh.isEmpty() || pt.isEmpty() || reason.isEmpty()) {
+            toast("中文名、目标写法、理由都要填");
+            return;
+        }
+        new Thread(() -> {
+            try {
+                JSONObject body = new JSONObject();
+                body.put("type", "add");
+                body.put("libraryId", libraryId);
+                body.put("zh", zh);
+                body.put("pt", pt);
+                body.put("reason", reason);
+                JSONObject result = lan.orgCreateRequest(body);
+                main.post(() -> {
+                    if (result.optBoolean("ok", false)) {
+                        toast(getString(R.string.terms_req_ok));
+                        refreshMyRequests();
+                    } else {
+                        toast("提交失败：" + result.optString("error", "未知原因"));
+                    }
+                });
+            } catch (Exception error) {
+                main.post(() -> toast("提交失败：" + describeError(error)));
+            }
+        }).start();
     }
 
     /** 切到这一页时：先把本地草稿画出来，再**静默拉一次电脑上的现表**（以电脑为准）。 */
@@ -2080,6 +2375,9 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             return;
         }
         runTermsAction("load");
+        // 库与申请：和旧热词表并排显示（旧的"自己编辑上传"仍在，迁移期不强行下线）
+        refreshOrgLibraries();
+        refreshMyRequests();
     }
 
     // ── 表格渲染 ────────────────────────────────────────────────────────────

@@ -225,6 +225,24 @@
     <!-- 热词表页（底部导航第 4 个栏位，表格形式） -->
     <string name="nav_terms">热词表</string>
     <string name="terms_add">新增</string>
+    <string name="terms_libs_title">本次同传启用的库</string>
+    <string name="terms_libs_hint">勾选要启用的术语库（只影响本次同传；库内容由管理员维护）</string>
+    <string name="terms_libs_refresh">刷新</string>
+    <string name="terms_libs_save">保存选择</string>
+    <string name="terms_libs_saved">已保存：%1$d 个库（下一次同传生效）</string>
+    <string name="terms_libs_empty">（电脑上还没有库）</string>
+    <string name="terms_req_title">我的申请</string>
+    <string name="terms_req_new">提申请</string>
+    <string name="terms_req_hint">用户不能直接改库：提交申请后由管理员审批，通过后才进字幕。</string>
+    <string name="terms_req_empty">（还没有申请）</string>
+    <string name="terms_req_dialog_title">提交申请</string>
+    <string name="terms_req_reason">申请理由（必填）</string>
+    <string name="terms_req_submit">提交</string>
+    <string name="terms_req_ok">已提交，等管理员审批</string>
+    <string name="terms_req_status_pending">待审</string>
+    <string name="terms_req_status_approved">已通过</string>
+    <string name="terms_req_status_rejected">已驳回</string>
+    <string name="terms_req_status_withdrawn">已撤回</string>
     <string name="terms_add_title">新增一条对照</string>
     <string name="terms_batch">批量导入</string>
     <string name="terms_batch_title">批量导入</string>

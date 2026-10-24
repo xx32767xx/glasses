@@ -297,6 +297,67 @@ public class LanClient {
         return requestWithCode("/terms", "GET", null, 8000);
     }
 
+    // ── 组织接口：库 / 会议选库 / 申请审批（docs/19）────────────────────────────
+    //
+    // 与旧热词表接口的区别（很关键，别混用）：
+    //   · 旧 `/terms` 是"用户自己改自己那张表"，新 `/org/*` 是"用户只能选库与提申请"；
+    //   · 全部走 requestWithCode：权限拒绝（403）与业务拒绝（400）都要能读出提示文案，
+    //     用 request() 会把这些塞进异常消息，界面就没法逐条显示。
+
+    /** 列出本机可用库（admin/user/dev 都能读）。 */
+    public JSONObject orgLibraries() throws IOException, org.json.JSONException {
+        return requestWithCode("/org/libraries", "GET", null, 8000);
+    }
+
+    /** 这一场同传选了哪些库。 */
+    public JSONObject orgMeetingLibraries(String meetingId) throws IOException, org.json.JSONException {
+        return requestWithCode("/org/meeting/" + meetingId + "/libraries", "GET", null, 8000);
+    }
+
+    /** 保存在这一场启用哪些库（空数组 = 什么都不启用）。 */
+    public JSONObject orgSaveMeetingLibraries(String meetingId, org.json.JSONArray libraryIds)
+            throws IOException, org.json.JSONException {
+        JSONObject body = new JSONObject();
+        body.put("libraryIds", libraryIds);
+        return requestWithCode("/org/meeting/" + meetingId + "/libraries", "PUT", body, 8000);
+    }
+
+    /** 我的申请（含状态：pending / approved / rejected / withdrawn）。 */
+    public JSONObject orgMyRequests() throws IOException, org.json.JSONException {
+        return requestWithCode("/org/requests/mine", "GET", null, 8000);
+    }
+
+    /**
+     * 冻结这一场的术语快照（插件只认快照，所以选库改完要重新冻结一次）。
+     * <p>失败不致命：下一场开始前还会再生成一次。
+     */
+    public JSONObject orgSnapshot(String meetingId) throws IOException, org.json.JSONException {
+        JSONObject body = new JSONObject();
+        return requestWithCode("/org/meeting/" + meetingId + "/snapshot", "POST", body, 12000);
+    }
+
+    /**
+     * 提交申请。
+     * <p>⚠️ 请求体里**不要**放 applicant：申请人由服务端从 token 解出来（放了也会被忽略）。
+     */
+    public JSONObject orgCreateRequest(JSONObject request) throws IOException, org.json.JSONException {
+        return requestWithCode("/org/requests", "POST", request, 8000);
+    }
+
+    /** 邮箱验证码登录：先取码（码打印在电脑端 relay 控制台），再登录拿 token。 */
+    public JSONObject authRequestCode(String email) throws IOException, org.json.JSONException {
+        JSONObject body = new JSONObject();
+        body.put("email", email);
+        return requestWithCode("/auth/code", "POST", body, 8000);
+    }
+
+    public JSONObject authLoginEmail(String email, String code) throws IOException, org.json.JSONException {
+        JSONObject body = new JSONObject();
+        body.put("email", email);
+        body.put("code", code);
+        return requestWithCode("/auth/login-email", "POST", body, 8000);
+    }
+
     /**
      * 一次请求，但**把非 2xx 也当正常返回**（返回 { code, json }）。
      *
