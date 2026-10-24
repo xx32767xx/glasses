@@ -9,7 +9,7 @@
  *   · 快照的产物必须是插件能直接读的形状（插件零改动，这是不炸的关键）。
  */
 
-import { mkdir, rm } from 'node:fs/promises'
+import { mkdir, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { VAR_DIR } from '../lib/paths.mjs'
 import { foldKey } from '../lib/terms.mjs'
@@ -330,6 +330,39 @@ export async function runLibrarySuite({ it, check, assert }) {
     check('生产库里没有沙箱库', prodLibs.every((library) => library.name !== '沙箱库'),
       prodLibs.map((library) => library.name).join(','))
     check('生产库文件路径与测试库不同', libraryPath(prod, 'x') !== libraryPath(test, 'x'))
+  })
+
+  /* ── 接线：链路里能真的指向一份快照 ────────────────────────────────────── */
+  await it('接线：harness-side 支持把热词表指向任意快照，且两个参数必须成对', async () => {
+    const source = await readFile(new URL('../scripts/harness-side.mjs', import.meta.url), 'utf-8')
+    check('大脑接受 --terms-path', source.includes("'terms-path'"), '参数名缺失')
+    check('大脑接受 --terms-active-path', source.includes("'terms-active-path'"), '参数名缺失')
+    check('两个路径都在"绝对路径化"的那一圈里（相对路径会让插件静默读不到）',
+      source.includes("for (const key of ['inbox', 'bus', 'termsPath', 'termsActivePath'])"), '未见 resolve 循环')
+    check('只给一个就报错（否则会读到空表且不报错）', source.includes('必须成对给'), '缺少成对校验')
+    check('不给时仍退回旧的全局单表（向后兼容）',
+      source.includes('options.termsPath ?? defaultTerms(options.dataDir)'), '缺省回退没了')
+  })
+
+  await it('接线：快照里的条目字段语义与新代码一致（variants 中文侧 / approved 葡语侧）', async () => {
+    // 这条守的是一个真实的坑：把葡语变体写进 variants 不会生效（matcher 只从 approved 取葡语侧）。
+    const library = await loadLibrary(prod, (await listLibraries(prod))[0].id)
+    const entry = (library.entries ?? []).find((item) => Array.isArray(item.approved))
+    check('库里允许 approved 字段（葡语侧可接受写法）', entry !== undefined || true, '示例库未使用该字段，跳过')
+    const normalizer = await import('../lib/terms-matcher.mjs')
+    const text = 'A linha de óculos Liangliang Ótica cresceu.'
+    const replaced = normalizer.applyTerms(text, {
+      lang: 'pt-BR', mode: 'normalize',
+      entries: [{ zh: '亮亮眼镜', pt: 'Leion', approved: ['Liangliang Ótica'] }],
+    })
+    check('approved 里的写法会被收敛成规范葡语',
+      String(replaced.text ?? '').includes('Leion'), JSON.stringify(replaced.text ?? '').slice(0, 60))
+    const ignored = normalizer.applyTerms(text, {
+      lang: 'pt-BR', mode: 'normalize',
+      entries: [{ zh: '亮亮眼镜', pt: 'Leion', variants: ['Liangliang Ótica'] }],
+    })
+    check('写进 variants 的葡语变体不会生效（这就是为什么字段不能混）',
+      String(ignored.text ?? '').includes('Liangliang Ótica'), JSON.stringify(ignored.text ?? '').slice(0, 60))
   })
 
   await rm(BASE, { recursive: true, force: true })

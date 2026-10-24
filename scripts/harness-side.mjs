@@ -54,6 +54,12 @@ const HELP = `harness-side —— 常驻的 harness 侧进程（给手机 + 局�
   --cols <n>            AR 显示宽度（缺省 40；眼镜到手后按实测改）
   --lines <n>           AR 可见行数（缺省 3；眼镜到手后按实测改）
   --poll-ms <n>         收件箱轮询间隔（缺省 150）
+  --terms-path <path>       热词表文件（缺省 <data-dir>/terms.json）
+  --terms-active-path <p>   "这一场用哪个 user 键"（缺省 <data-dir>/terms-active.json）
+                            这两个参数用来指向**会议级术语快照**：
+                            <data-dir>/meetings/<场次>/terms.json 与 terms-active.json
+                            由 \`node scripts/terms-admin.mjs snapshot --meeting <场次> --libraries a,b\` 生成。
+                            ⚠️ 必须成对给：只换一个会读到空表，而且**不会报错**（插件按另一个文件里的 user 键找表）。
   --keep-inbox          保留收件箱里的旧内容（缺省会先清空，见下）
   --help
 
@@ -72,7 +78,11 @@ const HELP = `harness-side —— 常驻的 harness 侧进程（给手机 + 局�
 
 export function parseArgs(argv) {
   const options = { mode: 'live', dataDir: LIVE_DATA_DIR, cols: 40, lines: 3, pollMs: 150, keepInbox: false, proofread: true, termsRescue: false }
-  const takesValue = new Set(['data-dir', 'inbox', 'bus', 'cols', 'lines', 'poll-ms'])
+  const takesValue = new Set(['data-dir', 'inbox', 'bus', 'cols', 'lines', 'poll-ms',
+    // 2026-10-23：允许把「热词表」指向任意一份快照（会议级术语快照 = var/data/meetings/<场次>/）。
+    // 为什么需要：库（libraries/）与插件之间必须有个"冻结成一份表"的中间物 ——
+    // 插件只认两个文件 + 一个 user 键，所以由调用方把快照路径传进来，插件零改动。
+    'terms-path', 'terms-active-path'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (token === '--offline') { options.mode = 'offline'; continue }
@@ -92,6 +102,8 @@ export function parseArgs(argv) {
     else if (key === 'bus') options.bus = value
     else if (key === 'cols') options.cols = Number(value)
     else if (key === 'lines') options.lines = Number(value)
+    else if (key === 'terms-path') options.termsPath = value
+    else if (key === 'terms-active-path') options.termsActivePath = value
     else options.pollMs = Number(value)
   }
   if (options.help === true) return options
@@ -104,8 +116,13 @@ export function parseArgs(argv) {
   //    然后收件箱**静默读不到**（继电器照写、屏幕上永远没字幕、一个错都不报）。
   //    start-all 那边也做了同样的事，这里是防"单独起 harness-side"时踩到。
   options.dataDir = resolve(options.dataDir)
-  for (const key of ['inbox', 'bus']) {
+  for (const key of ['inbox', 'bus', 'termsPath', 'termsActivePath']) {
     if (options[key] !== undefined) options[key] = resolve(options[key])
+  }
+  // 只给其中一个就报错：terms.json 与 terms-active.json 必须配套
+  //（单独换一个 = 插件按"另一个文件里的 user 键"去本文件里找表 → 找到空表，而且不报错）
+  if ((options.termsPath === undefined) !== (options.termsActivePath === undefined)) {
+    throw new Error('--terms-path 与 --terms-active-path 必须成对给（一个是指向的表、一个是"这一场用哪个 user 键"）')
   }
   options.inbox = options.inbox ?? defaultInbox(options.dataDir)
   options.bus = options.bus ?? defaultBus(options.dataDir)
@@ -162,8 +179,9 @@ async function main() {
       settingsPath: defaultSettings(options.dataDir).replace(/\\/g, '/'),
       // 热词归一（docs/15 阶段 3）：开关 + 表 + "当前用哪个用户" + 事件日志
       terms: 'on',
-      termsPath: defaultTerms(options.dataDir).replace(/\\/g, '/'),
-      termsActivePath: defaultTermsActive(options.dataDir).replace(/\\/g, '/'),
+      // 允许指向任意一份快照（会议级术语快照）；不给就用旧的全局单表路径。
+      termsPath: (options.termsPath ?? defaultTerms(options.dataDir)).replace(/\\/g, '/'),
+      termsActivePath: (options.termsActivePath ?? defaultTermsActive(options.dataDir)).replace(/\\/g, '/'),
       termsLogPath: join(options.dataDir, TERMS_LOG_NAME).replace(/\\/g, '/'),
       // 待入表队列（B 方案，docs/15 §18.2）：插件只追加，relay 在启动/每场开始时合并
       termsPendingPath: defaultTermsPending(options.dataDir).replace(/\\/g, '/'),
