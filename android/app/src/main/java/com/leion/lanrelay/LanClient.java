@@ -301,17 +301,34 @@ public class LanClient {
     //
     // 与旧热词表接口的区别（很关键，别混用）：
     //   · 旧 `/terms` 是"用户自己改自己那张表"，新 `/org/*` 是"用户只能选库与提申请"；
-    //   · 全部走 requestWithCode：权限拒绝（403）与业务拒绝（400）都要能读出提示文案，
-    //     用 request() 会把这些塞进异常消息，界面就没法逐条显示。
+    //   · 全部走 requestWithCode：权限拒绝（403）与业务拒绝（400）都要能读出提示文案。
+    //
+    // ⚠️ **必须拆包**：requestWithCode 返回的是 `{code, json}` 包装对象（旧的热词表接口
+    //    就是这么用的），不是响应正文。第一版这里直接把它当成正文用了 ——
+    //    于是 `optBoolean("ok")` 永远 false、`optString("error")` 永远取不到，
+    //    界面只能显示"读取库失败：未知原因"。踩过一次，别再来。
+    private static JSONObject unwrap(JSONObject wrapper) {
+        JSONObject json = wrapper == null ? null : wrapper.optJSONObject("json");
+        if (json == null) json = new JSONObject();
+        if (!json.has("error") && wrapper != null && wrapper.optInt("code", 0) > 0) {
+            // 把 HTTP 码塞回去：界面能直接显示"（HTTP 404）"，省掉一轮猜
+            try {
+                json.put("httpStatus", wrapper.optInt("code", 0));
+            } catch (org.json.JSONException ignored) {
+                // 放不进去就放不进，不影响主流程
+            }
+        }
+        return json;
+    }
 
     /** 列出本机可用库（admin/user/dev 都能读）。 */
     public JSONObject orgLibraries() throws IOException, org.json.JSONException {
-        return requestWithCode("/org/libraries", "GET", null, 8000);
+        return unwrap(requestWithCode("/org/libraries", "GET", null, 8000));
     }
 
     /** 这一场同传选了哪些库。 */
     public JSONObject orgMeetingLibraries(String meetingId) throws IOException, org.json.JSONException {
-        return requestWithCode("/org/meeting/" + meetingId + "/libraries", "GET", null, 8000);
+        return unwrap(requestWithCode("/org/meeting/" + meetingId + "/libraries", "GET", null, 8000));
     }
 
     /** 保存在这一场启用哪些库（空数组 = 什么都不启用）。 */
@@ -319,12 +336,12 @@ public class LanClient {
             throws IOException, org.json.JSONException {
         JSONObject body = new JSONObject();
         body.put("libraryIds", libraryIds);
-        return requestWithCode("/org/meeting/" + meetingId + "/libraries", "PUT", body, 8000);
+        return unwrap(requestWithCode("/org/meeting/" + meetingId + "/libraries", "PUT", body, 8000));
     }
 
     /** 我的申请（含状态：pending / approved / rejected / withdrawn）。 */
     public JSONObject orgMyRequests() throws IOException, org.json.JSONException {
-        return requestWithCode("/org/requests/mine", "GET", null, 8000);
+        return unwrap(requestWithCode("/org/requests/mine", "GET", null, 8000));
     }
 
     /**
@@ -333,7 +350,7 @@ public class LanClient {
      */
     public JSONObject orgSnapshot(String meetingId) throws IOException, org.json.JSONException {
         JSONObject body = new JSONObject();
-        return requestWithCode("/org/meeting/" + meetingId + "/snapshot", "POST", body, 12000);
+        return unwrap(requestWithCode("/org/meeting/" + meetingId + "/snapshot", "POST", body, 12000));
     }
 
     /**
@@ -341,21 +358,21 @@ public class LanClient {
      * <p>⚠️ 请求体里**不要**放 applicant：申请人由服务端从 token 解出来（放了也会被忽略）。
      */
     public JSONObject orgCreateRequest(JSONObject request) throws IOException, org.json.JSONException {
-        return requestWithCode("/org/requests", "POST", request, 8000);
+        return unwrap(requestWithCode("/org/requests", "POST", request, 8000));
     }
 
     /** 邮箱验证码登录：先取码（码打印在电脑端 relay 控制台），再登录拿 token。 */
     public JSONObject authRequestCode(String email) throws IOException, org.json.JSONException {
         JSONObject body = new JSONObject();
         body.put("email", email);
-        return requestWithCode("/auth/code", "POST", body, 8000);
+        return unwrap(requestWithCode("/auth/code", "POST", body, 8000));
     }
 
     public JSONObject authLoginEmail(String email, String code) throws IOException, org.json.JSONException {
         JSONObject body = new JSONObject();
         body.put("email", email);
         body.put("code", code);
-        return requestWithCode("/auth/login-email", "POST", body, 8000);
+        return unwrap(requestWithCode("/auth/login-email", "POST", body, 8000));
     }
 
     /**

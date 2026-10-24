@@ -2141,11 +2141,16 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                 //    第一版没查 ok 就把"没有 libraries 字段"当成"还没建库"，
                 //    于是旧 relay 上永远显示"（电脑上还没有库）"—— 看着像数据问题，其实是路由不存在。
                 if (!libraries.optBoolean("ok", false)) {
-                    String reason = libraries.optString("error", "未知原因");
+                    String reason = libraries.optString("error", "");
                     String hint = libraries.optString("hint", "");
-                    main.post(() -> setLibStatus("读取库失败：" + reason + (hint.isEmpty() ? "" : "（" + hint + "）")
-                            + (reason.contains("not-found") ? "\n→ 电脑上的 relay 是旧版：重启一次 start-all" : "")
-                            + (reason.contains("auth") || reason.contains("登录") ? "\n→ 先在「设置 → 账户」登录" : "")));
+                    int httpStatus = libraries.optInt("httpStatus", 0);
+                    StringBuilder text = new StringBuilder("读取库失败：");
+                    text.append(reason.isEmpty() ? "未知原因" : reason);
+                    if (httpStatus > 0) text.append("（HTTP ").append(httpStatus).append("）");
+                    if (!hint.isEmpty()) text.append("（").append(hint).append("）");
+                    if (reason.contains("not-found")) text.append("\n→ 电脑上的 relay 是旧版：重启一次 start-all");
+                    if (reason.contains("auth") || reason.contains("登录")) text.append("\n→ 先在「设置 → 账户」登录");
+                    main.post(() -> setLibStatus(text.toString()));
                     return;
                 }
                 JSONObject selection = lan.orgMeetingLibraries(ORG_MEETING_ID);
