@@ -326,6 +326,11 @@ public class LanClient {
         return unwrap(requestWithCode("/org/libraries", "GET", null, 8000));
     }
 
+    /** 单个库的详情（**含条目正文**，用于"点开看里面有什么"）。 */
+    public JSONObject orgLibrary(String libraryId) throws IOException, org.json.JSONException {
+        return unwrap(requestWithCode("/org/libraries/" + libraryId, "GET", null, 8000));
+    }
+
     /** 这一场同传选了哪些库。 */
     public JSONObject orgMeetingLibraries(String meetingId) throws IOException, org.json.JSONException {
         return unwrap(requestWithCode("/org/meeting/" + meetingId + "/libraries", "GET", null, 8000));

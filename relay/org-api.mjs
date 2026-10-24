@@ -85,8 +85,11 @@ export async function handleOrg(input) {
       json: {
         ok: true,
         libraries: libraries.map((library) => ({
-          id: library.id, name: library.name, categoryId: library.categoryId,
-          categoryName: categoryName.get(library.categoryId) ?? null,
+          id: library.id, name: library.name, categoryId: library.categoryId ?? '',
+          // 分类可能没有：这里统一给**空串**而不是 null。
+          // 客户端（Android 的 optString）遇到 JSON null 会返回字符串 "null"，
+          // 于是界面上出现"null · 8 条"——与其每个客户端各修一次，不如服务端不给 null。
+          categoryName: categoryName.get(library.categoryId) ?? '',
           priority: library.priority, visibility: library.visibility,
           entries: (library.entries ?? []).length, updatedAt: library.updatedAt,
         })),

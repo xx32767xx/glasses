@@ -111,6 +111,23 @@ export async function runStartAllSuite({ it, check, assert }) {
     check('原有参数没被挤掉', argsOf(on).includes('--data-dir') && argsOf(on).includes('--cols'), argsOf(on))
   })
 
+  await it('会议级术语快照：给了路径才传给大脑（否则沿用旧的全局表）', async () => {
+    // docs/19：`--libraries` 在 main() 里先冻结快照，再把两个路径传给大脑。
+    // 这里钉住"拼命令行"这一段 —— 否则会出现"生成了快照但大脑没读"的静默失效。
+    const plain = buildSteps(parseArgs([])).find(s => s.key === 'brain')
+    check('缺省不带 --terms-path', argsOf(plain).includes('--terms-path') === false, argsOf(plain))
+    const withPaths = buildSteps(Object.assign(parseArgs([]), {
+      termsPath: 'X/meetings/current/terms.json',
+      termsActivePath: 'X/meetings/current/terms-active.json',
+    })).find(s => s.key === 'brain')
+    check('给了就成对传下去',
+      argsOf(withPaths).includes('--terms-path') && argsOf(withPaths).includes('--terms-active-path'),
+      argsOf(withPaths))
+    check('两个路径都指向快照目录（不是旧的全局 terms.json）',
+      withPaths.args[withPaths.args.indexOf('--terms-path') + 1].includes('meetings'),
+      argsOf(withPaths))
+  })
+
   // ── 2. 参数校验：拼错了要立刻报错，而不是起一半 ─────────────────────────────
 
   await it('非法端口/行列数立刻报错', async () => {

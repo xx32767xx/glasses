@@ -2195,6 +2195,10 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
             row.setPadding(0, dp(2), 0, dp(2));
+            // 整行可点：点开看这个库里具体有哪些词条（只读）
+            row.setBackgroundResource(R.drawable.tap_pill);
+            row.setClickable(true);
+            row.setOnClickListener(v -> showLibraryEntries(library));
 
             final android.widget.CheckBox box = new android.widget.CheckBox(this);
             box.setChecked(orgPicked.contains(library.id));
@@ -2206,8 +2210,12 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             row.addView(box);
 
             TextView label = new TextView(this);
-            String meta = (library.categoryName == null || library.categoryName.isEmpty() ? "未分类" : library.categoryName)
-                    + " · " + library.entries + " 条 · 优先级 " + library.priority;
+            // ⚠️ 分类可能没有：Android 的 optString 遇到 JSONObject.NULL 会返回字符串 "null"，
+            //    直接拼进界面就显示成"null · 8 条"。服务端已经改成给空串，这里再兜一层。
+            String category = library.categoryName;
+            if (category == null || category.isEmpty() || "null".equals(category)) category = "未分类";
+            String meta = category + " · " + library.entries + " 条 · 优先级 " + library.priority
+                    + "（点击查看词条）";
             label.setText(library.name + "\n" + meta);
             label.setTextSize(13f);
             label.setTextColor(ContextCompat.getColor(this, R.color.ink));
@@ -2218,6 +2226,88 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
             termsLibrariesBox.addView(row);
         }
+    }
+
+    /** 点开一个库：列出里面的条目（只读，不能改 —— 改库是管理员的事）。 */
+    private void showLibraryEntries(final OrgLibrary library) {
+        final LanClient lan = client;
+        if (lan == null) {
+            toast(getString(R.string.terms_status_need_connect));
+            return;
+        }
+        setLibStatus("正在读取「" + library.name + "」的词条…");
+        new Thread(() -> {
+            try {
+                JSONObject detail = lan.orgLibrary(library.id);
+                if (!detail.optBoolean("ok", false)) {
+                    main.post(() -> setLibStatus("读取词条失败：" + detail.optString("error", "未知原因")));
+                    return;
+                }
+                JSONObject body = detail.optJSONObject("library");
+                org.json.JSONArray entries = body == null ? null : body.optJSONArray("entries");
+                main.post(() -> {
+                    setLibStatus("已选 " + orgPicked.size() + " / " + orgLibraries.size() + " 个库");
+                    showEntriesDialog(library, entries);
+                });
+            } catch (Exception error) {
+                main.post(() -> setLibStatus("读取词条失败：" + describeError(error)));
+            }
+        }).start();
+    }
+
+    private void showEntriesDialog(OrgLibrary library, org.json.JSONArray entries) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(16), dp(10), dp(16), dp(6));
+        if (entries == null || entries.length() == 0) {
+            TextView empty = new TextView(this);
+            empty.setText("这个库还没有词条");
+            empty.setTextSize(13f);
+            box.addView(empty);
+        } else {
+            for (int i = 0; i < entries.length(); i += 1) {
+                JSONObject entry = entries.optJSONObject(i);
+                if (entry == null) continue;
+                StringBuilder line = new StringBuilder();
+                line.append(i + 1).append(". ").append(entry.optString("zh")).append("  →  ")
+                        .append(entry.optString("pt"));
+                org.json.JSONArray approved = entry.optJSONArray("approved");
+                if (approved != null && approved.length() > 0) {
+                    StringBuilder forms = new StringBuilder();
+                    for (int k = 0; k < approved.length(); k += 1) {
+                        String form = approved.optString(k);
+                        if (form.isEmpty() || form.equals(entry.optString("pt"))) continue;
+                        if (forms.length() > 0) forms.append("、");
+                        forms.append(form);
+                    }
+                    if (forms.length() > 0) line.append("\n     可接受写法：").append(forms);
+                }
+                org.json.JSONArray variants = entry.optJSONArray("variants");
+                if (variants != null && variants.length() > 0) {
+                    StringBuilder forms = new StringBuilder();
+                    for (int k = 0; k < variants.length(); k += 1) {
+                        String form = variants.optString(k);
+                        if (form.isEmpty()) continue;
+                        if (forms.length() > 0) forms.append("、");
+                        forms.append(form);
+                    }
+                    if (forms.length() > 0) line.append("\n     中文变体：").append(forms);
+                }
+                TextView item = new TextView(this);
+                item.setText(line);
+                item.setTextSize(13f);
+                item.setTextColor(ContextCompat.getColor(this, R.color.ink));
+                item.setPadding(0, dp(6), 0, dp(6));
+                box.addView(item);
+            }
+        }
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(box);
+        new AlertDialog.Builder(this)
+                .setTitle(library.name + "（" + (entries == null ? 0 : entries.length()) + " 条，只读）")
+                .setView(scroll)
+                .setPositiveButton(android.R.string.ok, null)
+                .show();
     }
 
     /** 保存"这一场启用哪些库"。空选择是合法状态（= 不启用术语库）。 */

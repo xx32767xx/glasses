@@ -20,7 +20,13 @@
  *
  * 常用参数
  *   --cpu                 识别用 CPU（缺省 cuda/float16；没有 N 卡时用这个）
- *   --offline             大脑用离线例句表（不联网、零成本，只认得剧本那 14 句）
+ * --libraries <id|all|none>
+                        启用**会议级术语库**（docs/19）：起服务前把选中的库冻结成一份快照，
+                        让大脑读快照而不是旧的全局表。all=全部库，none=这一场不启用术语。
+                        不给这个参数就沿用旧的全局表（<data-dir>/terms.json），行为不变。
+  --meeting <场次>      快照落在 <data-dir>/meetings/<场次>/，缺省 current。
+                        同一场次重复启动会**重新冻结**（改了库要重启一次才生效，这是刻意的）。
+  --offline             大脑用离线例句表（不联网、零成本，只认得剧本那 14 句）
  *   --no-transcriber      只起转发 + 大脑（用手输文字那条路时够用）
  *   --data-dir <path>     数据目录（缺省 var/live）
  *   --port <n>            转发端口（缺省 8788）
@@ -35,6 +41,42 @@ import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { ROOT, LOGS_DIR, WHISPER_CACHE_DIR, defaultAudioIn, defaultBus, defaultInbox, defaultSecret } from '../lib/paths.mjs'
 import { DEFAULT_DATA_DIR } from '../relay/lan-relay.mjs'
+import { listLibraries, loadLibrary } from '../lib/libraries.mjs'
+import { loadSelection, selectionPath } from '../relay/org-api.mjs'
+import { writeMeetingSnapshot } from '../lib/snapshot.mjs'
+
+/**
+ * 生成"这一场"的术语快照（`--libraries` 的落地实现）。
+ *
+ * `--libraries all` = 启用全部可见库；`--libraries a,b` = 指定几个；
+ * `--libraries none`/空 = 显式不启用（此时仍会生成一份空快照，语义是"这一场没有术语"）。
+ * 不写旧的全局 terms.json —— 那条路只留给没给 `--libraries` 的向后兼容场景。
+ */
+async function prepareMeetingTerms(options) {
+  const libraries = await listLibraries(options.dataDir)
+  if (libraries.length === 0) {
+    return { ok: false, error: `data-dir 里一个库都没有：先用 tasks-admin/terms-admin 建库（${options.dataDir}）` }
+  }
+  const wanted = String(options.libraries).trim()
+  let libraryIds
+  if (wanted === 'all' || wanted === '*') {
+    libraryIds = libraries.map((library) => library.id)
+  } else if (wanted === 'none' || wanted === '') {
+    libraryIds = []
+  } else {
+    libraryIds = wanted.split(',').map((item) => item.trim()).filter(Boolean)
+    const unknown = libraryIds.filter((id) => libraries.every((library) => library.id !== id))
+    if (unknown.length > 0) {
+      return { ok: false, error: `这些库不存在：${unknown.join(', ')}（可用：${libraries.map((library) => library.id).join(', ')}）` }
+    }
+  }
+  const snapshot = await writeMeetingSnapshot(options.dataDir, options.meeting, { libraryIds, libraries })
+  return {
+    ok: true, entries: snapshot.entries, libraryIds,
+    termsPath: snapshot.termsPath, activePath: snapshot.activePath,
+    conflicts: snapshot.conflicts,
+  }
+}
 
 const HELP = `start-all —— 一条命令起齐整条链路
 
@@ -47,6 +89,12 @@ const HELP = `start-all —— 一条命令起齐整条链路
                           small 18.9% / medium 7.4% / large-v3 3.9% 的字错率
                         —— 模型大小是影响准确率**最大**的那个变量，比调切句/beam/提示词加起来都大。
                         large-v3 在 GPU 上每段约 0.6 秒（延迟仍在 1.3 秒量级），所以 GPU 上直接用大的。
+--libraries <id|all|none>
+                        启用**会议级术语库**（docs/19）：起服务前把选中的库冻结成一份快照，
+                        让大脑读快照而不是旧的全局表。all=全部库，none=这一场不启用术语。
+                        不给这个参数就沿用旧的全局表（<data-dir>/terms.json），行为不变。
+  --meeting <场次>      快照落在 <data-dir>/meetings/<场次>/，缺省 current。
+                        同一场次重复启动会**重新冻结**（改了库要重启一次才生效，这是刻意的）。
   --offline             大脑用离线例句表（不联网、零成本，只认得剧本那 14 句）
   --proofread           打开大模型校对（第二遍）：初译先上屏，空闲时回头改这一句。
                         代价是每句多一次模型调用，但**不占**下一句的初译时间（见 docs/07）
@@ -94,6 +142,9 @@ export function parseArgs(argv) {
     offline: false,
     proofread: false,
     termsRescue: false,
+    // 会议级术语库（docs/19）：给了就生成快照并让大脑读它；不给则沿用旧的全局表
+    libraries: null,
+    meeting: 'current',
     transcriber: true,
     whisperModel: null,          // null = 按设备自动选（见下）
     device: 'cuda',
@@ -105,7 +156,7 @@ export function parseArgs(argv) {
     from: null,
     to: null,
   }
-  const takesValue = new Set(['data-dir', 'inbox', 'bus', 'audio', 'port', 'cols', 'lines', 'whisper-model', 'from', 'to'])
+  const takesValue = new Set(['data-dir', 'inbox', 'bus', 'audio', 'port', 'cols', 'lines', 'whisper-model', 'from', 'to', 'libraries', 'meeting'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -226,6 +277,10 @@ export function buildSteps(options) {
   if (options.proofread) brainArgs.push('--proofread')
   // 热词临时修正（实验）：必须真的传到大脑，否则"以为开了"而实际没开
   if (options.termsRescue) brainArgs.push('--terms-rescue')
+  // 会议级术语快照（docs/19）：给了 --libraries 才传；不给则大脑沿用旧的全局表
+  if (options.termsPath && options.termsActivePath) {
+    brainArgs.push('--terms-path', options.termsPath, '--terms-active-path', options.termsActivePath)
+  }
   steps.push({
     key: 'brain',
     ...STEPS.brain,
@@ -420,6 +475,22 @@ export async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv)
   if (options.help) { process.stdout.write(HELP); return 0 }
 
+  // ── 会议级术语库：给了 --libraries 就先冻结一份快照，再让大脑读它 ────────────
+  //
+  // 为什么冻结成"快照"而不是让插件直接读库：插件只认两个文件 + 一个 user 键（docs/19）。
+  // 快照的好处是"这一场开始后改库不影响正在进行的会议"，而且插件侧零改动。
+  // 不给 --libraries 就什么都不做，沿用旧的全局表（向后兼容）。
+  if (options.libraries) {
+    const prepared = await prepareMeetingTerms(options)
+    if (prepared.ok !== true) {
+      console.error(`❌ ${prepared.error}`)
+      return 1
+    }
+    options.termsPath = prepared.termsPath
+    options.termsActivePath = prepared.activePath
+    options.termSummary = `会议快照 ${prepared.entries} 条（库 ${prepared.libraryIds.length} 个，场次 ${options.meeting}）`
+  }
+
   // ── 起之前先查端口：这是"以为重启了其实还是旧进程"的头号来源 ──────────────
   if (await portInUse(options.port)) {
     console.error('')
@@ -491,6 +562,10 @@ export async function main(argv = process.argv.slice(2)) {
       ? '想开，但离线例句表答不出"写成了什么" → 实际不会生效（去掉 --offline 才有意义）'
       : '已开启（实验：观测到漏写时问一次模型，可验证才换那一小段）')
     : '关闭（缺省；加 --terms-rescue 打开，见 docs/15 §18）'}`)
+  // 术语来源：说清楚这一场用的是"会议快照"还是"旧的全局表" —— 两者效果完全不同，
+  // 而界面上看不出区别（都是"字幕里出现了规范写法"）。
+  console.log(`  术语来源    ${options.termSummary
+    ?? '旧的全局表（<data-dir>/terms.json；加 --libraries all 或 --libraries id1,id2 改用会议快照）'}`)
   console.log(`  识别模型    ${options.transcriber ? `${options.whisperModel} / ${options.device} / ${options.computeType}` : '未启动（--no-transcriber）'}`)
   console.log(`  数据目录    ${options.dataDir}`)
   for (const note of envNotes) console.log(`  ${note}`)
