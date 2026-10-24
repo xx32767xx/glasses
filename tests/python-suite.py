@@ -1767,9 +1767,9 @@ def main():
     check("正常人声电平（RMS≈0.03）必须放行",
           _ws.silence_skip_reason(speechy) is None, str(_ws.silence_skip_reason(speechy)))
     # 大声与小音量之间：0.008 阈值附近两侧都要有断言（阈值本身就是契约）
-    check("阈值下沿（0.0079）拦、上沿（0.0081）放",
-          _ws.silence_skip_reason(np.full(16000, 0.0079, dtype=np.float32)) is not None
-          and _ws.silence_skip_reason(np.full(16000, 0.0081, dtype=np.float32)) is None)
+    check("阈值下沿（0.019 = 实测幻听段所在区间）拦、上沿（0.021）放",
+          _ws.silence_skip_reason(np.full(16000, 0.019, dtype=np.float32)) is not None
+          and _ws.silence_skip_reason(np.full(16000, 0.021, dtype=np.float32)) is None)
 
     check("空音频直接判丢弃，不会送给模型", _ws.silence_skip_reason(np.zeros(0, dtype=np.float32)) is not None)
     # 归一化本身会把静音放大 —— 这正是"闸必须放在归一化之前"的原因

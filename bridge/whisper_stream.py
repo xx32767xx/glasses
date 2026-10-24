@@ -298,6 +298,10 @@ def parse_args(argv=None):
                         help="no_speech_prob 高于这个值就丢弃该段（防幻听）")
     parser.add_argument("--min-logprob", type=float, default=-1.00,
                         help="avg_logprob 低于这个值就丢弃该段（太不确定就别显示）")
+    parser.add_argument("--silence-skip-level", type=float, default=SILENCE_SKIP_RMS,
+                        help="原始电平（归一化之前）低于这个值就在**解码前**丢掉："
+                             "既不给幻听机会，也省一次识别。缺省 0.02 与人声门槛同一个数；"
+                             "实测在 0.012~0.019 的敲击/呼吸段上，Whisper 会吐「谢谢大家」「搅拌均匀」这类假字幕。")
     parser.add_argument("--self-check", action="store_true", help="只检查依赖与模型能否加载")
     args = parser.parse_args(argv)
     # 把 `--lang-candidates zh,pt` 解析成元组；空串 = 不限定（回到全域挑最大）。
@@ -656,12 +660,12 @@ def looks_like_hallucination(text: str) -> bool:
 #   模型于是一定会"听出"点东西。幻听词表只能事后拦，拦不住新花样。
 #
 # 所以正确做法是**在解码之前**按原始电平丢掉：不出幻听，还省一次识别。
-# 阈值 0.008 = 人声门槛（0.02）的四成，给"小声说话"留足余量；
+# 阈值取 0.02 = 与 SPEECH_RMS_FLOOR **同一个数**（人声门槛）。
 # 判据用**归一化之前**的电平 —— 归一化之后就没有"安静"可言了。
-SILENCE_SKIP_RMS = 0.008
+SILENCE_SKIP_RMS = 0.02
 
 
-def silence_skip_reason(audio) -> str | None:
+def silence_skip_reason(audio, threshold=SILENCE_SKIP_RMS) -> str | None:
     """明显不是人声就返回丢弃原因（None = 照常解码）。
 
     单独成函数是为了能被测试直接钉住：这个闸判错一次，要么吃真字幕、要么放幻听进来。
@@ -669,8 +673,8 @@ def silence_skip_reason(audio) -> str | None:
     if audio is None or len(audio) == 0:
         return "空音频"
     level = rms_of(audio)
-    if level < SILENCE_SKIP_RMS:
-        return (f"近乎静音（原始电平 {level:.4f} < {SILENCE_SKIP_RMS}）"
+    if level < threshold:
+        return (f"近乎静音（原始电平 {level:.4f} < {threshold}）"
                 f"→ 解码前丢弃：不花识别时间，也不给幻听机会")
     return None
 
@@ -1005,7 +1009,7 @@ def pick_language(all_probs, candidates):
 def transcribe(model, audio, language, min_logprob, no_speech_prob,
                beam_size=1, initial_prompt=None, do_normalize=True,
                speech_floor=SPEECH_RMS_FLOOR, candidates=None, context_text=None,
-               hint_text=None):
+               hint_text=None, silence_floor=SILENCE_SKIP_RMS):
     """把一段音频识别成文字，并过四道闸。
 
     返回 `(文字, 是否被丢弃, 丢弃原因, 是否用"电平证据"压过了 no_speech_prob, 丢弃类别)`。
@@ -1024,7 +1028,7 @@ def transcribe(model, audio, language, min_logprob, no_speech_prob,
     """
     # ⚠️ 静音闸必须在 normalize_peak **之前**判：归一化会把近乎静音的段放大到正常电平，
     #    之后再判就没有"安静"可言了（实战中正是它把噪声喂成了「中文字幕志愿者 李宗盛」）。
-    skip = silence_skip_reason(audio)
+    skip = silence_skip_reason(audio, silence_floor)
     if skip is not None:
         return "", True, skip, False, "silence"
     data = normalize_peak(audio) if do_normalize else audio
@@ -1463,6 +1467,9 @@ def main():
             model, utterance, language,
             args.min_logprob, args.no_speech_prob,
             beam_size=args.beam_size,
+            # 解码前的静音闸阈值（可调）：实测在 0.012~0.019 的敲击/呼吸段上，
+            # Whisper 会吐「谢谢大家」「搅拌均匀」这类假字幕，所以缺省取人声门槛 0.02。
+            silence_floor=args.silence_skip_level,
             hint_text=hint, context_text=carried or None,
             do_normalize=not args.no_normalize,
             # 只有在**没指定语种**时才用得上（指定了就不检测）。见 transcribe 里的说明。

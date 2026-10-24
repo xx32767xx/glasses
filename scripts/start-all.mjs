@@ -91,23 +91,29 @@ function describeLegacyTerms(dataDir) {
   }
 }
 
-async function prepareMeetingTerms(options) {
+/** 把 `--libraries` 的值解析成 id 数组（`all`/`*` 与 `none`/空 由 prepare 处理）。 */
+function parseLibraryIds(raw) {
+  const text = String(raw).trim()
+  if (text === 'all' || text === '*' || text === 'none' || text === '') return null
+  return text.split(',').map((item) => item.trim()).filter(Boolean)
+}
+
+async function prepareMeetingTerms(options, plan = {}) {
   const libraries = await listLibraries(options.dataDir)
-  if (libraries.length === 0) {
-    return { ok: false, error: `data-dir 里一个库都没有：先用 tasks-admin/terms-admin 建库（${options.dataDir}）` }
-  }
-  const wanted = String(options.libraries).trim()
+  const wanted = typeof options.libraries === 'string' ? String(options.libraries).trim() : ''
   let libraryIds
-  if (wanted === 'all' || wanted === '*') {
-    libraryIds = libraries.map((library) => library.id)
+  if (Array.isArray(plan.libraryIds)) {
+    libraryIds = plan.libraryIds
   } else if (wanted === 'none' || wanted === '') {
     libraryIds = []
+  } else if (wanted === 'all' || wanted === '*') {
+    libraryIds = libraries.map((library) => library.id)
   } else {
     libraryIds = wanted.split(',').map((item) => item.trim()).filter(Boolean)
-    const unknown = libraryIds.filter((id) => libraries.every((library) => library.id !== id))
-    if (unknown.length > 0) {
-      return { ok: false, error: `这些库不存在：${unknown.join(', ')}（可用：${libraries.map((library) => library.id).join(', ')}）` }
-    }
+  }
+  const unknown = libraryIds.filter((id) => libraries.every((library) => library.id !== id))
+  if (unknown.length > 0) {
+    return { ok: false, error: `这些库不存在：${unknown.join(', ')}（可用：${libraries.map((library) => library.id).join(', ') || '无'}）` }
   }
   const snapshot = await writeMeetingSnapshot(options.dataDir, options.meeting, { libraryIds, libraries })
   return {
@@ -519,15 +525,39 @@ export async function main(argv = process.argv.slice(2)) {
   // 为什么冻结成"快照"而不是让插件直接读库：插件只认两个文件 + 一个 user 键（docs/19）。
   // 快照的好处是"这一场开始后改库不影响正在进行的会议"，而且插件侧零改动。
   // 不给 --libraries 就什么都不做，沿用旧的全局表（向后兼容）。
+  // ── 会议级术语库：决定"这一场用哪些库" ────────────────────────────────────
+  //
+  // 三种来源，优先级从上到下：
+  //   ① `--libraries all|id1,id2|none`：命令行显式指定（最高优先）
+  //   ② `meetings/<场次>/selection.json`：**手机/管理端选的那几个库**
+  //   ③ 都没有：沿用旧的全局表（向后兼容）
+  //
+  // ⚠️ ② 这条是踩出来的：第一版只认 `--libraries`，于是用户在界面上取消勾选、重启，
+  //    却因为还带着 `--libraries all` 而**照样启用全部库** —— 表现就是"换表不生效"、
+  //    "取消了还出现正确译名"。界面上做的选择必须能生效，否则那个开关就是假的。
   if (options.libraries) {
-    const prepared = await prepareMeetingTerms(options)
+    const prepared = await prepareMeetingTerms(options, { libraryIds: parseLibraryIds(options.libraries) })
     if (prepared.ok !== true) {
       console.error(`❌ ${prepared.error}`)
       return 1
     }
     options.termsPath = prepared.termsPath
     options.termsActivePath = prepared.activePath
-    options.termSummary = `会议快照 ${prepared.entries} 条（库 ${prepared.libraryIds.length} 个，场次 ${options.meeting}）`
+    options.termSummary = `会议快照 ${prepared.entries} 条`
+      + `（命令行 --libraries，库 ${prepared.libraryIds.length} 个，场次 ${options.meeting}）`
+  } else {
+    const selection = await loadSelection(options.dataDir, options.meeting)
+    if (Array.isArray(selection.libraryIds) && selection.updatedAt) {
+      const prepared = await prepareMeetingTerms(options, { libraryIds: selection.libraryIds })
+      if (prepared.ok !== true) {
+        console.error(`❌ ${prepared.error}`)
+        return 1
+      }
+      options.termsPath = prepared.termsPath
+      options.termsActivePath = prepared.activePath
+      options.termSummary = `会议快照 ${prepared.entries} 条`
+        + `（来自界面选择，库 ${prepared.libraryIds.length} 个，场次 ${options.meeting}）`
+    }
   }
 
   // ── 起之前先查端口：这是"以为重启了其实还是旧进程"的头号来源 ──────────────
