@@ -262,6 +262,54 @@ def load_audio(path):
     return audio
 
 
+def diagnose_load_error(message):
+    """把"模型起不来"的报错翻成人话 + 下一步做什么。返回若干行建议（可能为空）。
+
+    为什么要有这一步：用户第一次跑的时候看到的是
+    `'[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol'`
+    这样的原始报错，它既不是"环境没装好"，也不是"卡不支持"，
+    而是**模型下不下来**（国内直连 huggingface.co 的典型症状，尤其新版
+    huggingface_hub 默认走 Xet 传输，而镜像站不转 Xet 接口）。
+    不把这条说清楚，用户会去反复重装 ctranslate2 —— 修错地方。
+    """
+    text = (message or "").lower()
+    advice = []
+    if any(word in text for word in ("ssl", "eof occurred", "connection", "timed out", "max retries",
+                                     "temporary failure", "getaddrinfo", "read timed out")):
+        advice = [
+            "模型没下下来（不是环境坏了）。国内直连 huggingface.co 经常这样，两步解决：",
+            "  1) 换镜像：  export HF_ENDPOINT=https://hf-mirror.com",
+            "  2) 关掉 Xet 传输：export HF_HUB_DISABLE_XET=1",
+            "     （hf-mirror 不转 Xet 接口；不关就会出现 xet-read-token 这类 SSL 报错）",
+            "  再跑：python scripts/fetch-model.py large-v3",
+            "  已经下了一部分也没关系：缓存按文件续传，不用从头再来。",
+        ]
+    elif "no kernel image" in text or "kernel image is available" in text:
+        advice = [
+            "这张卡的算力内核没编进 ctranslate2 这个 wheel（常见于 Pascal 等老架构）。",
+            "  换 ctranslate2 版本（例如 pip install \"ctranslate2==4.4.0\"）或改用 conda 装；",
+            "  这个错与驱动、cu12 库无关，别去修那两处。见 docs/10 §9.7。",
+        ]
+    elif "401" in text or "403" in text or "unauthorized" in text or "gated" in text:
+        advice = [
+            "模型仓库要登录（或触发了限流）。",
+            "  export HF_TOKEN=<你的 token>（huggingface.co/settings/tokens）后重试；",
+            "  只想下公开模型的话，也可以先引导镜像（见上一条的 HF_ENDPOINT）。",
+        ]
+    elif "out of memory" in text or "cuda_error_out_of_memory" in text or "outofmemory" in text:
+        advice = [
+            "显存不够。换更小的模型（medium/small）或更低精度的档位（int8_float16 / int8_float32）。",
+            "  另见 docs/10 §7.6（4 GB 显存档位）。",
+        ]
+    return advice
+
+
+def report_failure(label, message):
+    print(f"  {label:26} ✗ 起不来：{message}")
+    for item in diagnose_load_error(message):
+        print(f"      {item}")
+
+
 def check_models(models, compute_types, audio, device):
     line("④ 实测（同一段音频，比较精度档）")
     from faster_whisper import WhisperModel
@@ -274,8 +322,7 @@ def check_models(models, compute_types, audio, device):
                 model = WhisperModel(model_name, device=device, compute_type=compute)
                 load_ms = (time.perf_counter() - t0) * 1000
             except Exception as error:                  # noqa: BLE001
-                message = str(error).strip().splitlines()[0][:160]
-                print(f"  {label:26} ✗ 起不来：{message}")
+                report_failure(label, str(error).strip().splitlines()[0][:160])
                 continue
             try:
                 t0 = time.perf_counter()
@@ -286,7 +333,10 @@ def check_models(models, compute_types, audio, device):
                 results.append({"label": label, "loadMs": load_ms, "seconds": elapsed, "rtf": rtf, "text": text})
                 print(f"  {label:26} ✓ 加载 {load_ms:7.0f}ms · 解码 {elapsed * 1000:7.0f}ms · RTF {rtf:.2f}")
             except Exception as error:                  # noqa: BLE001
-                print(f"  {label:26} ✗ 解码失败：{str(error).splitlines()[0][:160]}")
+                message = str(error).strip().splitlines()[0][:160]
+                print(f"  {label:26} ✗ 解码失败：{message}")
+                for item in diagnose_load_error(message):
+                    print(f"      {item}")
             finally:
                 del model
                 try:

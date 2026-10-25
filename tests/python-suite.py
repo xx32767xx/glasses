@@ -1973,6 +1973,46 @@ def main():
     check("CPU 上不查表（CPU 的档位与显卡无关）",
           whisper_stream.resolve_compute_type("float16", "cpu") == ("float16", ""))
 
+    # ── 模型下载与环境自检的"报错翻译"────────────────────────────────────────
+    # 用户在服务器上第一次跑时遇到的是：
+    #   '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol'
+    #   .../xet-read-token/...
+    # 这不是环境坏，是模型下不下来（镜像站不转 Xet 接口）。把处置直接摆在屏幕上，
+    # 否则用户会去反复重装 ctranslate2 —— 修错地方。
+    heading("模型下载（fetch-model.py）与报错翻译")
+    fetch_spec = importlib.util.spec_from_file_location(
+        "fetch_model", ROOT / "scripts" / "fetch-model.py")
+    fetch_module = importlib.util.module_from_spec(fetch_spec)
+    fetch_spec.loader.exec_module(fetch_module)
+
+    check("模型短名 → Systran/faster-whisper-<名字>",
+          fetch_module.repo_of("large-v3") == "Systran/faster-whisper-large-v3")
+    check("已经是 组织/仓库 的原样返回（不重复拼）",
+          fetch_module.repo_of("Systran/faster-whisper-medium") == "Systran/faster-whisper-medium")
+    check("空模型名报错（而不是拼出一个 Systran/faster-whisper- 去下）",
+          _raises(lambda: fetch_module.repo_of("  ")))
+    check("字节数说成人话：3 GiB → 3.0 GB",
+          fetch_module.human_size(3 * 1024 ** 3) == "3.0 GB",
+          fetch_module.human_size(3 * 1024 ** 3))
+    check("0 字节显示 0 B（不显示 0.0 B）", fetch_module.human_size(0) == "0 B")
+
+    ssl_advice = " ".join(env_module.diagnose_load_error(
+        "'[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol' "
+        "thrown while requesting GET https://huggingface.co/api/models/.../xet-read-token/abc"))
+    check("SSL/xet 报错 → 指向镜像与 HF_HUB_DISABLE_XET（而不是让人去重装 ctranslate2）",
+          "HF_ENDPOINT" in ssl_advice and "HF_HUB_DISABLE_XET" in ssl_advice, ssl_advice[:200])
+    kernel_advice = " ".join(env_module.diagnose_load_error(
+        "CUDA error: no kernel image is available for execution on the device"))
+    check("no kernel image → 指向 ctranslate2 版本，并明说与驱动/cu12 库无关",
+          "ctranslate2" in kernel_advice and "无关" in kernel_advice, kernel_advice[:200])
+    check("401 → 指向 HF_TOKEN",
+          "HF_TOKEN" in " ".join(env_module.diagnose_load_error("401 Client Error: Unauthorized")))
+    check("显存不够 → 指向换小模型/低精度档",
+          "显存" in " ".join(env_module.diagnose_load_error(
+              "CUDA failed with error out of memory")))
+    check("认不出的报错不硬编建议（返回空列表，别乱指挥）",
+          env_module.diagnose_load_error("something totally unexpected") == [])
+
     # ── 结果 ────────────────────────────────────────────────────────────────
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
     if failures:
