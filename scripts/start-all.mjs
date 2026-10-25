@@ -46,6 +46,20 @@ import { currentTermsPaths, readCurrentMeeting } from '../lib/meeting-terms.mjs'
  * 日志虽然打了，但那一行太平常，很难联想到"换了个用户"。
  * 所以在**启动横幅**上直接点出来，并给出可以照抄的修法。
  */
+/**
+ * 数据目录属于哪个"环境"——**纯标签，不改变任何行为**。
+ *
+ * 为什么值得打出来：服务器用 /opt/glasses-data、本地用 var/live 或 var/live-test，
+ * 三个目录各自独立；混了就会以为"改了没生效"（其实改的是另一套数据）。
+ */
+function describeDataDirEnv(dataDir) {
+  const text = String(dataDir).replace(/\\/g, '/')
+  if (/glasses-data$/.test(text)) return text + '（生产：服务器上的正式数据）'
+  if (/\/live-test$/.test(text)) return text + '（测试：本地实验数据）'
+  if (/\/live$/.test(text)) return text + '（本地默认：var/live）'
+  return text + '（自定义目录；环境标签只影响 CLI 的 --env 约定，不影响服务行为）'
+}
+
 function describeLegacyTerms(dataDir) {
   try {
     const activeRaw = readFileSync(join(dataDir, 'terms-active.json'), 'utf-8')
@@ -81,6 +95,10 @@ const HELP = `start-all —— 一条命令起齐整条链路
   node scripts/start-all.mjs [选项]
 
   --cpu                 识别用 CPU（缺省 cuda + float16；没有 N 卡时用这个）
+  --compute <类型>      GPU 计算精度：float16（缺省）/ int8_float16 / int8 / float32。
+                        显存紧的卡（例如 4GB）用 int8_float16：large-v3 从 ~5GB 降到 ~3GB，
+                        代价是解码略慢（实测同类设置约 1.3~1.8 倍），准确率基本不变。
+                        ⚠️ 显存放不下时 ctranslate2 会直接抛错，不会"自动降级" —— 先用小模型试。
   --whisper-model <尺寸> tiny/base/small/medium/large-v3
                         缺省按设备自动选：**GPU 用 large-v3，CPU 用 small**。
                         依据（中文基准 30 条，见 docs/04 §11）：
@@ -145,7 +163,7 @@ export function parseArgs(argv) {
     from: null,
     to: null,
   }
-  const takesValue = new Set(['data-dir', 'inbox', 'bus', 'audio', 'port', 'cols', 'lines', 'whisper-model', 'from', 'to'])
+  const takesValue = new Set(['data-dir', 'inbox', 'bus', 'audio', 'port', 'cols', 'lines', 'whisper-model', 'compute', 'from', 'to'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -166,6 +184,11 @@ export function parseArgs(argv) {
     index += 1
     if (key === 'port' || key === 'cols' || key === 'lines') options[key] = Number(value)
     else if (key === 'data-dir') options.dataDir = value      // 注意：命令行是 data-dir，属性是 dataDir
+    else if (key === 'compute') {
+      const allowed = ['float16', 'int8_float16', 'int8', 'float32']
+      if (!allowed.includes(value)) throw new Error(`--compute 只能是 ${allowed.join(' / ')}`)
+      options.computeType = value
+    }
     else if (key === 'whisper-model') options.whisperModel = value
     else options[key] = value
   }
@@ -567,6 +590,9 @@ export async function main(argv = process.argv.slice(2)) {
     if (legacy.warning) console.log(`  ⚠️ ${legacy.warning}`)
   }
   console.log(`  识别模型    ${options.transcriber ? `${options.whisperModel} / ${options.device} / ${options.computeType}` : '未启动（--no-transcriber）'}`)
+  // 环境标签：**它只是人们怎么叫这套数据，不是任何开关**（见 docs/10 §7）。
+  // 之所以打出来：服务器与本地各有一套数据目录，混了会以为"改了没生效"。
+  console.log(`  数据目录环境 ${describeDataDirEnv(options.dataDir)}`)
   console.log(`  数据目录    ${options.dataDir}`)
   for (const note of envNotes) console.log(`  ${note}`)
   if (staleAudioSeconds > 0) {
