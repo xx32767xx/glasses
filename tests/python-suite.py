@@ -2029,6 +2029,37 @@ def main():
     check("一个库都没找到时给空串（不产出「:」这种半截路径）",
           env_module.join_lib_dirs([]) == "" and env_module.join_lib_dirs(None) == "")
 
+    # ── 连通性自检（scripts/check-relay.py）────────────────────────────────
+    # 接不上服务器时，不同原因在手机上长得一模一样（"连不上"）。
+    # 这个脚本的价值全在"哪一步断了 + 下一步做什么"，所以断言钉的是分类与地址规整。
+    heading("连通性自检（check-relay.py）")
+    relay_spec = importlib.util.spec_from_file_location(
+        "check_relay", ROOT / "scripts" / "check-relay.py")
+    relay_module = importlib.util.module_from_spec(relay_spec)
+    relay_spec.loader.exec_module(relay_module)
+
+    check("随手写的地址补成 http://（局域网最常见的手误）",
+          relay_module.normalize_base_url("192.168.1.5:8788") == "http://192.168.1.5:8788")
+    check("末尾斜杠去掉（否则拼出来是 //hello）",
+          relay_module.normalize_base_url("http://10.0.0.2:8788/") == "http://10.0.0.2:8788")
+    check("https 与默认端口保留",
+          relay_module.normalize_base_url("https://translate.example.com/") == "https://translate.example.com")
+    check("空地址 / 不支持的协议要报错（而不是拼出个怪 URL 去连）",
+          _raises(lambda: relay_module.normalize_base_url("  "))
+          and _raises(lambda: relay_module.normalize_base_url("ftp://x")))
+
+    refused = " ".join(relay_module.classify_failure("[WinError 10061] 由于目标计算机积极拒绝"))
+    check("连接被拒 → 指向“服务没起 / 端口不对 / 只听 127.0.0.1”",
+          "没在这个端口上监听" in refused and "--public" in refused, refused[:160])
+    check("超时 → 指向防火墙/安全组/端口转发（而不是让人去重装依赖）",
+          "防火墙" in " ".join(relay_module.classify_failure("timed out")))
+    check("401 → 明确说“连上了但密钥不对”（这条最容易被误判成连不上）",
+          "密钥不对" in " ".join(relay_module.classify_failure("HTTP 401 unauthorized")))
+    check("认不出的失败不给胡说八道的建议",
+          relay_module.classify_failure("weird failure") == [])
+    check("密钥文件不存在时返回空串（由调用方提示，不抛异常）",
+          relay_module.read_secret_file(ROOT / "var" / "tmp" / "__no_secret__.txt") == "")
+
     # ── 结果 ────────────────────────────────────────────────────────────────
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
     if failures:
