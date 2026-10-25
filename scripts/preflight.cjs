@@ -200,6 +200,44 @@ function parseArgs(argv) {
   return options
 }
 
+// ── ⑥ deepseek-harness 检出 ────────────────────────────────────────────────
+// 大脑（scripts/harness-side.mjs）必须跑在**真实的** DSH 工具运行时上，
+// 所以服务器上除了本仓库，还要有一份 deepseek-harness 检出、而且**构建过**。
+// 这是部署时最容易漏的一条：不写进体检，用户看到的是
+// "无法加载真实的 @deepseek-ai/dsh-tools 构建产物" 这种一眼看不出怎么修的话。
+function checkHarnessCheckout() {
+  console.log('⑥ deepseek-harness 检出（大脑要用真实的 DSH 工具）')
+  var toolsRelative = path.join('packages', 'core', 'tools', 'lib', 'index.js')
+  var home = process.env.HOME || process.env.USERPROFILE || ''
+  var candidates = []
+  if (process.env.DSH_CHECKOUT) { candidates.push(process.env.DSH_CHECKOUT) }
+  if (process.env.DSH_HOME) { candidates.push(path.join(process.env.DSH_HOME, 'deepseek-harness')) }
+  if (home) { candidates.push(path.join(home, 'deepseek-harness')) }
+  candidates.push('/opt/deepseek-harness')
+  candidates.push(path.join(process.cwd(), '..', 'deepseek-harness'))
+  // 开发机（Windows）的默认位置只在 Windows 上列出来（与 lib/real-tools.mjs 保持一致）
+  if (process.platform === 'win32') {
+    candidates.push('D:\\DeepSeekHarness\\deepseek-harness')
+  }
+
+  for (var i = 0; i < candidates.length; i++) {
+    if (fs.existsSync(path.join(candidates[i], toolsRelative))) {
+      ok('找到并已构建', candidates[i])
+      return true
+    }
+  }
+  bad('没有可用的检出（找过 ' + candidates.join('、') + '）', [
+    '在服务器上放一份并构建：',
+    '  git clone <deepseek-harness 仓库> ~/deepseek-harness',
+    '  cd ~/deepseek-harness && pnpm install && pnpm build',
+    '检出在别处就指定：export DSH_CHECKOUT=/path/to/deepseek-harness',
+    '交给 systemd 时写进单元：Environment=DSH_CHECKOUT=/path/to/deepseek-harness',
+    '只是想先验证网络连通性？可以不启动大脑：',
+    '  node relay/lan-relay.mjs --data-dir ' + 'var/live' + ' --port 8788 --public'
+  ])
+  return false
+}
+
 async function main() {
   var options = parseArgs(process.argv.slice(2))
   console.log('亮亮眼镜 · 启动前体检（只检查，不改任何东西）')
@@ -209,6 +247,7 @@ async function main() {
   checkDataDir(options.dataDir)
   await checkPort(options.port)
   checkModel(options.hfHome, options.model)
+  checkHarnessCheckout()
   console.log('')
   if (!nodeOk) {
     console.log('先把 Node 版本搞对，再往下走 —— 后面的 .mjs 脚本都依赖它。')

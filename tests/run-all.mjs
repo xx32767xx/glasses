@@ -345,6 +345,50 @@ heading('启动前体检（preflight.cjs，老语法才能自救）')
   })
 }
 
+// ── 9. 部署路径解析（别把开发机路径写死） ────────────────────────────────────
+// 真实事故：服务器上启动大脑时，报错是
+//   Invalid module ".../D:%5CDeepSeekHarness%5Cdeepseek-harness/packages/..." must not include
+//   encoded "/" or "\" characters
+// 因为 lib/real-tools.mjs 在"一个候选都没命中"时落到了写死的 D:\ 路径上。
+// 这类错误的共同点是：真正的原因（这台机器上没有检出）被一串技术细节盖住了。
+
+heading('部署路径解析（别把开发机路径写死）')
+{
+  const realTools = await import('../lib/real-tools.mjs')
+  const fsPromises = await import('node:fs/promises')
+
+  await it('开发机的 D:\\ 路径只在 Windows 上才是候选', async () => {
+    const linux = realTools.checkoutCandidates({}, '/srv/glasses', 'linux')
+    check('Linux 候选里没有 D:\\DeepSeekHarness（否则报错会变成"编码字符"而不是"没有检出"）',
+      !linux.some(item => /^D:\\DeepSeekHarness/i.test(item)), linux.join(', '))
+    check('仍然包含服务器上常见的位置 /opt/deepseek-harness',
+      linux.includes('/opt/deepseek-harness'), linux.join(', '))
+    const windows = realTools.checkoutCandidates({}, '/srv/glasses', 'win32')
+    check('Windows 上才加开发机默认路径',
+      windows.some(item => /^D:\\DeepSeekHarness/i.test(item)), windows.join(', '))
+  })
+
+  await it('DSH_CHECKOUT 永远排第一优先', async () => {
+    const list = realTools.checkoutCandidates({ DSH_CHECKOUT: '/opt/dsh' }, '/srv/glasses', 'linux')
+    check('第一个就是它', list[0] === '/opt/dsh', list[0])
+  })
+
+  await it('没有检出时的报错说清了怎么装', async () => {
+    const message = realTools.missingCheckoutMessage({}, '/srv/glasses')
+    check('给了 git clone 与 pnpm build', /git clone/.test(message) && /pnpm build/.test(message))
+    check('给了 DSH_CHECKOUT 与 systemd 写法',
+      /DSH_CHECKOUT/.test(message) && /Environment=/.test(message), message.slice(0, 120))
+    check('给了"先只起转发进程测连通性"的临时路', /lan-relay/.test(message))
+  })
+
+  await it('没构建过的目录不会被当成检出', async () => {
+    const emptyDir = fileURLToPath(new URL('../var/tmp/preflight-probe', import.meta.url))
+    await fsPromises.mkdir(emptyDir, { recursive: true })
+    check('resolveCheckout 不轻信 DSH_CHECKOUT',
+      realTools.resolveCheckout({ DSH_CHECKOUT: emptyDir }, '/srv/glasses') !== emptyDir)
+  })
+}
+
 // ── 结果 ─────────────────────────────────────────────────────────────────────
 
 console.log = realLog
