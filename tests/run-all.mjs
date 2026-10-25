@@ -25,6 +25,7 @@ import { runBridgeSuite } from './bridge-suite.mjs'
 import { runRelaySuite } from './relay-suite.mjs'
 import { runDebugSuite } from './debug-suite.mjs'
 import { runStartAllSuite } from './start-all-suite.mjs'
+import { runDbSuite } from './db-suite.mjs'
 import { runNetDoctorSuite } from './net-doctor-suite.mjs'
 import { runBenchSuite } from './bench-suite.mjs'
 import { runLintSuite } from './lint-suite.mjs'
@@ -180,6 +181,12 @@ await runDebugSuite(helpers)
 
 heading('一键启动（start-all：命令行拼接与前置检查）')
 await runStartAllSuite(helpers)
+
+// ── P1：SQLite 访问层与 JSON 迁移 ────────────────────────────────────────────
+// 房间与发言权需要原子互斥（JSON 文件没有事务），字幕需要按时间清理。
+// 这一节钉的是"表能幂等建起来 + 旧数据条数逐项对得上 + 一房一行 floor_state"。
+heading('SQLite 存储与旧 JSON 迁移（P1）')
+await runDbSuite(helpers)
 
 // ── 7b. 网络体检（手机连不上时"卡在哪一环"的判断）──────────────────────────
 // 这一节的价值全在"判断得对不对"：换一次网络就踩同一批坑（地址变了、防火墙不认、
