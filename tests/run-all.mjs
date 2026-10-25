@@ -305,6 +305,46 @@ await it('tests/python-suite.py 全部通过', async () => {
   check('python-suite.py 退出码为 0', result.code === 0, `退出码 ${result.code}（输出见上）`)
 })
 
+// ── 8. 启动前体检（老 Node 的自救） ─────────────────────────────────────────
+// 真实事故：服务器上是 Ubuntu 22.04 的 apt nodejs（12.22），一跑
+// `node scripts/start-all.mjs` 就报 `SyntaxError: Unexpected token '?'`
+// （`??` 语法要 Node 14+）。报错发生在**解析阶段**，任何写在 .mjs 里的友好提示
+// 都没机会执行 —— 所以要有一个人用老语法写的体检脚本，才能把话说清楚。
+// 这里钉两件事：① 它确实不依赖新语法；② 它自己能跑起来且退出码为 0。
+
+heading('启动前体检（preflight.cjs，老语法才能自救）')
+{
+  const fs = await import('node:fs/promises')
+  const preflightPath = fileURLToPath(new URL('../scripts/preflight.cjs', import.meta.url))
+
+  await it('preflight.cjs 只用老语法（不含 ?? 与 ?.，也不 import）', async () => {
+    const source = await fs.readFile(preflightPath, 'utf8')
+    // 注释里会提到这些符号（就是在解释这个坑），所以先剥掉注释再查
+    const codeOnly = source
+      .replace(/\/\*[\s\S]*?\*\//g, '')          // 块注释（含文件头那段）
+      .split('\n')
+      .filter(line => !line.trim().startsWith('//'))
+      .join('\n')
+    check('不含 ?? 与 ?.（否则老 Node 连它都解析不了）',
+      !/\?\?/.test(codeOnly) && !/\?\.[a-zA-Z_$[(]/.test(codeOnly),
+      codeOnly.match(/.{0,20}\?\?.{0,20}/)?.[0] ?? '')
+    check('用 CommonJS（require）', /require\(/.test(codeOnly) && !/^\s*import\s/m.test(codeOnly))
+  })
+
+  await it('preflight.cjs 在本机跑得通（退出码 0）', async () => {
+    const result = await new Promise(resolve => {
+      const child = spawn(process.execPath, [preflightPath,
+        '--data-dir', fileURLToPath(new URL('../var/tmp/preflight-probe', import.meta.url)),
+        '--hf-home', fileURLToPath(new URL('../var/cache/hf', import.meta.url)),
+        '--port', '8791'], { cwd: repoRoot, stdio: 'ignore' })
+      child.on('error', () => resolve({ missing: true }))
+      child.on('close', code => resolve({ code }))
+    })
+    check('能起来且环境检查通过', result.missing !== true && result.code === 0,
+      result.missing ? 'spawn 失败' : `退出码 ${result.code}`)
+  })
+}
+
 // ── 结果 ─────────────────────────────────────────────────────────────────────
 
 console.log = realLog

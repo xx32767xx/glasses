@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "在 DeepSeek Harness 里自定义亮亮视野 (LLVision) Leion Pro / GLXSS ME AR 眼镜插件，并搭中↔巴西葡语双向同传 app",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "generate": "node scripts/generate.mjs",
     "check": "node scripts/generate.mjs --check",
@@ -15,6 +18,8 @@
     "bridge": "node bridge/asr-bridge.mjs",
     "demo": "node bridge/asr-bridge.mjs --inbox var/demo/asr-inbox.jsonl --engine replay --replay bridge/sample-transcript.txt --truncate",
     "harness-side": "node scripts/harness-side.mjs",
+    "prestart": "node scripts/preflight.cjs",
+    "doctor": "node scripts/preflight.cjs",
     "start": "node scripts/start-all.mjs",
     "debug": "node scripts/debug-window.mjs",
     "fake-phone": "node scripts/fake-phone.mjs",
