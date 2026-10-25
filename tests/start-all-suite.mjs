@@ -10,7 +10,7 @@
 
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { archiveSessionLogs, buildSteps, childEnv, flushLogStreams, main, parseArgs, portInUse, sessionStamp } from '../scripts/start-all.mjs'
+import { archiveSessionLogs, assertDataDirWritable, buildSteps, childEnv, flushLogStreams, main, parseArgs, portInUse, sessionStamp } from '../scripts/start-all.mjs'
 import { defaultAudioIn, defaultBus, defaultInbox, VAR_DIR } from '../lib/paths.mjs'
 
 const argsOf = step => step.args.join(' ')
@@ -465,5 +465,47 @@ export async function runStartAllSuite({ it, check, assert }) {
     }
     const after = existsSync(audioPath) ? statSync(audioPath).size : null
     check('音频文件大小没变（dry-run 不该清它）', before === after, `${before} → ${after}`)
+  })
+
+  // 真实事故：服务器上 `--data-dir /var/lib/leion/live` 起不来，
+  // 报的是识别进程 `EACCES: permission denied, mkdir '/var/lib/leion'`，
+  // 然后三个进程全停 —— 屏幕上只有一段 Node 堆栈，看不出"该 sudo 建目录"。
+  // 现在启动前就试写一次，并把修法直接打出来。
+  await it('数据目录写不进去时，启动前就说清楚怎么修', async () => {
+    const { mkdirSync, writeFileSync, rmSync, mkdtempSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+
+    check('能写的目录不报问题（正常的临时目录）',
+      assertDataDirWritable(mkdtempSync(join(tmpdir(), 'leion-writable-'))) === null)
+
+    // 造一个"父级是文件"的路径：跨平台都会失败，不用真去碰 /var/lib
+    const base = mkdtempSync(join(tmpdir(), 'leion-blocked-'))
+    const blocker = join(base, 'not-a-dir')
+    writeFileSync(blocker, 'x')
+    const target = join(blocker, 'live')
+    try {
+      const problem = assertDataDirWritable(target)
+      check('写不进去时返回说明而不是抛异常', typeof problem === 'string', String(problem))
+      check('说明里有 sudo mkdir + chown 的修法',
+        /sudo mkdir -p/.test(problem) && /chown/.test(problem), String(problem))
+      check('也给了不想用 sudo 的替代（--data-dir ~/leion-data）',
+        /--data-dir/.test(problem), String(problem))
+      check('把目录路径带出来（否则不知道是哪个目录）',
+        problem.includes(target), String(problem))
+
+      // main 应该直接返回 1（在起进程之前），而不是起了一个再退出。
+      // 注意：阻塞物必须还在——删掉之后这个路径就变得可写了，main 会真的去 spawn。
+      const originalError = console.error
+      console.error = () => {}
+      let exitCode
+      try {
+        exitCode = await main(['--quiet-logs', '--port', '18789', '--data-dir', target])
+      } finally {
+        console.error = originalError
+      }
+      check('main 在起进程之前就返回 1', exitCode === 1, `code=${exitCode}`)
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
   })
 }

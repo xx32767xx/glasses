@@ -31,7 +31,7 @@
 import { spawn } from 'node:child_process'
 import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, copyFileSync, unlinkSync, statSync, writeFileSync } from 'node:fs'
 import { connect } from 'node:net'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { ROOT, LOGS_DIR, WHISPER_CACHE_DIR, defaultAudioIn, defaultBus, defaultInbox, defaultSecret } from '../lib/paths.mjs'
 import { DEFAULT_DATA_DIR } from '../relay/lan-relay.mjs'
@@ -485,9 +485,53 @@ export function archiveSessionLogs({ logsDir, keys, stamp = sessionStamp() }) {
  * 现在 `--dry-run` 会走完整条启动前逻辑（解析参数 → 探端口 → 拼命令 → 打印横幅）后返回，
  * 测试直接 `await main(['--dry-run'])` 就能把这类崩掉的问题挡住。
  */
+/**
+ * 数据目录写不进去时给用户看的那段话（纯函数，专门为了能被测试钉住）。
+ *
+ * 真实事故：服务器上用 `--data-dir /var/lib/leion/live` 起，识别进程
+ * `EACCES: permission denied, mkdir '/var/lib/leion'` 退出 → 整条链跟着全停，
+ * 而屏幕上只有一段 Node 堆栈，看不出"该 sudo 建目录"。
+ */
+export function describeDataDirProblem(dataDir, error) {
+  const parent = dirname(dataDir)
+  const reason = error && (error.code || error.message) ? (error.code ?? error.message) : '未知错误'
+  return [
+    `数据目录写不进去：${dataDir}（${reason}）`,
+    '  识别与转发进程一启动就要在这里建文件，写不进去会直接退出、整条链跟着停。',
+    '',
+    '  修法（二选一）：',
+    `    sudo mkdir -p ${parent} && sudo chown "$USER": ${parent}`,
+    '    或换一个你有权限的目录：--data-dir ~/leion-data',
+  ].join('\n')
+}
+
+/** 真正去试一下能否创建/写入；能写返回 null，不能写返回说明文字。 */
+export function assertDataDirWritable(dataDir) {
+  try {
+    mkdirSync(dataDir, { recursive: true })
+    const probe = join(dataDir, '.start-all-probe')
+    writeFileSync(probe, 'ok')
+    unlinkSync(probe)
+    return null
+  } catch (error) {
+    return describeDataDirProblem(dataDir, error)
+  }
+}
+
 export async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv)
   if (options.help) { process.stdout.write(HELP); return 0 }
+
+  // ── 数据目录先确认能写：否则是"三个进程起两个、第三个退出、然后全停" ────────
+  if (!options.dryRun) {
+    const problem = assertDataDirWritable(options.dataDir)
+    if (problem !== null) {
+      console.error('')
+      console.error(`❌ ${problem}`)
+      console.error('')
+      return 1
+    }
+  }
 
   // ── 会议级术语库：给了 --libraries 就先冻结一份快照，再让大脑读它 ────────────
   //
