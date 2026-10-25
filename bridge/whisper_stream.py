@@ -176,7 +176,8 @@ def parse_args(argv=None):
     parser.add_argument("--model", default="small", help="模型大小：tiny/base/small/medium/large-v3（缺省 small）")
     parser.add_argument("--device", default="cpu", help="cpu 或 cuda（本机实测两者都能跑，见 --stats）")
     parser.add_argument("--compute-type", default="int8",
-                        help="int8 / int8_float16 / float16 / float32（CPU 用 int8，GPU 用 float16）")
+                        help="int8 / int8_float32 / int8_float16 / float16 / float32"
+                             "（CPU 用 int8；GPU 用 float16；Pascal 卡如 Tesla P40 没有 FP16 加速，用 int8_float32）")
     parser.add_argument("--language", default=None, help="固定语种（zh / pt）；缺省自动判定")
     # 限定候选语种：不指定 `--language` 时，只在候选里挑，而不是在 99 种语言里挑。
     #
@@ -1388,6 +1389,37 @@ def emit(text: str):
         print(clean, flush=True)
 
 
+def resolve_compute_type(requested, device):
+    """返回 (实际使用的精度, 说明)。GPU 上把不支持的精度换成这台卡能跑的。
+
+    为什么需要（真实环境逼出来的）：ctranslate2 能跑哪些精度是**按卡查表**的，
+    而 **Pascal 架构（Tesla P40/P100，算力 6.1）没有 FP16 加速**，ctranslate2
+    直接不提供 float16 —— 偏偏我们的缺省精度就是 float16。于是"照着文档抄"
+    在一台 24 GB 的 P40 上会起不来，报的是 ctranslate2 的一行英文。
+    这类机器的正确档位是 int8_float32（权重 INT8、激活 FP32），实测也快。
+
+    只在 device=cuda 时过一遍；查不到（没有 ctranslate2 / 机器没卡）就原样返回，
+    让 WhisperModel 自己去报价，不在这里假装知道。
+    """
+    if device != "cuda":
+        return requested, ""
+    try:
+        import ctranslate2
+
+        supported = sorted(ctranslate2.get_supported_compute_types("cuda"))
+    except Exception as error:                          # noqa: BLE001
+        return requested, f"（查不到本机支持的精度：{type(error).__name__}: {error}；按 {requested} 直接试）"
+    if not supported or requested in supported:
+        return requested, ""
+    # 这些卡上 int8_float32 最快；int8 是它的老名字；float32 保底
+    for candidate in ("int8_float32", "int8", "float32"):
+        if candidate in supported:
+            return candidate, (
+                f"⚠️ 这台 GPU 不支持 {requested}（能跑的是 {'/'.join(supported)}），"
+                f"已自动改用 {candidate}")
+    return requested, f"⚠️ 本机支持的精度里没有可替换项：{'/'.join(supported)}"
+
+
 def main():
     args = parse_args()
     # 只有"真要从麦克风收"才需要 sounddevice。
@@ -1397,8 +1429,12 @@ def main():
     need_audio = args.file is None and args.follow is None
     np, WhisperModel, sounddevice = load_dependencies(need_audio)
 
+    compute_type, compute_note = resolve_compute_type(args.compute_type, args.device)
+    if compute_note:
+        print(f"[whisper_stream] {compute_note}", file=sys.stderr)
+
     print(f"[whisper_stream] 加载模型 {args.model}"
-          f"（device={args.device}, compute_type={args.compute_type}）…", file=sys.stderr)
+          f"（device={args.device}, compute_type={compute_type}）…", file=sys.stderr)
     # 把"模型从哪儿来"打出来。这一行是被一次真实事故逼出来的：
     # 用户自己跑的时候没设 HF_HOME，于是模型从零开始下载到默认缓存 ——
     # 直连 HuggingFace 三分钟只下了 2.5MB，识别进程 4 分钟都没开始听，
@@ -1409,7 +1445,7 @@ def main():
     print("[whisper_stream] 若这里显示的是默认缓存，而模型仓库里已经有了，"
           "说明 HF_HOME 没设 —— 它会重新下一个几百 MB 的模型，慢得像是卡住了",
           file=sys.stderr)
-    model = WhisperModel(args.model, device=args.device, compute_type=args.compute_type)
+    model = WhisperModel(args.model, device=args.device, compute_type=compute_type)
     print("[whisper_stream] 模型就绪", file=sys.stderr)
 
     if args.self_check:

@@ -364,6 +364,8 @@ export function formatBanner(options, relay, addresses = []) {
   lines.push('  手机端「录音上传」还需要另一个进程把音频变成文字（识别在电脑上跑）：')
   lines.push(`      node bridge/asr-bridge.mjs --inbox "${options.inbox}" --whisper-follow "${options.audio}" \\`)
   lines.push('        --whisper-device cuda --whisper-compute float16')
+  lines.push('  （Pascal 卡如 Tesla P40 没有 FP16 加速，把 float16 换成 int8_float32；')
+  lines.push('    不确定就跑 python scripts/check-asr-env.py，它会直接告诉你该用哪档）')
   lines.push('  （不要写成 python … | node … 管道：PowerShell 会缓冲 stdout，而识别进程一直不退出，')
   lines.push('    于是桥一行都收不到。见 bridge/whisper_stream.py 头部说明。）')
   lines.push('')

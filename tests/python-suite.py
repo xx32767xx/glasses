@@ -27,6 +27,7 @@ python-suite.py —— 语音分段器与音频读入的验证套件
 import sys
 import os
 import subprocess
+import importlib.util
 import wave
 import contextlib
 import inspect
@@ -48,6 +49,7 @@ from whisper_stream import (   # noqa: E402
     looks_like_hallucination, looks_like_prompt_echo, normalize_peak, parse_args,
     pick_language, prompt_for, rms_of, transcribe, whisper_language_of,
 )
+import whisper_stream                                                    # noqa: E402
 from whisper_transcribe import TARGET_RATE, load_audio                    # noqa: E402
 import asr_pack                                                          # noqa: E402
 from asr_pack import (select_from_pool, per_session_quota, pool_for,     # noqa: E402
@@ -1915,6 +1917,61 @@ def main():
           broken.returncode == 1 and "跑不起来" in broken.stderr, broken.stderr[:200])
 
     out_file.unlink(missing_ok=True)
+
+    # ── GPU 精度档位（Pascal 没有 FP16 加速）────────────────────────────────
+    # 这条是被真实环境逼出来的：Tesla P40（算力 6.1）上 ctranslate2 不提供
+    # float16，而我们的缺省值就是 float16 —— 用户的 24 GB 卡"照文档抄"起不来。
+    heading("GPU 精度档位（Pascal 没有 FP16 加速）")
+    import ctranslate2
+
+    check_asr_env = importlib.util.spec_from_file_location(
+        "check_asr_env", ROOT / "scripts" / "check-asr-env.py")
+    env_module = importlib.util.module_from_spec(check_asr_env)
+    check_asr_env.loader.exec_module(env_module)
+
+    check("算力 6.1 → Pascal，且判定为「没有 FP16 加速」",
+          env_module.arch_of("6.1") == "Pascal"
+          and env_module.has_fp16_acceleration("6.1") is False)
+    check("算力 8.6 → Ampere，有 FP16 加速",
+          env_module.arch_of("8.6") == "Ampere"
+          and env_module.has_fp16_acceleration("8.6") is True)
+    check("算力认不出来时不硬下结论（返回 None 而不是 False）",
+          env_module.has_fp16_acceleration("") is None
+          and env_module.arch_of("99.9") == "")
+
+    pascal_supported = ["int8", "int16", "float32", "int8_float32"]
+    ada_supported = ["bfloat16", "float16", "float32", "int8", "int8_float16", "int8_float32"]
+    check("P40 这类卡自动选 int8_float32（不是照抄文档里的 float16）",
+          env_module.pick_compute_candidates(pascal_supported) == ["int8_float32", "int8"],
+          env_module.pick_compute_candidates(pascal_supported))
+    check("有 FP16 的卡仍然先测 float16（别为了 Pascal 把常见卡拖慢）",
+          env_module.pick_compute_candidates(ada_supported) == ["float16", "int8_float16"],
+          env_module.pick_compute_candidates(ada_supported))
+    check("拿不到支持列表时按请求原样去试（让 ctranslate2 自己报错，不假装知道）",
+          env_module.pick_compute_candidates([], ["float16", "int8_float16"]) == ["float16", "int8_float16"])
+    check("显式要求了不支持的档位 → 退回能跑的，而不是直接放弃",
+          env_module.pick_compute_candidates(pascal_supported, ["float16"]) == ["int8_float32", "int8"])
+    check("推荐档位：Pascal 推 int8_float32，Ada 推 float16",
+          env_module.recommend_compute(pascal_supported) == "int8_float32"
+          and env_module.recommend_compute(ada_supported) == "float16")
+    check("什么精度都查不到时返回空串（上层据此只说「查不到」）",
+          env_module.recommend_compute([]) == "")
+
+    # 识别端自己也要能兜住：把"支持的精度"打桩成 P40 的样子，看会不会自动改档
+    original_supported = ctranslate2.get_supported_compute_types
+    try:
+        ctranslate2.get_supported_compute_types = lambda device="cuda": set(pascal_supported)
+        effective, note = whisper_stream.resolve_compute_type("float16", "cuda")
+        check("识别进程收到这台卡不支持的 float16 → 自动改用 int8_float32 并说清楚",
+              effective == "int8_float32" and "不支持 float16" in note,
+              f"{effective} / {note}")
+        kept, kept_note = whisper_stream.resolve_compute_type("int8_float32", "cuda")
+        check("本来就能跑的档位原样保留、不产生多余告警",
+              kept == "int8_float32" and kept_note == "", f"{kept} / {kept_note}")
+    finally:
+        ctranslate2.get_supported_compute_types = original_supported
+    check("CPU 上不查表（CPU 的档位与显卡无关）",
+          whisper_stream.resolve_compute_type("float16", "cpu") == ("float16", ""))
 
     # ── 结果 ────────────────────────────────────────────────────────────────
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")

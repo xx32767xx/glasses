@@ -95,9 +95,11 @@ const HELP = `start-all —— 一条命令起齐整条链路
   node scripts/start-all.mjs [选项]
 
   --cpu                 识别用 CPU（缺省 cuda + float16；没有 N 卡时用这个）
-  --compute <类型>      GPU 计算精度：float16（缺省）/ int8_float16 / int8 / float32。
+  --compute <类型>      GPU 计算精度：float16（缺省）/ int8_float16 / int8_float32 / int8 / float32。
                         显存紧的卡（例如 4GB）用 int8_float16：large-v3 从 ~5GB 降到 ~3GB，
                         代价是解码略慢（实测同类设置约 1.3~1.8 倍），准确率基本不变。
+                        **Pascal 架构（Tesla P40/P100）没有 FP16 加速，用 int8_float32。**
+                        遇到不支持的精度会自动换成能跑的档位，并在日志里明说（见 resolve_compute_type）。
                         ⚠️ 显存放不下时 ctranslate2 会直接抛错，不会"自动降级" —— 先用小模型试。
   --whisper-model <尺寸> tiny/base/small/medium/large-v3
                         缺省按设备自动选：**GPU 用 large-v3，CPU 用 small**。
@@ -185,7 +187,7 @@ export function parseArgs(argv) {
     if (key === 'port' || key === 'cols' || key === 'lines') options[key] = Number(value)
     else if (key === 'data-dir') options.dataDir = value      // 注意：命令行是 data-dir，属性是 dataDir
     else if (key === 'compute') {
-      const allowed = ['float16', 'int8_float16', 'int8', 'float32']
+      const allowed = ['float16', 'int8_float16', 'int8_float32', 'int8', 'float32']
       if (!allowed.includes(value)) throw new Error(`--compute 只能是 ${allowed.join(' / ')}`)
       options.computeType = value
     }

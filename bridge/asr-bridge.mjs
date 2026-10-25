@@ -217,10 +217,12 @@ const HELP = `asr-bridge —— 把语音识别结果送进 leion-pro 的 ASR �
   --replay-delay-ms <n>       replay 每行之间的间隔，缺省 1200（模拟真人说话节奏）
   --whisper-model <尺寸>      engine=whisper 时的模型：tiny/base/small/medium/large-v3，缺省 small
   --whisper-device <设备>     cpu 或 cuda，缺省 cpu
-  --whisper-compute <类型>    int8（CPU）/ float16（GPU），缺省 int8
+  --whisper-compute <类型>    int8（CPU）/ float16（GPU）/ int8_float32（Pascal 卡），缺省 int8
                               ⚠️ 缺省组合在本机实测是最慢的一档（小句 RTF 1.4，延迟约 2.6 秒）。
                                  有 NVIDIA 显卡时建议 --whisper-device cuda --whisper-compute float16，
                                  实测同样的句子只要 0.1~0.25 秒（延迟约 0.8~1.0 秒）。
+                                 **Pascal 架构（Tesla P40/P100）没有 FP16 加速**，要用 int8_float32；
+                                 给错档位会自动换档并打一行日志（whisper_stream.resolve_compute_type）。
                                  数字与测法见 docs/04-语音识别验证.md。
   --whisper-follow <path>     手机端「录音上传」：尾随 relay 追加写的裸 PCM 文件。
                                  给了这个就等于 --engine whisper 且让识别进程跟着文件跑。
