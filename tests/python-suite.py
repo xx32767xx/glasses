@@ -2060,6 +2060,22 @@ def main():
     check("密钥文件不存在时返回空串（由调用方提示，不抛异常）",
           relay_module.read_secret_file(ROOT / "var" / "tmp" / "__no_secret__.txt") == "")
 
+    # --say 要能可靠地从 /frame 的响应里判断"译文到没到"
+    frame = relay_module.frame_of({"ok": True, "changed": True, "seq": 3,
+                                   "frame": {"source": "这是一条测试信息",
+                                             "text": "Esta é uma mensagem de teste",
+                                             "partial": False}})
+    check("能从 /frame 里取出原文与译文",
+          frame is not None and frame["source"] == "这是一条测试信息"
+          and frame["text"] == "Esta é uma mensagem de teste" and frame["partial"] is False,
+          str(frame))
+    check("增量帧被标出来（half-sentence 与定稿在眼镜上显示不同）",
+          relay_module.frame_of({"frame": {"text": "Esta", "partial": True}})["partial"] is True)
+    check("没有帧时返回 None（不能把 None 当成'空译文'去等）",
+          relay_module.frame_of({"ok": True, "changed": False, "frame": None}) is None
+          and relay_module.frame_of({}) is None
+          and relay_module.frame_of({"frame": "不是对象"}) is None)
+
     # ── 结果 ────────────────────────────────────────────────────────────────
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
     if failures:

@@ -76,6 +76,24 @@ def read_secret_file(path):
         return ""
 
 
+def frame_of(payload):
+    """从 /frame 的响应里取出这一帧的 (原文, 译文, 是否增量)；没有帧就返回 None。
+
+    /frame 的形状是 {ok, changed, seq, frame:{source, text, partial}}。
+    抽成函数是为了能被测试钉住 —— "取了半天说没有帧" 是排查时最费时间的一种错。
+    """
+    if not isinstance(payload, dict):
+        return None
+    frame = payload.get("frame")
+    if not isinstance(frame, dict):
+        return None
+    return {
+        "source": frame.get("source") if isinstance(frame.get("source"), str) else "",
+        "text": frame.get("text") if isinstance(frame.get("text"), str) else "",
+        "partial": frame.get("partial") is True,
+    }
+
+
 def classify_failure(message):
     """把网络/HTTP 失败翻成"下一步做什么"。返回若干行。"""
     text = (message or "").lower()
@@ -132,7 +150,7 @@ class Probe:
             self.context.check_hostname = False
             self.context.verify_mode = ssl.CERT_NONE
 
-    def request(self, path, method="GET", body=None, token=None):
+    def request(self, path, method="GET", body=None, token=None, timeout=None):
         url = f"{self.base}{path}"
         data = None
         headers = {}
@@ -144,8 +162,9 @@ class Probe:
             data = json.dumps(body).encode("utf-8")
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
+        effective_timeout = self.timeout if timeout is None else timeout
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout, context=self.context) as response:
+            with urllib.request.urlopen(request, timeout=effective_timeout, context=self.context) as response:
                 raw = response.read()
                 return response.status, raw
         except urllib.error.HTTPError as error:
@@ -171,6 +190,80 @@ def say(ok, label, detail=""):
     return ok
 
 
+def say_once(probe, text, source_lang, wait_seconds):
+    """把一句话塞进收件箱，等大脑翻出译文。返回是否成功。
+
+    为什么值得做成一个开关：这条链路（relay → 收件箱 → 大脑 → 字幕总线）用 curl 手搓
+    很容易被引号/转义坑住（JSON 里带中文、shell 里带空格），然后你得分辨
+    "是我 curl 写错了" 还是 "大脑没工作"。这里一次说清。
+    """
+    import time
+
+    print("  · ⑦ 大脑链路：塞一句话，等译文")
+    try:
+        status, stats, body = probe.json("/status")
+    except ConnectionError as error:
+        say(False, "   /status 读不到，没法定位新帧", str(error))
+        return False
+    since = stats.get("seq") if isinstance(stats, dict) else 0
+    if not isinstance(since, int):
+        since = 0
+
+    try:
+        status, payload, body = probe.json(
+            "/say", method="POST",
+            body={"text": text, "from": source_lang},
+        )
+    except ConnectionError as error:
+        say(False, "   POST /say 失败", str(error))
+        for item in classify_failure(str(error)):
+            print(f"      {item}")
+        return False
+    if status != 200 or not payload or payload.get("ok") is not True:
+        say(False, "   POST /say 被拒", f"HTTP {status} {body[:140]}")
+        for item in classify_failure(f"{status} {body}"):
+            print(f"      {item}")
+        return False
+    say(True, "   已写入收件箱", f"「{text}」")
+    print(f"   等译文，最多 {wait_seconds:.0f} 秒（大脑要先调一次模型）…")
+
+    deadline = time.time() + max(1.0, wait_seconds)
+    while time.time() < deadline:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        # /frame 是**长轮询**：没有新帧时它会挂住最多 25 秒（relay 的 pollHoldMs）。
+        # 所以这里的单次超时不能被当成错误 —— 它正是"还没有译文"的正常表现。
+        per_request = max(1.0, min(remaining, 8.0))
+        try:
+            status, payload, body = probe.json(f"/frame?since={since}", timeout=per_request)
+        except ConnectionError as error:
+            if "timed out" in str(error).lower():
+                continue                     # 长轮询到点没新帧，继续等（直到 deadline）
+            say(False, "   /frame 请求失败", str(error))
+            return False
+        if status != 200:
+            say(False, "   /frame 返回异常", f"HTTP {status} {body[:120]}")
+            return False
+        frame = frame_of(payload)
+        if frame is not None and frame["text"]:
+            label = "增量（半句）" if frame["partial"] else "定稿"
+            say(True, f"   译文到了（{label}）", frame["text"])
+            if frame["source"]:
+                print(f"      原文 {frame['source']}")
+            return True
+        # 没等到就继续长轮询；服务端自己会挂住到有新帧或超时
+        time.sleep(0.2)
+
+    say(False, "   没等到译文", f"{wait_seconds:.0f} 秒内字幕总线没有新帧")
+    print("      多半是大脑没在工作，按顺序查：")
+    print("        ① 有没有起大脑：ps aux | grep harness-side")
+    print("        ② 大脑日志：tail -30 <仓库>/var/logs/brain.log")
+    print("        ③ 翻译凭据：没配 DEEPSEEK_API_KEY（或 $DSH_HOME/.credentials.yaml）时大脑翻不出来")
+    print("        ④ 想先排除大脑：用 --offline 起 start-all，只认剧本那 14 句")
+    return False
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="测这台机器能不能连上转发服务器（手机连之前先跑这个）",
@@ -182,6 +275,12 @@ def main(argv=None):
     parser.add_argument("--user", default=None, help="可选：账号，用来自动测 /auth/login 与 /org")
     parser.add_argument("--password", default=None, help="可选：密码")
     parser.add_argument("--timeout", type=float, default=5.0, help="单次请求超时秒数，缺省 5")
+    parser.add_argument("--say", default=None,
+                        help="塞一句话进收件箱并等译文（测 relay+大脑 的整条链路，不含识别）")
+    parser.add_argument("--from", dest="source_lang", default="zh-CN",
+                        help="配合 --say：源语种，缺省 zh-CN")
+    parser.add_argument("--wait", type=float, default=20.0,
+                        help="配合 --say：等译文的最长秒数，缺省 20")
     args = parser.parse_args(argv)
 
     print("转发服务器连通性检查")
@@ -298,6 +397,13 @@ def main(argv=None):
                 say(False, f"   {label}（{path}）", f"HTTP {status} {text[:120]}")
     else:
         print("  · ⑥ 账号与术语：没给 --user/--password，跳过（要测就补上）")
+
+    # ⑦ 塞一句话，等译文（测 relay + 大脑；不含识别）
+    if args.say:
+        if not say_once(probe, args.say, args.source_lang, args.wait):
+            return 1
+    else:
+        print("  · ⑦ 大脑链路：没给 --say，跳过（要测大脑就加 --say \"这是一条测试信息\"）")
 
     print("\n全部通过。现在可以在手机上填这个地址了：")
     print(f"  {base}")
