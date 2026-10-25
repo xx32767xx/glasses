@@ -1859,6 +1859,61 @@ def main():
     bad_wav.unlink()
     good_wav.unlink()
 
+    # ── systemd 环境文件生成（scripts/make-env-file.py）──────────────────────
+    # 裸机/conda 部署都要把 PATH 与 LD_LIBRARY_PATH 交给 systemd。
+    # 这两个值是手工抄写最容易出错的地方（路径长、含多级目录），
+    # 所以让脚本按环境目录现算，并用测试锁住"算不出来时要明确报错"。
+    heading("systemd 环境文件生成（make-env-file.py）")
+    env_script = ROOT / "scripts" / "make-env-file.py"
+    fake_env = probe_dir / "fake-venv"
+    fake_env.mkdir(parents=True, exist_ok=True)
+    (fake_env / "bin").mkdir(exist_ok=True)
+
+    def run_env_file(*extra):
+        # 显式指定 utf-8 + errors='replace'：Windows 上子进程输出是 UTF-8，
+        # 而父进程默认按 GBK 解码，会抛 UnicodeDecodeError 并把 stderr 变成 None。
+        return subprocess.run(
+            [sys.executable, str(env_script), *[str(item) for item in extra]],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+
+    good = run_env_file(fake_env, "--python", sys.executable)
+    check("能按环境目录算出 PATH（指向该环境的 bin）",
+          good.returncode == 0 and "PATH=" in good.stdout and "/bin:" in good.stdout,
+          good.stdout[:200] + good.stderr[:200])
+    check("一定会给出 LD_LIBRARY_PATH（缺 cu12 库时退回到驱动默认目录）",
+          "LD_LIBRARY_PATH=" in good.stdout and len(good.stdout.strip().splitlines()) >= 2,
+          good.stdout[:200])
+    check("诊断信息走 stderr（stdout 只有环境变量，方便重定向成文件）",
+          "环境目录" in good.stderr and "环境目录" not in good.stdout,
+          good.stderr[:200])
+
+    out_file = probe_dir / "asr.env"
+    written = run_env_file(fake_env, "--python", sys.executable, "--out", out_file)
+    check("--out 写出的文件内容与打印内容一致",
+          written.returncode == 0 and out_file.read_text(encoding="utf-8") == good.stdout,
+          f"returncode={written.returncode}")
+    with_hf = run_env_file(fake_env, "--python", sys.executable, "--hf-home", fake_env)
+    check("--hf-home 会写进 HF_HOME（模型缓存别落在默认家目录）",
+          with_hf.returncode == 0 and f"HF_HOME={fake_env}" in with_hf.stdout,
+          with_hf.stdout[:200])
+
+    missing = run_env_file(probe_dir / "__no_such_env__")
+    check("环境目录不存在 → 退出码 1 且说清怎么办",
+          missing.returncode == 1 and "找不到环境目录" in missing.stderr, missing.stderr[:200])
+
+    no_python = probe_dir / "fake-dir-without-python"
+    no_python.mkdir(exist_ok=True)
+    plain = run_env_file(no_python)
+    check("目录在但缺 bin/python → 明确指出这不是 venv/conda 环境",
+          plain.returncode == 1 and "不是 venv/conda 环境" in plain.stderr, plain.stderr[:200])
+
+    broken = run_env_file(fake_env, "--python", probe_dir / "__no_such_python__")
+    check("解释器跑不起来 → 退出码 1（不静默生成一份错的环境文件）",
+          broken.returncode == 1 and "跑不起来" in broken.stderr, broken.stderr[:200])
+
+    out_file.unlink(missing_ok=True)
+
     # ── 结果 ────────────────────────────────────────────────────────────────
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
     if failures:
