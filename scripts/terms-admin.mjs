@@ -24,7 +24,7 @@
  */
 
 import { mkdir, readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { VAR_DIR } from '../lib/paths.mjs'
 import { resolveDataDir, ENVS } from '../lib/store.mjs'
 import {
@@ -57,10 +57,12 @@ function parseArgs(argv) {
   return options
 }
 
-const USAGE = `用法：node scripts/terms-admin.mjs <命令> --env prod|test [选项]
+const USAGE = `用法：node scripts/terms-admin.mjs <命令> --env prod|test [--root <数据目录>] [选项]
 
 命令：
   init        建目录（幂等）
+  --root      直接用这个数据目录（服务器上形如 /opt/glasses-data）；
+              不给则用 <仓库>/var/live 或 var/live-test，由 --env 决定
   admin       建管理员账户        --username --password [--email]
   code        发一个验证码（本地打印，不真发邮件）  --email
   login       用验证码登录（返回 token）            --email --code
@@ -86,8 +88,14 @@ function envOf(options) {
 }
 
 function rootOf(options) {
+  const env = envOf(options)
+  // --root：**直接用这个目录**。服务器上数据目录通常叫 /opt/glasses-data（不叫 live/live-test），
+  // 用 --base 拼不出来；而"让运维为了跑一条 CLI 去改名目录"是没必要的折腾。
+  if (typeof options.root === 'string' && options.root !== '') {
+    return { env, root: resolve(options.root) }
+  }
   const base = typeof options.base === 'string' ? options.base : VAR_DIR
-  return { env: envOf(options), root: resolveDataDir(base, envOf(options)) }
+  return { env, root: resolveDataDir(base, env) }
 }
 
 function need(options, key) {
