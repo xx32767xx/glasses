@@ -73,6 +73,11 @@
   .entry { padding:7px 0; border-bottom:1px dashed var(--line); font-size:13px; }
   .entry:last-child { border-bottom:none; }
   .tag { font-size:11px; color:var(--muted); margin-left:6px; }
+  /* 表格里的小按钮：停用/启用、续期。做小一点，免得一列按钮比数据还抢眼 */
+  .mini { font: inherit; font-size:11px; padding:3px 8px; border-radius:6px; cursor:pointer;
+          background:transparent; color:var(--muted); border:1px solid var(--line); }
+  .mini:hover { color:#fff; border-color:var(--muted); }
+  .mini.danger:hover { color:#fff; border-color:#e5484d; background:rgba(229,72,77,.16); }
 </style>
 </head>
 <body>
@@ -342,12 +347,42 @@ async function loadAccounts() {
     const rows = data.accounts || [];
     document.getElementById('accountCount').textContent = rows.length + ' 个';
     box.innerHTML = rows.length === 0 ? '<div class="empty">还没有账号</div>'
-      : '<table><thead><tr><th>用户名</th><th>邮箱</th><th>角色</th><th>状态</th><th>过期</th></tr></thead><tbody>'
+      : '<table><thead><tr><th>用户名</th><th>邮箱</th><th>角色</th><th>状态</th><th>过期</th><th>操作</th></tr></thead><tbody>'
         + rows.map((a) => '<tr><td><b>' + a.username + '</b></td><td>' + (a.email || '—') + '</td>'
             + '<td>' + a.role + '</td><td>' + (a.usable ? a.status : a.status + '（不可用）') + '</td>'
-            + '<td class="mono">' + (a.expiresAt ? a.expiresAt.slice(0, 10) : '—') + '</td></tr>').join('')
+            + '<td class="mono">' + (a.expiresAt ? a.expiresAt.slice(0, 10) : '—') + '</td>'
+            + '<td>' + accountActions(a) + '</td></tr>').join('')
         + '</tbody></table>';
   } catch (error) { box.innerHTML = '<div class="empty">' + String(error.message || error) + '</div>'; }
+}
+
+/** 每个账号后面的两个按钮：停用/启用、续期 7 天。
+ *  停用走 /org/accounts/<用户名>/status，续期走 /renew —— 都按用户名，
+ *  因为管理员手动建的测试账号没有邮箱。 */
+function accountActions(a) {
+  const name = encodeURIComponent(a.username);
+  const toggle = a.status === 'disabled'
+    ? '<button class="mini" onclick="setAccountStatus(\'' + name + '\',\'active\')">启用</button>'
+    : '<button class="mini danger" onclick="setAccountStatus(\'' + name + '\',\'disabled\')">停用</button>';
+  const renew = '<button class="mini" onclick="renewAccount(\'' + name + '\')">续期 7 天</button>';
+  return toggle + ' ' + renew;
+}
+
+async function setAccountStatus(name, status) {
+  if (status === 'disabled' && !confirm('停用 ' + decodeURIComponent(name) + '？停用后这个账号立刻登录不上、已发的 token 也失效。')) return;
+  try {
+    await api('/org/accounts/' + name + '/status', { method: 'POST', body: { status } });
+    toast(decodeURIComponent(name) + ' → ' + (status === 'disabled' ? '已停用' : '已启用'));
+    loadAccounts();
+  } catch (error) { toast('失败：' + String(error.message || error)); }
+}
+
+async function renewAccount(name) {
+  try {
+    const data = await api('/org/accounts/' + name + '/renew', { method: 'POST', body: { days: 7 } });
+    toast(decodeURIComponent(name) + ' 续期到 ' + String(data.expiresAt || '').slice(0, 10));
+    loadAccounts();
+  } catch (error) { toast('失败：' + String(error.message || error)); }
 }
 
 async function createAccount() {

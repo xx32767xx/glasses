@@ -16,8 +16,8 @@ import { startRelay } from '../relay/lan-relay.mjs'
 import { VAR_DIR } from '../lib/paths.mjs'
 import { ensureTestAccount, resetTestAccount } from '../scripts/test-account.mjs'
 import {
-  checkPassword, emptyAccounts, hashPassword, issueToken, login, normalizeUsername, register,
-  revokeToken, tokenKey, userForToken, verifyPassword,
+  checkPassword, createAccountWithPassword, emptyAccounts, hashPassword, issueToken, loadAccounts, login,
+  normalizeUsername, register, revokeToken, saveAccounts, tokenKey, userForToken, verifyPassword,
 } from '../lib/accounts.mjs'
 
 const TMP = join(VAR_DIR, 'test', 'accounts-suite')
@@ -212,6 +212,41 @@ export async function runAccountsSuite({ it, check, assert }) {
       const status = await call('/status')
       check('accounts = true', status.json.accounts === true, status.text)
       check('有 authOk 计数', typeof status.json.authOk === 'number', status.text)
+    })
+
+    // 管理员要能停用/续期测试账号（docs/19：dev 账号默认 7 天过期）。
+    // 两条都按**用户名**操作 —— 管理员手动建的账号没有邮箱。
+    // 这里直接写盘建一个管理员：`POST /org/accounts` 需要管理员 token，先有鸡还是先有蛋。
+    const admin = await (async () => {
+      const doc = await loadAccounts(TMP)
+      const created = createAccountWithPassword(doc, { username: 'boss', password: 'secret12', role: 'admin' })
+      if (created.ok !== true) throw new Error(`建管理员失败：${created.error}`)
+      await saveAccounts(TMP, created.doc)
+      const res = await call('/auth/login', { method: 'POST', body: { username: 'boss', password: 'secret12' } })
+      if (res.status !== 200) throw new Error(`管理员登录失败：${res.text}`)
+      return res.json.token
+    })()
+
+    await it('停用后立刻登录不上；恢复后又能登录', async () => {
+      const disabled = await call('/org/accounts/alice/status', { method: 'POST', token: admin, body: { status: 'disabled' } })
+      check('停用接口 200', disabled.status === 200, disabled.text)
+      const blocked = await call('/auth/login', { method: 'POST', body: { username: 'alice', password: 'secret12' } })
+      check('停用后再登录被拒', blocked.status === 401, blocked.text)
+      const restored = await call('/org/accounts/alice/status', { method: 'POST', token: admin, body: { status: 'active' } })
+      check('恢复接口 200', restored.status === 200, restored.text)
+      const again = await call('/auth/login', { method: 'POST', body: { username: 'alice', password: 'secret12' } })
+      check('恢复后能登录', again.status === 200, again.text)
+    })
+
+    await it('续期把到期时间往后推；非法天数被拒', async () => {
+      const renewed = await call('/org/accounts/alice/renew', { method: 'POST', token: admin, body: { days: 3 } })
+      check('续期接口 200 且给出新到期时间',
+        renewed.status === 200 && typeof renewed.json.expiresAt === 'string', renewed.text)
+      check('新到期时间在未来', Date.parse(renewed.json.expiresAt) > Date.now(), renewed.json.expiresAt)
+      const zero = await call('/org/accounts/alice/renew', { method: 'POST', token: admin, body: { days: 0 } })
+      check('0 天被拒（否则"延长零天"看起来像生效了）', zero.status === 400, zero.text)
+      const nobody = await call('/org/accounts/nobody/renew', { method: 'POST', token: admin, body: { days: 3 } })
+      check('不存在的账号被拒', nobody.status === 400, nobody.text)
     })
 
     await it('/hello 带 token 时记下正确的用户（插件靠它取表）', async () => {

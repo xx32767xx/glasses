@@ -24,7 +24,7 @@
  */
 
 import { join } from 'node:path'
-import { allowed, createAccountWithPassword, listAccounts, loadAccounts, saveAccounts } from '../lib/accounts.mjs'
+import { DEV_TTL_DAYS, allowed, createAccountWithPassword, listAccounts, loadAccounts, renewAccount, saveAccounts, setStatusByUsername } from '../lib/accounts.mjs'
 import { readJson, writeJsonAtomic } from '../lib/store.mjs'
 import { listLibraries, loadLibrary, loadCategories, saveLibrary, importLibraries } from '../lib/libraries.mjs'
 import { createRequest, decideRequest, loadRequests, pendingOf, withdrawRequest } from '../lib/requests.mjs'
@@ -241,6 +241,34 @@ export async function handleOrg(input) {
         json: { ok: true, username: String(body.username), role: created.role },
       }
     }
+  }
+
+  // ── 管理员：账号的停用 / 恢复 / 续期（docs/19：测试账号默认 7 天过期）─────────
+  // 路径形如 POST /org/accounts/<用户名>/status  {status}
+  //          POST /org/accounts/<用户名>/renew   {days}
+  // 按**用户名**而不是邮箱：管理员手动建的测试账号只有用户名+密码。
+  if (segments[1] === 'accounts' && segments.length === 4 && method === 'POST') {
+    if (allowed(role, 'account.manage') !== true) return deny(role, 'account.manage')
+    const username = decodeURIComponent(segments[2])
+    const doc = await loadAccounts(root)
+
+    if (segments[3] === 'status') {
+      const status = String(body.status ?? '')
+      const result = setStatusByUsername(doc, username, status)
+      if (result.ok !== true) return bad(400, result.error)
+      await saveAccounts(root, result.doc)
+      return { status: 200, json: { ok: true, username: result.username, status: result.status } }
+    }
+
+    if (segments[3] === 'renew') {
+      const days = body.days === undefined ? DEV_TTL_DAYS : Number(body.days)
+      const result = renewAccount(doc, username, days)
+      if (result.ok !== true) return bad(400, result.error)
+      await saveAccounts(root, result.doc)
+      return { status: 200, json: { ok: true, username, expiresAt: result.expiresAt } }
+    }
+
+    return bad(404, `没有这个接口：${method} ${path}`)
   }
 
   return bad(404, `没有这个接口：${method} ${path}`)
