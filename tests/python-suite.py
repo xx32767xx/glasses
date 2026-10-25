@@ -1870,11 +1870,13 @@ def main():
     (fake_env / "bin").mkdir(exist_ok=True)
 
     def run_env_file(*extra):
-        # 显式指定 utf-8 + errors='replace'：Windows 上子进程输出是 UTF-8，
-        # 而父进程默认按 GBK 解码，会抛 UnicodeDecodeError 并把 stderr 变成 None。
+        # 子进程强制 UTF-8：Windows 上 Python 往管道写中文会按 cp936 编码，
+        # 父进程再按 utf-8 解码就是乱码（断言会莫名其妙地失败）。
+        # 顺便用 errors='replace' 兜住，不抛 UnicodeDecodeError。
+        env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
         return subprocess.run(
             [sys.executable, str(env_script), *[str(item) for item in extra]],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            capture_output=True, text=True, encoding="utf-8", errors="replace", env=env,
         )
 
     good = run_env_file(fake_env, "--python", sys.executable)
