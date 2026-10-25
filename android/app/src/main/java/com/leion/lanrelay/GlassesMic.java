@@ -296,8 +296,47 @@ public class GlassesMic implements AudioSource {
 
     // ── 音频线程：只攒块 + 入队 ─────────────────────────────────────────────
 
-    private void onPcm(byte[] data, int offset, int length) {
-        if (!running || data == null || length <= 0) return;
+    /* ── 眼镜输入电平（2026-10-25 实测结论）──────────────────────────────
+     *
+     * 实测：眼镜麦克风的电平偏高 —— 原始录音底噪 RMS 0.043、语音 0.275、峰值顶到 1.0（削波），
+     * 识别时末尾会多出一整句幻觉（"請不吝點贊訂閱…"），CER 40%。
+     * 把同一段录音**软件降 12 dB** 后：幻觉整句消失、CER 降到 12.6%（比手机还好）。
+     *
+     * 硬件音量键在手机上已经到头了（再降一档语音只剩 0.014，低于静音闸门 0.02），
+     * 所以缺的这 12 dB 在这里补：**上链之前**按样本乘系数（s16 + 饱和）。
+     * 前提是"未削波"——削掉的部分软件补不回来，这也是为什么先让硬件别顶到满幅。
+     *
+     * 档位用 GAIN_DB 表示（负数=衰减）。设置页的滑条下一步接这里（setGainDb 已就绪）。
+     */
+    private static volatile float gainFactor = 0.2512f;     // 默认 −12 dB
+    private static volatile float gainDb = -12f;
+
+    /** 设置衰减量（dB，取值 ≤ 0）。同时更新线性系数。 */
+    public static void setGainDb(float db) {
+        float clamped = Math.max(-40f, Math.min(0f, db));
+        gainDb = clamped;
+        gainFactor = (float) Math.pow(10.0, clamped / 20.0);
+        Log.i(TAG, "眼镜输入电平设为 " + clamped + " dB（系数 " + gainFactor + "）");
+    }
+
+    /** 当前衰减量（dB）。 */
+    public static float getGainDb() { return gainDb; }
+
+    /** 就地按系数缩放一段 s16le PCM，带饱和（不产生回绕噪声）。 */
+    private static void applyGain(byte[] buffer, int length) {
+        float factor = gainFactor;
+        if (factor >= 0.999f) return;                       // 0 dB：零开销
+        for (int i = 0; i + 1 < length; i += 2) {
+            int sample = (short) ((buffer[i] & 0xFF) | (buffer[i + 1] << 8));
+            int scaled = Math.round(sample * factor);
+            if (scaled > 32767) scaled = 32767;
+            else if (scaled < -32768) scaled = -32768;
+            buffer[i] = (byte) (scaled & 0xFF);
+            buffer[i + 1] = (byte) ((scaled >> 8) & 0xFF);
+        }
+    }
+
+    private void onPcm(byte[] data, int offset, int length) {        if (!running || data == null || length <= 0) return;
         if (offset < 0 || offset + length > data.length) return;   // 防御：越界就别读了
 
         reportLevel(data, offset, length);
@@ -316,6 +355,7 @@ public class GlassesMic implements AudioSource {
     private void enqueue(byte[] source, int length) {
         byte[] copy = new byte[length];
         System.arraycopy(source, 0, copy, 0, length);
+        applyGain(copy, length);          // ← 上链之前统一调电平（见 GAIN_* 注释）
         pendingLength = 0;
         if (!queue.offer(copy)) {
             byte[] dropped = queue.poll();
