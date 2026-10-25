@@ -2013,6 +2013,22 @@ def main():
     check("认不出的报错不硬编建议（返回空列表，别乱指挥）",
           env_module.diagnose_load_error("something totally unexpected") == [])
 
+    # 自检给的是"export LD_LIBRARY_PATH=..."整行，抄错一个目录就白折腾：
+    # cuBLAS 与 cuDNN 在不同目录，只给前者会报 cudnn 缺库。
+    lib_root = probe_dir / "libs"
+    cublas_dir = lib_root / "nvidia" / "cublas" / "lib"
+    cudnn_dir = lib_root / "nvidia" / "cudnn" / "lib"
+    joined = env_module.join_lib_dirs([
+        str(cudnn_dir / "libcudnn.so.9"),
+        str(cublas_dir / "libcublas.so.12"),
+        str(cublas_dir / "libcublasLt.so.12"),      # 同一目录下的第二个库不应重复出现
+    ])
+    expected_joined = ":".join(sorted([str(cublas_dir), str(cudnn_dir)]))
+    check("LD_LIBRARY_PATH 建议把 cuBLAS 与 cuDNN 的目录都凑齐（且去重）",
+          joined == expected_joined, f"{joined} != {expected_joined}")
+    check("一个库都没找到时给空串（不产出「:」这种半截路径）",
+          env_module.join_lib_dirs([]) == "" and env_module.join_lib_dirs(None) == "")
+
     # ── 结果 ────────────────────────────────────────────────────────────────
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
     if failures:

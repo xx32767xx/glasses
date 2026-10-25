@@ -174,6 +174,21 @@ def gpu_info():
     return info
 
 
+def join_lib_dirs(paths):
+    """一堆 .so 的路径 → LD_LIBRARY_PATH 该写的那一串目录（去重、按字母序）。
+
+    为什么要去重并凑齐：cuBLAS 与 cuDNN 在两三个不同的目录里，
+    只把 cublas 那个目录写进 LD_LIBRARY_PATH，cuDNN 仍然找不到 ——
+    于是"照提示抄了还是报 cudnn 缺库"。一次给全，别让人拼。
+    """
+    dirs = []
+    for path in paths or []:
+        directory = os.path.dirname(os.path.abspath(path))
+        if directory and directory not in dirs:
+            dirs.append(directory)
+    return ":".join(sorted(dirs))
+
+
 def check_cuda_libs(info):
     line("② CUDA 运行库（ctranslate2 要 cuBLAS 12 + cuDNN 9）")
     cublas12 = find_libs("libcublas.so.12")
@@ -181,8 +196,9 @@ def check_cuda_libs(info):
     print(f"  libcublas.so.12   {'✓ ' + cublas12[0] if cublas12 else '✗ 没找到'}")
     print(f"  libcudnn*（cu12） {'✓ 找到 ' + str(len(cudnn9)) + ' 个' if cudnn9 else '✗ 没找到'}")
     if cublas12:
-        libdir = os.path.dirname(cublas12[0])
-        print(f"  建议把这一串加进 LD_LIBRARY_PATH：\n    export LD_LIBRARY_PATH={libdir}:$LD_LIBRARY_PATH")
+        joined = join_lib_dirs(cublas12 + cudnn9)
+        print(f"  建议把这一串加进 LD_LIBRARY_PATH（cuBLAS 与 cuDNN 的目录都要给）：\n"
+              f"    export LD_LIBRARY_PATH={joined}:$LD_LIBRARY_PATH")
     else:
         print("\n  这是 CUDA 13 机器上最常见的坑：系统/环境里只有 cu13 的库，"
               "而 ctranslate2 要 cu12 版的。\n  修法（装到同一个环境里）：\n"
@@ -219,8 +235,8 @@ def check_capabilities(info, device):
 
     fp16 = has_fp16_acceleration(capability)
     if fp16 is False:
-        print(f"  ⚠️ {arch or '这张卡'}没有 FP16 加速：float16 / int8_float16 用不了，"
-              "要用 int8_float32（权重 INT8、激活 FP32）。")
+        print(f"  ⚠️ {arch or '这张卡'} 没有 FP16 加速：float16 / int8_float16 用不了，"
+              "要用 int8_float32 / int8（权重 INT8、激活 FP32）。")
         print("     这是算力决定的，跟驱动、CUDA 版本、装没装 cuDNN 都无关 —— 换库没用，换档位才有用。")
     elif fp16 is True:
         print("  ✓ 有张量核：float16 可用，通常是最快的一档。")
@@ -312,6 +328,8 @@ def report_failure(label, message):
 
 def check_models(models, compute_types, audio, device):
     line("④ 实测（同一段音频，比较精度档）")
+    print("  每档先跑一次预热再计时 —— 第一档会替后面所有档付掉 CUDA 上下文与 cuDNN 选算法"
+          "的固定开销\n  （生产链路也这么做：whisper_stream 启动时先拿 1 秒静音跑一遍）。")
     from faster_whisper import WhisperModel
     results = []
     for model_name in models:
@@ -325,6 +343,12 @@ def check_models(models, compute_types, audio, device):
                 report_failure(label, str(error).strip().splitlines()[0][:160])
                 continue
             try:
+                # 预热：不计入结果。不预热的话，先测的那一档必然最慢（约多吃 0.2~0.4 秒），
+                # 于是"哪个档最快"取决于顺序而不是档位本身 —— 那这张表就没有意义了。
+                try:
+                    list(model.transcribe(audio, language="zh", beam_size=1)[0])
+                except Exception:                       # noqa: BLE001
+                    pass                                # 预热失败就照常计时，让真正的报错暴露出来
                 t0 = time.perf_counter()
                 segments = list(model.transcribe(audio, language="zh", beam_size=1)[0])
                 elapsed = time.perf_counter() - t0
