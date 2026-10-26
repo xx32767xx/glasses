@@ -251,7 +251,7 @@ function enterConsole() {
   pill.textContent = me.role;
   pill.className = 'pill ' + (me.role === 'admin' ? 'on' : '');
   document.getElementById('who').textContent = me.user + (me.role === 'admin' ? '' : '（非管理员：只能看库，改不了）');
-  loadMeeting(); loadLibraries(); loadPending(); loadAccounts();
+  loadDataset(); loadMeeting(); loadLibraries(); loadPending(); loadAccounts();
 }
 
 async function loadMeeting() {
