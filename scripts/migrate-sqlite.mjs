@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url'
 import { importFromDataDir, openDb } from '../lib/db.mjs'
 
 export function parseArgs(argv) {
-  const options = { apply: false, dataDir: 'var/live', db: null, help: false }
+  const options = { apply: false, dataDir: process.env.LEION_DATA_DIR || 'var/live', db: null, help: false }
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (token === '--apply') { options.apply = true; continue }

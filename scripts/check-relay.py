@@ -271,7 +271,7 @@ def main(argv=None):
     )
     parser.add_argument("--base", default="http://127.0.0.1:8788", help="服务器地址，缺省本机 8788")
     parser.add_argument("--secret", default=None, help="共享密钥；不给就读 --data-dir/relay-secret.txt")
-    parser.add_argument("--data-dir", default="var/live", help="数据目录（用来找 relay-secret.txt）")
+    parser.add_argument("--data-dir", default=os.environ.get("LEION_DATA_DIR") or "var/live", help="数据目录（找 relay-secret.txt）；缺省取 $LEION_DATA_DIR 或 var/live")
     parser.add_argument("--user", default=None, help="可选：账号，用来自动测 /auth/login 与 /org")
     parser.add_argument("--password", default=None, help="可选：密码")
     parser.add_argument("--timeout", type=float, default=5.0, help="单次请求超时秒数，缺省 5")
