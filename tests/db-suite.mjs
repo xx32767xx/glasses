@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { importFromDataDir, openDb, purgeOldUtterances, SCHEMA_VERSION } from '../lib/db.mjs'
 import { readAccountsDoc, writeAccountsDoc } from '../lib/accounts-store.mjs'
+import { hashPassword, verifyPassword } from '../lib/accounts.mjs'
 
 export async function runDbSuite({ it, check }) {
   const dir = mkdtempSync(join(tmpdir(), 'leion-db-'))
@@ -100,6 +101,8 @@ export async function runDbSuite({ it, check }) {
         orphan: { user: 'nobody', label: '', createdAt: '2026-10-03T00:00:00.000Z' } },
       codes: { 'dev1@example.com': { key: 'deadbeef', issuedAt: '2026-10-04T00:00:00.000Z', expiresAt: '2026-10-04T00:10:00.000Z' } },
     }
+    const real = hashPassword('secret12')
+    doc.users.dev1 = { ...doc.users.dev1, ...real }
     check('写入成功', writeAccountsDoc(dataDir, doc).ok === true)
     const back = readAccountsDoc(dataDir)
     check('账号数一致', Object.keys(back.users).length === 2, JSON.stringify(Object.keys(back.users)))
@@ -112,6 +115,8 @@ export async function runDbSuite({ it, check }) {
     check('验证码用 key 字段（不是 hash）', back.codes['dev1@example.com']?.key === 'deadbeef',
       JSON.stringify(back.codes))
     check('验证码到期时间原样', back.codes['dev1@example.com'].expiresAt === '2026-10-04T00:10:00.000Z')
+    check('往返后密码仍然校验得过（scrypt 参数必须一起存）', verifyPassword('secret12', back.users.dev1) === true, JSON.stringify(back.users.dev1).slice(0, 120))
+    check('错误密码校验不过', verifyPassword('wrong-pass', back.users.dev1) === false)
     check('二次写入不翻倍（整表替换）', (() => {
       writeAccountsDoc(dataDir, back)
       const again = readAccountsDoc(dataDir)
