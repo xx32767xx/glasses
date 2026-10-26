@@ -109,6 +109,7 @@
   <header class="top">
     <h1>术语库管理控制台</h1>
     <span class="pill" id="rolePill">—</span>
+      <span class="pill" id="datasetPill" title="当前服务的数据目录（生产 / 测试靠它区分）">环境 —</span>
     <span class="who" id="who">—</span>
     <button class="btn ghost" onclick="logout()">退出登录</button>
   </header>
@@ -338,6 +339,29 @@ async function decide(id, decision) {
       : '已驳回');
     loadPending(); loadLibraries();
   } catch (error) { toast(String(error.message || error)); }
+}
+
+/**
+ * 显示"我现在操作的是哪一套数据"。
+ *
+ * 为什么需要：生产与测试是两个数据目录（甚至两个进程），但浏览器里两个页面长得一模一样，
+ * 很容易在测试页里删生产账号。这里直接从 /status 的 inbox 路径推出数据目录，**不需要服务端改动**。
+ * 想做"一键切换"是不行的：一个 relay 进程只绑定一个 dataDir（收音频、发会议术语都是它），
+ * 要切环境就再起一个实例（不同端口），两个页面对应两套数据。
+ */
+async function loadDataset() {
+  const pill = document.getElementById('datasetPill');
+  try {
+    const data = await api('/status');
+    const inbox = typeof data.inbox === 'string' ? data.inbox : '';
+    const dir = inbox.replace(/[\\\\/][^\\\\/]+$/, '') || '未知';
+    const isTest = /(^|[\\\\/])(test|live-test)([\\\\/]|$)/.test(dir);
+    pill.textContent = (isTest ? '测试 ' : '生产 ') + dir;
+    pill.style.borderColor = isTest ? '#e0b341' : '';
+    pill.style.color = isTest ? '#e0b341' : '';
+  } catch (error) {
+    pill.textContent = '环境 未知';
+  }
 }
 
 async function loadAccounts() {
