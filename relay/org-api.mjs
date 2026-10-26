@@ -29,6 +29,8 @@ import { readJson, writeJsonAtomic } from '../lib/store.mjs'
 import { listLibraries, loadLibrary, loadCategories, saveLibrary, importLibraries } from '../lib/libraries.mjs'
 import { createRequest, decideRequest, loadRequests, pendingOf, withdrawRequest } from '../lib/requests.mjs'
 import { writeMeetingSnapshot } from '../lib/snapshot.mjs'
+import { createRoom, joinRoom, listMembers, roomByCode, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
+import { publishMeetingTerms } from '../lib/meeting-terms.mjs'
 
 export function selectionPath(root, meetingId) {
   // 会议 id 会被拼进路径，所以只允许安全字符（防目录穿越）
@@ -269,6 +271,40 @@ export async function handleOrg(input) {
     }
 
     return bad(404, `没有这个接口：${method} ${path}`)
+  }
+
+  // ── 房间（P2a）：建房 / 6 位邀请码加入 / 房间术语库（冻结快照）─────────────
+  if (segments[1] === 'rooms' && segments.length === 2) {
+    if (method === 'POST') {
+      const name = String(body.name ?? '').trim()
+      if (name === '') return bad(400, '房间名不能为空')
+      const created = createRoom(root, { name, host: user, now })
+      if (created.ok !== true) return bad(400, created.error)
+      joinRoom(root, { room: created.room, username: user, lang: body.lang, now })
+      return { status: 200, json: { ok: true, room: created.room } }
+    }
+    return bad(405, '只支持 POST')
+  }
+
+  if (method === 'POST' && segments[1] === 'rooms' && segments[2] === 'join' && segments.length === 3) {
+    const joined = joinRoom(root, { code: body.code, username: user, lang: body.lang, now })
+    if (joined.ok !== true) return bad(400, joined.error)
+    return { status: 200, json: { ok: true, room: joined.room, members: joined.members } }
+  }
+
+  if (method === 'GET' && segments[1] === 'rooms' && segments.length === 3) {
+    const roomId = decodeURIComponent(segments[2])
+    return { status: 200, json: { ok: true, roomId, members: listMembers(root, roomId), libraryIds: roomLibraries(root, roomId) } }
+  }
+
+  if (method === 'POST' && segments[1] === 'rooms' && segments[3] === 'libraries' && segments.length === 4) {
+    const roomId = decodeURIComponent(segments[2])
+    const libraryIds = Array.isArray(body.libraryIds) ? body.libraryIds.map(String) : []
+    const saved = setRoomLibraries(root, roomId, libraryIds)
+    if (saved.ok !== true) return bad(400, saved.error)
+    const published = await publishMeetingTerms(root, { libraryIds, owner: user, meetingId: roomId, now })
+    if (published.ok !== true) return bad(400, published.error ?? '发布会议术语失败')
+    return { status: 200, json: { ok: true, roomId, libraryIds, entries: published.entries } }
   }
 
   return bad(404, `没有这个接口：${method} ${path}`)
