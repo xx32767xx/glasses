@@ -12,6 +12,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { importFromDataDir, openDb, purgeOldUtterances, SCHEMA_VERSION } from '../lib/db.mjs'
+import { readAccountsDoc, writeAccountsDoc } from '../lib/accounts-store.mjs'
 
 export async function runDbSuite({ it, check }) {
   const dir = mkdtempSync(join(tmpdir(), 'leion-db-'))
@@ -86,6 +87,37 @@ export async function runDbSuite({ it, check }) {
     db.close()
   })
 
+  await it('账号 doc ↔ SQLite 往返等值（含 tokens 与 codes 的 key 字段）', () => {
+    const dataDir = join(dir, 'acc')
+    mkdirSync(dataDir, { recursive: true })
+    const doc = {
+      version: 1,
+      users: {
+        boss: { salt: 'aa', hash: 'bb', role: 'admin', status: 'active', createdAt: '2026-10-01T00:00:00.000Z', via: 'admin', email: 'boss@example.com' },
+        dev1: { salt: 'cc', hash: 'dd', role: 'dev', status: 'active', createdAt: '2026-10-02T00:00:00.000Z', expiresAt: '2026-11-01T00:00:00.000Z', via: 'admin' },
+      },
+      tokens: { abc123: { user: 'boss', label: 'cli', createdAt: '2026-10-03T00:00:00.000Z' },
+        orphan: { user: 'nobody', label: '', createdAt: '2026-10-03T00:00:00.000Z' } },
+      codes: { 'dev1@example.com': { key: 'deadbeef', issuedAt: '2026-10-04T00:00:00.000Z', expiresAt: '2026-10-04T00:10:00.000Z' } },
+    }
+    check('写入成功', writeAccountsDoc(dataDir, doc).ok === true)
+    const back = readAccountsDoc(dataDir)
+    check('账号数一致', Object.keys(back.users).length === 2, JSON.stringify(Object.keys(back.users)))
+    check('hash/salt/role/status 原样', back.users.boss.hash === 'bb' && back.users.boss.salt === 'aa'
+      && back.users.boss.role === 'admin' && back.users.boss.status === 'active', JSON.stringify(back.users.boss))
+    check('到期时间原样', back.users.dev1.expiresAt === '2026-11-01T00:00:00.000Z', String(back.users.dev1.expiresAt))
+    check('邮箱保留', back.users.boss.email === 'boss@example.com')
+    check('token 保留、孤儿 token 被丢弃', back.tokens.abc123?.user === 'boss' && back.tokens.orphan === undefined,
+      JSON.stringify(Object.keys(back.tokens)))
+    check('验证码用 key 字段（不是 hash）', back.codes['dev1@example.com']?.key === 'deadbeef',
+      JSON.stringify(back.codes))
+    check('验证码到期时间原样', back.codes['dev1@example.com'].expiresAt === '2026-10-04T00:10:00.000Z')
+    check('二次写入不翻倍（整表替换）', (() => {
+      writeAccountsDoc(dataDir, back)
+      const again = readAccountsDoc(dataDir)
+      return Object.keys(again.users).length === 2 && Object.keys(again.tokens).length === 1
+    })())
+  })
   await it('发言权互斥在库层成立：一房只有一行 floor_state', () => {
     const db = openDb(join(dir, 'c.db'))
     db.prepare('INSERT INTO rooms (id, code, name, host, created_at) VALUES (?, ?, ?, ?, ?)')
