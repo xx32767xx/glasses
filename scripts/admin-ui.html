@@ -356,7 +356,10 @@ async function loadDataset() {
     const inbox = typeof data.inbox === 'string' ? data.inbox : '';
     const dir = inbox.replace(/[\\\\/][^\\\\/]+$/, '') || '未知';
     const isTest = /(^|[\\\\/])(test|live-test)([\\\\/]|$)/.test(dir);
-    pill.textContent = (isTest ? '测试 ' : '生产 ') + dir;
+    // 只显示最后一级目录（生产 live / 测试 test）：完整路径太长，pill 会被 CSS 截成省略号，看起来像没生效
+    const short = String(dir).split(/[\\\\/]/).filter(Boolean).pop() || dir;
+    pill.textContent = (isTest ? '测试 ' : '生产 ') + short;
+    pill.title = '数据目录：' + dir + '（生产与测试是两个目录/两个进程，不能一键切换）';
     pill.style.borderColor = isTest ? '#e0b341' : '';
     pill.style.color = isTest ? '#e0b341' : '';
   } catch (error) {
