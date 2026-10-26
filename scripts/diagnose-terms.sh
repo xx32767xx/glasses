@@ -11,9 +11,14 @@ for port in 8788 8789; do
     s=$(cat "$f")
     out=$(curl -s -m 2 "http://127.0.0.1:$port/hello?secret=$s" 2>/dev/null)
     [ -n "$out" ] || continue
-    inbox=$(curl -s -m 2 "http://127.0.0.1:$port/status?secret=$s" 2>/dev/null \
-      | python3 -c "import json,sys;print(json.load(sys.stdin).get('inbox',''))" 2>/dev/null)
-    echo "  端口 $port 活着 → 数据目录 $(dirname "$inbox")"
+    status=$(curl -s -m 2 "http://127.0.0.1:$port/status?secret=$s" 2>/dev/null)
+    inbox=$(echo "$status" | python3 -c "import json,sys;print(json.load(sys.stdin).get('inbox',''))" 2>/dev/null)
+    if [ -n "$inbox" ]; then
+      echo "  端口 $port 活着 → 收件箱 $inbox"
+      echo "                 → 数据目录 $(dirname "$inbox")"
+    else
+      echo "  端口 $port 活着（但 /status 没给 inbox）"
+    fi
     break
   done
 done
