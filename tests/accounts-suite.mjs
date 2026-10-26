@@ -153,7 +153,7 @@ export async function runAccountsSuite({ it, check, assert }) {
       check('200', reg.status === 200, reg.text)
       check('给了 token', typeof reg.json.token === 'string' && reg.json.token.length === 64, reg.text)
       check('回显用户名', reg.json.user === 'alice')
-      const raw = await readFile(join(TMP, 'accounts.json'), 'utf-8')
+      const raw = await readFile(join(TMP, 'leion.db'), 'utf-8')
       check('文件里没有明文密码', raw.includes('secret12') === false)
       check('文件里没有明文 token', raw.includes(reg.json.token) === false)
     })
