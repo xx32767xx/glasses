@@ -45,8 +45,11 @@ android {
     // 4.34：修发言权互斥的客户端一侧 —— 被顶替（B 后开麦抢走）后 A 只在轮询里刷了文字、
     //       没停麦克风：界面显示发言人=B，音频却还在双路往识别流里灌。现在立刻停上传 +
     //       按钮回灰（蓝=在传/灰=空闲）+ Toast 提示；心跳被拒也立刻停。见 docs/21 §4.34。
-        versionCode = 63
-        versionName = "4.34"
+    // 4.35：发言权改 WS 推送（/ws）：被顶替不再等 2 秒轮询，一推即到。服务端是手写的
+    //       RFC6455（lib/ws-hub.mjs，仓库零依赖），客户端用缓存里的 Java-WebSocket 1.6.0；
+    //       推送断了自动退回 2 秒轮询，心跳独立按 5 秒走。见 docs/21 §4.35。
+        versionCode = 64
+        versionName = "4.35"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），
@@ -129,4 +132,11 @@ dependencies {
   implementation("androidx.core:core:1.13.0")
   implementation("androidx.fragment:fragment:1.5.4")
   implementation("androidx.localbroadcastmanager:localbroadcastmanager:1.0.0")
+
+  // 发言权实时推送（4.35）：Android 没有内置 WebSocket 客户端，用 Java-WebSocket。
+  // 服务端那半边是手写的（lib/ws-hub.mjs，Node 没有内置 WS 服务端，而仓库零依赖）。
+  // 版本同样**贴着本机缓存**：1.6.0 的 jar+pom 都在，slf4j-api 1.7.30 也在 → 离线可构建。
+  // ⚠️ 换成别的版本之前先在 ~/.gradle/caches 里确认有 jar，否则构建会卡在联网拉取。
+  implementation("org.java-websocket:Java-WebSocket:1.6.0")
+  implementation("org.slf4j:slf4j-api:1.7.30")
 }

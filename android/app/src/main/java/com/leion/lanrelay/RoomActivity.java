@@ -27,6 +27,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     public static final String EXTRA_NAME = "roomName";
 
     private static final long FLOOR_POLL_MS = 2000L;
+    /** WS 推送通道活着时，轮询退化成"看门狗"：只防推送通道假死，不必跑那么勤。 */
+    private static final long FLOOR_POLL_WATCHDOG_MS = 10000L;
     private static final long HEARTBEAT_MS = 5000L;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -49,6 +51,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     private Runnable pendingAfterPermission;
     private Button micUploadButton;
     private long lastHeartbeat = 0L;
+    /** 发言权推送通道（4.35）。它只让"谁在说话"更快到达；断了就靠轮询。 */
+    private FloorSocket floorSocket;
+    private boolean wsOnline = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -82,6 +87,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         if (token != null && !token.isEmpty()) client.setToken(token);
         if (myName != null && !myName.isEmpty()) client.setUser(myName);
         client.start();
+        startFloorSocket(host, secret, token);
 
         micUploadButton = findViewById(R.id.roomUpload);
         micUploadButton.setOnClickListener(v -> toggleUpload());
@@ -92,10 +98,28 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         lockButton.setEnabled(false);
         lockButton.setAlpha(0.5f);
         scheduleFloorPoll(0L);
+        scheduleHeartbeatTick();
+    }
+
+    /**
+     * 心跳与"状态推送"**解耦**（4.35）：WS 活着时轮询退成 10 秒看门狗，
+     * 而服务端租约是 15 秒 —— 只靠轮询顺带续租，余量太薄（网络抖一下就掉麦）。
+     * 所以心跳自己按 5 秒走，不看有没有消息进来。
+     */
+    private void scheduleHeartbeatTick() {
+        ui.postDelayed(() -> {
+            if (isFinishing()) return;
+            if (holding) heartbeatIfDue();
+            scheduleHeartbeatTick();
+        }, HEARTBEAT_MS);
     }
 
     @Override
     protected void onDestroy() {
+        if (floorSocket != null) {
+            floorSocket.stop();
+            floorSocket = null;
+        }
         if (mic != null) {
             mic.stop();
             mic = null;
@@ -103,6 +127,36 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         if (client != null) client.stop();
         ui.removeCallbacksAndMessages(null);
         super.onDestroy();
+    }
+
+    /**
+     * 发言权推送通道（4.35）：让"谁在说话"一推即到，不再是 2 秒轮询。
+     *
+     * <p>没登录（没有 token）就不连 —— 服务端要用 token 才知道"我是房间里的谁"。
+     * 连不上 / 掉线都只是一行状态：2 秒轮询一直在跑，WS 只负责更快。
+     */
+    private void startFloorSocket(String host, String secret, String token) {
+        if (host == null || host.isEmpty() || token == null || token.isEmpty()) {
+            return;
+        }
+        floorSocket = new FloorSocket(host, secret, token, roomKey, new FloorSocket.Listener() {
+            @Override
+            public void onFloor(JSONObject state) {
+                final JSONObject body = state;
+                ui.post(() -> applyFloorState(holderOf(body), body.optBoolean("locked", false)));
+            }
+
+            @Override
+            public void onState(String message) {
+                ui.post(() -> statusLine.setText(message));
+            }
+
+            @Override
+            public void onOnlineChanged(boolean online) {
+                ui.post(() -> wsOnline = online);
+            }
+        });
+        floorSocket.start();
     }
 
     // ── 开麦 / 关麦 ──────────────────────────────────────────────────────
@@ -356,17 +410,10 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 final JSONObject body = state;
                 ui.post(() -> {
                     if (body != null && body.optBoolean("ok", false)) {
-                        String holder = holderOf(body);
-                        boolean wasHolding = holding;
-                        takingChanged(holder, body.optBoolean("locked", false));
-                        if (holding) {
-                            heartbeatIfDue();
-                        } else if (wasHolding || mic != null) {
-                            // 我已经不是持麦者：被别人顶替 / 被强制收回 / 租约过期
-                            onFloorLost(holder);
-                        }
+                        applyFloorState(holderOf(body), body.optBoolean("locked", false));
                     }
-                    if (!isFinishing()) scheduleFloorPoll(FLOOR_POLL_MS);
+                    // 推送通道活着 → 轮询只当看门狗，别白跑那么勤；断了 → 立刻回到 2 秒
+                    if (!isFinishing()) scheduleFloorPoll(wsOnline ? FLOOR_POLL_WATCHDOG_MS : FLOOR_POLL_MS);
                 });
             }, "room-floor-poll").start();
         }, delay);
@@ -378,6 +425,23 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         micUploadButton.setText(uploading ? "停止同传" : "开始同传");
         micUploadButton.setBackgroundColor(uploading ? 0xFF1565C0 : 0xFF263238);
         micUploadButton.setEnabled(true);
+    }
+
+    /**
+     * 一份发言权状态到了 —— **轮询和 WS 推送走同一条路**（4.35）。
+     *
+     * 两处入口必须共用这段，否则就会出现"推送很快，但忘了停上传"这类不对称的 bug：
+     * 界面上 B 在说话、A 的麦克风还在传，正是 4.34 修的那个故障。
+     */
+    private void applyFloorState(String holder, boolean isLocked) {
+        boolean wasHolding = holding;
+        takingChanged(holder, isLocked);
+        if (holding) {
+            heartbeatIfDue();
+        } else if (wasHolding || mic != null) {
+            // 我已经不是持麦者：被别人顶替 / 被强制收回 / 租约过期
+            onFloorLost(holder);
+        }
     }
 
     /** 停止上传并刷新按钮；`hint` 为空则保留当前提示。 */

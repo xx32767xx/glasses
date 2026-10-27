@@ -28,6 +28,7 @@ import { runStartAllSuite } from './start-all-suite.mjs'
 import { runDbSuite } from './db-suite.mjs'
 import { runRoomsSuite } from './rooms-suite.mjs'
 import { runFloorSuite } from './floor-suite.mjs'
+import { runWsSuite } from './ws-suite.mjs'
 import { runProofreadTermsSuite } from './proofread-terms-suite.mjs'
 import { runNetDoctorSuite } from './net-doctor-suite.mjs'
 import { runBenchSuite } from './bench-suite.mjs'
@@ -196,6 +197,11 @@ await runRoomsSuite(helpers)
 
 heading('发言权互斥（P2b：抢麦 / 锁定 / 断线释放）')
 await runFloorSuite(helpers)
+
+// 发言权原来靠"每 2 秒 GET 一次"，被顶替要 2 秒才看得到；改成 WS 推送后是一推即到。
+// 这一套两端都真跑：手写服务端（lib/ws-hub.mjs）+ Node 自带的 WebSocket 客户端。
+heading('发言权推送（/ws：一推即到，不再是 2 秒轮询）')
+await runWsSuite(helpers)
 
 heading('校对遵守术语表')
 await runProofreadTermsSuite(helpers)

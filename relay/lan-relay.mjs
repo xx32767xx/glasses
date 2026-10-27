@@ -43,6 +43,7 @@ import {
 } from '../lib/paths.mjs'
 import { lintTranslation } from '../lib/translation-lint.mjs'
 import { handleOrg } from './org-api.mjs'
+import { createWsHub } from '../lib/ws-hub.mjs'
 import { publishMeetingTerms, readCurrentMeeting } from '../lib/meeting-terms.mjs'
 import { loadSelection } from './org-api.mjs'
 import {
@@ -62,7 +63,7 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
  * **电脑上跑的还是旧版进程**（没有 `/auth/*` 端点）。与其让人对着 404 猜，
  * 不如让这一端把自己的能力报出来，手机据此说人话。
  */
-export const RELAY_FEATURES = ['hello', 'say', 'audio', 'frame', 'status', 'diag', 'lint', 'terms', 'settings', 'auth', 'org']
+export const RELAY_FEATURES = ['hello', 'say', 'audio', 'frame', 'status', 'diag', 'lint', 'terms', 'settings', 'auth', 'org', 'floor-ws']
 
 /**
  * 默认数据目录：和 scripts/harness-side.mjs 指向同一对文件，两边靠它对接。
@@ -1315,6 +1316,8 @@ export async function startRelay(rawOptions = {}) {
           sockets: state.sockets,
           connections: state.connections,
           lastConnectionAt: state.lastConnectionAt,
+          // 发言权推送（WS）的在线连接：房间级的实时通道，推的是"谁在说话"，不推音频。
+          ws: wsHub.stats(),
           publicMode: options.public === true,
           inbox: options.inbox,
           bus: options.bus,
@@ -1528,6 +1531,20 @@ export async function startRelay(rawOptions = {}) {
           method: request.method, path: url.pathname, body, user, role, root: options.dataDir,
         })
         send(response, result.status, result.json)
+        // 发言权变了 → 立刻推给这个房间里的所有人（`/ws` 通道）。
+        // 轮询仍然是兜底：WS 只负责"快点知道"，不替代 GET /floor。
+        // heartbeat 不推：它只刷新租约，可见状态没变，推了只是白费流量。
+        if (result.status < 400 && request.method === 'POST') {
+          const floorMatch = /^\/org\/rooms\/([^/]+)\/floor$/.exec(url.pathname)
+          if (floorMatch !== null) {
+            if (body.action !== 'heartbeat') {
+              wsHub.broadcastFloor(decodeURIComponent(floorMatch[1]))
+            }
+          } else if (url.pathname === '/org/rooms/leave') {
+            // 持麦者退出时服务端会把麦清空（lib/rooms.mjs）→ 留下的人也要立刻看到
+            wsHub.broadcastFloor(decodeURIComponent(String(body.roomId ?? body.code ?? '')))
+          }
+        }
         return
       }
 
@@ -1539,7 +1556,7 @@ export async function startRelay(rawOptions = {}) {
         return
       }
 
-      send(response, 404, { ok: false, error: 'not-found', routes: ['/hello', '/say', '/audio', '/frame', '/status', '/terms', '/settings', '/auth/register', '/auth/login', '/auth/logout', '/auth/whoami', '/org/libraries', '/org/meeting/<id>/libraries', '/org/requests', '/admin'] })
+      send(response, 404, { ok: false, error: 'not-found', routes: ['/hello', '/say', '/audio', '/frame', '/status', '/terms', '/settings', '/auth/register', '/auth/login', '/auth/logout', '/auth/whoami', '/org/libraries', '/org/meeting/<id>/libraries', '/org/requests', '/admin', '/ws'] })
     })().catch(error => {
       if (!response.writableEnded) {
         send(response, 500, { ok: false, error: String(error && error.message ? error.message : error) })
@@ -1557,6 +1574,21 @@ export async function startRelay(rawOptions = {}) {
     state.lastConnectionAt = new Date().toISOString()
     socket.on('close', () => { state.sockets -= 1 })
   })
+
+  // ── 发言权推送通道（手写 WebSocket，见 lib/ws-hub.mjs）─────────────────
+  // 只推"谁在说话/锁没锁"这类低频状态；音频与字幕不走这里。
+  // 认证与普通请求同一套：共享密钥 + token（token 决定"我是房间里的谁"）。
+  const wsHub = createWsHub({
+    dataDir: options.dataDir,
+    checkSecret: given => secretMatches(secret, given),
+    resolveUser: async token => {
+      if (typeof token !== 'string' || token === '') return null
+      const doc = await loadAccounts(options.dataDir)
+      return userForToken(doc, token)
+    },
+    debug,
+  })
+  wsHub.attach(server)
 
   await new Promise((resolve, reject) => {
     server.once('error', reject)
@@ -1576,6 +1608,7 @@ export async function startRelay(rawOptions = {}) {
       state.waiters.clear()
       clearInterval(busTimer)
       if (sweepTimer !== null) clearInterval(sweepTimer)
+      wsHub.close()
       await state.writeChain.catch(() => {})
       await state.writer.close().catch(() => {})
       await new Promise(resolve => server.close(resolve))

@@ -470,6 +470,39 @@ export async function runAndroidOrderSuite({ it, check }) {
       '蓝 = 正在上传，灰 = 空闲')
   })
 
+  await it('发言权推送（/ws）接得对：轮询与推送共用一条应用路径，断了自动退回轮询', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+    const socket = readFileSync(join(javaDir, 'FloorSocket.java'), 'utf-8')
+
+    check('有 FloorSocket（WS 客户端）', socket.includes('extends WebSocketClient'), '没接 Java-WebSocket')
+    check('推送通道在房间页被启动', /private void startFloorSocket\(/.test(room) && /startFloorSocket\(host, secret, token\)/.test(room),
+      '没有连上去就等于没做')
+    check('离开房间时断开（不能留下野连接）', /onDestroy[\s\S]{0,400}floorSocket\.stop\(\)/.test(room),
+      'Activity 销毁要停掉它')
+
+    // 关键：轮询与推送必须走同一条应用路径 —— 否则"推送很快但忘了停上传"这种不对称 bug 会重演（4.34）
+    check('两处入口都走 applyFloorState',
+      (room.match(/applyFloorState\(/g) || []).length >= 3,
+      '轮询一处 + 推送一处 + 定义一处')
+    check('applyFloorState 里带着"被顶替就停上传"的判断',
+      /applyFloorState[\s\S]{0,400}onFloorLost\(/.test(room), '不能只有界面刷新')
+
+    // 推送活着时轮询退成看门狗，但**必须还留一轮询**（WS 假死时它是唯一发现者）
+    check('有"推送活着就放慢轮询"的分支', /wsOnline\s*\?\s*FLOOR_POLL_WATCHDOG_MS/.test(room),
+      '没有它就没有兜底')
+    check('看门狗间隔仍在租约之内', /FLOOR_POLL_WATCHDOG_MS\s*=\s*(\d+)L/.test(room)
+      && Number(/FLOOR_POLL_WATCHDOG_MS\s*=\s*(\d+)L/.exec(room)[1]) < 15000, '必须小于服务端 15 秒租约')
+    check('心跳有独立的定时器（不靠推送消息顺带续租）', /private void scheduleHeartbeatTick\(/.test(room),
+      '推送稀少时租约会把麦判成掉线')
+
+    const gradle = readFileSync(join(ROOT, 'android', 'app', 'build.gradle.kts'), 'utf-8')
+    check('依赖里钉着 Java-WebSocket 1.6.0（本机缓存里有，离线可构建）',
+      /implementation\("org\.java-websocket:Java-WebSocket:1\.6\.0"\)/.test(gradle), gradle.includes('Java-WebSocket'))
+    check('slf4j-api 也在（Java-WebSocket 的编译期依赖）',
+      /implementation\("org\.slf4j:slf4j-api:1\.7\.30"\)/.test(gradle))
+  })
+
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {
     const targets = [
       ...collectSources(join(ROOT, 'android', 'app', 'src', 'main', 'java'), ['.java']),

@@ -282,8 +282,8 @@ export async function runRelaySuite({ it, check, assert }) {
   await it('未知路由 404，并列出可用路由', async () => {
     const result = await call('/nope')
     check('404', result.status === 404, String(result.status))
-    // 2026-10-23 起多了组织接口与管理员页面（docs/19），这里按新清单核对
-    assert.deepEqual(result.json.routes, ['/hello', '/say', '/audio', '/frame', '/status', '/terms', '/settings', '/auth/register', '/auth/login', '/auth/logout', '/auth/whoami', '/org/libraries', '/org/meeting/<id>/libraries', '/org/requests', '/admin'])
+    // 2026-10-23 起多了组织接口与管理员页面（docs/19）；4.35 起多了发言权推送通道 /ws
+    assert.deepEqual(result.json.routes, ['/hello', '/say', '/audio', '/frame', '/status', '/terms', '/settings', '/auth/register', '/auth/login', '/auth/logout', '/auth/whoami', '/org/libraries', '/org/meeting/<id>/libraries', '/org/requests', '/admin', '/ws'])
   })
 
   await it('手机侧设置：PUT /settings 落盘、GET 能读回、坏请求被拒、且写在数据目录里', async () => {
