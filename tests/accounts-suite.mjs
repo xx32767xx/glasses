@@ -82,13 +82,16 @@ export async function runAccountsSuite({ it, check, assert }) {
     check('新 token 不等于注册时那个', good.token !== undefined)
   })
 
-  await it('注销只失效一个 token，别的设备照常', () => {
+  // 2026-10-27 用户要求：**同一账号只允许一处登录**。
+  // 下面的断言与旧版相反是故意的 —— 旧版"多设备并存"，新版"后登录者把前一个踢下线"。
+  await it('单会话：再次登录会让前一个 token 失效', () => {
     const reg = register(emptyAccounts(), 'wu', 'secret12')
     const second = login(reg.doc, 'wu', 'secret12')
+    check('第二次登录给的是新 token', second.ok === true && second.token !== reg.token)
+    check('前一个 token 已被吊销', userForToken(second.doc, reg.token) === null)
+    check('新 token 有效', userForToken(second.doc, second.token) === 'wu')
     const revoked = revokeToken(second.doc, second.token)
-    check('注销成功', revoked.ok === true)
-    check('被注销的 token 失效', userForToken(revoked.doc, second.token) === null)
-    check('另一个 token 仍有效', userForToken(revoked.doc, reg.token) === 'wu')
+    check('注销后当前 token 也失效', userForToken(revoked.doc, second.token) === null)
   })
 
   await it('测试账户脚本：一条命令建好账户 + 热词表，token 当场可用，reset 能清干净', async () => {
@@ -103,8 +106,9 @@ export async function runAccountsSuite({ it, check, assert }) {
     // 旧 token 仍然有效（登录不踢掉别的设备）—— 这是刻意的语义
     const { loadAccounts, userForToken } = await import('../lib/accounts.mjs')
     const doc = await loadAccounts(dataDir)
-    check('旧 token 仍有效', userForToken(doc, result.token) === 'test')
-    check('新 token 也有效', userForToken(doc, again.token) === 'test')
+    // 单会话：新登录踢掉旧 token（2026-10-27 用户要求）
+    check('旧 token 已失效', userForToken(doc, result.token) === null)
+    check('新 token 有效', userForToken(doc, again.token) === 'test')
     // reset 之后账户与表都没了
     await resetTestAccount({ dataDir })
     const after = await loadAccounts(dataDir)
