@@ -26,7 +26,7 @@
  * 但它精确覆盖了**最廉价、最常见、也最丢脸**的那一类：顺序写错。
  */
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { ROOT } from '../lib/paths.mjs'
 
@@ -131,6 +131,87 @@ export function annotateDepth(lines) {
     }
     return { before, after: depth }
   })
+}
+
+/**
+ * 源码完整性：**乱码**与**被吃掉的引号**。
+ *
+ * <p>为什么必须有一条检查盯着这个（2026-10-27 真实事故）：
+ * 4.31 那次提交把 `LanClient.java` 整个重写了一遍，写成的是
+ * **"原文 UTF-8 字节按 GBK 解码"** 的结果 —— 中文全部变成 `鐧诲綍` 这类乱码，
+ * 而且每段中文的**最后一个字的字节会把紧跟的引号一起吞掉**。
+ * 于是 javac 报了一串「未结束的字符串文字」，9 个错、看起来像编码环境的问题，
+ * 实际是**文件内容坏了**。（`git diff` 里那些 `-正确 / +乱码` 成对出现就是签名。）
+ *
+ * <p>三种症状分别对应三条判据，都能机械查：
+ *   ① 含 `閫氫俊` 这类只在乱码里出现的字（正常中文几乎不会用到）；
+ *   ② 严格 UTF-8 解码失败（说明文件根本不是 UTF-8 存的）；
+ *   ③ 去掉注释与字符串内容后，**同一行里的引号必须成对**（Java 的字符串不能跨行）。
+ *
+ * <p>判据 ③ 只在代码行上成立，所以先过一遍 `stripComments`：
+ * 注释与字面量的内容会被换成空格，散文里那些成对的引号 `<code>"我是谁"</code> 不会误报。
+ * 判据 ② 同理只对代码文件生效 —— `docs/05-数据通路.md` 里就**故意**写着 `���`
+ * 当作"收件箱被写坏了长什么样"的样例，文档不是代码，不该被这条判据管。
+ *
+ * <p>但文档**要举证乱码**的时候（`docs/20` 就贴了 4.31 事故的原文与乱码对照），
+ * 判据 ① 会误报。所以留了一个**精确到行**的豁免：那一行写上 `mojibake-ok` 就跳过。
+ * 故意只给行、不给文件 —— 整文件豁免等于把那一页的防线全撤了。
+ */
+export const MOJIBAKE_EVIDENCE_TAG = 'mojibake-ok'
+export const MOJIBAKE_MARKERS = ['锛', '鐨', '鏄', '鍦', '浜', '鎴', '缁', '杩', '璇', '瑁', '璁', '闇'] // mojibake-ok：这一行列的就是乱码字本身
+
+export function sourceIntegrityProblems(text, { strict = true } = {}) {
+  const problems = []
+  if (strict && text.includes('\uFFFD')) {
+    const line = text.split('\n').findIndex(l => l.includes('\uFFFD')) + 1
+    problems.push(`第 ${String(line).padStart(3, ' ')} 行出现 � —— 文件不是合法 UTF-8（可能被按 GBK 存过）`)
+  }
+  const lines = text.split('\n')
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index].includes(MOJIBAKE_EVIDENCE_TAG)) continue   // 这一行是在举证乱码
+    const markers = MOJIBAKE_MARKERS.filter(m => lines[index].includes(m))
+    if (markers.length > 0) {
+      problems.push(`第 ${String(index + 1).padStart(3, ' ')} 行含乱码 ${markers.join('')}：`
+        + lines[index].trim().slice(0, 60))
+    }
+  }
+  if (strict) {
+    const codeLines = stripComments(text).split('\n')
+    for (let index = 0; index < codeLines.length; index += 1) {
+      const line = codeLines[index]
+      if (line.includes('"""')) continue          // 文本块允许跨行，跳过
+      if (!/"/.test(line)) continue
+      const quotes = (line.match(/"/g) || []).length
+      if (quotes % 2 === 1) {
+        problems.push(`第 ${String(index + 1).padStart(3, ' ')} 行引号不成对（${quotes} 个）—— `
+          + '字符串没闭合，javac 会报「未结束的字符串文字」')
+      }
+    }
+  }
+  return problems
+}
+
+/** 递归列出目录下的指定扩展名文件（跳过 build/ 之类生成目录）。 */
+function collectSources(dir, extensions, found = []) {
+  let entries
+  try {
+    entries = readdirSync(dir)
+  } catch {
+    return found
+  }
+  for (const name of entries) {
+    if (name === 'build' || name === '.gradle' || name === 'node_modules') continue
+    const full = join(dir, name)
+    let info
+    try {
+      info = statSync(full)
+    } catch {
+      continue
+    }
+    if (info.isDirectory()) collectSources(full, extensions, found)
+    else if (extensions.some(ext => name.endsWith(ext))) found.push(full)
+  }
+  return found
 }
 
 export async function runAndroidOrderSuite({ it, check }) {
@@ -301,5 +382,50 @@ export async function runAndroidOrderSuite({ it, check }) {
     const bad = '    client.sendDiag("x");'
     check('没有守卫的那种仍然会被抓',
       new RegExp(`\\b${field}\\s*!=\\s*null`).test(bad) === false, bad.trim())
+  })
+
+  // ── 源码完整性：乱码 / 非法 UTF-8 / 被吃掉的引号 ──────────────────────────
+
+  // 反向自检先做：用真实的"UTF-8 字节按 GBK 解码"复现 4.31 那次事故。
+  // 只断言"干净代码不报"是不够的 —— 那样检查可能永远为真而我们以为它在守着。
+  await it('完整性检查本身有效：GBK 误读的代码必须被判坏（4.31 事故的回归）', () => {
+    const corrupt = correct => new TextDecoder('gbk').decode(Buffer.from(correct, 'utf8'))
+    const misread = corrupt('已送到电脑：')
+    check('复现出来的确实是乱码（不是原文）', misread !== '已送到电脑：', misread)
+
+    const mojibake = sourceIntegrityProblems(`listener.onStatus("${corrupt('连接失败：')}" + detail);`)
+    check('报出乱码', mojibake.some(p => p.includes('含乱码')), mojibake.join('；'))
+
+    // 事故里的第二个症状：最后一个汉字的字节把结尾引号吞掉 → 引号只剩一个
+    const swallowed = sourceIntegrityProblems(`listener.onStatus("${misread} + detail);`)
+    check('报出引号不成对', swallowed.some(p => p.includes('引号不成对')), swallowed.join('；'))
+
+    const clean = 'listener.onStatus("连接失败：" + describe(error));'
+    check('干净的一行都不报', sourceIntegrityProblems(clean).length === 0,
+      sourceIntegrityProblems(clean).join('；'))
+
+    // 散文里的成对引号（注释里的 `"我是谁"`）不该被当成代码
+    const prose = '    /** 界面必须区分"连上了电脑"和"同传真的在工作"。 */'
+    check('注释里的引号不误报', sourceIntegrityProblems(prose).length === 0,
+      sourceIntegrityProblems(prose).join('；'))
+  })
+
+  await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {
+    const targets = [
+      ...collectSources(join(ROOT, 'android', 'app', 'src', 'main', 'java'), ['.java']),
+      join(ROOT, 'android', 'app', 'build.gradle.kts'),
+      join(ROOT, 'android', 'build.gradle.kts'),
+      ...collectSources(join(ROOT, 'docs'), ['.md']),
+    ]
+    check('扫到了源文件', targets.length > 20, String(targets.length))
+
+    for (const file of targets) {
+      const text = readFileSync(file, 'utf-8')
+      const problems = sourceIntegrityProblems(text, {
+        strict: file.endsWith('.java') || file.endsWith('.kts'),
+      })
+      const label = file.slice(ROOT.length).replace(/\\/g, '/')
+      check(`${label}`, problems.length === 0, problems.slice(0, 4).join('；'))
+    }
   })
 }
