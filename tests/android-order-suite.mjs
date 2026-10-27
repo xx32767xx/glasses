@@ -439,6 +439,37 @@ export async function runAndroidOrderSuite({ it, check }) {
       '401 才清登录态；网络不通不许踢')
   })
 
+  await it('被顶替时必须自己停止上传（服务端只管裁决，它不知道我还在录音）', () => {
+    const roomActivity = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion',
+      'lanrelay', 'RoomActivity.java'), 'utf-8')
+    const methodBody = (name) => {
+      const at = roomActivity.indexOf(`private void ${name}(`)
+      check(`找得到 ${name}()`, at > 0, String(at))
+      return roomActivity.slice(at, roomActivity.indexOf('\n    }', at))
+    }
+
+    const lost = methodBody('onFloorLost')
+    check('onFloorLost 会真的停上传（不是只改按钮文字）', lost.includes('stopUpload('), lost.slice(0, 80))
+
+    const stop = methodBody('stopUpload')
+    check('stopUpload 调用了 mic.stop()', stop.includes('mic.stop()'), '否则麦克风还在往识别流里灌音频')
+    check('停完把按钮刷回空闲态', stop.includes('updateUploadButton()'))
+
+    // 轮询里必须走到 onFloorLost：只刷 takingChanged 就是 4.33 那个故障
+    check('轮询发现"已不是持麦者"会触发 onFloorLost',
+      /takingChanged\(holder[\s\S]{0,600}onFloorLost\(holder\)/.test(roomActivity),
+      '轮询不能只刷新文字')
+
+    // 心跳失败是最快的那条路（2 秒轮询之前就能知道），也要停
+    check('心跳被拒绝也立刻停',
+      /heartbeat[\s\S]{0,600}stopUpload\(/.test(roomActivity), '服务端说"不是持麦者"时不能等下一轮')
+
+    // 按钮要能一眼看出"在传/没传"：两态颜色不同，否则用户无法判断自己是否还在占麦
+    const button = methodBody('updateUploadButton')
+    check('上传与空闲用两种颜色', button.includes('0xFF1565C0') && button.includes('0xFF263238'),
+      '蓝 = 正在上传，灰 = 空闲')
+  })
+
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {
     const targets = [
       ...collectSources(join(ROOT, 'android', 'app', 'src', 'main', 'java'), ['.java']),

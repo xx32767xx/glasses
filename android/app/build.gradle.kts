@@ -42,8 +42,11 @@ android {
     // 4.33：房间页去掉重复的「术语库」按钮（选库在建房那一步）；修「莫名其妙掉登录」——
     //       authWhoAmI 原来返回 {code,json} 外壳，界面读 ok 永远 false，启动必回登录页，
     //       重登又按单会话踢掉另一台。现在拆包 + 区分「401 才清登录 / 连不上不踢」，见 docs/21 §4.33。
-        versionCode = 62
-        versionName = "4.33"
+    // 4.34：修发言权互斥的客户端一侧 —— 被顶替（B 后开麦抢走）后 A 只在轮询里刷了文字、
+    //       没停麦克风：界面显示发言人=B，音频却还在双路往识别流里灌。现在立刻停上传 +
+    //       按钮回灰（蓝=在传/灰=空闲）+ Toast 提示；心跳被拒也立刻停。见 docs/21 §4.34。
+        versionCode = 63
+        versionName = "4.34"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

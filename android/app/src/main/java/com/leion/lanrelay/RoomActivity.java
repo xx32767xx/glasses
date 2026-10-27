@@ -85,6 +85,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
 
         micUploadButton = findViewById(R.id.roomUpload);
         micUploadButton.setOnClickListener(v -> toggleUpload());
+        updateUploadButton();
         micButton.setOnClickListener(v -> toggleMic());
         lockButton.setOnClickListener(v -> toggleLock());
         findViewById(R.id.roomLeave).setOnClickListener(v -> leaveRoom());
@@ -154,6 +155,11 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 if (body.optString("tookOver", "").length() > 0) {
                     hintLine.setText("你已接管麦克风 · " + body.optString("tookOver") + " 已被自动静音");
                 }
+                // 点「开麦」再点回来 = 结束发言：正在上传的话必须跟着停，
+                // 否则会出现"麦已经放了、音频还在往识别流里灌"（4.34 修）
+                if (!holding && mic != null) {
+                    stopUpload("已结束发言 · 已停止同传");
+                }
             });
         }, "room-floor-" + action).start();
     }
@@ -210,7 +216,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         if (mic != null) {
             mic.stop();
             mic = null;
-            micUploadButton.setText("开始同传");
+            updateUploadButton();
             hintLine.setText("已停止上传");
             new Thread(new Runnable() {
                 public void run() {
@@ -239,8 +245,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                         if (mic != null) {
                             mic.stop();
                             mic = null;
-                            micUploadButton.setText("开始同传");
                         }
+                        updateUploadButton();
                     }
                 });
             }
@@ -321,15 +327,20 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         }
         String error = mic.start();
         if (error == null) {
-            micUploadButton.setText("停止同传");
+            updateUploadButton();
             hintLine.setText("正在上传麦克风，说话会被识别");
         } else {
             mic = null;
+            updateUploadButton();
             hintLine.setText(error);
         }
     }
 
     // ── 发言权轮询 ───────────────────────────────────────────────────────
+    //
+    // ⚠️ 这一圈不只是"刷新谁在说话"：**被顶替时必须立刻停止上传**（4.34 修）。
+    // 旧版只改了按钮文字，于是 A 被 B 抢麦后：界面显示发言人是 B，可 A 的麦克风还在
+    // 往同一个识别流里灌音频 —— 两路音频交错，字幕错乱，而界面上看着"一切正常"。
     private void scheduleFloorPoll(long delay) {
         if (pollScheduled) return;
         pollScheduled = true;
@@ -345,8 +356,15 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 final JSONObject body = state;
                 ui.post(() -> {
                     if (body != null && body.optBoolean("ok", false)) {
-                        takingChanged(holderOf(body), body.optBoolean("locked", false));
-                        if (holding) heartbeatIfDue();
+                        String holder = holderOf(body);
+                        boolean wasHolding = holding;
+                        takingChanged(holder, body.optBoolean("locked", false));
+                        if (holding) {
+                            heartbeatIfDue();
+                        } else if (wasHolding || mic != null) {
+                            // 我已经不是持麦者：被别人顶替 / 被强制收回 / 租约过期
+                            onFloorLost(holder);
+                        }
                     }
                     if (!isFinishing()) scheduleFloorPoll(FLOOR_POLL_MS);
                 });
@@ -354,15 +372,68 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         }, delay);
     }
 
+    /** 上传按钮的文字与颜色：**蓝 = 正在上传**，灰 = 空闲。被顶替时必须回到灰色。 */
+    private void updateUploadButton() {
+        boolean uploading = mic != null;
+        micUploadButton.setText(uploading ? "停止同传" : "开始同传");
+        micUploadButton.setBackgroundColor(uploading ? 0xFF1565C0 : 0xFF263238);
+        micUploadButton.setEnabled(true);
+    }
+
+    /** 停止上传并刷新按钮；`hint` 为空则保留当前提示。 */
+    private void stopUpload(String hint) {
+        if (mic != null) {
+            mic.stop();
+            mic = null;
+            lastHeartbeat = 0L;
+        }
+        updateUploadButton();
+        if (hint != null && !hint.isEmpty()) {
+            hintLine.setText(hint);
+        }
+    }
+
+    /**
+     * 发言权不再在我手上。**必须自己把麦克风停掉** —— 服务端只负责裁决"谁是持麦者"，
+     * 它不知道我这边还在录音；不主动停，两路音频就会混进同一个识别流。
+     */
+    private void onFloorLost(String holder) {
+        boolean wasUploading = mic != null;
+        String who = holder == null ? "" : holder;
+        String message;
+        if (!who.isEmpty()) {
+            message = wasUploading ? (who + " 接管了麦克风 · 已自动停止同传") : (who + " 接管了麦克风");
+        } else {
+            message = wasUploading ? "麦克风已释放 · 已自动停止同传" : "";
+        }
+        if (message.isEmpty()) {
+            updateUploadButton();
+            return;
+        }
+        stopUpload(message);
+        // 字幕流会不断改写 hint 行，所以这条提示再用 Toast 说一次（否则一闪就没了）
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+    }
+
     private void heartbeatIfDue() {
         long now = System.currentTimeMillis();
         if (now - lastHeartbeat < HEARTBEAT_MS) return;
         lastHeartbeat = now;
         new Thread(() -> {
+            JSONObject reply = null;
             try {
-                client.floorAction(roomKey, "heartbeat");
+                reply = client.floorAction(roomKey, "heartbeat");
             } catch (Exception ignored) {
-                // 心跳失败不打扰用户；断线 15 秒后服务端会自动释放
+                // 网络抖动：交给 2 秒轮询与服务端 15 秒租约兜底
+                return;
+            }
+            final JSONObject body = reply;
+            if (body != null && !body.optBoolean("ok", false)) {
+                // 服务端说"不是持麦者"：别再等下一轮轮询，那一秒的音频会混进识别流
+                ui.post(() -> {
+                    holding = false;
+                    stopUpload("你已不是持麦者 · 已自动停止同传");
+                });
             }
         }, "room-floor-heartbeat").start();
     }
