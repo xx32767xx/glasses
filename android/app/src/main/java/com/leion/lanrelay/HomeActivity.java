@@ -83,6 +83,7 @@ public class HomeActivity extends android.app.Activity {
                 startActivity(new Intent(this, MainActivity.class)));
         findViewById(R.id.homeLogout).setOnClickListener(v -> logout());
 
+        // 版本号显示在状态行，便于确认"装的是不是最新构建"
         applyMode();
         restoreSession();
     }
@@ -127,6 +128,7 @@ public class HomeActivity extends android.app.Activity {
 
     private void toggleRegisterMode() {
         registerMode = !registerMode;
+        // 版本号显示在状态行，便于确认"装的是不是最新构建"
         applyMode();
     }
 
