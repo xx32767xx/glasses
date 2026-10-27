@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRoom } from '../lib/rooms.mjs'
-import { FLOOR_LEASE_MS, floorState, forceReleaseFloor, heartbeatFloor, releaseFloor, setFloorLock, takeFloor } from '../lib/floor.mjs'
+import { FLOOR_LEASE_MS, FLOOR_LOCKED_LEASE_MS, floorLeaseOf, floorState, forceReleaseFloor, heartbeatFloor, releaseFloor, setFloorLock, sweepExpiredFloor, takeFloor } from '../lib/floor.mjs'
 
 export async function runFloorSuite({ it, check }) {
   const dir = mkdtempSync(join(tmpdir(), 'leion-floor-'))
@@ -57,6 +57,47 @@ export async function runFloorSuite({ it, check }) {
     const byHost = forceReleaseFloor(dir, { roomId: room.id, by: 'boss', host: room.host })
     check('发起者强制收回成功', byHost.ok === true && byHost.released === 'boss', JSON.stringify(byHost))
     check('收回后麦克风空闲', floorState(dir, room.id).holder === null)
+  })
+
+  await it('锁定态的掉线也会释放（4.42）：宽限更长，但**不是永久**', () => {
+    // 以前租约判断带 `!locked`，于是"锁了麦又掉线"永久占麦，只能等发起人手点强制收回。
+    const t0 = '2026-10-27T00:00:00.000Z'
+    takeFloor(dir, { roomId: room.id, username: 'dev1', now: t0 })
+    setFloorLock(dir, { roomId: room.id, username: 'dev1', host: room.host, locked: true })
+
+    check('锁定态租约比普通态长', FLOOR_LOCKED_LEASE_MS > FLOOR_LEASE_MS,
+      `${FLOOR_LOCKED_LEASE_MS} vs ${FLOOR_LEASE_MS}`)
+    check('floorLeaseOf 按锁定与否取租约',
+      floorLeaseOf(true) === FLOOR_LOCKED_LEASE_MS && floorLeaseOf(false) === FLOOR_LEASE_MS)
+
+    // 普通租约（15 秒）早就过了，但锁定态的宽限（60 秒）还没到 → 仍然抢不走
+    const stillLocked = new Date(Date.parse(t0) + FLOOR_LEASE_MS + 5000).toISOString()
+    const blocked = takeFloor(dir, { roomId: room.id, username: 'boss', now: stillLocked })
+    check('锁定宽限内他人仍被拒', blocked.ok === false, JSON.stringify(blocked))
+
+    // 超过锁定宽限 → 视为掉线，麦可以直接拿走
+    const expired = new Date(Date.parse(t0) + FLOOR_LOCKED_LEASE_MS + 5000).toISOString()
+    const taken = takeFloor(dir, { roomId: room.id, username: 'boss', now: expired })
+    check('超过锁定宽限后可以顶替', taken.ok === true && taken.state.holder === 'boss', JSON.stringify(taken))
+    check('回执说清是"上一个租约过期"且当时是锁定的',
+      taken.reason === 'previous-lease-expired' && taken.releasedLocked === true, JSON.stringify(taken))
+    releaseFloor(dir, { roomId: room.id, username: 'boss', now: expired })
+  })
+
+  await it('没人来抢时也要清扫过期持麦（GET /floor 那个入口用它）', () => {
+    const t0 = '2026-10-28T00:00:00.000Z'
+    takeFloor(dir, { roomId: room.id, username: 'dev1', now: t0 })
+    setFloorLock(dir, { roomId: room.id, username: 'dev1', host: room.host, locked: true })
+
+    const early = new Date(Date.parse(t0) + 10000).toISOString()
+    check('没超期时不清', sweepExpiredFloor(dir, room.id, Date.parse(early)).released === null)
+
+    const late = new Date(Date.parse(t0) + FLOOR_LOCKED_LEASE_MS + 1000).toISOString()
+    const swept = sweepExpiredFloor(dir, room.id, Date.parse(late))
+    check('超期后清掉了', swept.released === 'dev1', JSON.stringify(swept))
+    check('连锁定一起清掉', swept.locked === true, JSON.stringify(swept))
+    check('清完是空麦', floorState(dir, room.id).holder === null)
+    check('再扫一次就没事可做', sweepExpiredFloor(dir, room.id, Date.parse(late)).released === null)
   })
 
   rmSync(dir, { recursive: true, force: true })

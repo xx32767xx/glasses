@@ -143,7 +143,16 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             @Override
             public void onFloor(JSONObject state) {
                 final JSONObject body = state;
-                ui.post(() -> applyFloorState(holderOf(body), body.optBoolean("locked", false)));
+                ui.post(() -> {
+                    String released = body.optString("released", "");
+                    if (!released.isEmpty() && !"null".equals(released)) {
+                        String message = released + " 掉线，麦克风已释放"
+                                + (body.optBoolean("releasedLocked", false) ? "（含锁定）" : "");
+                        hintLine.setText(message);
+                        Toast.makeText(RoomActivity.this, message, Toast.LENGTH_SHORT).show();
+                    }
+                    applyFloorState(holderOf(body), body.optBoolean("locked", false));
+                });
             }
 
             @Override
@@ -433,6 +442,14 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                         return;
                     }
                     if (body != null && body.optBoolean("ok", false)) {
+                        String released = body.optString("released", "");
+                        if (!released.isEmpty() && !"null".equals(released)) {
+                            // 服务端把"锁着麦但人已经不在"的那位清掉了（4.42）
+                            String message = released + " 掉线，麦克风已释放"
+                                    + (body.optBoolean("releasedLocked", false) ? "（含锁定）" : "");
+                            hintLine.setText(message);
+                            Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+                        }
                         applyFloorState(holderOf(body), body.optBoolean("locked", false));
                     }
                     // 推送通道活着 → 轮询只当看门狗，别白跑那么勤；断了 → 立刻回到 2 秒

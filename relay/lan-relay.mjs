@@ -1617,6 +1617,17 @@ export async function startRelay(rawOptions = {}) {
         }
         const result = await handleOrg({
           method: request.method, path: url.pathname, body, user, role, root: options.dataDir,
+          // 断线清扫（4.42）：GET /floor 发现"锁着麦但人不在"时，顺手推给全房间
+          onFloorSwept: (roomId, swept) => {
+            try {
+              wsHub.broadcastFloor(roomId, {
+                released: swept.released,
+                releasedLocked: swept.locked === true,
+              })
+            } catch (error) {
+              debug(`[ws] 广播断线释放失败（不影响主流程）：${error?.message ?? error}`)
+            }
+          },
         })
         send(response, result.status, result.json)
         // 发言权变了 → 立刻推给这个房间里的所有人（`/ws` 通道）。

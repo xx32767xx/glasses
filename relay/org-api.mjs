@@ -30,7 +30,7 @@ import { listLibraries, loadLibrary, loadCategories, saveLibrary, importLibrarie
 import { createRequest, decideRequest, loadRequests, pendingOf, withdrawRequest } from '../lib/requests.mjs'
 import { writeMeetingSnapshot } from '../lib/snapshot.mjs'
 import { createRoom, isRoomClosed, joinRoom, leaveRoom, listMembers, listRooms, roomByCode, roomById, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
-import { FLOOR_LEASE_MS, floorState, forceReleaseFloor, heartbeatFloor, releaseFloor, setFloorLock, takeFloor } from '../lib/floor.mjs'
+import { FLOOR_LOCKED_LEASE_MS, FLOOR_LEASE_MS, floorState, forceReleaseFloor, heartbeatFloor, releaseFloor, setFloorLock, sweepExpiredFloor, takeFloor } from '../lib/floor.mjs'
 import { publishMeetingTerms } from '../lib/meeting-terms.mjs'
 
 export function selectionPath(root, meetingId) {
@@ -308,13 +308,32 @@ export async function handleOrg(input) {
     const rawF = decodeURIComponent(segments[2])
     const roomF = roomById(root, rawF) ?? roomByCode(root, rawF)
     if (roomF === null) return bad(404, `room not found: ${rawF}`)
-    if (method === 'GET') return { status: 200, json: { ok: true, ...floorState(root, roomF.id), leaseMs: FLOOR_LEASE_MS } }
+    if (method === 'GET') {
+      // 先清掉"锁着麦但人已经不在"的状态（4.42）：没人来抢时，这里就是唯一的清理点。
+      // 清掉了就把原因带回给客户端，让界面能说一句"XX 掉线，麦克风已释放"。
+      const swept = sweepExpiredFloor(root, roomF.id, Date.parse(now) || Date.now())
+      // 清掉了就广播一次：让**所有人**都看到"麦克风已释放"，而不是只有正在轮询的这台
+      if (swept.released !== null && typeof input.onFloorSwept === 'function') {
+        input.onFloorSwept(roomF.id, swept)
+      }
+      return {
+        status: 200,
+        json: {
+          ok: true,
+          ...floorState(root, roomF.id),
+          leaseMs: FLOOR_LEASE_MS,
+          lockedLeaseMs: FLOOR_LOCKED_LEASE_MS,
+          released: swept.released,
+          releasedLocked: swept.locked,
+        },
+      }
+    }
     if (method === 'POST') {
       const action = String(body.action ?? '')
       if (action === 'take') {
         const result = takeFloor(root, { roomId: roomF.id, username: user, now })
         if (result.ok !== true) return bad(409, result.error)
-        return { status: 200, json: { ok: true, ...result.state, tookOver: result.tookOver ?? null, reason: result.reason ?? null } }
+        return { status: 200, json: { ok: true, ...result.state, tookOver: result.tookOver ?? null, reason: result.reason ?? null, releasedLocked: result.releasedLocked === true } }
       }
       if (action === 'release') {
         const result = releaseFloor(root, { roomId: roomF.id, username: user, now })

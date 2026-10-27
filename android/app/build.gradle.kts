@@ -60,8 +60,10 @@ android {
     //       并且不再立刻 interrupt（那会丢掉最后半句），改成宽限 2 秒发完尾巴。见 docs/21 §4.40。
     // 4.41：建房后邀请码不再被选库框挡掉（长 Toast + 标题/正文都写码）；被别处登录顶下线时
     //       当场提示（SessionWatch 每 10 秒问一次 whoami，房间内轮询也判 401）。见 docs/21 §4.41。
-        versionCode = 70
-        versionName = "4.41"
+    // 4.42：锁定态掉线不再永久占麦 —— 锁定租约 60 秒（普通 15 秒），GET /floor 顺手清扫并广播
+    //       「XX 掉线，麦克风已释放」。见 docs/21 §4.42。
+        versionCode = 71
+        versionName = "4.42"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），
