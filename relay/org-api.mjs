@@ -55,6 +55,7 @@ export async function loadSelection(root, meetingId) {
 }
 
 function bad(status, error) {
+  if (error === undefined || error === null || error === '') error = `HTTP ${status}（服务端没有给出原因，看 relay 日志）`
   return { status, json: { ok: false, error } }
 }
 
@@ -307,8 +308,8 @@ export async function handleOrg(input) {
     const saved = setRoomLibraries(root, roomId, libraryIds)
     if (saved.ok !== true) return bad(400, saved.error)
     const published = await publishMeetingTerms(root, { libraryIds, owner: user, meetingId: roomId, now })
-    if (published.ok !== true) return bad(400, published.error)
-    return { status: 200, json: { ok: true, roomId, libraryIds, entries: published.entries } }
+    // publishMeetingTerms 不返回 ok 字段（返回 meetingId/entries/conflicts）——不要再按 ok 判断
+    return { status: 200, json: { ok: true, roomId, libraryIds, entries: published.entries, meetingId: published.meetingId, conflicts: published.conflicts ?? [] } }
   }
 
   return bad(404, `没有这个接口：${method} ${path}`)
