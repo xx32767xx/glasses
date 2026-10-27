@@ -50,8 +50,10 @@ android {
     //       推送断了自动退回 2 秒轮询，心跳独立按 5 秒走。见 docs/21 §4.35。
     // 4.36：接上字幕保留期清理（P4）—— 超过 7 天的字幕每小时清一次、启动也清一次；
     //       保留天数可用 --utterance-retention-days 调。见 docs/21 §4.36。
-        versionCode = 65
-        versionName = "4.36"
+    // 4.37：删掉 --from/--to —— 语种改成跟着每一句话走（手机上报 → 识别进程写进收件箱
+    //       每一行的 from → 插件按行定方向）。见 docs/21 §4.37。
+        versionCode = 66
+        versionName = "4.37"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

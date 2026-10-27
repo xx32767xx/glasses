@@ -46,7 +46,7 @@ sys.path.insert(0, str(ROOT / "asr-eval"))
 from whisper_stream import (   # noqa: E402
     LANGUAGE_PROMPTS, SPEECH_RMS_FLOOR, ContextCarry, IdleTracker, PcmFollower, Stats,
     UtteranceSegmenter, context_depth_for, decide_no_speech, looks_like_context_echo,
-    looks_like_hallucination, looks_like_prompt_echo, normalize_peak, parse_args,
+    emit, looks_like_hallucination, looks_like_prompt_echo, normalize_peak, parse_args,
     pick_language, prompt_for, rms_of, transcribe, whisper_language_of,
 )
 import whisper_stream                                                    # noqa: E402
@@ -2077,6 +2077,55 @@ def main():
           and relay_module.frame_of({"frame": "不是对象"}) is None)
 
     # ── 结果 ────────────────────────────────────────────────────────────────
+    # ── 每句话自带语种（--format json，4.37）────────────────────────────────
+    #
+    # 语种不再由命令行固定（--from/--to 已删除），它**只能**由识别侧随句子写出去。
+    # 写丢了，插件就退回"自己猜语种" —— 猜错会让整句安静地译成另一种语言
+    # （实测词错率 100%），比报错更危险。所以这条要钉住。
+    heading("每句话自带语种：--format json 写出 {text, from}")
+
+    def _capture_emit(format_name, text, language):
+        captured = []
+
+        class _Capture:
+            # emit() 里是 print(..., flush=True)：替身必须也有 flush，否则测的是替身的脾气
+            def write(self, chunk):
+                captured.append(chunk)
+
+            def flush(self):
+                pass
+
+        old_stdout, old_format = sys.stdout, whisper_stream.EMIT_FORMAT
+        try:
+            sys.stdout = _Capture()
+            whisper_stream.EMIT_FORMAT = format_name
+            emit(text, language)
+        finally:
+            sys.stdout, whisper_stream.EMIT_FORMAT = old_stdout, old_format
+        return captured
+
+    plain = _capture_emit("text", "纯文本一句", "zh")
+    check("text 格式只输出原文", plain and plain[0].strip() == "纯文本一句", str(plain))
+
+    zh_line = whisper_stream.json.loads(_capture_emit("json", "中文一句", "zh")[0])
+    check("中文句带 from=zh-CN", zh_line == {"text": "中文一句", "from": "zh-CN"}, str(zh_line))
+
+    pt_line = whisper_stream.json.loads(_capture_emit("json", "葡语一句", "pt")[0])
+    check("葡语句带 from=pt-BR", pt_line == {"text": "葡语一句", "from": "pt-BR"}, str(pt_line))
+
+    unknown = whisper_stream.json.loads(_capture_emit("json", "语种未知", None)[0])
+    check("语种未知时不硬编 from（让插件自己判）", unknown == {"text": "语种未知"}, str(unknown))
+
+    other = whisper_stream.json.loads(_capture_emit("json", "hello", "en")[0])
+    check("表外语种也不硬编 from", other == {"text": "hello"}, str(other))
+
+    check("空白句不产生任何行", _capture_emit("json", "   ", "zh") == [])
+
+    check("--format 缺省 text（老管线不受影响）",
+          parse_args(["--follow", "x.pcm"]).format == "text")
+    check("--format json 可用", parse_args(["--follow", "x.pcm", "--format", "json"]).format == "json")
+
+
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
     if failures:
         print("")

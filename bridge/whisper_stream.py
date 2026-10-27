@@ -58,6 +58,7 @@ leion-pro 的 ASR 收件箱：
 """
 
 import argparse
+import json
 import os
 import queue
 import sys
@@ -142,6 +143,14 @@ def whisper_language_of(tag):
 # 用来校验 `--lang-candidates`，免得写错了变成"限定悄悄失效"。
 WHISPER_LANG_CODES = ("pt", "zh", "en", "es")
 
+# 每句输出格式（main 里按 --format 覆盖）。text = 一行原文；json = 带语种标记。
+# 语种标记用**插件那套 tag**（zh-CN / pt-BR），不是 whisper 的两位码。
+EMIT_FORMAT = "text"
+
+# whisper 的两位语种码 → 收件箱/插件用的 tag。表外的语种不标 ——
+# 让插件按句子自动判定，比标一个它不认识的 tag 安全。
+LANG_TAGS = {"zh": "zh-CN", "pt": "pt-BR"}
+
 
 def parse_lang_candidates(raw):
     """把 `--lang-candidates zh,pt` 解析成元组；空串 = None（不限定）。
@@ -178,6 +187,9 @@ def parse_args(argv=None):
     parser.add_argument("--compute-type", default="int8",
                         help="int8 / int8_float32 / int8_float16 / float16 / float32"
                              "（CPU 用 int8；GPU 用 float16；Pascal 卡如 Tesla P40 没有 FP16 加速，用 int8_float32）")
+    parser.add_argument("--format", default="text", choices=("text", "json"),
+                        help="每句输出格式：text=一行原文（插件自动判语向）；"
+                             "json={\"text\":…,\"from\":\"zh-CN\"}，语种跟着每句话走（推荐）")
     parser.add_argument("--language", default=None, help="固定语种（zh / pt）；缺省自动判定")
     # 限定候选语种：不指定 `--language` 时，只在候选里挑，而不是在 99 种语言里挑。
     #
@@ -1031,7 +1043,7 @@ def transcribe(model, audio, language, min_logprob, no_speech_prob,
     #    之后再判就没有"安静"可言了（实战中正是它把噪声喂成了「中文字幕志愿者 李宗盛」）。
     skip = silence_skip_reason(audio, silence_floor)
     if skip is not None:
-        return "", True, skip, False, "silence"
+        return "", True, skip, False, "silence", language
     data = normalize_peak(audio) if do_normalize else audio
 
     # 拼给模型的提示词：指令在前、上文在后（顺序与实验一致）。
@@ -1085,6 +1097,10 @@ def transcribe(model, audio, language, min_logprob, no_speech_prob,
         condition_on_previous_text=False,   # 句间独立，避免上一句的错误污染下一句
         initial_prompt=prompt,
     )
+    # 这一句实际用的语种：显式指定了就是它；没指定时是模型检测出来的那个。
+    # 它要跟着句子一起发出去（--format json），否则插件只能自己再猜一遍。
+    resolved_language = language if language is not None else getattr(_info, "language", None)
+
     # 先算一次电平（在**归一化之前**算，那才是真实录音的电平）
     level = rms_of(audio)
 
@@ -1130,7 +1146,7 @@ def transcribe(model, audio, language, min_logprob, no_speech_prob,
             continue
         kept.append(text)
     return (" ".join(kept).strip(), kept == [], dropped,
-            (overrode and kept != []), kind)
+            (overrode and kept != []), kind, resolved_language)
 
 
 class Stats:
@@ -1382,10 +1398,23 @@ class IdleTracker:
 
 # ── 主流程 ───────────────────────────────────────────────────────────────────
 
-def emit(text: str):
-    """一行一句话，立刻 flush：延迟就是同传的命。"""
+def emit(text: str, language=None):
+    """一行一句话，立刻 flush：延迟就是同传的命。
+
+    --format json 时把**这一句实际用到的语种**一起写出去（`{"text":…,"from":"zh-CN"}`）。
+    为什么这件事重要：语种不再由命令行固定，而是跟着每句话走 —— 手机切语种、双方交替发言，
+    每一句都能按自己的语种翻译，不会出现"整路被定错语种、安静地输出另一种语言的译文"。
+    """
     clean = " ".join(text.split())
-    if clean:
+    if not clean:
+        return
+    if EMIT_FORMAT == "json":
+        payload = {"text": clean}
+        tag = LANG_TAGS.get(language)
+        if tag is not None:
+            payload["from"] = tag
+        print(json.dumps(payload, ensure_ascii=False), flush=True)
+    else:
         print(clean, flush=True)
 
 
@@ -1421,7 +1450,9 @@ def resolve_compute_type(requested, device):
 
 
 def main():
+    global EMIT_FORMAT
     args = parse_args()
+    EMIT_FORMAT = args.format
     # 只有"真要从麦克风收"才需要 sounddevice。
     # 注意 follow 模式也算"不是麦克风" —— 早先这里只判了 --file，于是
     # `--follow` 会因为没有 sounddevice 直接退出（而退出前那句错误信息又被管道
@@ -1499,7 +1530,7 @@ def main():
         # ⚠️ 但两段**分开传给 transcribe**：它们的闸判据强度不一样（见 transcribe 的说明）。
         hint = None if args.no_prompt else prompt_for(language, args.initial_prompt)
         carried = carry.prompt(language, now)
-        text, empty, reason, overrode, kind = transcribe(
+        text, empty, reason, overrode, kind, resolved_language = transcribe(
             model, utterance, language,
             args.min_logprob, args.no_speech_prob,
             beam_size=args.beam_size,
@@ -1529,7 +1560,7 @@ def main():
             print(f"  [{seconds:.1f}s 音频 / {elapsed:.2f}s 识别 / RTF {rtf:.2f}"
                   f" / 电平 {level:.4f}]{note}",
                   file=sys.stderr, flush=True)
-        emit(text)
+        emit(text, resolved_language)
 
     if args.file is not None:
         import wave

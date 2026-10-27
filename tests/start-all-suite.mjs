@@ -310,28 +310,32 @@ export async function runStartAllSuite({ it, check, assert }) {
   //   固定 pt  → 语种 {pt:20}，词错率 12.2%
   // 所以这两个开关存在的意义是**消掉"整句报废"那一类**，不是普遍提升准确率。
 
-  await it('固定语种：--from/--to 必须真的传到识别进程（否则单向模式是假的）', async () => {
-    const asr = buildSteps(parseArgs(['--from', 'zh-CN', '--to', 'pt-BR'])).find(s => s.key === 'asr')
-    check('带上 --from zh-CN', argsOf(asr).includes('--from zh-CN'), argsOf(asr))
-    check('带上 --to pt-BR', argsOf(asr).includes('--to pt-BR'), argsOf(asr))
+  await it('语种跟着每句话走：识别进程一律拿 --format json（不再传 --from/--to）', async () => {
+    const asr = buildSteps(parseArgs([])).find(s => s.key === 'asr')
+    const args = argsOf(asr)
+    check('识别进程拿到 --format json', args.includes('--format json'), args)
+    check('不再传 --from', args.includes('--from') === false, args)
+    check('不再传 --to', args.includes('--to') === false, args)
+
+    // 这两个参数应该**根本不存在**了：传了就是"看不懂的参数"
+    assert.throws(() => parseArgs(['--from', 'zh-CN']), /未知选项/)
+    assert.throws(() => parseArgs(['--to', 'pt-BR']), /未知选项/)
   })
 
-  await it('固定语种：缺省**不固定**（自动判定仍是缺省行为，不能悄悄改掉）', async () => {
+  await it('缺省不传任何语种参数（语种由每句话自带，双向同传零配置）', async () => {
     const asr = buildSteps(parseArgs([])).find(s => s.key === 'asr')
     check('没有 --from', argsOf(asr).includes('--from') === false, argsOf(asr))
     check('没有 --to', argsOf(asr).includes('--to') === false, argsOf(asr))
   })
 
-  await it('固定语种：非法语种与"同一个语种"都在入口就被拒（不让子进程起来才报）', async () => {
-    // 起不来的表现只是"某个进程起来就退了"，真正的原因在几百行日志之后 ——
-    // 所以在 parseArgs 就拦住。
-    assert.throws(() => parseArgs(['--from', 'en-US']), /只能是 zh-CN 或 pt-BR/)
-    assert.throws(() => parseArgs(['--to', 'ja']), /只能是 zh-CN 或 pt-BR/)
-    assert.throws(() => parseArgs(['--from', 'zh-CN', '--to', 'zh-CN']), /不能是同一个语种/)
-    check('合法的两个方向都通过',
-      parseArgs(['--from', 'pt-BR', '--to', 'zh-CN']).from === 'pt-BR',
-      'zh-CN→pt-BR 与 pt-BR→zh-CN 都该允许')
+  await it('--from/--to 已经从入口彻底移除（传了就报"未知选项"，不会静默忽略）', async () => {
+    // 从前这两个参数固定语种；现在语种跟着每句话走（手机随音频上报 → 识别进程写进
+    // 收件箱每一行）。留着它们更危险：用户以为固定住了，实际早就不生效。
+    assert.throws(() => parseArgs(['--from', 'zh-CN']), /未知选项 --from/)
+    assert.throws(() => parseArgs(['--to', 'pt-BR']), /未知选项 --to/)
+    assert.throws(() => parseArgs(['--from', 'en-US']), /未知选项/)
   })
+
 
   //
   // 为什么归档的时机是"进程结束"而不是"一次对话结束"：系统里没有可靠的

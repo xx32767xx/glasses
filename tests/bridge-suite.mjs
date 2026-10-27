@@ -233,31 +233,46 @@ export async function runBridgeSuite({ it, check, assert }) {
   })
 
   await it('parseArgs：whisper 引擎自带默认命令，指向随包的 Python 脚本', async () => {
-    const options = parseArgs(['--inbox', 'a.jsonl', '--engine', 'whisper', '--from', 'pt-BR'])
+    const options = parseArgs(['--inbox', 'a.jsonl', '--engine', 'whisper'])
     check('生成了默认命令', typeof options.command === 'string', String(options.command))
     check('指向 whisper_stream.py', options.command.includes('whisper_stream.py'), options.command)
-    check('把语种转成了 --language pt', options.command.includes('--language pt'), options.command)
+    // 4.37 起不再固定语种：不传 --language，让每句话自己带语种（见下面那条）
+    check('不再固定 --language', options.command.includes('--language') === false, options.command)
+    check('文本格式时不追加 --format', options.command.includes('--format') === false, options.command)
+    const json = parseArgs(['--inbox', 'a.jsonl', '--engine', 'whisper', '--format', 'json'])
+    check('json 格式时让识别进程也吐 json（每句带 from）',
+      json.command.includes('--format json'), json.command)
   })
 
-  await it('parseArgs：--from 必须**同时**关掉侧车语种，否则这个开关是假的', async () => {
-    // ⚠️ 真实踩到的坑：whisper_stream 默认听手机发来的 audio-in.lang，**优先于命令行**；
-    //    而安卓那边 sourceLang 的缺省值就是 pt-BR。于是 `--from zh-CN` 会被手机的声明
-    //    覆盖成 pt —— 正好是反的，而且**安静地**反（识别会把中文"翻"成葡语，
-    //    日志上看不出异常）。所以 --from 必须带上 --no-sidecar-lang。
-    const zh = parseArgs(['--inbox', 'a.jsonl', '--engine', 'whisper', '--from', 'zh-CN'])
-    check('--from zh-CN → --language zh', zh.command.includes('--language zh'), zh.command)
-    check('--from zh-CN → 带 --no-sidecar-lang', zh.command.includes('--no-sidecar-lang'), zh.command)
-    const pt = parseArgs(['--inbox', 'a.jsonl', '--engine', 'whisper', '--from', 'pt-BR'])
-    check('--from pt-BR → 也带 --no-sidecar-lang', pt.command.includes('--no-sidecar-lang'), pt.command)
-    // 没给 --from 时**不能**动侧车 —— 手机上的「听葡语/听中文」开关要靠它生效
-    const auto = parseArgs(['--inbox', 'a.jsonl', '--engine', 'whisper'])
-    check('没给 --from 就不许关侧车（否则手机切语种会失效）',
-      auto.command.includes('--no-sidecar-lang') === false, auto.command)
+  await it('语种跟着每句话走：JSON 行原样透传，行里的 from 不被全局标记覆盖', async () => {
+    // 4.37 起没有 --from/--to：识别进程每句话自带语种（{"text":…,"from":"zh-CN"}），
+    // 桥只负责透传。这条钉住"透传"这件事 —— 桥要是把 from 吃掉，插件就只能再猜一遍。
+    const inbox = inboxIn('per-line-from.jsonl')
+    const writer = await createInboxWriter({ inboxPath: inbox, format: 'json', truncate: true })
+    await writer.write('{"text":"你好，会议改到三点","from":"zh-CN"}')
+    await writer.write('{"text":"A reunião é às três","from":"pt-BR"}')
+    await writer.write('纯文本一行')
+    await writer.close()
+    const lines = (await readFile(inbox, 'utf-8')).split('\n').filter(l => l !== '')
+    check('写进去 3 行', lines.length === 3, String(lines.length))
+    check('中文那句带着 zh-CN', JSON.parse(lines[0]).from === 'zh-CN', lines[0])
+    check('葡语那句带着 pt-BR', JSON.parse(lines[1]).from === 'pt-BR', lines[1])
+    check('纯文本按 format=json 也包成对象', JSON.parse(lines[2]).text === '纯文本一行', lines[2])
+
+    // 行里的 from 优先于构造时的全局 tags（全局只做补缺）
+    const inbox2 = inboxIn('per-line-override.jsonl')
+    const writer2 = await createInboxWriter({
+      inboxPath: inbox2, format: 'json', tags: { from: 'zh-CN' }, truncate: true,
+    })
+    await writer2.write({ text: '这句其实是葡语', from: 'pt-BR' })
+    await writer2.close()
+    const first = JSON.parse((await readFile(inbox2, 'utf-8')).split('\n')[0])
+    check('行里的 from 赢过全局 tags', first.from === 'pt-BR', JSON.stringify(first))
   })
 
   await it('parseArgs：whisper 的模型/设备/精度能透传到 Python 脚本', async () => {
     const options = parseArgs([
-      '--inbox', 'a.jsonl', '--engine', 'whisper', '--from', 'pt-BR',
+      '--inbox', 'a.jsonl', '--engine', 'whisper',
       '--whisper-model', 'medium', '--whisper-device', 'cuda', '--whisper-compute', 'float16',
     ])
     check('模型透传', options.command.includes('--model medium'), options.command)

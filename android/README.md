@@ -565,7 +565,7 @@ taskkill /PID <那个PID> /F
 ```powershell
 node relay/lan-relay.mjs                                          # 终端 1
 # 终端 2：识别进程（用桥自己起，不要写 python | node 管道）
-node bridge/asr-bridge.mjs --inbox var/live/asr-inbox.jsonl --from zh-CN ^
+node bridge/asr-bridge.mjs --inbox var/live/asr-inbox.jsonl --format json ^
   --whisper-follow var/live/audio-in.pcm --whisper-device cuda --whisper-compute float16
 # 终端 3：把一段录音当"手机上传"发过去
 python bridge/make_long_wav.py var/audio/zh/20261004_002001.m4a var/audio/zh/short-16k.wav --times 3 --gap 1

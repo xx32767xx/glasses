@@ -124,12 +124,11 @@ const HELP = `start-all —— 一条命令起齐整条链路
   --port <n>            转发端口（缺省 8788）
   --cols <n>            显示宽度（缺省 40）
   --lines <n>           显示行数（缺省 3）
-  --from <zh-CN|pt-BR>  **固定源语种**（单向模式）：识别不再自动判语种，翻译方向也定死。
-                        例：中文发言译成巴葡 → --from zh-CN --to pt-BR
-                        缺省不固定（自动判定）。⚠️ 只有在"这一路音频只会有一种语言"时
-                        才安全 —— 固定错语种会让识别**安静地输出译文**而不是报错，
-                        实测后果见 buildSteps 里的注释。
-  --to <zh-CN|pt-BR>    固定目标语种（与 --from 配合）
+  （没有 --from / --to 了）
+                        语种跟着**每一句话**走：手机每次开始/切换录音都会把"说哪种语言"
+                        随音频上报（URL 参数 lang），识别进程按它解码，并把语种写进
+                        收件箱的每一行 → 插件据此定翻译方向、目标语种自动取另一种语言。
+                        所以双向同传不需要任何命令行参数。
   --open-window         另外弹一个窗口跑调试窗口（Windows；那个窗口是全屏重画的，混在一起会打架）
   --dry-run             只检查并显示将要做什么，不真的启动进程（用来排查"起不来"）
   --quiet-logs          不写 var/logs/
@@ -161,11 +160,8 @@ export function parseArgs(argv) {
     openWindow: false,
     writeLogs: true,
     public: false,
-    // null = 不固定语种（自动判定，现在的缺省行为）。见 buildSteps 里那段实测注释。
-    from: null,
-    to: null,
   }
-  const takesValue = new Set(['data-dir', 'inbox', 'bus', 'audio', 'port', 'cols', 'lines', 'whisper-model', 'compute', 'from', 'to'])
+  const takesValue = new Set(['data-dir', 'inbox', 'bus', 'audio', 'port', 'cols', 'lines', 'whisper-model', 'compute'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -198,18 +194,6 @@ export function parseArgs(argv) {
     if (!Number.isInteger(options[key]) || options[key] <= 0) {
       throw new Error(`--${key} 必须是正整数，收到 ${JSON.stringify(options[key])}`)
     }
-  }
-  // 语种只可能是这两个（与 LANGS / 桥接的校验一致）。
-  // 在这里就拦住，而不是等桥接进程起来才报 —— 那种情况下用户看到的是
-  // "某个进程起来就退了"，而真正的原因在几百行日志之后。
-  for (const key of ['from', 'to']) {
-    if (options[key] === null) continue
-    if (!['zh-CN', 'pt-BR'].includes(options[key])) {
-      throw new Error(`--${key} 只能是 zh-CN 或 pt-BR，收到 ${JSON.stringify(options[key])}`)
-    }
-  }
-  if (options.from !== null && options.to !== null && options.from === options.to) {
-    throw new Error(`--from 与 --to 不能是同一个语种（收到都是 ${options.from}）`)
   }
   // ⚠️ 数据目录必须解析成**绝对路径**。
   //    踩过的坑：`--data-dir var/test/x` 这样的相对路径会被原样写进插件配置，
@@ -262,23 +246,17 @@ export function buildSteps(options) {
       '--whisper-device', options.device,
       '--whisper-compute', options.computeType,
     ]
-    // 固定语种（单向模式）。给 `--from` 时桥接会做两件事：
-    //   ① 给 Whisper 传 `--language`，**不再自动判语种**；
-    //   ② 把源语种标在收件箱每一行上，插件据此定翻译方向（不必再猜）。
+    // ── 语种跟着每一句话走（4.37 起不再有 --from/--to）──────────────────
     //
-    // 为什么这件事值得一个开关 —— 真机数据说话（pt-coraa，20 条真实巴葡口语）：
-    //   自动判定：语种 {pt:19, he:1}，词错率 13.3%。那 1 条被认成希伯来语的句子
-    //             **整句报废（WER 100%）** —— 20 条里 1 条，5% 的句子被"判错语种"毁掉。
-    //   固定 pt ：语种 {pt:20}，词错率 12.2%，那条从 100% 降到 60%。
-    // 所以固定语种**消掉的是"整句报废"这一类**，不是普遍提升准确率（19/20 条没变）。
+    // 链路：手机每次开始/切换录音都会随音频上报 lang（`/audio?lang=`）→ relay 写进
+    // `audio-in.lang` 旁文件 → 识别进程按它解码，并把**实际用到的语种**写进收件箱的
+    // **每一行**（`{"text":…,"from":"zh-CN"}`）→ 插件按行取 from、目标语种取另一种。
     //
-    // ⚠️ **但它只有在"这一路音频只会有一种语言"时才是安全的**（例如单向发言）。
-    //    实测把葡语音频硬当中文识别：词错率 **100%**，而且输出不是乱码 ——
-    //    是**中文译文**（`sequer olhavam pra você` → `甚至看不見你`），
-    //    还会带 30 个繁体字。也就是说"固定错语种"会**安静地产出看着合理的东西**，
-    //    比报错更危险。所以这才是开关，不是缺省值。
-    if (options.from) asrArgs.push('--from', options.from)
-    if (options.to) asrArgs.push('--to', options.to)
+    // 为什么这样比"命令行固定语种"好：固定语种只有在"这一路音频只会有一种语言"时才安全。
+    // 实测把葡语音频硬当中文识别：词错率 **100%**，而且输出不是乱码 —— 是**中文译文**
+    // （`sequer olhavam pra você` → `甚至看不見你`）。也就是说固定错语种会**安静地产出
+    // 看着合理的东西**，比报错危险得多。现在一句话一种语种，就不会有"整路被定错"这种事。
+    asrArgs.push('--format', 'json')
     steps.push({
       key: 'asr',
       ...STEPS.asr,

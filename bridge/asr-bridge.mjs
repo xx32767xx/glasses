@@ -127,15 +127,15 @@ export function createLineAssembler({ flushOnPauseMs = 0, onLine, setTimer = set
 export async function createInboxWriter({ inboxPath, format = 'text', tags = {}, truncate: doTruncate = false, dryRun = false, log = console } = {}) {
   if (typeof inboxPath !== 'string' || inboxPath === '') throw new Error('createInboxWriter 需要 inboxPath')
   if (format !== 'text' && format !== 'json') throw new Error(`format 只能是 'text' 或 'json'，收到 ${JSON.stringify(format)}`)
-  if (tags.from !== undefined && !LANGS.includes(tags.from)) {
-    throw new Error(`from 只能是 ${LANGS.join(' / ')}，收到 ${JSON.stringify(tags.from)}`)
+  const checkTag = (label, value, allowed) => {
+    if (value === undefined) return
+    if (!allowed.includes(value)) {
+      throw new Error(`${label} 只能是 ${allowed.join(' / ')}，收到 ${JSON.stringify(value)}`)
+    }
   }
-  if (tags.to !== undefined && !LANGS.includes(tags.to)) {
-    throw new Error(`to 只能是 ${LANGS.join(' / ')}，收到 ${JSON.stringify(tags.to)}`)
-  }
-  if (tags.speaker !== undefined && !SPEAKERS.includes(tags.speaker)) {
-    throw new Error(`speaker 只能是 ${SPEAKERS.join(' / ')}，收到 ${JSON.stringify(tags.speaker)}`)
-  }
+  checkTag('from', tags.from, LANGS)
+  checkTag('to', tags.to, LANGS)
+  checkTag('speaker', tags.speaker, SPEAKERS)
 
   const stats = { lines: 0, bytes: 0, skipped: 0 }
   let handle = null
@@ -155,9 +155,45 @@ export async function createInboxWriter({ inboxPath, format = 'text', tags = {},
     }
   }
 
-  /** 一句话 → 收件箱里的一行。JSON 行不能含裸换行，否则插件会把它当成两句。 */
-  function formatLine(text) {
-    const clean = String(text).replace(/\s+/g, ' ').trim()
+  /**
+   * 一句话 → 收件箱里的一行。JSON 行不能含裸换行，否则插件会把它当成两句。
+   *
+   * <p>入参可以是**纯字符串**，也可以是 `{text, from, to, speaker}` 对象 ——
+   * 后者是 4.37 起的主要用法：识别进程**每句话**自带语种，桥只负责透传。
+   * 行里的字段优先于构造时的全局 tags（全局只用来补缺，比如 speaker）。
+   */
+  function formatLine(input) {
+    let structured = null
+    if (input !== null && typeof input === 'object') {
+      structured = input
+    } else if (typeof input === 'string' && input.trim().startsWith('{')) {
+      // 识别进程直接吐 JSON 行（whisper_stream --format json）时就地解析；
+      // 解析不出来就当普通文本，绝不让一行坏 JSON 把整条同传卡住。
+      try {
+        const parsed = JSON.parse(input)
+        if (parsed !== null && typeof parsed === 'object' && typeof parsed.text === 'string') {
+          structured = parsed
+        }
+      } catch {
+        structured = null
+      }
+    }
+
+    if (structured !== null) {
+      const clean = String(structured.text).replace(/\s+/g, ' ').trim()
+      if (clean === '') return null
+      const payload = { text: clean }
+      for (const key of ['from', 'to', 'speaker']) {
+        const value = structured[key] !== undefined ? structured[key] : tags[key]
+        if (value !== undefined) payload[key] = value
+      }
+      checkTag('from', payload.from, LANGS)
+      checkTag('to', payload.to, LANGS)
+      checkTag('speaker', payload.speaker, SPEAKERS)
+      return JSON.stringify(payload)
+    }
+
+    const clean = String(input).replace(/\s+/g, ' ').trim()
     if (clean === '') return null
     if (format === 'text') return clean
     const payload = { text: clean }
@@ -233,8 +269,8 @@ const HELP = `asr-bridge —— 把语音识别结果送进 leion-pro 的 ASR �
 
 格式
   --format text|json          text=一行原文（插件自动判语向）；json=带标记，缺省 text
-  --from <zh-CN|pt-BR>        标记源语种（json 格式时写进行里，等价于插件的 inboxFrom）
-  --to <zh-CN|pt-BR>          标记目标语种
+                              语种不再用命令行固定：ASR 把**每一句**的语种写进行里
+                              （{"text":…,"from":"zh-CN"}），插件按行取。透传即可。
   --speaker <them|me>         标记说话人
 
 行为
@@ -260,7 +296,7 @@ export function parseArgs(argv) {
   const options = { engine: 'stdin', format: 'text', replayDelayMs: 1200, flushOnPauseMs: 0, quiet: false }
   const takesValue = new Set([
     'inbox', 'engine', 'command', 'replay', 'replay-delay-ms', 'format',
-    'from', 'to', 'speaker', 'flush-on-pause-ms',
+    'speaker', 'flush-on-pause-ms',
     'whisper-model', 'whisper-device', 'whisper-compute', 'whisper-follow',
   ])
   const flags = new Set(['truncate', 'dry-run', 'quiet', 'help'])
@@ -302,16 +338,11 @@ export function parseArgs(argv) {
       // 注意：只有自动拼出来的命令才追加这些参数；用户自己写了 --command 就原样执行，
       // 免得"你以为跑的是你的命令，其实被塞了两个参数"。
       let command = `python "${join(HERE, 'whisper_stream.py')}"`
-      if (options.from !== undefined) {
-        command += ` --language ${options.from === 'zh-CN' ? 'zh' : 'pt'}`
-        // ⚠️ **必须同时关掉侧车语种**，否则 `--from` 是**假的**：
-        //    whisper_stream 默认听手机发来的 `audio-in.lang`，而且**优先于命令行**；
-        //    而安卓那边 `sourceLang` 的缺省值就是 `pt-BR`。
-        //    于是 `--from zh-CN` 会被手机的声明覆盖成 pt —— 正好是反的，
-        //    而且**安静地**反：识别会把中文"翻"成葡语，日志上看不出异常。
-        //    （真实踩到：这是我上一版接线时漏掉的，`--from` 看着生效其实没生效。）
-        command += ' --no-sidecar-lang'
-      }
+      // 每句话自带语种：手机把"说哪种语言"随音频上报 → whisper_stream 读旁文件解码 →
+      // 把**实际用到的语种**写进 json 行（`{"text":…,"from":"zh-CN"}`）。
+      // 所以这里只按格式要 json，不再固定 --language（固定错语种会安静地输出译文，
+      // 见 scripts/start-all.mjs 里那段实测注释）。
+      if (options.format === 'json') command += ' --format json'
       if (options['whisper-follow'] !== undefined) command += ` --follow "${options['whisper-follow']}"`
       if (options['whisper-model'] !== undefined) command += ` --model ${options['whisper-model']}`
       if (options['whisper-device'] !== undefined) command += ` --device ${options['whisper-device']}`
@@ -337,7 +368,8 @@ export async function createBridgeSink(options) {
   const writer = await createInboxWriter({
     inboxPath: options.inbox,
     format: options.format,
-    tags: { from: options.from, to: options.to, speaker: options.speaker },
+    // 只保留 speaker：语种由每一行自带（见 createInboxWriter 的 formatLine）
+    tags: { speaker: options.speaker },
     truncate: options.truncate === true,
     dryRun: options.dryRun === true,
   })
