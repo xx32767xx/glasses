@@ -31,6 +31,8 @@ public class RoomsActivity extends android.app.Activity {
     private TextView hint;
     private Button createButton;
     private Button joinButton;
+    /** 我在会议里说什么语言（zh-CN / pt-BR） */
+    private String speakLang = "zh-CN";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -60,6 +62,23 @@ public class RoomsActivity extends android.app.Activity {
 
         createButton.setOnClickListener(v -> createRoom());
         joinButton.setOnClickListener(v -> joinRoom());
+        findViewById(R.id.roomsLangZh).setOnClickListener(v -> setSpeakLang("zh-CN"));
+        findViewById(R.id.roomsLangPt).setOnClickListener(v -> setSpeakLang("pt-BR"));
+        String savedLang = prefs.getString("speakLang", "zh-CN");
+        setSpeakLang(savedLang == null || savedLang.isEmpty() ? "zh-CN" : savedLang);
+    }
+
+    /** 选择我在会里说的语言，并记住（下次默认用它）。 */
+    private void setSpeakLang(String lang) {
+        speakLang = lang;
+        getSharedPreferences("leion", MODE_PRIVATE).edit().putString("speakLang", lang).apply();
+        Button zh = findViewById(R.id.roomsLangZh);
+        Button pt = findViewById(R.id.roomsLangPt);
+        boolean isZh = "zh-CN".equals(lang);
+        zh.setText(isZh ? "我说中文 ✓" : "我说中文");
+        pt.setText(isZh ? "我说葡语" : "我说葡语 ✓");
+        zh.setBackgroundColor(isZh ? 0xFF1565C0 : 0xFF263238);
+        pt.setBackgroundColor(isZh ? 0xFF263238 : 0xFF1565C0);
     }
 
     private void createRoom() {
@@ -73,7 +92,7 @@ public class RoomsActivity extends android.app.Activity {
             JSONObject body = null;
             String error = "";
             try {
-                body = client.orgCreateRoom(name);
+                body = client.orgCreateRoom(name, speakLang);
             } catch (Exception e) {
                 error = e.getMessage() == null ? e.toString() : e.getMessage();
             }
@@ -114,7 +133,7 @@ public class RoomsActivity extends android.app.Activity {
             JSONObject body = null;
             String error = "";
             try {
-                body = client.orgJoinRoom(code);
+                body = client.orgJoinRoom(code, speakLang);
             } catch (Exception e) {
                 error = e.getMessage() == null ? e.toString() : e.getMessage();
             }

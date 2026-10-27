@@ -658,15 +658,31 @@ public class LanClient {
     // ── Rooms (P2a) ────────────────────────────────────────────────────
     /** Create a room; server returns a 6-digit invite code. */
     public JSONObject orgCreateRoom(String name) throws IOException, org.json.JSONException {
+        return orgCreateRoom(name, null);
+    }
+
+    /** 建房并声明"我在会里说什么语言"（服务端据此决定识别与翻译方向）。 */
+    public JSONObject orgCreateRoom(String name, String lang) throws IOException, org.json.JSONException {
         JSONObject body = new JSONObject();
         body.put("name", name);
+        if (lang != null && !lang.isEmpty()) {
+            body.put("lang", lang);
+        }
         return unwrap(requestWithCode("/org/rooms", "POST", body, 8000));
     }
 
     /** Join by 6-digit code (idempotent). */
     public JSONObject orgJoinRoom(String code) throws IOException, org.json.JSONException {
+        return orgJoinRoom(code, null);
+    }
+
+    /** 凭码加入并声明"我在这会里说什么语言"。 */
+    public JSONObject orgJoinRoom(String code, String lang) throws IOException, org.json.JSONException {
         JSONObject body = new JSONObject();
         body.put("code", code);
+        if (lang != null && !lang.isEmpty()) {
+            body.put("lang", lang);
+        }
         return unwrap(requestWithCode("/org/rooms/join", "POST", body, 8000));
     }
 

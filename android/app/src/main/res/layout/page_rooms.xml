@@ -24,6 +24,32 @@
         android:textSize="13sp"
         android:text="" />
 
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/roomsLangZh"
+            android:layout_width="0dp"
+            android:layout_height="46dp"
+            android:layout_weight="1"
+            android:text="我说中文"
+            android:textColor="#FFFFFF"
+            android:background="#1565C0" />
+
+        <Button
+            android:id="@+id/roomsLangPt"
+            android:layout_width="0dp"
+            android:layout_height="46dp"
+            android:layout_weight="1"
+            android:layout_marginLeft="8dp"
+            android:text="我说葡语"
+            android:textColor="#FFFFFF"
+            android:background="#263238" />
+    </LinearLayout>
+
     <EditText
         android:id="@+id/roomsName"
         android:layout_width="match_parent"
