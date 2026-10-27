@@ -29,7 +29,7 @@ import { readJson, writeJsonAtomic } from '../lib/store.mjs'
 import { listLibraries, loadLibrary, loadCategories, saveLibrary, importLibraries } from '../lib/libraries.mjs'
 import { createRequest, decideRequest, loadRequests, pendingOf, withdrawRequest } from '../lib/requests.mjs'
 import { writeMeetingSnapshot } from '../lib/snapshot.mjs'
-import { createRoom, joinRoom, listMembers, roomByCode, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
+import { createRoom, joinRoom, listMembers, roomByCode, roomById, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
 import { publishMeetingTerms } from '../lib/meeting-terms.mjs'
 
 export function selectionPath(root, meetingId) {
@@ -292,18 +292,22 @@ export async function handleOrg(input) {
     return { status: 200, json: { ok: true, room: joined.room, members: joined.members } }
   }
 
-  if (method === 'GET' && segments[1] === 'rooms' && segments.length === 3) {
-    const roomId = decodeURIComponent(segments[2])
-    return { status: 200, json: { ok: true, roomId, members: listMembers(root, roomId), libraryIds: roomLibraries(root, roomId) } }
+  if (segments[1] === 'rooms' && segments.length === 3) {
+    const raw = decodeURIComponent(segments[2])
+    const room = roomById(root, raw) ?? roomByCode(root, raw)
+    if (room === null) return bad(404, `room not found: ${raw} (use room.id or 6-digit code)`)
+    if (method === 'GET') return { status: 200, json: { ok: true, room, members: listMembers(root, room.id), libraryIds: roomLibraries(root, room.id) } }
   }
-
   if (method === 'POST' && segments[1] === 'rooms' && segments[3] === 'libraries' && segments.length === 4) {
-    const roomId = decodeURIComponent(segments[2])
+    const rawId = decodeURIComponent(segments[2])
+    const room = roomById(root, rawId) ?? roomByCode(root, rawId)
+    if (room === null) return bad(404, `room not found: ${rawId} (use room.id or 6-digit code)`)
+    const roomId = room.id
     const libraryIds = Array.isArray(body.libraryIds) ? body.libraryIds.map(String) : []
     const saved = setRoomLibraries(root, roomId, libraryIds)
     if (saved.ok !== true) return bad(400, saved.error)
     const published = await publishMeetingTerms(root, { libraryIds, owner: user, meetingId: roomId, now })
-    if (published.ok !== true) return bad(400, published.error ?? '发布会议术语失败')
+    if (published.ok !== true) return bad(400, published.error)
     return { status: 200, json: { ok: true, roomId, libraryIds, entries: published.entries } }
   }
 
