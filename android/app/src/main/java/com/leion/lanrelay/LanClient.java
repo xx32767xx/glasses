@@ -89,6 +89,15 @@ public class LanClient {
         this.user = value == null ? "" : value.trim();
     }
 
+    /** 当前服务器地址（用于"地址改了要重建客户端"的判断）。 */
+    public String getBaseUrl() {
+        return baseUrl;
+    }
+
+    /** 当前共享密钥（同上）。 */
+    public String getSecret() {
+        return secret;
+    }
     public void setToken(String value) {
         this.token = value == null ? "" : value.trim();
     }

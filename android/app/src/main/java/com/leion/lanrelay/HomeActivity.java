@@ -34,6 +34,8 @@ public class HomeActivity extends android.app.Activity {
 
     private LinearLayout loginBox;
     private LinearLayout homeBox;
+    private EditText serverInput;
+    private EditText secretInput;
     private EditText userInput;
     private EditText passInput;
     private EditText emailInput;
@@ -53,6 +55,8 @@ public class HomeActivity extends android.app.Activity {
 
         loginBox = findViewById(R.id.homeLoginBox);
         homeBox = findViewById(R.id.homeMainBox);
+        serverInput = findViewById(R.id.homeServer);
+        secretInput = findViewById(R.id.homeSecret);
         userInput = findViewById(R.id.homeUser);
         passInput = findViewById(R.id.homePass);
         emailInput = findViewById(R.id.homeEmail);
@@ -64,6 +68,8 @@ public class HomeActivity extends android.app.Activity {
         whoLine = findViewById(R.id.homeWho);
 
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        serverInput.setText(prefs.getString("host", ""));
+        secretInput.setText(prefs.getString("secret", ""));
         client = new LanClient(prefs.getString("host", ""), prefs.getString("secret", ""), null);
 
         loginButton.setOnClickListener(v -> doLogin());
@@ -162,7 +168,36 @@ public class HomeActivity extends android.app.Activity {
         }, "home-code").start();
     }
 
+    /** 规整服务器地址：没写协议就补 http://（`no protocol: /auth/login` 就是这么来的）。 */
+    private static String normalizeHost(String raw) {
+        String value = raw == null ? "" : raw.trim();
+        if (value.isEmpty()) return "";
+        while (value.endsWith("/")) value = value.substring(0, value.length() - 1);
+        if (!value.startsWith("http://") && !value.startsWith("https://")) value = "http://" + value;
+        return value;
+    }
+
     private void doLogin() {
+        final String host = normalizeHost(serverInput.getText().toString());
+        final String secret = secretInput.getText().toString().trim();
+        if (host.isEmpty()) {
+            status.setText("先填服务器地址，例如 http://117.50.180.93:8788");
+            Toast.makeText(this, "缺少服务器地址", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (secret.isEmpty()) {
+            status.setText("先填共享密钥（服务器 start-all 横幅里打印的那串）");
+            Toast.makeText(this, "缺少共享密钥", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        // 地址或密钥变了 → 重建客户端（否则还在用启动时那份空配置）
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putString("host", host).putString("secret", secret).apply();
+        if (client == null || !host.equals(client.getBaseUrl()) || !secret.equals(client.getSecret())) {
+            String token = getSharedPreferences(PREFS, MODE_PRIVATE).getString("accountToken", "");
+            client = new LanClient(host, secret, null);
+            if (token != null && !token.isEmpty()) client.setToken(token);
+        }
         final String user = userInput.getText().toString().trim();
         final String pass = passInput.getText().toString();
         final String email = emailInput.getText().toString().trim();

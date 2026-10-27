@@ -33,6 +33,24 @@
         android:visibility="gone">
 
         <EditText
+            android:id="@+id/homeServer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="服务器地址，例如 http://117.50.180.93:8788"
+            android:inputType="textUri"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#64748B" />
+
+        <EditText
+            android:id="@+id/homeSecret"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="共享密钥（start-all 横幅里那串）"
+            android:inputType="text"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#64748B" />
+
+        <EditText
             android:id="@+id/homeUser"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
