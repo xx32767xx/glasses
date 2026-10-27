@@ -28,6 +28,7 @@ import { runStartAllSuite } from './start-all-suite.mjs'
 import { runDbSuite } from './db-suite.mjs'
 import { runRoomsSuite } from './rooms-suite.mjs'
 import { runFloorSuite } from './floor-suite.mjs'
+import { runProofreadTermsSuite } from './proofread-terms-suite.mjs'
 import { runNetDoctorSuite } from './net-doctor-suite.mjs'
 import { runBenchSuite } from './bench-suite.mjs'
 import { runLintSuite } from './lint-suite.mjs'
@@ -195,6 +196,9 @@ await runRoomsSuite(helpers)
 
 heading('发言权互斥（P2b：抢麦 / 锁定 / 断线释放）')
 await runFloorSuite(helpers)
+
+heading('校对遵守术语表')
+await runProofreadTermsSuite(helpers)
 
 // ── 7b. 网络体检（手机连不上时"卡在哪一环"的判断）──────────────────────────
 // 这一节的价值全在"判断得对不对"：换一次网络就踩同一批坑（地址变了、防火墙不认、
