@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- page_room.xml —— 房间内页（P3.2）：主区字幕、底部开麦、右侧纵向悬浮条 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="horizontal"
+    android:background="#101418">
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/roomStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:padding="10dp"
+            android:textColor="#9EA7B3"
+            android:textSize="13sp"
+            android:text="连接中…" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="bottom"
+            android:padding="16dp">
+
+            <TextView
+                android:id="@+id/roomMain"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#FFFFFF"
+                android:textSize="30sp"
+                android:maxLines="4"
+                android:text="" />
+
+            <TextView
+                android:id="@+id/roomSub"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:textColor="#94A3B8"
+                android:textSize="15sp"
+                android:maxLines="3"
+                android:text="" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/roomHint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingLeft="16dp"
+            android:paddingRight="16dp"
+            android:textColor="#E0B341"
+            android:textSize="12sp"
+            android:minHeight="20dp"
+            android:text="" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:padding="12dp">
+
+            <Button
+                android:id="@+id/roomMic"
+                android:layout_width="0dp"
+                android:layout_height="56dp"
+                android:layout_weight="1"
+                android:text="点击开麦"
+                android:textColor="#FFFFFF"
+                android:textSize="16sp"
+                android:background="#37474F" />
+
+            <Button
+                android:id="@+id/roomLock"
+                android:layout_width="wrap_content"
+                android:layout_height="56dp"
+                android:layout_marginLeft="10dp"
+                android:text="锁定发言"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
+                android:background="#263238" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/roomSpeaker"
+        android:layout_width="86dp"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:padding="8dp"
+        android:textColor="#CFD8DC"
+        android:textSize="12sp"
+        android:background="#171E24"
+        android:text="麦克风空闲" />
+</LinearLayout>

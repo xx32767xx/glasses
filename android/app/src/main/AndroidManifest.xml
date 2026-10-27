@@ -118,6 +118,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- P3.2：房间内页（独立 Activity，稳定性优先） -->
+        <activity
+            android:name=".RoomActivity"
+            android:exported="false"
+            android:label="房间"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
     </application>
 
 </manifest>
