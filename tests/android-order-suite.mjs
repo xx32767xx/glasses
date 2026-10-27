@@ -410,6 +410,35 @@ export async function runAndroidOrderSuite({ it, check }) {
       sourceIntegrityProblems(prose).join('；'))
   })
 
+  await it('房间页没有术语库按钮（选库只在建房那一步，会中不可改）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const roomXml = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout', 'page_room.xml'), 'utf-8')
+    check('page_room.xml 里没有 roomLibraries 这个控件', !roomXml.includes('roomLibraries'),
+      '房间页底部只留：开麦 / 开始同传 / 退出 / 锁定发言')
+
+    const roomJava = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+    check('RoomActivity 不再引用这个 id', !roomJava.includes('roomLibraries'), '还残留 findViewById')
+    check('房间页不再能改本场术语库', !roomJava.includes('orgSetRoomLibraries'),
+      '术语在进房那一刻就冻结了（docs/21：建房时选库 → 快照）')
+
+    // 反向：不能一边删按钮、一边把唯一的选库入口也弄丢 —— 建房流程里必须还在
+    const roomsJava = readFileSync(join(javaDir, 'RoomsActivity.java'), 'utf-8')
+    check('建房那一步仍然提供选库', roomsJava.includes('showLibraryPicker') && roomsJava.includes('orgSetRoomLibraries'),
+      '否则用户就没有任何地方能选库了')
+  })
+
+  await it('authWhoAmI 返回拆过包的正文（外壳会让"打开就判成没登录"，单会话下还顺带踢掉另一台）', () => {
+    const source = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay',
+      'LanClient.java'), 'utf-8')
+    const at = source.indexOf('public JSONObject authWhoAmI()')
+    check('找得到 authWhoAmI', at > 0, String(at))
+    const snippet = source.slice(at, source.indexOf('\n    }', at))
+    check('方法体里拆掉了 { code, json } 外壳', snippet.includes('optJSONObject("json")'),
+      '直接 return requestWithCode(...) 时，界面读 optBoolean("ok") 永远是 false')
+    check('把 HTTP 码带回来（界面要分清 401 与"连不上"）', snippet.includes('_status'),
+      '401 才清登录态；网络不通不许踢')
+  })
+
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {
     const targets = [
       ...collectSources(join(ROOT, 'android', 'app', 'src', 'main', 'java'), ['.java']),

@@ -88,31 +88,64 @@ public class HomeActivity extends android.app.Activity {
         restoreSession();
     }
 
-    /** 有 token 且 whoami 还认它 → 直接进已登录态（省一次登录）。 */
+    /**
+     * 有 token 且 whoami 还认它 → 直接进已登录态（省一次登录）。
+     *
+     * <p><b>三种结果必须分开处理（4.33 修）</b>：
+     * <pre>
+     *   200 + ok:true   → 认；进首页
+     *   401             → **真的**失效（在别处登录 / 会话被吊销）：清本地 token，回登录页并说清原因
+     *   连不上服务器    → **不许**当掉登录：网络抖一下就踢回登录页，用户会以为"莫名其妙掉登录"，
+     *                     而重新登录又会吊销另一台手机的 token（单会话），把问题扩大成两台都掉
+     * </pre>
+     * 旧版把"连不上"和"401"混成了一个 false，所以启动时几乎必然判成未登录。
+     */
     private void restoreSession() {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        String token = prefs.getString("accountToken", "");
-        String user = prefs.getString("termsUser", "");
+        final String token = prefs.getString("accountToken", "");
+        final String user = prefs.getString("termsUser", "");
         if (token == null || token.isEmpty() || user == null || user.isEmpty()) {
             showLogin();
             return;
         }
         client.setToken(token);
         new Thread(() -> {
-            boolean ok = false;
-            String role = "";
+            JSONObject who = null;
+            String failure = "";
             try {
-                JSONObject who = client.authWhoAmI();
-                ok = who != null && who.optBoolean("ok", false);
-                role = who == null ? "" : who.optString("role", "");
-            } catch (Exception ignored) {
-                ok = false;
+                who = client.authWhoAmI();          // 已拆包，含 _status
+            } catch (Exception e) {
+                failure = e.getMessage() == null ? e.toString() : e.getMessage();
             }
-            final boolean valid = ok;
-            final String roleText = role;
+            final JSONObject body = who;
+            final String error = failure;
             ui.post(() -> {
-                if (valid) showHome(user, roleText);
-                else showLogin();
+                if (body == null) {
+                    // 连不上服务器：保留登录态，先按已登录进首页；真正的失效会在下一次请求里暴露
+                    showHome(user, "");
+                    status.setText("离线：连不上服务器（" + error + "），登录状态先保留");
+                    debugLine("restore offline: " + error);
+                    return;
+                }
+                int code = body.optInt("_status", 0);
+                if (body.optBoolean("ok", false)) {
+                    showHome(body.optString("user", user), body.optString("role", ""));
+                    return;
+                }
+                if (code == 401) {
+                    String hint = body.optString("hint", body.optString("error", ""));
+                    prefs.edit().remove("accountToken").remove("termsUser").remove("roomHost").apply();
+                    client.setToken("");
+                    showLogin();
+                    status.setText("登录已失效，请重新登录"
+                            + (hint.isEmpty() ? "" : ("（" + hint + "）")));
+                    debugLine("restore 401: " + hint);
+                    return;
+                }
+                // 其他非 2xx：服务端有问题，但**不一定**是会话失效 —— 同样不动登录态
+                showHome(user, "");
+                status.setText("无法确认登录状态（HTTP " + code + "），登录状态先保留");
+                debugLine("restore unexpected: " + body);
             });
         }, "home-restore").start();
     }

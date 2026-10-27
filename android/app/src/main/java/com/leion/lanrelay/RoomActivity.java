@@ -48,7 +48,6 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     private MicUploader mic;
     private Runnable pendingAfterPermission;
     private Button micUploadButton;
-    private Button librariesButton;
     private long lastHeartbeat = 0L;
 
     @Override
@@ -85,9 +84,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         client.start();
 
         micUploadButton = findViewById(R.id.roomUpload);
-        librariesButton = findViewById(R.id.roomLibraries);
         micUploadButton.setOnClickListener(v -> toggleUpload());
-        librariesButton.setOnClickListener(v -> chooseLibraries());
         micButton.setOnClickListener(v -> toggleMic());
         lockButton.setOnClickListener(v -> toggleLock());
         findViewById(R.id.roomLeave).setOnClickListener(v -> leaveRoom());
@@ -332,94 +329,6 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         }
     }
 
-    // ── 本场术语库选择 ────────────────────────────────────────────────────
-    private void chooseLibraries() {
-        new Thread(new Runnable() {
-            public void run() {
-                JSONObject body = null;
-                String error = "";
-                try {
-                    body = client.orgLibraries();
-                } catch (Exception e) {
-                    error = e.getMessage() == null ? e.toString() : e.getMessage();
-                }
-                final JSONObject result = body;
-                final String failure = error;
-                ui.post(new Runnable() {
-                    public void run() {
-                        if (result == null) {
-                            hintLine.setText("读不到术语库：" + failure);
-                            return;
-                        }
-                        org.json.JSONArray list = result.optJSONArray("libraries");
-                        if (list == null || list.length() == 0) {
-                            hintLine.setText("服务端还没有术语库（让管理员先建库）");
-                            return;
-                        }
-                        showLibraryDialog(list);
-                    }
-                });
-            }
-        }, "room-libraries").start();
-    }
-
-    private void showLibraryDialog(org.json.JSONArray libraries) {
-        final java.util.List<String> ids = new java.util.ArrayList<>();
-        final java.util.List<String> labels = new java.util.ArrayList<>();
-        final boolean[] checked = new boolean[libraries.length()];
-        for (int i = 0; i < libraries.length(); i++) {
-            JSONObject item = libraries.optJSONObject(i);
-            if (item == null) {
-                continue;
-            }
-            ids.add(item.optString("id", ""));
-            int entries = item.optInt("entries", 0);
-            org.json.JSONArray entriesArray = item.optJSONArray("entries");
-            if (entriesArray != null) {
-                entries = entriesArray.length();
-            }
-            labels.add(item.optString("name", item.optString("id", "")) + "（" + entries + " 条）");
-        }
-        new android.app.AlertDialog.Builder(this)
-                .setTitle("本场使用哪些术语库")
-                .setMultiChoiceItems(labels.toArray(new String[0]), checked,
-                        (dialog, which, isChecked) -> checked[which] = isChecked)
-                .setNegativeButton("取消", null)
-                .setPositiveButton("保存", (dialog, which) -> saveLibraries(ids, checked))
-                .show();
-    }
-
-    private void saveLibraries(final java.util.List<String> ids, final boolean[] checked) {
-        final org.json.JSONArray selected = new org.json.JSONArray();
-        for (int i = 0; i < checked.length && i < ids.size(); i++) {
-            if (checked[i]) {
-                selected.put(ids.get(i));
-            }
-        }
-        new Thread(new Runnable() {
-            public void run() {
-                JSONObject body = null;
-                String error = "";
-                try {
-                    body = client.orgSetRoomLibraries(roomKey, selected);
-                } catch (Exception e) {
-                    error = e.getMessage() == null ? e.toString() : e.getMessage();
-                }
-                final JSONObject result = body;
-                final String failure = error;
-                ui.post(new Runnable() {
-                    public void run() {
-                        if (result == null || !result.optBoolean("ok", false)) {
-                            String reason = result == null ? failure : result.optString("error", failure);
-                            hintLine.setText("保存术语库失败：" + reason);
-                            return;
-                        }
-                        hintLine.setText("已保存本场术语库：" + result.optInt("entries", 0) + " 条");
-                    }
-                });
-            }
-        }, "room-save-libraries").start();
-    }
     // ── 发言权轮询 ───────────────────────────────────────────────────────
     private void scheduleFloorPoll(long delay) {
         if (pollScheduled) return;

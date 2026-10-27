@@ -39,8 +39,11 @@ android {
     // 4.31：401 统一提示（单会话踢下线时说人话，不再表现为"操作莫名失败"）。
     // 4.32：修 LanClient.java 被整文件写成 GBK 乱码（javac 报 9 个「未结束的字符串文字」）——
     //       以干净提交为基重建 + 重放 401 改动；并加一道源码完整性检查，见 docs/20 §12。
-        versionCode = 61
-        versionName = "4.32"
+    // 4.33：房间页去掉重复的「术语库」按钮（选库在建房那一步）；修「莫名其妙掉登录」——
+    //       authWhoAmI 原来返回 {code,json} 外壳，界面读 ok 永远 false，启动必回登录页，
+    //       重登又按单会话踢掉另一台。现在拆包 + 区分「401 才清登录 / 连不上不踢」，见 docs/21 §4.33。
+        versionCode = 62
+        versionName = "4.33"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

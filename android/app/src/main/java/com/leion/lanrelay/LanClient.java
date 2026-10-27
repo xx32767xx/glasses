@@ -275,9 +275,21 @@ public class LanClient {
         return requestWithCode("/auth/logout", "POST", null, 8000);
     }
 
-    /** 用当前 token 问"我是谁"（失效时 401）。 */
+    /**
+     * 用当前 token 问"我是谁"（token 失效时 401）。
+     *
+     * <p>⚠️ 返回的是**拆过包的正文**（含 `_status`），不是 `{ code, json }` 外壳。
+     * 这一条是 4.33 修的一个真实故障：原来这里 `return requestWithCode(...)` 把外壳直接
+     * 返回给界面，而界面读的是 `optBoolean("ok")` —— 外壳里没有 `ok`，于是**永远为 false**，
+     * 结果"打开 App 就判成没登录"，每次启动都要重新登录；重新登录又会吊销另一台手机的
+     * token（单会话），表现为"另一台莫名其妙掉登录"。
+     */
     public JSONObject authWhoAmI() throws IOException, org.json.JSONException {
-        return requestWithCode("/auth/whoami", "GET", null, 8000);
+        JSONObject wrapper = requestWithCode("/auth/whoami", "GET", null, 8000);
+        JSONObject json = wrapper.optJSONObject("json");
+        if (json == null) json = new JSONObject();
+        json.put("_status", wrapper.optInt("code", 0));
+        return json;
     }
 
     // ── 热词对照表（docs/15 阶段 1：只校验与存取，不做替换）─────────────────
