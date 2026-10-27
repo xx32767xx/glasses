@@ -113,12 +113,8 @@
             android:exported="true"
             android:screenOrientation="portrait"
             android:configChanges="orientation|screenSize|keyboardHidden">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
         </activity>
-        <!-- P3.3 rooms lobby: temporary launcher entry -->
+        <!-- P3.3 rooms lobby -->
         <activity
             android:name=".RoomsActivity"
             android:exported="true"
@@ -130,6 +126,16 @@
             android:exported="false"
             android:label="房间"
             android:configChanges="orientation|screenSize|keyboardHidden" />
+        <!-- P3.5: new entry (login first, then the app body). Legacy MainActivity reached from home. -->
+        <activity
+            android:name=".HomeActivity"
+            android:exported="true"
+            android:label="译连 TransLink">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
     </application>
 
 </manifest>

@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- page_home.xml — 新入口：登录/注册（左）与首页（右），二选一显示 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="20dp"
+    android:background="#101418">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="译连 TransLink"
+        android:textColor="#FFFFFF"
+        android:textSize="26sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="中 ↔ 巴西葡语 同声传译"
+        android:textColor="#94A3B8"
+        android:textSize="13sp" />
+
+    <!-- ① 登录 / 注册 -->
+    <LinearLayout
+        android:id="@+id/homeLoginBox"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_marginTop="28dp"
+        android:visibility="gone">
+
+        <EditText
+            android:id="@+id/homeUser"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="用户名"
+            android:inputType="text"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#64748B" />
+
+        <EditText
+            android:id="@+id/homePass"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="密码"
+            android:inputType="textPassword"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#64748B" />
+
+        <EditText
+            android:id="@+id/homeEmail"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="邮箱（注册用）"
+            android:inputType="textEmailAddress"
+            android:visibility="gone"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#64748B" />
+
+        <EditText
+            android:id="@+id/homeCode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="邮箱验证码"
+            android:inputType="number"
+            android:visibility="gone"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#64748B" />
+
+        <Button
+            android:id="@+id/homeSendCode"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:layout_marginTop="6dp"
+            android:text="获取验证码"
+            android:textColor="#FFFFFF"
+            android:background="#263238"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/homeLogin"
+            android:layout_width="match_parent"
+            android:layout_height="54dp"
+            android:layout_marginTop="12dp"
+            android:text="登录"
+            android:textColor="#FFFFFF"
+            android:background="#1565C0" />
+
+        <Button
+            android:id="@+id/homeRegisterToggle"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:layout_marginTop="6dp"
+            android:text="注册新账号"
+            android:textColor="#90CAF9"
+            android:background="#00000000" />
+    </LinearLayout>
+
+    <!-- ② 首页（登录后） -->
+    <LinearLayout
+        android:id="@+id/homeMainBox"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_marginTop="28dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/homeWho"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#E0B341"
+            android:textSize="15sp"
+            android:text="" />
+
+        <Button
+            android:id="@+id/homeCreate"
+            android:layout_width="match_parent"
+            android:layout_height="64dp"
+            android:layout_marginTop="18dp"
+            android:text="会议房间（创建 / 加入）"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp"
+            android:background="#2E7D32" />
+
+        <Button
+            android:id="@+id/homeLegacy"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="10dp"
+            android:text="旧版界面（对比 / 回退）"
+            android:textColor="#B0BEC5"
+            android:background="#263238" />
+
+        <Button
+            android:id="@+id/homeLogout"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:layout_marginTop="10dp"
+            android:text="退出登录"
+            android:textColor="#EF9A9A"
+            android:background="#00000000" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/homeStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:textColor="#94A3B8"
+        android:textSize="13sp"
+        android:text="" />
+</LinearLayout>

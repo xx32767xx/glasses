@@ -1,0 +1,236 @@
+package com.leion.lanrelay;
+
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.text.InputType;
+import android.view.View;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import org.json.JSONObject;
+
+/**
+ * HomeActivity —— 新的 App 入口（P3.5）：① 登录/注册  →  ② 首页（建房/加入/设置）。
+ *
+ * 规则（用户 2026-10-27 定）：
+ *   - **打开 App 先看到登录/注册**，登录之后才看到 App 本体；
+ *   - 旧界面（MainActivity）保留但不再是入口，首页里给一个「旧版界面」按钮（方便对比/回退）。
+ *
+ * 设计取舍：先做成一个 Activity 内两态切换（登录态 / 已登录态），
+ * 少一个 Activity 就少一处状态同步，稳定性优先。
+ */
+public class HomeActivity extends android.app.Activity {
+
+    private static final String PREFS = "leion";
+
+    private final Handler ui = new Handler(Looper.getMainLooper());
+    private LanClient client;
+
+    private LinearLayout loginBox;
+    private LinearLayout homeBox;
+    private EditText userInput;
+    private EditText passInput;
+    private EditText emailInput;
+    private EditText codeInput;
+    private TextView status;
+    private Button loginButton;
+    private Button registerButton;
+    private Button sendCodeButton;
+    private TextView whoLine;
+
+    private boolean registerMode = false;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.page_home);
+
+        loginBox = findViewById(R.id.homeLoginBox);
+        homeBox = findViewById(R.id.homeMainBox);
+        userInput = findViewById(R.id.homeUser);
+        passInput = findViewById(R.id.homePass);
+        emailInput = findViewById(R.id.homeEmail);
+        codeInput = findViewById(R.id.homeCode);
+        status = findViewById(R.id.homeStatus);
+        loginButton = findViewById(R.id.homeLogin);
+        registerButton = findViewById(R.id.homeRegisterToggle);
+        sendCodeButton = findViewById(R.id.homeSendCode);
+        whoLine = findViewById(R.id.homeWho);
+
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        client = new LanClient(prefs.getString("host", ""), prefs.getString("secret", ""), null);
+
+        loginButton.setOnClickListener(v -> doLogin());
+        registerButton.setOnClickListener(v -> toggleRegisterMode());
+        sendCodeButton.setOnClickListener(v -> sendCode());
+        findViewById(R.id.homeCreate).setOnClickListener(v -> openRooms());
+        findViewById(R.id.homeLegacy).setOnClickListener(v ->
+                startActivity(new Intent(this, MainActivity.class)));
+        findViewById(R.id.homeLogout).setOnClickListener(v -> logout());
+
+        applyMode();
+        restoreSession();
+    }
+
+    /** 有 token 且 whoami 还认它 → 直接进已登录态（省一次登录）。 */
+    private void restoreSession() {
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        String token = prefs.getString("accountToken", "");
+        String user = prefs.getString("termsUser", "");
+        if (token == null || token.isEmpty() || user == null || user.isEmpty()) {
+            showLogin();
+            return;
+        }
+        client.setToken(token);
+        new Thread(() -> {
+            boolean ok = false;
+            String role = "";
+            try {
+                JSONObject who = client.authWhoAmI();
+                ok = who != null && who.optBoolean("ok", false);
+                role = who == null ? "" : who.optString("role", "");
+            } catch (Exception ignored) {
+                ok = false;
+            }
+            final boolean valid = ok;
+            final String roleText = role;
+            ui.post(() -> {
+                if (valid) showHome(user, roleText);
+                else showLogin();
+            });
+        }, "home-restore").start();
+    }
+
+    private void applyMode() {
+        emailInput.setVisibility(registerMode ? View.VISIBLE : View.GONE);
+        codeInput.setVisibility(registerMode ? View.VISIBLE : View.GONE);
+        sendCodeButton.setVisibility(registerMode ? View.VISIBLE : View.GONE);
+        loginButton.setText(registerMode ? "注册并登录" : "登录");
+        registerButton.setText(registerMode ? "已有账号？去登录" : "注册新账号");
+        status.setText(registerMode ? "注册需要邮箱 + 验证码（点击获取验证码）" : "用用户名 + 密码登录");
+    }
+
+    private void toggleRegisterMode() {
+        registerMode = !registerMode;
+        applyMode();
+    }
+
+    private void showLogin() {
+        loginBox.setVisibility(View.VISIBLE);
+        homeBox.setVisibility(View.GONE);
+    }
+
+    private void showHome(String user, String role) {
+        loginBox.setVisibility(View.GONE);
+        homeBox.setVisibility(View.VISIBLE);
+        whoLine.setText(user + (role.isEmpty() ? "" : " · " + role));
+        status.setText("已登录");
+    }
+
+    private void sendCode() {
+        final String email = emailInput.getText().toString().trim();
+        if (email.isEmpty()) {
+            Toast.makeText(this, "先填邮箱", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        sendCodeButton.setEnabled(false);
+        new Thread(() -> {
+            JSONObject body = null;
+            String error = "";
+            try {
+                body = client.authRequestCode(email);
+            } catch (Exception e) {
+                error = e.getMessage() == null ? e.toString() : e.getMessage();
+            }
+            final JSONObject result = body;
+            final String failure = error;
+            ui.post(() -> {
+                sendCodeButton.setEnabled(true);
+                if (result != null && result.optBoolean("ok", false)) {
+                    String code = result.optString("code", "");
+                    status.setText(code.isEmpty() ? "验证码已发送到邮箱" : ("验证码：" + code + "（开发环境直接返回）"));
+                } else {
+                    status.setText("获取验证码失败：" + (result == null ? failure : result.optString("error", failure)));
+                }
+            });
+        }, "home-code").start();
+    }
+
+    private void doLogin() {
+        final String user = userInput.getText().toString().trim();
+        final String pass = passInput.getText().toString();
+        final String email = emailInput.getText().toString().trim();
+        final String code = codeInput.getText().toString().trim();
+        if (user.isEmpty() || pass.isEmpty()) {
+            Toast.makeText(this, "用户名和密码都要填", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (registerMode && (email.isEmpty() || code.isEmpty())) {
+            Toast.makeText(this, "注册需要邮箱和验证码", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        loginButton.setEnabled(false);
+        status.setText(registerMode ? "注册中…" : "登录中…");
+        new Thread(() -> {
+            JSONObject body = null;
+            String error = "";
+            try {
+                body = registerMode
+                        ? client.authRegisterEmail(email, user, pass, code)
+                        : client.authLogin(user, pass);
+            } catch (Exception e) {
+                error = e.getMessage() == null ? e.toString() : e.getMessage();
+            }
+            final JSONObject result = body;
+            final String failure = error;
+            ui.post(() -> {
+                loginButton.setEnabled(true);
+                if (result == null || !result.optBoolean("ok", false)) {
+                    String reason = failure;
+                    if (result != null) {
+                        String hint = result.optString("hint", "");
+                        reason = hint.isEmpty() ? result.optString("error", failure) : hint;
+                    }
+                    status.setText((registerMode ? "注册失败：" : "登录失败：") + reason);
+                    return;
+                }
+                String token = result.optString("token", "");
+                String name = result.optString("user", user);
+                String role = result.optString("role", "");
+                getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                        .putString("accountToken", token)
+                        .putString("termsUser", name)
+                        .apply();
+                client.setToken(token);
+                showHome(name, role);
+            });
+        }, "home-login").start();
+    }
+
+    private void logout() {
+        new Thread(() -> {
+            try {
+                client.authLogout();
+            } catch (Exception ignored) {
+                // 注销失败也要清本地，否则用户卡在"以为注销了"
+            }
+            ui.post(() -> {
+                getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                        .remove("accountToken").remove("termsUser").remove("roomHost").apply();
+                client.setToken("");
+                showLogin();
+                status.setText("已注销");
+            });
+        }, "home-logout").start();
+    }
+
+    private void openRooms() {
+        startActivity(new Intent(this, RoomsActivity.class));
+    }
+}
