@@ -292,6 +292,28 @@ public class LanClient {
         return json;
     }
 
+    /**
+     * 会话还活着吗？活着返回当前用户名，**被踢下线抛 {@link SessionExpiredException}**。
+     *
+     * <p>为什么需要它：单会话（同一账号后登录的踢掉前一个）只是吊销了旧 token ——
+     * 被踢的那台手机如果不主动问，就永远不知道自己已经下线，界面看着一切正常，
+     * 直到某次操作莫名失败（用户 2026-10-27 报的"被挤下线的那台完全静默"）。
+     * 界面每隔几秒问一次，就能当场提示并回登录页。
+     *
+     * <p>它也是 `throwIfSessionExpired` 的第一个真实调用点：401 统一变成一条人话异常，
+     * 界面只 catch 一个类型即可。
+     */
+    public String checkSession() throws IOException, org.json.JSONException {
+        JSONObject wrapper = requestWithCode("/auth/whoami", "GET", null, 8000);
+        // 401 → SessionExpiredException（人话消息只在 throwIfSessionExpired 里写一处）
+        throwIfSessionExpired(wrapper);
+        JSONObject body = wrapper.optJSONObject("json");
+        if (body == null || !body.optBoolean("ok", false)) {
+            throw new IOException("无法确认登录状态（HTTP " + wrapper.optInt("code", 0) + "）");
+        }
+        return body.optString("user", "");
+    }
+
     // ── 热词对照表（docs/15 阶段 1：只校验与存取，不做替换）─────────────────
 
     /**

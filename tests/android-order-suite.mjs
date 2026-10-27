@@ -601,6 +601,46 @@ export async function runAndroidOrderSuite({ it, check }) {
       '不复位 = 停过一次之后所有真错误都被吞掉')
   })
 
+  await it('建房后邀请码不会被选库框挡掉（4.41）', () => {
+    const src = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion',
+      'lanrelay', 'RoomsActivity.java'), 'utf-8')
+
+    // 现象：建房成功立刻弹术语库对话框，页面上的邀请码被整个盖住，用户来不及抄。
+    check('建房成功后先弹一条长 Toast 报邀请码（Toast 显示在对话框之上）',
+      /Toast\.makeText\(this, "本场邀请码：" \+ code, Toast\.LENGTH_LONG\)/.test(src),
+      '没有它，邀请码就被对话框盖住了')
+    check('邀请码被传进选库框', /chooseLibsAfterCreate\(id, room\.optString\("name", name\), code\)/.test(src))
+    check('选库框的标题里带着邀请码', /codeLine[^\n]*本场术语库/.test(src), '标题要能直接看到码')
+    check('选库框的正文也重复一次邀请码', /setMessage\([^)]*code/.test(src), '正文再写一次，抄错的概率更低')
+  })
+
+  await it('被别处登录顶下线时要**当场提示**（4.41，用户报的"静默"）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const watch = readFileSync(join(javaDir, 'SessionWatch.java'), 'utf-8')
+    const client = readFileSync(join(javaDir, 'LanClient.java'), 'utf-8')
+    const home = readFileSync(join(javaDir, 'HomeActivity.java'), 'utf-8')
+    const rooms = readFileSync(join(javaDir, 'RoomsActivity.java'), 'utf-8')
+    const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+
+    check('有会话监听类', /class SessionWatch/.test(watch))
+    check('监听调的是 checkSession', /client\.checkSession\(\)/.test(watch))
+    check('只有 SessionExpiredException 才回调（网络失败不算掉登录）',
+      /catch \(LanClient\.SessionExpiredException/.test(watch) && /catch \(Exception ignored\)/.test(watch))
+
+    // 401 统一走 throwIfSessionExpired —— 它原先是没有调用点的死代码（B3）
+    check('checkSession 用上了 throwIfSessionExpired', /throwIfSessionExpired\(wrapper\)/.test(client),
+      '原来这两个类是死代码，现在必须真的被调用')
+
+    check('首页登录后开始监听', /private void startSessionWatch\(\)/.test(home) && /sessionWatch\.start\(\)/.test(home))
+    check('首页被踢时清 token 并回登录页',
+      /sessionWatch[\s\S]{0,600}remove\("accountToken"\)[\s\S]{0,300}showLogin\(\)/.test(home))
+    check('房间大厅也监听', /new SessionWatch\(client[\s\S]{0,500}sessionWatch\.start\(\)/.test(rooms))
+    check('房间内轮询发现 401 就提示并退出',
+      /optInt\("httpStatus", 0\) == 401[\s\S]{0,200}showKicked\(/.test(room), '房间里也不能静默')
+    check('showKicked 清掉本地 token 并结束页面',
+      /private void showKicked\(String hint\)[\s\S]{0,800}remove\("accountToken"\)[\s\S]{0,300}finish/.test(room))
+  })
+
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {
     const targets = [
       ...collectSources(join(ROOT, 'android', 'app', 'src', 'main', 'java'), ['.java']),

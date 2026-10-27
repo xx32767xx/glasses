@@ -33,6 +33,9 @@ public class HomeActivity extends android.app.Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private LanClient client;
 
+    /** 会话监听（4.41）：被别处登录顶掉时当场提示，而不是静默。 */
+    private SessionWatch sessionWatch;
+
     private LinearLayout loginBox;
     private LinearLayout homeBox;
     private EditText serverInput;
@@ -179,6 +182,35 @@ public class HomeActivity extends android.app.Activity {
         homeBox.setVisibility(View.VISIBLE);
         whoLine.setText(user + (role.isEmpty() ? "" : " · " + role));
         status.setText("已登录");
+        startSessionWatch();
+    }
+
+    /**
+     * 开始盯着"我这台还登录着吗"（4.41）。
+     *
+     * <p>为什么必须在首页也盯着：单会话下，另一台一登录这台就被吊销 token，
+     * 而它如果正停在首页等着，**永远不会知道**（用户 2026-10-27 报的静默）。
+     */
+    private void startSessionWatch() {
+        if (sessionWatch != null) sessionWatch.stop();
+        sessionWatch = new SessionWatch(client, message -> ui.post(() -> {
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+            status.setText(message);
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                    .remove("accountToken").remove("termsUser").remove("roomHost").apply();
+            client.setToken("");
+            showLogin();
+        }));
+        sessionWatch.start();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (sessionWatch != null) {
+            sessionWatch.stop();
+            sessionWatch = null;
+        }
+        super.onDestroy();
     }
 
     private void sendCode() {
@@ -339,6 +371,10 @@ public class HomeActivity extends android.app.Activity {
                 // 注销失败也要清本地，否则用户卡在"以为注销了"
             }
             ui.post(() -> {
+                if (sessionWatch != null) {
+                    sessionWatch.stop();
+                    sessionWatch = null;
+                }
                 getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                         .remove("accountToken").remove("termsUser").remove("roomHost").apply();
                 client.setToken("");

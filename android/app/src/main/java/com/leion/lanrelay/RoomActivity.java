@@ -192,8 +192,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 }
                 int status = body.optInt("_status", 0);
                 if (status == 401) {
-                    Toast.makeText(this, "登录已失效（可能在别处登录），请重新登录", Toast.LENGTH_LONG).show();
-                    finish();
+                    showKicked(body.optString("hint", body.optString("error", "")));
                     return;
                 }
                 if (status >= 400 || body.optBoolean("ok", false) == false) {
@@ -236,6 +235,24 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         lockButton.setEnabled(holding || (anyHolder && myName.equals(hostName())));
         lockButton.setAlpha(lockButton.isEnabled() ? 1f : 0.5f);
         speakerBar.setText(anyHolder ? ("发言人：" + holder + (isLocked ? "（已锁定）" : "")) : "麦克风空闲");
+    }
+
+    /**
+     * 会话被顶掉（单会话的另一面）：提示、清本地 token、退出房间。
+     *
+     * <p>为什么退出房间而不是留在原地：这张牌桌上的身份已经失效，任何操作都会失败；
+     * 留在这里只会让用户以为是"网络卡了"。退出后首页的会话监听会把界面带回登录页。
+     */
+    private void showKicked(String hint) {
+        if (isFinishing()) return;
+        String extra = hint == null || hint.isEmpty() ? "" : ("：" + hint);
+        String message = "登录已失效" + extra + "（账号可能在别处登录），请重新登录";
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+        hintLine.setText(message);
+        statusLine.setText(message);
+        getSharedPreferences("leion", MODE_PRIVATE).edit()
+                .remove("accountToken").remove("termsUser").remove("roomHost").apply();
+        ui.postDelayed(this::finish, 1500);
     }
 
     private String hostName() {
@@ -409,6 +426,12 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 }
                 final JSONObject body = state;
                 ui.post(() -> {
+                    // 单会话：被别处登录顶掉时，房间里的轮询是最早能发现的地方
+                    // （点按钮才发现的话，用户已经对着"没反应"愣了几秒）
+                    if (body != null && body.optInt("httpStatus", 0) == 401) {
+                        showKicked(body.optString("hint", body.optString("error", "")));
+                        return;
+                    }
                     if (body != null && body.optBoolean("ok", false)) {
                         applyFloorState(holderOf(body), body.optBoolean("locked", false));
                     }

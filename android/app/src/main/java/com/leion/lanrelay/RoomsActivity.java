@@ -23,6 +23,9 @@ public class RoomsActivity extends android.app.Activity {
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private LanClient client;
+
+    /** 会话监听（4.41）：在大厅等着的时候也要能发现被顶下线。 */
+    private SessionWatch sessionWatch;
     private String myName = "";
 
     private EditText nameInput;
@@ -60,12 +63,31 @@ public class RoomsActivity extends android.app.Activity {
         String token = prefs.getString("accountToken", "");
         if (token != null && !token.isEmpty()) client.setToken(token);
 
+        // 在大厅等着的时候也要能发现"被别处登录顶下线"（4.41）
+        sessionWatch = new SessionWatch(client, message -> ui.post(() -> {
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+            getSharedPreferences("leion", MODE_PRIVATE).edit()
+                    .remove("accountToken").remove("termsUser").remove("roomHost").apply();
+            client.setToken("");
+            finish();
+        }));
+        sessionWatch.start();
+
         createButton.setOnClickListener(v -> createRoom());
         joinButton.setOnClickListener(v -> joinRoom());
         findViewById(R.id.roomsLangZh).setOnClickListener(v -> setSpeakLang("zh-CN"));
         findViewById(R.id.roomsLangPt).setOnClickListener(v -> setSpeakLang("pt-BR"));
         String savedLang = prefs.getString("speakLang", "zh-CN");
         setSpeakLang(savedLang == null || savedLang.isEmpty() ? "zh-CN" : savedLang);
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (sessionWatch != null) {
+            sessionWatch.stop();
+            sessionWatch = null;
+        }
+        super.onDestroy();
     }
 
     /** 选择我在会里说的语言，并记住（下次默认用它）。 */
@@ -117,7 +139,10 @@ public class RoomsActivity extends android.app.Activity {
                 codeBox.setVisibility(View.VISIBLE);
                 getSharedPreferences("leion", MODE_PRIVATE).edit()
                         .putString("roomHost", myName).apply();
-                chooseLibsAfterCreate(id, room.optString("name", name));
+                // 邀请码只在这几秒里"新鲜"：Toast 会盖在紧接着弹出的选库对话框**上面**，
+                // 让用户不用先关掉对话框才看得到（用户 2026-10-27 报的"来不及看"）。
+                Toast.makeText(this, "本场邀请码：" + code, Toast.LENGTH_LONG).show();
+                chooseLibsAfterCreate(id, room.optString("name", name), code);
             });
         }, "rooms-create").start();
     }
@@ -161,7 +186,7 @@ public class RoomsActivity extends android.app.Activity {
     }
 
     /** 建房后立刻选本场术语库（按用户要求：选库放在创建会议这一步，而不是进房后再点按钮）。 */
-    private void chooseLibsAfterCreate(final String roomId, final String roomName) {
+    private void chooseLibsAfterCreate(final String roomId, final String roomName, final String code) {
         new Thread(new Runnable() {
             public void run() {
                 JSONObject body = null;
@@ -186,14 +211,22 @@ public class RoomsActivity extends android.app.Activity {
                             enter(roomId, roomName);
                             return;
                         }
-                        showLibraryPicker(roomId, roomName, list);
+                        showLibraryPicker(roomId, roomName, code, list);
                     }
                 });
             }
         }, "rooms-libs").start();
     }
 
-    private void showLibraryPicker(final String roomId, final String roomName, org.json.JSONArray libraries) {
+    /**
+     * 选本场术语库。
+     *
+     * <p>标题与正文里都写上**邀请码**：这一步是建房后紧接着弹的对话框，会盖住页面上的
+     * 邀请码显示 —— 用户还没来得及抄，就先看到选库框了（用户 2026-10-27 报的）。
+     * 把码放进对话框里，两个需求就同时满足了：选库仍在建房这一步，邀请码也不会被错过。
+     */
+    private void showLibraryPicker(final String roomId, final String roomName,
+                                   final String code, org.json.JSONArray libraries) {
         final java.util.List<String> ids = new java.util.ArrayList<>();
         final java.util.List<String> labels = new java.util.ArrayList<>();
         for (int i = 0; i < libraries.length(); i++) {
@@ -207,8 +240,11 @@ public class RoomsActivity extends android.app.Activity {
             labels.add(item.optString("name", item.optString("id", "")) + "（" + count + " 条）");
         }
         final boolean[] checked = new boolean[labels.size()];
+        String codeLine = (code == null || code.isEmpty()) ? "" : ("邀请码 " + code + " · ");
         new android.app.AlertDialog.Builder(this)
-                .setTitle("本场会议使用哪些术语库（会中不可改）")
+                .setTitle(codeLine + "本场术语库（会中不可改）")
+                .setMessage("把" + (code == null || code.isEmpty() ? "6 位邀请码" : code)
+                        + " 告诉对方即可入会。术语在进房那一刻冻结，会中改不了。")
                 .setMultiChoiceItems(labels.toArray(new String[0]), checked,
                         (dialog, which, isChecked) -> checked[which] = isChecked)
                 .setNegativeButton("先不选，直接进房", (dialog, which) -> enter(roomId, roomName))
