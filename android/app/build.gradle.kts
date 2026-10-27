@@ -48,8 +48,10 @@ android {
     // 4.35：发言权改 WS 推送（/ws）：被顶替不再等 2 秒轮询，一推即到。服务端是手写的
     //       RFC6455（lib/ws-hub.mjs，仓库零依赖），客户端用缓存里的 Java-WebSocket 1.6.0；
     //       推送断了自动退回 2 秒轮询，心跳独立按 5 秒走。见 docs/21 §4.35。
-        versionCode = 64
-        versionName = "4.35"
+    // 4.36：接上字幕保留期清理（P4）—— 超过 7 天的字幕每小时清一次、启动也清一次；
+    //       保留天数可用 --utterance-retention-days 调。见 docs/21 §4.36。
+        versionCode = 65
+        versionName = "4.36"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

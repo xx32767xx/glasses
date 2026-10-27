@@ -37,6 +37,7 @@ import { networkInterfaces } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createInboxWriter } from '../bridge/asr-bridge.mjs'
+import { purgeUtterancesIn } from '../lib/db.mjs'
 import {
   LIVE_DIR, defaultAudioIn, defaultAudioLang, defaultAudioRate, defaultBus, defaultInbox, defaultSecret,
   defaultSettings,
@@ -55,6 +56,9 @@ import {
 } from '../lib/accounts.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
+
+/** 字幕清理的扫描间隔（小时级足够：早删一小时晚删一小时都无所谓）。 */
+const UTTERANCE_SWEEP_MS = 60 * 60 * 1000
 
 /**
  * 转发进程的**能力清单**（写进 /hello 与 /status）。
@@ -118,6 +122,9 @@ const HELP = `lan-relay —— 手机 ↔ 电脑 的局域网转发进程
   --audio-lang <path>   语种旁文件（缺省 <data-dir>/audio-in.lang）
   --poll-hold-ms <n>    长轮询最长挂起时间（缺省 25000）
   --bus-poll-ms <n>     字幕总线轮询间隔（缺省 60）
+  --utterance-retention-days <n>
+                        字幕保留天数（缺省 7）：超过的按天自动删除（隐私要求，
+                        见 docs/21 §10 的 P4）。启动时先清一次，之后每小时清一次。
   --public              公网部署模式：强制强密钥 + 每 IP 限流 + 音频总量上限
                         **绑到公网地址时必须加这个**（见 docs/10）
   --lint                译文质检：每个定稿帧拿原文对一遍，报"确定错/警告"（**缺省就开**）
@@ -200,8 +207,8 @@ export function createRateLimiter({ windowMs, maxRequests }) {
   }
 }
 
-export function parseArgs(argv) {  const options = { port: 8788, host: '0.0.0.0', pollHoldMs: 25000, busPollMs: 60, quiet: false, lint: true }
-  const takesValue = new Set(['port', 'host', 'secret', 'data-dir', 'inbox', 'bus', 'audio', 'audio-rate', 'audio-lang', 'poll-hold-ms', 'bus-poll-ms'])
+export function parseArgs(argv) {  const options = { port: 8788, host: '0.0.0.0', pollHoldMs: 25000, busPollMs: 60, quiet: false, lint: true, utteranceRetentionDays: 7 }
+  const takesValue = new Set(['port', 'host', 'secret', 'data-dir', 'inbox', 'bus', 'audio', 'audio-rate', 'audio-lang', 'poll-hold-ms', 'bus-poll-ms', 'utterance-retention-days'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -221,6 +228,7 @@ export function parseArgs(argv) {  const options = { port: 8788, host: '0.0.0.0'
     if (key === 'port') options.port = Number(value)
     else if (key === 'poll-hold-ms') options.pollHoldMs = Number(value)
     else if (key === 'bus-poll-ms') options.busPollMs = Number(value)
+      else if (key === 'utterance-retention-days') options.utteranceRetentionDays = Number(value)
     else if (key === 'data-dir') options.dataDir = value
     else if (key === 'inbox') options.inbox = value
     else if (key === 'bus') options.bus = value
@@ -233,7 +241,7 @@ export function parseArgs(argv) {  const options = { port: 8788, host: '0.0.0.0'
   if (!Number.isInteger(options.port) || options.port <= 0 || options.port > 65535) {
     throw new Error(`--port 必须是 1..65535 的整数，收到 ${JSON.stringify(options.port)}`)
   }
-  for (const key of ['pollHoldMs', 'busPollMs']) {
+  for (const key of ['pollHoldMs', 'busPollMs', 'utteranceRetentionDays']) {
     if (!Number.isFinite(options[key]) || options[key] <= 0) {
       throw new Error(`${key} 必须是正数，收到 ${JSON.stringify(options[key])}`)
     }
@@ -450,7 +458,7 @@ export function clientIp(request) {
 export async function startRelay(rawOptions = {}) {
   const options = Object.assign({
     port: 0, host: '127.0.0.1', pollHoldMs: 25000, busPollMs: 60,
-    dataDir: DEFAULT_DATA_DIR, quiet: true,
+    dataDir: DEFAULT_DATA_DIR, quiet: true, utteranceRetentionDays: 7,
   }, rawOptions)
   options.inbox = options.inbox ?? defaultInbox(options.dataDir)
   options.bus = options.bus ?? defaultBus(options.dataDir)
@@ -542,6 +550,8 @@ export async function startRelay(rawOptions = {}) {
     connections: 0,
     lastConnectionAt: null,
     inboxLines: 0,
+    /** 字幕清理（P4）：累计删掉多少条超过保留期的字幕。 */
+    utterancesPurged: 0,
     /** 译文质检（见 lib/translation-lint.mjs）：报了多少条确定错 / 警告。 */
     lintBad: 0,
     lintWarn: 0,
@@ -729,6 +739,32 @@ export async function startRelay(rawOptions = {}) {
 
   const busTimer = setInterval(() => { void pollBus() }, options.busPollMs)
   busTimer.unref?.()
+
+  // ── 字幕保留期清理（P4，docs/21 §10）─────────────────────────────────────
+  //
+  // 为什么要有：字幕里是**真实会议内容**。库存在服务器上、还能被管理员看到，
+  // "永久保留"既不是我们需要的能力，也不是用户同意过的事。所以超过保留期就删。
+  //
+  // 为什么是"启动先跑一次 + 每小时一次"：启动时补上"停机期间该删的"；
+  // 之后按小时扫，不追求准点 —— 早删一小时晚删一小时都无所谓，一天一次又太粗。
+  const purgeUtterances = (now = Date.now()) => {
+    try {
+      const removed = purgeUtterancesIn(options.dataDir, now, options.utteranceRetentionDays)
+      if (removed > 0) {
+        state.utterancesPurged += removed
+        debug(`🧹 字幕清理：删掉 ${removed} 条超过 ${options.utteranceRetentionDays} 天的字幕`)
+      }
+      return removed
+    } catch (error) {
+      // 清理失败绝不能影响同传：它是维护动作，不是主链路
+      debug(`⚠️ 字幕清理失败（不影响同传）：${error?.message ?? error}`)
+      return 0
+    }
+  }
+
+  void purgeUtterances()
+  const purgeTimer = setInterval(() => { void purgeUtterances() }, UTTERANCE_SWEEP_MS)
+  purgeTimer.unref?.()
 
   // ── HTTP ──────────────────────────────────────────────────────────────────
 
@@ -1300,6 +1336,9 @@ export async function startRelay(rawOptions = {}) {
           frames: state.frameCount,
           says: state.sayCount,
           inboxLines: state.writer.stats.lines,
+          // 字幕保留期清理（P4）：累计删了多少条、保留几天
+          utterancesPurged: state.utterancesPurged,
+          utteranceRetentionDays: options.utteranceRetentionDays,
           rejected: state.rejected,
           rateLimited: state.rateLimited,
           diagLines: state.diagLines,
@@ -1603,10 +1642,13 @@ export async function startRelay(rawOptions = {}) {
     port: server.address().port,
     /** 主动结束一次长轮询（测试里用它避免等待超时）。 */
     notify: notifyWaiters,
+    /** 立刻跑一次字幕清理（测试与运维手搓时用）。返回删掉的条数。 */
+    purgeUtterances,
     async close() {
       state.closed = true
       state.waiters.clear()
       clearInterval(busTimer)
+      clearInterval(purgeTimer)
       if (sweepTimer !== null) clearInterval(sweepTimer)
       wsHub.close()
       await state.writeChain.catch(() => {})

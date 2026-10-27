@@ -11,7 +11,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { importFromDataDir, openDb, purgeOldUtterances, SCHEMA_VERSION } from '../lib/db.mjs'
+import { dbPath, importFromDataDir, openDb, purgeOldUtterances, purgeUtterancesIn, SCHEMA_VERSION } from '../lib/db.mjs'
 import { readAccountsDoc, writeAccountsDoc } from '../lib/accounts-store.mjs'
 import { hashPassword, verifyPassword } from '../lib/accounts.mjs'
 
@@ -153,6 +153,27 @@ export async function runDbSuite({ it, check }) {
     const left = db.prepare('SELECT src_text FROM utterances').all().map(row => row.src_text)
     check('只留下新的那条', left.length === 1 && left[0] === '新', left.join(','))
     db.close()
+  })
+
+  await it('purgeUtterancesIn：给个数据目录就能清（relay 的定时任务走这条）', () => {
+    // 这一层单独测的意义：openDb / close 成对很容易漏，漏了就是句柄泄漏。
+    const dataDir = join(dir, 'purge-dir')
+    const db = openDb(dbPath(dataDir))
+    const insert = db.prepare(`INSERT INTO utterances (room_id, username, src_lang, src_text, dst_text, start_at)
+      VALUES (?, ?, ?, ?, ?, ?)`)
+    const now = Date.parse('2026-10-25T12:00:00Z')
+    insert.run('r', 'boss', 'zh-CN', '老', 'velho', now - 9 * 86400000)
+    insert.run('r', 'boss', 'zh-CN', '新', 'novo', now - 2 * 3600000)
+    db.close()
+
+    check('返回删掉的条数', purgeUtterancesIn(dataDir, now) === 1)
+    // 再来一次就是 0：说明它确实删干净了，而不是每次都报同一个数
+    check('第二次再清就没有可删的了', purgeUtterancesIn(dataDir, now) === 0)
+
+    const verify = openDb(dbPath(dataDir))
+    const left = verify.prepare('SELECT src_text FROM utterances').all().map(row => row.src_text)
+    verify.close()
+    check('留下的是新那条', left.length === 1 && left[0] === '新', left.join(','))
   })
 
   rmSync(dir, { recursive: true, force: true })

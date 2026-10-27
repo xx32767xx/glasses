@@ -16,6 +16,7 @@ import { startRelay, formatBanner, pcmLevel, describeLevel,
   createRateLimiter, clientIp, resolveSecret, formatPublicChecklist,
   PUBLIC_LIMITS } from '../relay/lan-relay.mjs'
 import { VAR_DIR } from '../lib/paths.mjs'
+import { dbPath, openDb } from '../lib/db.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const TMP = join(VAR_DIR, 'test', 'relay-suite')
@@ -278,6 +279,31 @@ export async function runRelaySuite({ it, check, assert }) {
   })
 
   // ── 4. 错误与边界 ──────────────────────────────────────────────────────────
+
+  await it('字幕保留期清理（P4）：超过保留期的字幕会被删，新的留下', async () => {
+    // relay 的定时器是每小时一次，测试不等待它 —— 直接调它暴露出来的那一次，
+    // 验的是"数据目录 → 删对了行"这条链（定时器本身只是一行 setInterval）。
+    const db = openDb(dbPath(TMP))
+    const insert = db.prepare(`INSERT INTO utterances (room_id, username, src_lang, src_text, dst_text, start_at)
+      VALUES (?, ?, ?, ?, ?, ?)`)
+    const now = Date.now()
+    insert.run('r', 'boss', 'zh-CN', '十天前的旧字幕', 'legendas antigas', now - 10 * 86400000)
+    insert.run('r', 'boss', 'zh-CN', '刚发生的字幕', 'legendas novas', now - 60000)
+    db.close()
+
+    const removed = relay.purgeUtterances(now)
+    check('删掉了超过保留期的那条', removed >= 1, String(removed))
+
+    const after = openDb(dbPath(TMP))
+    const left = after.prepare('SELECT src_text FROM utterances').all().map(row => row.src_text)
+    after.close()
+    check('新的那条还在', left.includes('刚发生的字幕'), left.join(','))
+    check('老的已经没了', left.includes('十天前的旧字幕') === false, left.join(','))
+
+    const status = await call('/status')
+    check('/status 里能看到保留天数', status.json.utteranceRetentionDays === 7, JSON.stringify(status.json.utteranceRetentionDays))
+    check('/status 里能看到累计删除条数', status.json.utterancesPurged >= 1, String(status.json.utterancesPurged))
+  })
 
   await it('未知路由 404，并列出可用路由', async () => {
     const result = await call('/nope')
