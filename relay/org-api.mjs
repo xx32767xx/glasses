@@ -30,6 +30,7 @@ import { listLibraries, loadLibrary, loadCategories, saveLibrary, importLibrarie
 import { createRequest, decideRequest, loadRequests, pendingOf, withdrawRequest } from '../lib/requests.mjs'
 import { writeMeetingSnapshot } from '../lib/snapshot.mjs'
 import { createRoom, isRoomClosed, joinRoom, leaveRoom, listMembers, roomByCode, roomById, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
+import { FLOOR_LEASE_MS, floorState, forceReleaseFloor, heartbeatFloor, releaseFloor, setFloorLock, takeFloor } from '../lib/floor.mjs'
 import { publishMeetingTerms } from '../lib/meeting-terms.mjs'
 
 export function selectionPath(root, meetingId) {
@@ -300,6 +301,43 @@ export async function handleOrg(input) {
     return { status: 200, json: { ok: true, closed: left.closed, roomId: left.roomId, members: left.members } }
   }
 
+
+  // ── 发言权互斥（P2b）────────────────────────────────────────────────
+  if (segments[1] === 'rooms' && segments[3] === 'floor' && segments.length === 4) {
+    const rawF = decodeURIComponent(segments[2])
+    const roomF = roomById(root, rawF) ?? roomByCode(root, rawF)
+    if (roomF === null) return bad(404, `room not found: ${rawF}`)
+    if (method === 'GET') return { status: 200, json: { ok: true, ...floorState(root, roomF.id), leaseMs: FLOOR_LEASE_MS } }
+    if (method === 'POST') {
+      const action = String(body.action ?? '')
+      if (action === 'take') {
+        const result = takeFloor(root, { roomId: roomF.id, username: user, now })
+        if (result.ok !== true) return bad(409, result.error)
+        return { status: 200, json: { ok: true, ...result.state, tookOver: result.tookOver ?? null, reason: result.reason ?? null } }
+      }
+      if (action === 'release') {
+        const result = releaseFloor(root, { roomId: roomF.id, username: user, now })
+        if (result.ok !== true) return bad(409, result.error)
+        return { status: 200, json: { ok: true, ...result.state, released: result.released } }
+      }
+      if (action === 'lock' || action === 'unlock') {
+        const result = setFloorLock(root, { roomId: roomF.id, username: user, host: roomF.host, locked: action === 'lock', now })
+        if (result.ok !== true) return bad(409, result.error)
+        return { status: 200, json: { ok: true, ...result.state } }
+      }
+      if (action === 'heartbeat') {
+        const result = heartbeatFloor(root, { roomId: roomF.id, username: user, now })
+        if (result.ok !== true) return bad(409, result.error)
+        return { status: 200, json: { ok: true } }
+      }
+      if (action === 'force-release') {
+        const result = forceReleaseFloor(root, { roomId: roomF.id, by: user, host: roomF.host, now })
+        if (result.ok !== true) return bad(409, result.error)
+        return { status: 200, json: { ok: true, ...result.state, released: result.released } }
+      }
+      return bad(400, `unknown action: ${action}`)
+    }
+  }
   if (segments[1] === 'rooms' && segments.length === 3) {
     const raw = decodeURIComponent(segments[2])
     const room = roomById(root, raw) ?? roomByCode(root, raw)
