@@ -645,4 +645,58 @@ public class LanClient {
         }
         return message;
     }
+
+    // ── Rooms (P2a) ────────────────────────────────────────────────────
+    /** Create a room; server returns a 6-digit invite code. */
+    public JSONObject orgCreateRoom(String name) throws IOException, org.json.JSONException {
+        JSONObject body = new JSONObject();
+        body.put("name", name);
+        return unwrap(requestWithCode("/org/rooms", "POST", body, 8000));
+    }
+
+    /** Join by 6-digit code (idempotent). */
+    public JSONObject orgJoinRoom(String code) throws IOException, org.json.JSONException {
+        JSONObject body = new JSONObject();
+        body.put("code", code);
+        return unwrap(requestWithCode("/org/rooms/join", "POST", body, 8000));
+    }
+
+    /** Room info: members + selected libraries. Accepts room id or invite code. */
+    public JSONObject orgRoomInfo(String roomIdOrCode) throws IOException, org.json.JSONException {
+        return unwrap(requestWithCode("/org/rooms/" + roomIdOrCode, "GET", null, 8000));
+    }
+
+    /** Persist room library selection; server freezes a meeting-terms snapshot. */
+    public JSONObject orgSetRoomLibraries(String roomIdOrCode, org.json.JSONArray libraryIds)
+            throws IOException, org.json.JSONException {
+        JSONObject body = new JSONObject();
+        body.put("libraryIds", libraryIds);
+        return unwrap(requestWithCode("/org/rooms/" + roomIdOrCode + "/libraries", "POST", body, 15000));
+    }
+
+    /** Leave the room. Host leaving closes the room for everyone. */
+    public JSONObject orgLeaveRoom(String roomIdOrCode) throws IOException, org.json.JSONException {
+        JSONObject body = new JSONObject();
+        body.put("roomId", roomIdOrCode);
+        return unwrap(requestWithCode("/org/rooms/leave", "POST", body, 8000));
+    }
+
+    // ── Speaking right (P2b) ───────────────────────────────────────────
+    /** Current floor state: holder / locked / leaseMs. */
+    public JSONObject floorGet(String roomIdOrCode) throws IOException, org.json.JSONException {
+        return unwrap(requestWithCode("/org/rooms/" + roomIdOrCode + "/floor", "GET", null, 8000));
+    }
+
+    /** action = take | release | lock | unlock | heartbeat | force-release */
+    public JSONObject floorAction(String roomIdOrCode, String action)
+            throws IOException, org.json.JSONException {
+        JSONObject body = new JSONObject();
+        body.put("action", action);
+        // 409 means "rejected by rules" (locked by someone else); we still want the body.
+        JSONObject wrapper = requestWithCode("/org/rooms/" + roomIdOrCode + "/floor", "POST", body, 8000);
+        JSONObject json = wrapper.optJSONObject("json");
+        if (json == null) json = new JSONObject();
+        json.put("_status", wrapper.optInt("code", 0));
+        return json;
+    }
 }
