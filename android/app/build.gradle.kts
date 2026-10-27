@@ -56,8 +56,10 @@ android {
     //       再开新文件；计数跨重启有效。/status 报 audioMaxBytes 与 audioRotations。见 docs/21 §4.38。
     // 4.39：新入口补上「设置」与「隐私政策」两页（服务器/密钥/我说什么语言/校对开关/
     //       清空本机记录）；首页有入口，两个 Activity 不对外导出。见 docs/21 §4.39。
-        versionCode = 68
-        versionName = "4.39"
+    // 4.40：修「点结束同传后弹 上传出错：thread interrupted」—— 主动停不算错，
+    //       并且不再立刻 interrupt（那会丢掉最后半句），改成宽限 2 秒发完尾巴。见 docs/21 §4.40。
+        versionCode = 69
+        versionName = "4.40"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

@@ -60,10 +60,30 @@ public class MicUploader implements AudioSource {
     /** 攒够多久就上传一次。 */
     private static final int CHUNK_MS = 1000;
 
+    /**
+     * 停止时给录音线程的宽限（毫秒）：先把最后不足一块的尾巴发出去，再不济才打断。
+     * 2 秒够一次局域网之上的上传完成；真卡死（比如底层 read 不返回）也不会拖住界面。
+     */
+    private static final long STOP_GRACE_MS = 2000L;
+
     private final LanClient client;
     private final Listener listener;
 
     private volatile boolean running = false;
+
+    /**
+     * 是不是**用户主动停的**（4.40 修）。
+     *
+     * <p>为什么需要它：`stop()` 用 `interrupt()` 让录音线程尽快退出，而那一刻线程很可能正卡在
+     * **上传**的网络调用里。被打断的 I/O 会抛一个消息为 `thread interrupted` 的异常，
+     * 于是"用户点了结束同传"被渲染成红字「上传出错：thread interrupted」——
+     * 那是**预期行为**，不是故障。用这个标志把"主动停"和"真出错"分开。
+     *
+     * <p>⚠️ 它必须在 `start()` 里**复位**：否则停过一次之后，后续真正的上传错误会被永远吞掉，
+     * 用户就再也看不到"为什么没有字幕"的原因了。
+     */
+    private volatile boolean stopping = false;
+
     private Thread thread;
     private AudioRecord record;
     private int sampleRate;
@@ -158,6 +178,8 @@ public class MicUploader implements AudioSource {
 
         record = candidate;
         sampleRate = chosen;
+        // 每次开始都复位：停过一次之后必须重新"听得见错误"（见 stopping 的注释）
+        stopping = false;
         final int bytesPerChunk = Math.max(2, chosen * 2 * CHUNK_MS / 1000);
         final int readBytes = Math.max(2, chosen * 2 * READ_MS / 1000);
         running = true;
@@ -177,16 +199,37 @@ public class MicUploader implements AudioSource {
      * 停止录音上传。会把最后不足一块的音频也发出去。
      *
      * 刻意**不在这里 join**：这个方法是主线程调的，join 会把界面卡住。
-     * 只置标志 + 打断；AudioRecord 的释放交给录音线程自己的 finally 收尾
-     * （它那一刻最多再 read 一次，100ms 内就结束了）。
+     * 只置标志；另起一个看门狗线程等它自己收尾（见下面 stop() 里的说明）。
+     * AudioRecord 的释放交给录音线程自己的 finally。
      */
     public void stop() {
+        // 顺序很重要：先声明"这是主动停"，再让线程退出。
+        // 反过来的话，被打断那一刻抛出的异常会先被 catch 到、判定成真故障。
+        stopping = true;
         running = false;
         Thread current = thread;
         thread = null;
-        if (current != null) {
-            current.interrupt();
+        if (current == null) {
+            return;
         }
+        // 为什么**不**立刻 interrupt（4.40 修）：
+        //   录音线程此刻多半正卡在"上传上一块"的网络调用里，而 interrupt 唯一的作用就是
+        //   把那次上传打断 —— 最后不足一块的尾巴（往往就是最后半句话）被丢掉，
+        //   同时抛出一个消息为 "thread interrupted" 的异常（4.39 及以前就弹成红字了）。
+        //   而录音循环里没有 sleep/wait，interrupt 并不能让它更快退出。
+        // 所以：先给它最多 2 秒把尾巴发出去；还赖着不走才打断（比如底层 read 卡死）。
+        Thread guard = new Thread(() -> {
+            try {
+                current.join(STOP_GRACE_MS);
+            } catch (InterruptedException ignored) {
+                return;                       // 我们自己被中断：交给进程收尾
+            }
+            if (current.isAlive()) {
+                current.interrupt();
+            }
+        }, "mic-stop-grace");
+        guard.setDaemon(true);
+        guard.start();
     }
 
     private void releaseRecord() {
@@ -292,7 +335,7 @@ public class MicUploader implements AudioSource {
                 upload(buffer, filled, first);
             }
         } catch (Exception error) {
-            if (running) {
+            if (running && !stopping) {
                 final String message = describe(error);
                 post(() -> listener.onUploadError("录音中断：" + message));
             }
@@ -312,6 +355,11 @@ public class MicUploader implements AudioSource {
             return true;
         } catch (Exception error) {
             running = false;
+            // 主动停（用户点了「结束同传」）时，这一块上传被打断是**预期**的：
+            // 不报错，也别把界面上的「已停止上传」盖成红字。
+            if (stopping) {
+                return false;
+            }
             final String message = describe(error);
             post(() -> listener.onUploadError("上传音频失败：" + message));
             return false;

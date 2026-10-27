@@ -560,6 +560,47 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('写了不采集画面', privacyXml.includes('摄像头'))
   })
 
+  await it('主动停止上传不许报错（"上传出错：thread interrupted" 的回归）', () => {
+    // 用户点「结束同传」时 stop() 会 interrupt 录音线程，而那一刻线程很可能正卡在上传的网络
+    // 调用里 —— 被打断抛出的异常消息就是 "thread interrupted"，被当成故障报成红字。
+    const uploader = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion',
+      'lanrelay', 'MicUploader.java'), 'utf-8')
+    const methodBody = (name) => {
+      const at = uploader.indexOf(name)
+      check(`找得到 ${name}`, at > 0, name)
+      return uploader.slice(at, uploader.indexOf('\n    }', at))
+    }
+
+    check('有"主动停"标志', /private volatile boolean stopping/.test(uploader),
+      '没有它就没法区分"预期打断"和"真故障"')
+
+    // stop() 必须是"先置标志、再（宽限后）打断"，而且不能一上来就 interrupt ——
+    // interrupt 唯一的效果是打断正在上传的那一块，最后半句话就丢了。
+    const stopAt = uploader.indexOf('public void stop()')
+    const stopBody = uploader.slice(stopAt, uploader.indexOf('\n    }', stopAt))
+    const flagAt = stopBody.indexOf('stopping = true')
+    const joinAt = stopBody.indexOf('join(STOP_GRACE_MS)')
+    const interruptAt = stopBody.indexOf('current.interrupt()')
+    check('stop() 先置 stopping', flagAt >= 0, `flag@${flagAt}`)
+    check('stop() 先给线程 2 秒把尾巴发完', joinAt > flagAt, `flag@${flagAt} join@${joinAt}`)
+    check('打断只作为兜底（在宽限之后）', interruptAt > joinAt, `join@${joinAt} interrupt@${interruptAt}`)
+
+    // 上传失败分支：主动停时静默退出，不报错
+    check('上传失败分支会先看"是不是主动停"',
+      /catch \(Exception error\)[\s\S]{0,200}if \(stopping\)[\s\S]{0,120}return false/.test(uploader),
+      '否则用户点了结束仍会看到红字')
+
+    // 录音循环的异常分支：只有"还在跑且不是主动停"才算故障
+    check('录音循环的 catch 判 running && !stopping',
+      /if \(running && !stopping\)/.test(uploader), '只用 running 判会把主动停也算成故障')
+
+    // 关键：start() 必须复位，否则停过一次之后真错误就再也报不出来了
+    const startAt = uploader.indexOf('public String start()')
+    const startBody = uploader.slice(startAt, uploader.indexOf('\n    }', startAt))
+    check('start() 里复位了 stopping', /stopping = false/.test(startBody),
+      '不复位 = 停过一次之后所有真错误都被吞掉')
+  })
+
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {
     const targets = [
       ...collectSources(join(ROOT, 'android', 'app', 'src', 'main', 'java'), ['.java']),
