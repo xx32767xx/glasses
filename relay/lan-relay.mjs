@@ -1009,6 +1009,24 @@ export async function startRelay(rawOptions = {}) {
    * lines 在别处表示"收件箱已写入的行数"，两个含义撞在一起会互相覆盖。
    * 预算优先取自字幕帧：插件的配置是唯一来源。
    */
+  /**
+   * 这次登录/注册发了新 token（单会话会吊销旧的）→ **立刻**通知被顶掉的旧会话（4.45）。
+   *
+   * <p>为什么要有：吊销是服务端一瞬间的事，但被顶掉的那台手机以前只能靠 10 秒一次的
+   * 轮询才知道 —— 用户体感就是"被踢了却不吭声"。现在它只要连着会话通道，
+   * 一秒之内就会收到 `{type:'kicked'}` 并被断开。
+   */
+  function notifyKickedIfReplaced(username) {
+    if (wsHub === null || typeof username !== 'string' || username === '') return
+    try {
+      if (wsHub.notifyKicked(username, 'elsewhere-login')) {
+        debug(`[账户] ${username} 在别处登录，已通知旧会话下线`)
+      }
+    } catch (error) {
+      debug(`[ws] 通知旧会话失败（不影响登录）：${error?.message ?? error}`)
+    }
+  }
+
   function info() {
     return {
       device: state.lastFrame?.device ?? 'Leion Pro',
@@ -1505,6 +1523,7 @@ export async function startRelay(rawOptions = {}) {
         await saveAccounts(options.dataDir, result.doc)
         debug(`[账户] 邮箱注册成功：${result.username}（${result.email}）`)
         send(response, 200, { ok: true, user: result.username, role: result.role, token: result.token })
+        notifyKickedIfReplaced(result.username)
         return
       }
       if (request.method === 'POST' && url.pathname === '/auth/login') {
@@ -1519,6 +1538,7 @@ export async function startRelay(rawOptions = {}) {
         }
         await saveAccounts(options.dataDir, result.doc)
         send(response, 200, { ok: true, user: result.username, role: roleOf(result.doc, result.username), token: result.token })
+        notifyKickedIfReplaced(result.username)
         return
       }
 

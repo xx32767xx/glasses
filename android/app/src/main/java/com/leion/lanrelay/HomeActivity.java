@@ -36,6 +36,9 @@ public class HomeActivity extends android.app.Activity {
     /** 会话监听（4.41）：被别处登录顶掉时当场提示，而不是静默。 */
     private SessionWatch sessionWatch;
 
+    /** 会话推送通道（4.45）：把"被顶下线"的延迟从最多 10 秒压到一秒内。 */
+    private SessionSocket sessionSocket;
+
     private LinearLayout loginBox;
     private LinearLayout homeBox;
     private EditText serverInput;
@@ -193,6 +196,7 @@ public class HomeActivity extends android.app.Activity {
      */
     private void startSessionWatch() {
         if (sessionWatch != null) sessionWatch.stop();
+        if (sessionSocket != null) sessionSocket.stop();
         sessionWatch = new SessionWatch(client, message -> ui.post(() -> {
             Toast.makeText(this, message, Toast.LENGTH_LONG).show();
             status.setText(message);
@@ -202,6 +206,37 @@ public class HomeActivity extends android.app.Activity {
             showLogin();
         }));
         sessionWatch.start();
+
+        // 推送优先：连上后把轮询放宽到 60 秒；断了立刻回到 10 秒（推送是静默失效的，必须有兜底）
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        sessionSocket = new SessionSocket(
+                prefs.getString("host", ""), prefs.getString("secret", ""),
+                prefs.getString("accountToken", ""),
+                new SessionSocket.Listener() {
+                    @Override
+                    public void onKicked(String reason) {
+                        ui.post(() -> {
+                            Toast.makeText(HomeActivity.this,
+                                    "账号已在别处登录，这台设备的登录已失效", Toast.LENGTH_LONG).show();
+                            status.setText("账号已在别处登录，请重新登录");
+                            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                                    .remove("accountToken").remove("termsUser").remove("roomHost").apply();
+                            client.setToken("");
+                            if (sessionWatch != null) sessionWatch.stop();
+                            if (sessionSocket != null) sessionSocket.stop();
+                            showLogin();
+                        });
+                    }
+
+                    @Override
+                    public void onOnlineChanged(boolean online) {
+                        if (sessionWatch != null) {
+                            sessionWatch.setIntervalMs(online
+                                    ? SessionWatch.INTERVAL_SLOW_MS : SessionWatch.INTERVAL_MS);
+                        }
+                    }
+                });
+        sessionSocket.start();
     }
 
     @Override
@@ -209,6 +244,10 @@ public class HomeActivity extends android.app.Activity {
         if (sessionWatch != null) {
             sessionWatch.stop();
             sessionWatch = null;
+        }
+        if (sessionSocket != null) {
+            sessionSocket.stop();
+            sessionSocket = null;
         }
         super.onDestroy();
     }

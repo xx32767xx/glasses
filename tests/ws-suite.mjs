@@ -263,6 +263,7 @@ export async function runWsSuite({ it, check }) {
     })
 
     await it('发起者退出 = 整场结束：在线的人立刻收到 closed 并被断开（4.44）', async () => {
+
       // 用户报的：发起者退出后，其余参会者还留在房间里，点什么都失败。
       const watcher = openSocket(wsUrl(room.code, bobToken))
       opened.push(watcher)
@@ -314,6 +315,30 @@ export async function runWsSuite({ it, check }) {
         probe.close()
       }
     })
+    await it('会话通道：另一台登录时，被顶掉的那台一秒内收到 kicked（4.45）', async () => {
+      // 用户报的诉求：能不能把"检测到自己被挤下线"从 10 秒轮询变成推送。
+      const ticket = openSocket(`${wsBase}?session=1&token=${aliceToken}&secret=ws-test-secret`)
+      opened.push(ticket)
+      await ticket.ready
+      const hello = await ticket.next()
+      check('会话通道握手成功', hello !== null && hello.type === 'session', JSON.stringify(hello))
+      check('握手带上了用户名', hello.user === 'alice', JSON.stringify(hello))
+
+      // 另一台设备用同一账号再登录 → 服务端当场吊销旧 token 并通知
+      const again = await post('/auth/login', { username: 'alice', password: 'secret12' })
+      check('再次登录成功', again.status === 200, String(again.status))
+
+      const pushed = await ticket.next(3000)
+      check('旧会话立刻收到 kicked', pushed !== null && pushed.type === 'kicked', JSON.stringify(pushed))
+      check('原因说清了是在别处登录', pushed.reason === 'elsewhere-login', JSON.stringify(pushed))
+
+      const deadline2 = Date.now() + 2000
+      while (ticket.closed.done !== true && Date.now() < deadline2) {
+        await new Promise(resolve => setTimeout(resolve, 20))
+      }
+      check('会话连接随后被服务端关闭', ticket.closed.done === true, JSON.stringify(ticket.closed))
+    })
+
   } finally {
     for (const client of opened) client.close()
     await relay.close().catch(() => {})

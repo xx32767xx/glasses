@@ -688,6 +688,27 @@ export async function runAndroidOrderSuite({ it, check }) {
       '不能只靠 WS —— WS 断了人就留在空屋里')
   })
 
+  await it('被顶下线走推送：会话通道 + 轮询兜底（4.45）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const socket = readFileSync(join(javaDir, 'SessionSocket.java'), 'utf-8')
+    const watch = readFileSync(join(javaDir, 'SessionWatch.java'), 'utf-8')
+    const home = readFileSync(join(javaDir, 'HomeActivity.java'), 'utf-8')
+    const rooms = readFileSync(join(javaDir, 'RoomsActivity.java'), 'utf-8')
+
+    check('会话通道连的是 /ws?session=1', /\/ws\?session=1/.test(socket), '没有它就只能靠 10 秒轮询')
+    check('认得 type=kicked', /"kicked"\.equals\(parsed\.optString\("type"/.test(socket))
+    check('轮询间隔可调（推送活着时放慢）', /public void setIntervalMs\(long value\)/.test(watch))
+    check('有"慢速间隔"常量（兜底不必跑那么勤）', /INTERVAL_SLOW_MS/.test(watch))
+
+    for (const [name, src] of [['首页', home], ['大厅', rooms]]) {
+      check(`${name}连了会话通道`, /new SessionSocket\([\s\S]{0,2500}sessionSocket\.start\(\)/.test(src), name)
+      check(`${name}收到 kicked 会清 token 并退出`, /onKicked\(String reason\)[\s\S]{0,1200}remove\("accountToken"\)/.test(src), name)
+      check(`${name}按推送是否在线调整轮询间隔`,
+        /setIntervalMs\(online[\s\S]{0,120}INTERVAL_SLOW_MS/.test(src), name)
+      check(`${name}销毁时断开推送`, /onDestroy\(\)[\s\S]{0,800}sessionSocket\.stop\(\)/.test(src), name)
+    }
+  })
+
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {
     const targets = [
       ...collectSources(join(ROOT, 'android', 'app', 'src', 'main', 'java'), ['.java']),

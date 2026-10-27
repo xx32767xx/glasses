@@ -66,8 +66,10 @@ android {
     //       两条通道共用 RoomActivity.applyFrame，不会各自渲染得不一样。见 docs/21 §4.43。
     // 4.44：修 4.41 带出来的选库框（setMessage 挤掉多选列表）；锁定按钮文案与权限一致；
     //       发起者退出 = 整场结束 → 服务端主动推 closed 并断开（轮询兜底判 410）。见 docs/21 §4.44。
-        versionCode = 73
-        versionName = "4.44"
+    // 4.45：「被别处登录顶下线」改走推送 —— /ws?session=1 会话通道，服务端吊销旧 token 的那一刻
+    //       就通知；SessionWatch 轮询保留，但推送在线时放宽到 60 秒。见 docs/21 §4.45。
+        versionCode = 74
+        versionName = "4.45"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

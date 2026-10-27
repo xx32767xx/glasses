@@ -22,6 +22,15 @@ public class SessionWatch {
     /** 检查间隔。10 秒足够"当场发现"，又不至于把服务器问烦（960 次/天/设备）。 */
     static final long INTERVAL_MS = 10000L;
 
+    /**
+     * 推送通道（{@link SessionSocket}）活着时的间隔：60 秒。
+     *
+     * <p>为什么还要留着轮询：推送是"服务端说"、轮询是"我主动问"，两条独立的路。
+     * WS 断了、服务端重启、代理把长连接掐了 —— 这些情况下推送是**静默失效**的，
+     * 只有轮询能发现。但既然推送已经把延迟压到"一秒内"，兜底就不必跑那么勤。
+     */
+    static final long INTERVAL_SLOW_MS = 60000L;
+
     public interface Listener {
         /** 会话已失效（被别处登录顶掉 / token 过期）。回调在后台线程，界面自己切主线程。 */
         void onKicked(String message);
@@ -31,7 +40,13 @@ public class SessionWatch {
     private final Listener listener;
 
     private volatile boolean running = false;
+    private volatile long intervalMs = INTERVAL_MS;
     private Thread thread;
+
+    /** 推送通道活着 → 放宽到 60 秒；断了 → 立刻回到 10 秒。 */
+    public void setIntervalMs(long value) {
+        intervalMs = value <= 0 ? INTERVAL_MS : value;
+    }
 
     public SessionWatch(LanClient client, Listener listener) {
         this.client = client;
@@ -68,7 +83,7 @@ public class SessionWatch {
                 // 连不上 / 服务端临时异常：**不当作掉登录**（见类注释）
             }
             try {
-                Thread.sleep(INTERVAL_MS);
+                Thread.sleep(intervalMs);
             } catch (InterruptedException stop) {
                 return;
             }

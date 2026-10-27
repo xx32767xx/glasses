@@ -26,6 +26,9 @@ public class RoomsActivity extends android.app.Activity {
 
     /** 会话监听（4.41）：在大厅等着的时候也要能发现被顶下线。 */
     private SessionWatch sessionWatch;
+
+    /** 会话推送（4.45）：让"被顶下线"一秒内到达，而不是等 10 秒轮询。 */
+    private SessionSocket sessionSocket;
     private String myName = "";
 
     private EditText nameInput;
@@ -73,6 +76,31 @@ public class RoomsActivity extends android.app.Activity {
         }));
         sessionWatch.start();
 
+        sessionSocket = new SessionSocket(
+                prefs.getString("host", ""), prefs.getString("secret", ""), token,
+                new SessionSocket.Listener() {
+                    @Override
+                    public void onKicked(String reason) {
+                        ui.post(() -> {
+                            Toast.makeText(RoomsActivity.this,
+                                    "账号已在别处登录，这台设备的登录已失效", Toast.LENGTH_LONG).show();
+                            getSharedPreferences("leion", MODE_PRIVATE).edit()
+                                    .remove("accountToken").remove("termsUser").remove("roomHost").apply();
+                            client.setToken("");
+                            finish();
+                        });
+                    }
+
+                    @Override
+                    public void onOnlineChanged(boolean online) {
+                        if (sessionWatch != null) {
+                            sessionWatch.setIntervalMs(online
+                                    ? SessionWatch.INTERVAL_SLOW_MS : SessionWatch.INTERVAL_MS);
+                        }
+                    }
+                });
+        sessionSocket.start();
+
         createButton.setOnClickListener(v -> createRoom());
         joinButton.setOnClickListener(v -> joinRoom());
         findViewById(R.id.roomsLangZh).setOnClickListener(v -> setSpeakLang("zh-CN"));
@@ -86,6 +114,10 @@ public class RoomsActivity extends android.app.Activity {
         if (sessionWatch != null) {
             sessionWatch.stop();
             sessionWatch = null;
+        }
+        if (sessionSocket != null) {
+            sessionSocket.stop();
+            sessionSocket = null;
         }
         super.onDestroy();
     }
