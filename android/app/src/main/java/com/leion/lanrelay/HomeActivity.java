@@ -48,6 +48,8 @@ public class HomeActivity extends android.app.Activity {
     private TextView whoLine;
 
     private boolean registerMode = false;
+    /** 屏幕调试行（无 adb 时靠它定位） */
+    private final java.util.ArrayDeque<String> debugLines = new java.util.ArrayDeque<>();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -178,6 +180,28 @@ public class HomeActivity extends android.app.Activity {
         return value;
     }
 
+    /** 状态区追加一行调试信息（同时写 logcat），没有 adb 也能看到。 */
+    private void debugLine(final String text) {
+        String stamp = new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(new java.util.Date());
+        Log.i("LeionHome", text);
+        runOnUiThread(new Runnable() {
+            public void run() {
+                debugLines.addLast(stamp + " " + text);
+                while (debugLines.size() > 7) {
+                    debugLines.removeFirst();
+                }
+                StringBuilder sb = new StringBuilder();
+                for (String line : debugLines) {
+                    if (sb.length() > 0) {
+                        sb.append('\n');
+                    }
+                    sb.append(line);
+                }
+                status.setText(sb.toString());
+            }
+        });
+    }
+
     private void doLogin() {
         final String host = normalizeHost(serverInput.getText().toString());
         final String secret = secretInput.getText().toString().trim();
@@ -211,6 +235,7 @@ public class HomeActivity extends android.app.Activity {
             Toast.makeText(this, "注册需要邮箱和验证码", Toast.LENGTH_SHORT).show();
             return;
         }
+        debugLine("tap login host=" + host + " secretLen=" + secret.length() + " user=" + user);
         loginButton.setEnabled(false);
         status.setText(registerMode ? "注册中…" : "登录中…");
         new Thread(() -> {
@@ -228,6 +253,7 @@ public class HomeActivity extends android.app.Activity {
             final String failure = error;
             ui.post(() -> {
                 loginButton.setEnabled(true);
+                debugLine(result == null ? ("exception " + failure) : ("response ok=" + result.optBoolean("ok", false)));
                 Log.i("LeionHome", "login result=" + result + " failure=" + failure);
                 if (result == null || !result.optBoolean("ok", false)) {
                     String reason = failure;
