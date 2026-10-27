@@ -133,7 +133,14 @@
           <button class="btn ok" onclick="createAccount()">添加测试账号</button>
         </div>
         <div class="mono">加的是 dev 测试账号：只读、默认 7 天过期、不发验证码。用户自己注册走「邮箱+用户名+密码+验证码」。</div>
-        <div id="accounts"><div class="empty">加载中…</div></div>
+        <h2>会议列表 <span class="tag" id="roomCount">—</span></h2>
+<div class="row">
+  <button class="btn ghost" onclick="loadRooms()">刷新</button>
+  <span class="tag">未结束的房间；发起者退出即结束整场</span>
+</div>
+<div id="rooms"><div class="empty">加载中…</div></div>
+
+<div id="accounts"><div class="empty">加载中…</div></div>
       </div>
     </section>
 
@@ -251,7 +258,7 @@ function enterConsole() {
   pill.textContent = me.role;
   pill.className = 'pill ' + (me.role === 'admin' ? 'on' : '');
   document.getElementById('who').textContent = me.user + (me.role === 'admin' ? '' : '（非管理员：只能看库，改不了）');
-  loadDataset(); loadMeeting(); loadLibraries(); loadPending(); loadAccounts();
+  loadDataset(); loadMeeting(); loadRooms(); loadLibraries(); loadPending(); loadAccounts();
 }
 
 async function loadMeeting() {
@@ -365,6 +372,24 @@ async function loadDataset() {
   } catch (error) {
     pill.textContent = '环境 未知';
   }
+}
+
+async function loadRooms() {
+  const box = document.getElementById('rooms');
+  try {
+    const data = await api('/org/rooms');
+    const rows = data.rooms || [];
+    document.getElementById('roomCount').textContent = rows.length + ' 个进行中';
+    box.innerHTML = rows.length === 0 ? '<div class="empty">当前没有进行中的会议</div>'
+      : '<table><thead><tr><th>房间</th><th>邀请码</th><th>发起者</th><th>成员</th><th>当前发言人</th><th>创建时间</th></tr></thead><tbody>'
+        + rows.map((r) => '<tr><td><b>' + r.name + '</b></td>'
+            + '<td class="mono">' + r.code + '</td>'
+            + '<td>' + r.host + '</td>'
+            + '<td>' + r.members + ' 人</td>'
+            + '<td>' + (r.holder ? r.holder : '空闲') + '</td>'
+            + '<td class="mono">' + String(r.createdAt || '').slice(0, 16).replace('T', ' ') + '</td></tr>').join('')
+        + '</tbody></table>';
+  } catch (error) { box.innerHTML = '<div class="empty">' + String(error.message || error) + '</div>'; }
 }
 
 async function loadAccounts() {
