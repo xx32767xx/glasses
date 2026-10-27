@@ -156,6 +156,28 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             }
 
             @Override
+            public void onFrame(final JSONObject message) {
+                final JSONObject frame = message == null ? null : message.optJSONObject("frame");
+                if (frame == null) return;
+                ui.post(() -> {
+                    org.json.JSONArray linesArray = frame.optJSONArray("lines");
+                    String[] lines = null;
+                    if (linesArray != null) {
+                        lines = new String[linesArray.length()];
+                        for (int i = 0; i < lines.length; i++) lines[i] = linesArray.optString(i, "");
+                    }
+                    org.json.JSONArray missArray = frame.optJSONArray("termsMiss");
+                    String[] missing = null;
+                    if (missArray != null) {
+                        missing = new String[missArray.length()];
+                        for (int i = 0; i < missing.length; i++) missing[i] = missArray.optString(i, "");
+                    }
+                    applyFrame(frame.optString("text", ""), lines, frame.optString("source", ""),
+                            frame.optBoolean("partial", false), missing);
+                });
+            }
+
+            @Override
             public void onState(String message) {
                 ui.post(() -> statusLine.setText(message));
             }
@@ -557,15 +579,25 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     @Override
     public void onFrame(String speaker, String lang, String[] lines, String text,
                         String source, String sourceLang, boolean partial, String[] termsMissing) {
-        ui.post(() -> {
-            String main = (text == null || text.isEmpty()) ? (lines == null ? "" : String.join("\n", lines)) : text;
-            mainLine.setText(main == null ? "" : main);
-            subLine.setText(source == null ? "" : source);
-            if (partial) hintLine.setText("生成中…");
-            else if (termsMissing != null && termsMissing.length > 0) {
-                hintLine.setText("术语未按规范写法出现：" + String.join("、", termsMissing));
-            } else hintLine.setText("");
-        });
+        ui.post(() -> applyFrame(text, lines, source, partial, termsMissing));
+    }
+
+    /**
+     * 渲染一帧字幕。**长轮询与 WS 推送都走这里**（4.43），否则两条路各写一份，
+     * 迟早出现"长轮询能显示、WS 显示不出来"这种只在一半设备上出现的分裂。
+     */
+    private void applyFrame(String text, String[] lines, String source, boolean partial, String[] termsMissing) {
+        String main = (text == null || text.isEmpty())
+                ? (lines == null ? "" : String.join("\n", lines)) : text;
+        mainLine.setText(main == null ? "" : main);
+        subLine.setText(source == null ? "" : source);
+        if (partial) {
+            hintLine.setText("生成中…");
+        } else if (termsMissing != null && termsMissing.length > 0) {
+            hintLine.setText("术语未按规范写法出现：" + String.join("、", termsMissing));
+        } else {
+            hintLine.setText("");
+        }
     }
 
     @Override

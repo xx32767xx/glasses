@@ -16,8 +16,9 @@ import java.util.Locale;
  * 2 秒才知道自己被静音了 —— 而这段时间里它的麦克风还在传（4.34 修的正是它照做的问题，
  * 这条通道解决的是"**知都不知道**"）。改成 WS 推送后是**一推即到**。
  *
- * <p><b>它只推一件小事</b>：谁在说话、锁没锁、多久算掉线。音频与字幕不走这里
- * （字幕仍走 `/frame` 长轮询；音频目前只有"手机→电脑"一个方向）。
+ * <p><b>它推两件事</b>：谁在说话（低频）与**新字幕帧**（4.43 起）。
+ * 长轮询 `/frame` 仍然保留作兜底 —— WS 断了好歹还能收到字幕。
+ * 音频不走这里（目前只有"手机→电脑"一个方向）。
  *
  * <p><b>断了不影响功能</b>：`RoomActivity` 里 2 秒轮询一直在跑，WS 只是让它更快。
  * 所以这里连不上、掉了、服务端没这个端点（老版本 relay）都**只记一行状态**，不弹框。
@@ -35,6 +36,14 @@ public class FloorSocket {
     public interface Listener {
         /** 收到一份完整的发言权状态（整条替换，不做增量）。 */
         void onFloor(JSONObject state);
+
+        /**
+         * 收到一帧新字幕（4.43 起也是推过来的，不再是每帧一次 HTTP 长轮询）。
+         *
+         * <p>参数就是服务端那条消息本体（含 `seq` 与 `frame`）：
+         * 界面自己决定怎么渲染，这条通道只负责"来了一帧、别等了"。
+         */
+        void onFrame(JSONObject message);
 
         /** 连接层的一行状态（连上 / 断开 / 出错）。失败不是错误，轮询会兜住。 */
         void onState(String message);
@@ -170,8 +179,11 @@ public class FloorSocket {
             } catch (Exception error) {
                 return;   // 不是 JSON 就当没看见：别因为一句话断掉整条通道
             }
-            if ("floor".equals(parsed.optString("type", ""))) {
+            String type = parsed.optString("type", "");
+            if ("floor".equals(type)) {
                 listener.onFloor(parsed);
+            } else if ("frame".equals(type)) {
+                listener.onFrame(parsed);
             }
         }
 

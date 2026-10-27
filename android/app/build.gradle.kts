@@ -62,8 +62,10 @@ android {
     //       当场提示（SessionWatch 每 10 秒问一次 whoami，房间内轮询也判 401）。见 docs/21 §4.41。
     // 4.42：锁定态掉线不再永久占麦 —— 锁定租约 60 秒（普通 15 秒），GET /floor 顺手清扫并广播
     //       「XX 掉线，麦克风已释放」。见 docs/21 §4.42。
-        versionCode = 71
-        versionName = "4.42"
+    // 4.43：字幕也走 WS 推送（与发言权同一条连接），/frame 长轮询保留兜底；
+    //       两条通道共用 RoomActivity.applyFrame，不会各自渲染得不一样。见 docs/21 §4.43。
+        versionCode = 72
+        versionName = "4.43"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

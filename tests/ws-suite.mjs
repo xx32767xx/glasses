@@ -2,7 +2,8 @@
  * ws-suite.mjs —— 发言权推送通道（手写 WebSocket，`lib/ws-hub.mjs`）
  * ============================================================================
  *
- * 两段：① 帧编解码这类纯函数（跑得快、失败时一眼看出是哪一层的错）；
+ * 三个部分：⓪ 帧编解码纯函数 ① 发言权状态推送 ② 新字幕帧推送（4.43）；
+ * 后两者都用 Node 自带的 `WebSocket` 客户端真跑，见下。
  * ② **真服务器 + 真客户端**：用 Node 自带的 `WebSocket` 客户端连 relay 的 `/ws`，
  *    验证"有人开麦 → 房间里所有人都立刻收到"，而不是等 2 秒轮询。
  *
@@ -10,7 +11,7 @@
  * 只有在真客户端面前才会暴露 —— Node 自带的客户端是**带掩码**的，正好替我们验这一条。
  */
 
-import { mkdir, rm } from 'node:fs/promises'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { VAR_DIR } from '../lib/paths.mjs'
@@ -210,6 +211,32 @@ export async function runWsSuite({ it, check }) {
       await post('/org/rooms/leave', { roomId: room.id }, bobToken)
       const forAlice = await opened[0].next()
       check('推送里 holder=null', forAlice !== null && forAlice.holder === null, JSON.stringify(forAlice))
+    })
+
+    await it('新字幕帧也会推过来（4.43：字幕不再只靠 /frame 长轮询）', async () => {
+      // 字幕总线是一场会议一条文件：relay 每 60ms 读一次，变了就 publishFrame。
+      // 现在 publishFrame 顺带推给所有 WS 连接 —— 这条测试验的就是这个"顺带"。
+      const watcher = openSocket(wsUrl(room.code, aliceToken))
+      opened.push(watcher)
+      await watcher.ready
+      await watcher.next()                       // 连上时的 floor 快照
+
+      const frame = {
+        speaker: 'alice',
+        lang: 'zh-CN',
+        lines: ['会议改到三点'],
+        text: '会议改到三点',
+        source: '会议改到三点',
+        sourceLang: 'zh-CN',
+        partial: false,
+      }
+      await writeFile(join(BASE, 'subtitle-bus.json'), JSON.stringify(frame), 'utf-8')
+
+      const pushed = await watcher.next(3000)
+      check('收到 type=frame 的推送', pushed !== null && pushed.type === 'frame', JSON.stringify(pushed))
+      check('带上了帧内容', pushed.frame && pushed.frame.text === '会议改到三点', JSON.stringify(pushed?.frame))
+      check('带上了序号（客户端据此判断是不是新的一帧）', typeof pushed.seq === 'number' && pushed.seq > 0,
+        String(pushed.seq))
     })
 
     await it('同一个人重复连进来时，旧连接被顶掉（避免"两个我"各自收状态）', async () => {

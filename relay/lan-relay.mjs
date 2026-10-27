@@ -648,6 +648,10 @@ export async function startRelay(rawOptions = {}) {
       + `[${frame.speaker ?? '?'} / ${frame.lang ?? '?'}] ${frame.text ?? ''}`)
     lintFrame(frame)
     notifyWaiters()
+    // 4.43：字幕也走 WS（长轮询留着兜底）。seq 一起带上，客户端能判断是不是新的一帧。
+    if (wsHub !== null) {
+      wsHub.broadcastFrame({ type: 'frame', seq: state.seq, changed: true, frame })
+    }
   }
 
   /**
@@ -1677,7 +1681,8 @@ export async function startRelay(rawOptions = {}) {
   // ── 发言权推送通道（手写 WebSocket，见 lib/ws-hub.mjs）─────────────────
   // 只推"谁在说话/锁没锁"这类低频状态；音频与字幕不走这里。
   // 认证与普通请求同一套：共享密钥 + token（token 决定"我是房间里的谁"）。
-  const wsHub = createWsHub({
+  let wsHub = null
+  wsHub = createWsHub({
     dataDir: options.dataDir,
     checkSecret: given => secretMatches(secret, given),
     resolveUser: async token => {

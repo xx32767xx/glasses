@@ -641,6 +641,23 @@ export async function runAndroidOrderSuite({ it, check }) {
       /private void showKicked\(String hint\)[\s\S]{0,800}remove\("accountToken"\)[\s\S]{0,300}finish/.test(room))
   })
 
+  await it('字幕两条通道共用一条渲染路径（4.43：长轮询 + WS 推送）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const socket = readFileSync(join(javaDir, 'FloorSocket.java'), 'utf-8')
+    const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+
+    check('推送通道认得 type=frame', /"frame"\.equals\(type\)/.test(socket), socket.slice(0, 120))
+    check('Listener 有 onFrame 回调', /void onFrame\(JSONObject message\)/.test(socket))
+
+    // 关键不变量：长轮询与 WS 都必须走同一个 applyFrame，否则两条路迟早渲染得不一样
+    check('有共用的 applyFrame', /private void applyFrame\(/.test(room))
+    check('长轮询那条路也走 applyFrame', /public void onFrame\(String speaker[\s\S]{0,300}applyFrame\(/.test(room))
+    check('WS 那条路也走 applyFrame', /public void onFrame\(final JSONObject message\)[\s\S]{0,1600}applyFrame\(/.test(room),
+      'WS 收到帧后必须复用渲染，而不是各写一份')
+    check('长轮询仍然保留（WS 断了要有兜底）', /request\("\/frame\?since=/.test(readFileSync(join(javaDir, 'LanClient.java'), 'utf-8')) ||
+      /\/frame\?since=/.test(readFileSync(join(javaDir, 'LanClient.java'), 'utf-8')), '兜底不能删')
+  })
+
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {
     const targets = [
       ...collectSources(join(ROOT, 'android', 'app', 'src', 'main', 'java'), ['.java']),
