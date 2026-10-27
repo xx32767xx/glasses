@@ -77,6 +77,16 @@
                 android:background="#37474F" />
 
             <Button
+                android:id="@+id/roomLeave"
+                android:layout_width="wrap_content"
+                android:layout_height="56dp"
+                android:layout_marginLeft="10dp"
+                android:text="退出"
+                android:textColor="#EF9A9A"
+                android:textSize="14sp"
+                android:background="#263238" />
+
+            <Button
                 android:id="@+id/roomLock"
                 android:layout_width="wrap_content"
                 android:layout_height="56dp"

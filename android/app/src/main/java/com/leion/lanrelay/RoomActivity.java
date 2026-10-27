@@ -80,6 +80,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
 
         micButton.setOnClickListener(v -> toggleMic());
         lockButton.setOnClickListener(v -> toggleLock());
+        findViewById(R.id.roomLeave).setOnClickListener(v -> leaveRoom());
         lockButton.setEnabled(false);
         lockButton.setAlpha(0.5f);
         scheduleFloorPoll(0L);
@@ -132,7 +133,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                     if (action.equals("take")) hintLine.setText(reason);
                     return;
                 }
-                String holder = body.optString("holder", "");
+                String holder = holderOf(body);
                 takingChanged(holder, body.optBoolean("locked", false));
                 if (body.optString("tookOver", "").length() > 0) {
                     hintLine.setText("你已接管麦克风 · " + body.optString("tookOver") + " 已被自动静音");
@@ -141,6 +142,14 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         }, "room-floor-" + action).start();
     }
 
+    /** JSON 里 holder 可能是 null，optString 会返回字面量 "null" —— 统一归一成空串。 */
+    private static String holderOf(JSONObject body) {
+        if (body == null || body.isNull("holder")) {
+            return "";
+        }
+        String value = body.optString("holder", "");
+        return "null".equals(value) ? "" : value;
+    }
     private void takingChanged(String holder, boolean isLocked) {
         holding = holder != null && holder.equals(myName) && !holder.isEmpty();
         locked = isLocked;
@@ -157,6 +166,29 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         return getSharedPreferences("leion", MODE_PRIVATE).getString("roomHost", "");
     }
 
+    /** 退出房间：发起者退出会让整场结束（服务端规则）。 */
+    private void leaveRoom() {
+        micButton.setEnabled(false);
+        new Thread(new Runnable() {
+            public void run() {
+                String error = "";
+                try {
+                    client.orgLeaveRoom(roomKey);
+                } catch (Exception e) {
+                    error = e.getMessage() == null ? e.toString() : e.getMessage();
+                }
+                final String failure = error;
+                ui.post(new Runnable() {
+                    public void run() {
+                        if (!failure.isEmpty()) {
+                            Toast.makeText(RoomActivity.this, "退出时出错：" + failure, Toast.LENGTH_SHORT).show();
+                        }
+                        finish();
+                    }
+                });
+            }
+        }, "room-leave").start();
+    }
     // ── 发言权轮询 ───────────────────────────────────────────────────────
     private void scheduleFloorPoll(long delay) {
         if (pollScheduled) return;
@@ -173,7 +205,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 final JSONObject body = state;
                 ui.post(() -> {
                     if (body != null && body.optBoolean("ok", false)) {
-                        takingChanged(body.optString("holder", ""), body.optBoolean("locked", false));
+                        takingChanged(holderOf(body), body.optBoolean("locked", false));
                         if (holding) heartbeatIfDue();
                     }
                     if (!isFinishing()) scheduleFloorPoll(FLOOR_POLL_MS);
