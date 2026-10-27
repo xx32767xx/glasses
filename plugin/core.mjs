@@ -447,7 +447,7 @@ export function translationSystem(policy, from, to, termsHint) {
  *
  * @param policy 由 plugin/policy.generated.mjs（生成物）提供
  */
-export function proofreadSystem(policy, from, to) {
+export function proofreadSystem(policy, from, to, entries) {
   if (policy === undefined || policy === null) {
     throw new Error('proofreadSystem 需要 policy（见 policy/br-pt.json 与 plugin/policy.generated.mjs）')
   }
@@ -458,6 +458,19 @@ export function proofreadSystem(policy, from, to) {
   ]
   const rules = policy.proofreadRules === undefined ? [] : policy.proofreadRules
   rules.forEach((rule, index) => lines.push((index + 1) + '. ' + rule))
+  // 术语表也必须给校对看：否则它会把初译里正确的专名改成"直译"。
+  // 实测反例：初译 Liangliang Vision → 校对改成 Brilha a visão，原文里的公司名整段丢失。
+  const termList = Array.isArray(entries) ? entries : []
+  if (termList.length > 0) {
+    lines.push("术语表（以下写法是已确认的规范译名，必须原样保留：不改写、不直译、不省略）：")
+    for (const entry of termList) {
+      const zh = entry && entry.zh ? String(entry.zh) : ""
+      const pt = entry && entry.pt ? String(entry.pt) : ""
+      if (zh === "" || pt === "") continue
+      lines.push("- " + zh + " → " + pt)
+    }
+    lines.push("初译里若出现表外的专名，按初译保留，不要自行发明新写法。")
+  }
   if (to === PT && Array.isArray(policy.terminology) && policy.terminology.length > 0) {
     lines.push('用词必须按巴葡（括号里是葡葡，不要用）：' + policy.terminology
       .map(entry => entry.br + '（不用 ' + entry.ptpt + '）')
@@ -1622,7 +1635,7 @@ export function createInterpreter(ctx, rawConfig, deps) {
       const proofreadOptions = {
         provider: route.providerId,
         model: route.modelId,
-        system: proofreadSystem(policy, item.from, item.to),
+        system: proofreadSystem(policy, item.from, item.to, state.terms.entries),
         messages,
         maxTokens: config.maxTokens,
         // 温度比翻译再低一点：校对要的是"稳定地判对错"，不是发挥。
