@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  page_privacy.xml —— 隐私政策（4.39，A2）。
+
+  文案只写**这套系统实际做了什么**，不抄模板：
+  音频去哪、字幕留多久、本机记录留多久、不采集什么、公网为什么要 TLS。
+  规则来源：docs/21 §4（隐私）与 §4.38（音频轮转）、relay 的 /audio 与保留期清理。
+-->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#101418"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="隐私政策"
+            android:textColor="#FFFFFF"
+            android:textSize="24sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="译连 TransLink · 中↔巴西葡语同声传译"
+            android:textColor="#94A3B8"
+            android:textSize="12sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:lineSpacingExtra="4dp"
+            android:textColor="#D6DEE6"
+            android:textSize="14sp"
+            android:text="一、这套系统采集什么\n只采集麦克风声音与由此得到的文字。不采集摄像头画面、不采集位置、不采集通讯录，也不读取其它应用的数据。" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:lineSpacingExtra="4dp"
+            android:textColor="#D6DEE6"
+            android:textSize="14sp"
+            android:text="二、音频去哪了\n你说的话由手机麦克风按块上传到你们自己的服务器（不经过第三方云）。服务器把它写进音频文件供识别使用；这个文件超过上限（缺省 1 GB）会自动轮转，只保留最近一份，旧的那份随后被覆盖。" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:lineSpacingExtra="4dp"
+            android:textColor="#D6DEE6"
+            android:textSize="14sp"
+            android:text="三、文字留多久\n服务器上的字幕记录按保留期自动清理（缺省 7 天）。手机本机的历史记录（原文与译文）只存在应用私有目录里，最多 200 条，你可以在设置页随时一键清空。" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:lineSpacingExtra="4dp"
+            android:textColor="#D6DEE6"
+            android:textSize="14sp"
+            android:text="四、谁能看到\n只有你所在会议的参与者能看到这次同传的字幕；管理员能看到账号与术语库，不会主动翻看会议内容。共享密钥泄露等于别人能往这台服务器推字幕，请勿外传。" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:lineSpacingExtra="4dp"
+            android:textColor="#D6DEE6"
+            android:textSize="14sp"
+            android:text="五、关于公网\n当前验证阶段走的是明文 http（8788 端口），密钥与音频在网络上是明文传输。正式使用前必须上 TLS（https），否则不要在公网上传输真实会议内容。" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:lineSpacingExtra="4dp"
+            android:textColor="#D6DEE6"
+            android:textSize="14sp"
+            android:text="六、你的选择\n不同意被录音就不要点「开始同传」；想删掉本机记录，去设置页点「清空本机记录」；想让服务器别再保留这次会议的字幕，请让管理员按保留期清理或直接结束这场会议。" />
+
+        <Button
+            android:id="@+id/privacyBack"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="24dp"
+            android:text="返回设置"
+            android:textColor="#FFFFFF"
+            android:background="#263238" />
+    </LinearLayout>
+</ScrollView>

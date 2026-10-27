@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  page_settings_app.xml —— 新入口用的设置页（4.39，A2）。
+
+  为什么另起一页而不是复用 page_settings.xml：那一页是**旧界面**（MainActivity）的底部导航页，
+  id 与字符串都绑在它上面（主题/字号/显示模式/开发者模式…）。新入口（HomeActivity）只需要
+  "连哪台服务器 + 我说什么语言 + 校对开关 + 隐私 + 清空本机记录"这几项。
+  旧界面将来要下掉，这一页不该被它拖着。
+
+  id 一律用 setApp 前缀，避免与旧页的 settings* 撞名（两页同时被 R 引用）。
+-->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#101418"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="设置"
+            android:textColor="#FFFFFF"
+            android:textSize="24sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/setAppStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:padding="8dp"
+            android:background="#1B2228"
+            android:textColor="#B0BEC5"
+            android:textSize="12sp"
+            android:minHeight="36dp"
+            android:text="" />
+
+        <!-- ── 连接 ───────────────────────────────────────────────────── -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:text="服务器"
+            android:textColor="#E0B341"
+            android:textSize="14sp" />
+
+        <EditText
+            android:id="@+id/setAppServer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="http://117.50.180.93:8788"
+            android:inputType="textUri"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#64748B" />
+
+        <EditText
+            android:id="@+id/setAppSecret"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="共享密钥（start-all 横幅里那串）"
+            android:inputType="text"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#64748B" />
+
+        <Button
+            android:id="@+id/setAppSave"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
+            android:text="保存连接设置"
+            android:textColor="#FFFFFF"
+            android:background="#1565C0" />
+
+        <!-- ── 我说什么语言 ────────────────────────────────────────────── -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="我在会里说哪种语言"
+            android:textColor="#E0B341"
+            android:textSize="14sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="决定识别与翻译方向：我说中文，对方的话译成葡语；反之亦然。"
+            android:textColor="#94A3B8"
+            android:textSize="12sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/setAppLangZh"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:text="我说中文"
+                android:textColor="#FFFFFF"
+                android:background="#263238" />
+
+            <Button
+                android:id="@+id/setAppLangPt"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_marginLeft="8dp"
+                android:layout_weight="1"
+                android:text="我说葡语"
+                android:textColor="#FFFFFF"
+                android:background="#263238" />
+        </LinearLayout>
+
+        <!-- ── 校对 ──────────────────────────────────────────────────── -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="译文校对（第二遍）"
+            android:textColor="#E0B341"
+            android:textSize="14sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="以电脑端为准：这个开关真正生效的地方在服务器，手机只是遥控器。"
+            android:textColor="#94A3B8"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/setAppProofread"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="6dp"
+            android:text="读取中…"
+            android:textColor="#FFFFFF"
+            android:background="#263238" />
+
+        <!-- ── 隐私 ──────────────────────────────────────────────────── -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="隐私"
+            android:textColor="#E0B341"
+            android:textSize="14sp" />
+
+        <Button
+            android:id="@+id/setAppPrivacy"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="6dp"
+            android:text="隐私政策（音频与字幕去哪了）"
+            android:textColor="#FFFFFF"
+            android:background="#263238" />
+
+        <Button
+            android:id="@+id/setAppClearRecords"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
+            android:text="清空本机记录（原文与译文）"
+            android:textColor="#EF9A9A"
+            android:background="#263238" />
+
+        <Button
+            android:id="@+id/setAppBack"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:layout_marginTop="20dp"
+            android:text="返回"
+            android:textColor="#B0BEC5"
+            android:background="#00000000" />
+
+        <TextView
+            android:id="@+id/setAppVersion"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:textColor="#64748B"
+            android:textSize="11sp"
+            android:text="" />
+    </LinearLayout>
+</ScrollView>

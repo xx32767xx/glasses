@@ -136,6 +136,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- 4.39（A2）：设置页与隐私政策。两者都从首页进入，不需要对外导出 -->
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:label="设置"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
+        <activity
+            android:name=".PrivacyActivity"
+            android:exported="false"
+            android:label="隐私政策" />
     </application>
 
 </manifest>

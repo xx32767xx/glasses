@@ -79,6 +79,8 @@ public class HomeActivity extends android.app.Activity {
         registerButton.setOnClickListener(v -> toggleRegisterMode());
         sendCodeButton.setOnClickListener(v -> sendCode());
         findViewById(R.id.homeCreate).setOnClickListener(v -> openRooms());
+        findViewById(R.id.homeSettings).setOnClickListener(v ->
+                startActivity(new Intent(this, SettingsActivity.class)));
         findViewById(R.id.homeLegacy).setOnClickListener(v ->
                 startActivity(new Intent(this, MainActivity.class)));
         findViewById(R.id.homeLogout).setOnClickListener(v -> logout());

@@ -503,6 +503,63 @@ export async function runAndroidOrderSuite({ it, check }) {
       /implementation\("org\.slf4j:slf4j-api:1\.7\.30"\)/.test(gradle))
   })
 
+  await it('设置页与隐私页：接得对、写得全（A2）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const layoutDir = join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout')
+    const settingsJava = readFileSync(join(javaDir, 'SettingsActivity.java'), 'utf-8')
+    const privacyJava = readFileSync(join(javaDir, 'PrivacyActivity.java'), 'utf-8')
+    const settingsXml = readFileSync(join(layoutDir, 'page_settings_app.xml'), 'utf-8')
+    const privacyXml = readFileSync(join(layoutDir, 'page_privacy.xml'), 'utf-8')
+    const homeXml = readFileSync(join(layoutDir, 'page_home.xml'), 'utf-8')
+    const homeJava = readFileSync(join(javaDir, 'HomeActivity.java'), 'utf-8')
+    const manifest = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'AndroidManifest.xml'), 'utf-8')
+
+    // 1) 两个 Activity 都在清单里，且不对外导出
+    for (const name of ['SettingsActivity', 'PrivacyActivity']) {
+      check(`清单里注册了 ${name}`, new RegExp(`android:name="\\.${name}"`).test(manifest), name)
+      check(`${name} 不对外导出`, new RegExp(`\\.${name}"[\\s\\S]{0,80}exported="false"`).test(manifest))
+    }
+
+    // 2) 首页能进得去（否则页面存在也白做）
+    check('首页有设置按钮', homeXml.includes('@+id/homeSettings'), '没有入口')
+    check('首页按钮真的打开设置页',
+      /homeSettings[\s\S]{0,160}SettingsActivity\.class/.test(homeJava), homeJava.slice(0, 80))
+    check('设置页能进隐私页',
+      /setAppPrivacy[\s\S]{0,160}PrivacyActivity\.class/.test(settingsJava))
+
+    // 3) 每个 R.id.* 在对应布局里都真实存在 —— 少一个就是构建期/运行期的空指针
+    for (const [javaName, javaText, xmlName, xmlText] of [
+      ['SettingsActivity', settingsJava, 'page_settings_app.xml', settingsXml],
+      ['PrivacyActivity', privacyJava, 'page_privacy.xml', privacyXml],
+    ]) {
+      const used = [...javaText.matchAll(/R\.id\.(\w+)/g)].map(m => m[1])
+      check(`${javaName} 用到了 id`, used.length > 0, javaName)
+      for (const id of used) {
+        check(`${javaName} 的 ${id} 在 ${xmlName} 里存在`,
+          new RegExp(`@\\+id/${id}\\b`).test(xmlText), `缺 @+id/${id}`)
+      }
+    }
+
+    // 4) 设置页要真的能改东西（不是摆设）
+    check('能保存服务器地址', /putString\("host"/.test(settingsJava))
+    check('能保存共享密钥', /putString\("secret"/.test(settingsJava))
+    check('能切换"我说什么语言"', /putString\("speakLang"/.test(settingsJava))
+    check('校对开关以电脑端为准（读 + 写都走接口）',
+      /client\.settingsGet\(\)/.test(settingsJava) && /client\.settingsPutProofread\(/.test(settingsJava))
+    check('能清空本机记录', /clearAll\(\)/.test(settingsJava))
+
+    const records = readFileSync(join(javaDir, 'Records.java'), 'utf-8')
+    check('Records.clearAll 真的把文件写空', /public int clearAll\(\)[\s\S]{0,400}write\(new ArrayList<>\(\)\)/.test(records),
+      '只返回条数不写盘 = 按钮点了没反应')
+
+    // 5) 隐私文案必须覆盖"这套系统真实做过的事"，不能是一句空话
+    check('写了字幕保留期（7 天）', privacyXml.includes('7 天'))
+    check('写了音频轮转上限（1 GB）', privacyXml.includes('1 GB'))
+    check('写了本机记录上限（200 条）', privacyXml.includes('200 条'))
+    check('写了公网明文的风险（TLS）', privacyXml.includes('明文') && privacyXml.includes('TLS'))
+    check('写了不采集画面', privacyXml.includes('摄像头'))
+  })
+
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {
     const targets = [
       ...collectSources(join(ROOT, 'android', 'app', 'src', 'main', 'java'), ['.java']),

@@ -146,6 +146,23 @@ public class Records {
         write(all);
     }
 
+    /**
+     * 清空**全部**本机记录（设置页的「清空本机记录」）。
+     *
+     * <p>为什么要有它：这些记录是**原文与译文的原文**（真实会议内容），只存在手机私有目录里。
+     * 留着是为了"回看"，但用户必须能一键删掉 —— 隐私政策（page_privacy.xml 第三节）承诺了这一点，
+     * 承诺与按钮必须成对存在。
+     *
+     * <p>返回删掉的条数（0 = 本来就没有）。删除失败时返回 0：删不掉比谎称删掉了好，
+     * 而且界面会照实说"本机没有记录"。
+     */
+    public int clearAll() {
+        int count = load().size();
+        if (count == 0) return 0;
+        write(new ArrayList<>());
+        return count;
+    }
+
     private void write(List<Session> all) {
         try {
             JSONArray array = new JSONArray();
