@@ -117,7 +117,7 @@ public class RoomsActivity extends android.app.Activity {
                 codeBox.setVisibility(View.VISIBLE);
                 getSharedPreferences("leion", MODE_PRIVATE).edit()
                         .putString("roomHost", myName).apply();
-                enter(id, room.optString("name", name));
+                chooseLibsAfterCreate(id, room.optString("name", name));
             });
         }, "rooms-create").start();
     }
@@ -160,6 +160,95 @@ public class RoomsActivity extends android.app.Activity {
         }, "rooms-join").start();
     }
 
+    /** 建房后立刻选本场术语库（按用户要求：选库放在创建会议这一步，而不是进房后再点按钮）。 */
+    private void chooseLibsAfterCreate(final String roomId, final String roomName) {
+        new Thread(new Runnable() {
+            public void run() {
+                JSONObject body = null;
+                String error = "";
+                try {
+                    body = client.orgLibraries();
+                } catch (Exception e) {
+                    error = e.getMessage() == null ? e.toString() : e.getMessage();
+                }
+                final JSONObject result = body;
+                final String failure = error;
+                ui.post(new Runnable() {
+                    public void run() {
+                        if (result == null) {
+                            hint.setText("读不到术语库（可先不选，进房后仍可补选）：" + failure);
+                            enter(roomId, roomName);
+                            return;
+                        }
+                        org.json.JSONArray list = result.optJSONArray("libraries");
+                        if (list == null || list.length() == 0) {
+                            hint.setText("服务端还没有术语库，本场先不用术语");
+                            enter(roomId, roomName);
+                            return;
+                        }
+                        showLibraryPicker(roomId, roomName, list);
+                    }
+                });
+            }
+        }, "rooms-libs").start();
+    }
+
+    private void showLibraryPicker(final String roomId, final String roomName, org.json.JSONArray libraries) {
+        final java.util.List<String> ids = new java.util.ArrayList<>();
+        final java.util.List<String> labels = new java.util.ArrayList<>();
+        for (int i = 0; i < libraries.length(); i++) {
+            JSONObject item = libraries.optJSONObject(i);
+            if (item == null) {
+                continue;
+            }
+            ids.add(item.optString("id", ""));
+            org.json.JSONArray entries = item.optJSONArray("entries");
+            int count = entries != null ? entries.length() : item.optInt("entries", 0);
+            labels.add(item.optString("name", item.optString("id", "")) + "（" + count + " 条）");
+        }
+        final boolean[] checked = new boolean[labels.size()];
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("本场会议使用哪些术语库（会中不可改）")
+                .setMultiChoiceItems(labels.toArray(new String[0]), checked,
+                        (dialog, which, isChecked) -> checked[which] = isChecked)
+                .setNegativeButton("先不选，直接进房", (dialog, which) -> enter(roomId, roomName))
+                .setPositiveButton("确定并进入", (dialog, which) -> saveLibsThenEnter(roomId, roomName, ids, checked))
+                .show();
+    }
+
+    private void saveLibsThenEnter(final String roomId, final String roomName,
+                                   final java.util.List<String> ids, final boolean[] checked) {
+        final org.json.JSONArray selected = new org.json.JSONArray();
+        for (int i = 0; i < checked.length && i < ids.size(); i++) {
+            if (checked[i]) {
+                selected.put(ids.get(i));
+            }
+        }
+        new Thread(new Runnable() {
+            public void run() {
+                JSONObject body = null;
+                String error = "";
+                try {
+                    body = client.orgSetRoomLibraries(roomId, selected);
+                } catch (Exception e) {
+                    error = e.getMessage() == null ? e.toString() : e.getMessage();
+                }
+                final JSONObject result = body;
+                final String failure = error;
+                ui.post(new Runnable() {
+                    public void run() {
+                        if (result != null && result.optBoolean("ok", false)) {
+                            hint.setText("本场术语已冻结：" + result.optInt("entries", 0) + " 条");
+                        } else {
+                            hint.setText("术语库保存失败（可进房后补）："
+                                    + (result == null ? failure : result.optString("error", failure)));
+                        }
+                        enter(roomId, roomName);
+                    }
+                });
+            }
+        }, "rooms-save-libs").start();
+    }
     private void enter(String roomIdOrCode, String roomName) {
         if (roomIdOrCode == null || roomIdOrCode.isEmpty()) {
             hint.setText("房间标识为空，无法进入");
