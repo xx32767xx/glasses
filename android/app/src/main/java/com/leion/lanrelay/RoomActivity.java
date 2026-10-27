@@ -274,6 +274,11 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
 
     private void startUpload(MicUploader.Listener listener) {
         mic = new MicUploader(client, listener);
+        // 我在会里说的语言（建房/加入时选的）决定识别方向，别再用默认值
+        String speak = getSharedPreferences("leion", MODE_PRIVATE).getString("speakLang", "zh-CN");
+        if (speak != null && !speak.isEmpty()) {
+            mic.setLanguage(speak);
+        }
         String error = mic.start();
         if (error == null) {
             micUploadButton.setText("停止同传");
