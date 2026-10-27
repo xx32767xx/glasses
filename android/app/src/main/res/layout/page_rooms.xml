@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- page_rooms.xml —— 房间大厅（P3.3）：建房 / 凭码加入 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="20dp"
+    android:background="#101418">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="译连 · 会议房间"
+        android:textColor="#FFFFFF"
+        android:textSize="24sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/roomsHint"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:textColor="#94A3B8"
+        android:textSize="13sp"
+        android:text="" />
+
+    <EditText
+        android:id="@+id/roomsName"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:hint="房间名（例如：圣保罗洽谈）"
+        android:textColor="#FFFFFF"
+        android:textColorHint="#64748B"
+        android:inputType="text" />
+
+    <Button
+        android:id="@+id/roomsCreate"
+        android:layout_width="match_parent"
+        android:layout_height="54dp"
+        android:layout_marginTop="8dp"
+        android:text="建房并生成邀请码"
+        android:textColor="#FFFFFF"
+        android:background="#2E7D32" />
+
+    <TextView
+        android:id="@+id/roomsCodeBox"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:textColor="#E0B341"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:visibility="gone"
+        android:text="" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_marginTop="24dp"
+        android:layout_marginBottom="24dp"
+        android:background="#263238" />
+
+    <EditText
+        android:id="@+id/roomsCode"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="6 位邀请码"
+        android:textColor="#FFFFFF"
+        android:textColorHint="#64748B"
+        android:inputType="number" />
+
+    <Button
+        android:id="@+id/roomsJoin"
+        android:layout_width="match_parent"
+        android:layout_height="54dp"
+        android:layout_marginTop="8dp"
+        android:text="加入房间"
+        android:textColor="#FFFFFF"
+        android:background="#37474F" />
+</LinearLayout>
