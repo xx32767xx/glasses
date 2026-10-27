@@ -123,10 +123,6 @@
             android:name=".RoomsActivity"
             android:exported="true"
             android:label="会议房间">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
         </activity>
         <!-- P3.2：房间内页（独立 Activity，稳定性优先） -->
         <activity
