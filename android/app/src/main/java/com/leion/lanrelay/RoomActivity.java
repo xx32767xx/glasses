@@ -139,6 +139,11 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                     return;
                 }
                 int status = body.optInt("_status", 0);
+                if (status == 401) {
+                    Toast.makeText(this, "登录已失效（可能在别处登录），请重新登录", Toast.LENGTH_LONG).show();
+                    finish();
+                    return;
+                }
                 if (status >= 400 || body.optBoolean("ok", false) == false) {
                     // 409 = 被规则拒绝（别人锁定中），这是业务状态，不是网络错误
                     String reason = body.optString("error", "");
