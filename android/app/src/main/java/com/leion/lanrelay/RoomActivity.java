@@ -21,6 +21,8 @@ import org.json.JSONObject;
  */
 public class RoomActivity extends android.app.Activity implements LanClient.Listener {
 
+    private static final int REQ_RECORD_AUDIO = 2001;
+
     public static final String EXTRA_ROOM = "roomIdOrCode";
     public static final String EXTRA_NAME = "roomName";
 
@@ -44,6 +46,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     private boolean locked = false;
     private boolean pollScheduled = false;
     private MicUploader mic;
+    private Runnable pendingAfterPermission;
     private Button micUploadButton;
     private Button librariesButton;
     private long lastHeartbeat = 0L;
@@ -244,6 +247,11 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 // 电平只做静默反馈，不刷界面（避免每帧刷新拖慢字幕）
             }
         };
+        ensureRecordPermission(() -> takeFloorThenUpload(listener));
+    }
+
+    /** 先抢麦，成功才上传。 */
+    private void takeFloorThenUpload(final MicUploader.Listener listener) {
         // 发言权互斥：**先抢麦，再上传**。否则"没人占麦却在上传"，对面永远显示空闲。
         new Thread(new Runnable() {
             public void run() {
@@ -270,6 +278,36 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 });
             }
         }, "room-take-floor").start();
+    }
+
+    /** 没有录音权限就先申请；授予后再回来继续（新界面不再依赖旧界面的授权流程）。 */
+    private void ensureRecordPermission(Runnable then) {
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+                == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            then.run();
+            return;
+        }
+        pendingAfterPermission = then;
+        requestPermissions(new String[] { android.Manifest.permission.RECORD_AUDIO }, REQ_RECORD_AUDIO);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != REQ_RECORD_AUDIO) {
+            return;
+        }
+        boolean granted = grantResults.length > 0
+                && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED;
+        Runnable after = pendingAfterPermission;
+        pendingAfterPermission = null;
+        if (!granted) {
+            hintLine.setText("没有麦克风权限：请在系统设置里给「译连 TransLink」录音权限，然后再点开始同传");
+            return;
+        }
+        if (after != null) {
+            after.run();
+        }
     }
 
     private void startUpload(MicUploader.Listener listener) {
