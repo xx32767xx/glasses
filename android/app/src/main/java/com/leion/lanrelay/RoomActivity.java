@@ -207,6 +207,15 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             mic = null;
             micUploadButton.setText("开始同传");
             hintLine.setText("已停止上传");
+            new Thread(new Runnable() {
+                public void run() {
+                    try {
+                        client.floorAction(roomKey, "release");
+                    } catch (Exception ignored) {
+                        // 释放失败由服务端 15 秒租约兜底
+                    }
+                }
+            }, "room-release-floor").start();
             return;
         }
         final MicUploader.Listener listener = new MicUploader.Listener() {
@@ -235,6 +244,35 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 // 电平只做静默反馈，不刷界面（避免每帧刷新拖慢字幕）
             }
         };
+        // 发言权互斥：**先抢麦，再上传**。否则"没人占麦却在上传"，对面永远显示空闲。
+        new Thread(new Runnable() {
+            public void run() {
+                JSONObject body = null;
+                String failure = "";
+                try {
+                    body = client.floorAction(roomKey, "take");
+                } catch (Exception e) {
+                    failure = e.getMessage() == null ? e.toString() : e.getMessage();
+                }
+                final JSONObject result = body;
+                final String error = failure;
+                ui.post(new Runnable() {
+                    public void run() {
+                        if (result == null || result.optInt("_status", 0) >= 400 || !result.optBoolean("ok", false)) {
+                            String reason = result == null ? error : result.optString("error", error);
+                            hintLine.setText("无法开麦：" + (reason.isEmpty() ? "被拒绝" : reason));
+                            micUploadButton.setEnabled(true);
+                            return;
+                        }
+                        takingChanged(holderOf(result), result.optBoolean("locked", false));
+                        startUpload(listener);
+                    }
+                });
+            }
+        }, "room-take-floor").start();
+    }
+
+    private void startUpload(MicUploader.Listener listener) {
         mic = new MicUploader(client, listener);
         String error = mic.start();
         if (error == null) {
