@@ -241,10 +241,12 @@ public class RoomsActivity extends android.app.Activity {
         }
         final boolean[] checked = new boolean[labels.size()];
         String codeLine = (code == null || code.isEmpty()) ? "" : ("邀请码 " + code + " · ");
+        // ⚠️ 这里**不能**再调 setMessage（4.44 修）：AlertDialog 同时给了 message 与
+        // multiChoiceItems 时，AppCompat 会把列表挤掉 —— 表现就是"选库框弹出来了、但里面
+        // 一个库都没有"。邀请码只在**标题**里写一次（标题不会被列表挤掉），
+        // 另外建房那一刻还有一条长 Toast 报码。
         new android.app.AlertDialog.Builder(this)
                 .setTitle(codeLine + "本场术语库（会中不可改）")
-                .setMessage("把" + (code == null || code.isEmpty() ? "6 位邀请码" : code)
-                        + " 告诉对方即可入会。术语在进房那一刻冻结，会中改不了。")
                 .setMultiChoiceItems(labels.toArray(new String[0]), checked,
                         (dialog, which, isChecked) -> checked[which] = isChecked)
                 .setNegativeButton("先不选，直接进房", (dialog, which) -> enter(roomId, roomName))

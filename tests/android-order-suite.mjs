@@ -611,7 +611,11 @@ export async function runAndroidOrderSuite({ it, check }) {
       '没有它，邀请码就被对话框盖住了')
     check('邀请码被传进选库框', /chooseLibsAfterCreate\(id, room\.optString\("name", name\), code\)/.test(src))
     check('选库框的标题里带着邀请码', /codeLine[^\n]*本场术语库/.test(src), '标题要能直接看到码')
-    check('选库框的正文也重复一次邀请码', /setMessage\([^)]*code/.test(src), '正文再写一次，抄错的概率更低')
+    // 4.44：**不能**再给这个对话框加 setMessage —— AppCompat 在同时设置了 message 与
+    // multiChoiceItems 时会把列表挤掉，表现就是"框弹出来了但一个库都没有"（用户报过）。
+    check('选库框没有 setMessage（否则列表会被挤掉）',
+      /setTitle\(codeLine[\s\S]{0,200}?setMessage/.test(src) === false,
+      '标题带码即可，正文会挤掉多选列表')
   })
 
   await it('被别处登录顶下线时要**当场提示**（4.41，用户报的"静默"）', () => {
@@ -656,6 +660,32 @@ export async function runAndroidOrderSuite({ it, check }) {
       'WS 收到帧后必须复用渲染，而不是各写一份')
     check('长轮询仍然保留（WS 断了要有兜底）', /request\("\/frame\?since=/.test(readFileSync(join(javaDir, 'LanClient.java'), 'utf-8')) ||
       /\/frame\?since=/.test(readFileSync(join(javaDir, 'LanClient.java'), 'utf-8')), '兜底不能删')
+  })
+
+  await it('锁定按钮的文案要与"我能不能按"一致（4.44）', () => {
+    // 用户报的：A（发起者）锁了麦，B 那边明明按不动，按钮却写着「解锁」。
+    const room = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion',
+      'lanrelay', 'RoomActivity.java'), 'utf-8')
+    const body = room.slice(room.indexOf('private void takingChanged('), room.indexOf('\n    }', room.indexOf('private void takingChanged(')))
+
+    check('持麦者看到「解锁」', body.includes('"解锁"'))
+    check('发起者解他人锁时文案不同（否则与"解自己"混为一谈）', body.includes('"解锁（他人）"'))
+    check('无关的人看到的是状态而不是动作', body.includes('"发言已锁定"'),
+      '既不是持麦者也不是发起者时，不该出现「解锁」这个动作')
+    check('能不能按由 canLock 决定', /boolean canLock = holding \|\| \(anyHolder && iAmHost\)/.test(body))
+  })
+
+  await it('发起者退出后其余人立刻被请出房间（4.44）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+    const socket = readFileSync(join(javaDir, 'FloorSocket.java'), 'utf-8')
+
+    check('推送通道认得 type=closed', /"closed"\.equals\(type\)/.test(socket))
+    check('Listener 有 onRoomClosed', /void onRoomClosed\(String reason\)/.test(socket))
+    check('房间页收到就退出', /private void leaveBecauseClosed\(String reason\)/.test(room))
+    check('轮询也判 closed/410（WS 断了靠它兜底）',
+      /optBoolean\("closed", false\)[\s\S]{0,120}optInt\("httpStatus", 0\) == 410|optInt\("httpStatus", 0\) == 410[\s\S]{0,160}leaveBecauseClosed/.test(room),
+      '不能只靠 WS —— WS 断了人就留在空屋里')
   })
 
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {

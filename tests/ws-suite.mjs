@@ -147,6 +147,10 @@ export async function runWsSuite({ it, check }) {
     body: JSON.stringify(body ?? {}),
   })
 
+  const get = (path, token) => fetch(http + path, {
+    headers: { ...secretHeader, ...(token ? { 'x-leion-token': token } : {}) },
+  })
+
   const opened = []
   try {
     const aliceToken = (await (await post('/auth/login', { username: 'alice', password: 'secret12' })).json()).token
@@ -256,6 +260,42 @@ export async function runWsSuite({ it, check }) {
         await new Promise(resolve => setTimeout(resolve, 20))
       }
       check('旧连接被服务端关掉', first.closed.done === true, JSON.stringify(first.closed))
+    })
+
+    await it('发起者退出 = 整场结束：在线的人立刻收到 closed 并被断开（4.44）', async () => {
+      // 用户报的：发起者退出后，其余参会者还留在房间里，点什么都失败。
+      const watcher = openSocket(wsUrl(room.code, bobToken))
+      opened.push(watcher)
+      await watcher.ready
+      await watcher.next()                          // 连上时的 floor 快照
+
+      const left = await post('/org/rooms/leave', { roomId: room.id }, aliceToken)
+      const leftBody = await left.json()
+      check('发起者退出时服务端说这场结束了', leftBody.closed === true, JSON.stringify(leftBody))
+
+      // 注意：退出时服务端会先推一条 floor（持麦者清空），再推 closed —— 别把顺序当契约
+      let pushed = null
+      const deadlineMsg = Date.now() + 3000
+      while (Date.now() < deadlineMsg) {
+        const message = await watcher.next(500)
+        if (message === null) continue
+        if (message.type === 'closed') { pushed = message; break }
+      }
+      check('在线的人立刻收到 closed 推送', pushed !== null, JSON.stringify(pushed))
+      check('推送里说清原因（发起者退出）', pushed.reason === 'host-left', JSON.stringify(pushed))
+
+      // 连接随后被服务端关掉（不是让它自己猜）
+      const deadline = Date.now() + 2000
+      while (watcher.closed.done !== true && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 20))
+      }
+      check('连接被服务端关闭', watcher.closed.done === true, JSON.stringify(watcher.closed))
+
+      // 兜底：即使 WS 没连上，轮询也要能发现"这场结束了"
+      const floor = await get(`/org/rooms/${room.id}/floor`, bobToken)
+      const floorBody = await floor.json()
+      check('GET /floor 对已结束的会议返回 410', floor.status === 410, String(floor.status))
+      check('并且明确说 closed', floorBody.closed === true, JSON.stringify(floorBody))
     })
 
     await it('认证不过的一律连不上（密钥错 / token 错 / 房间不存在）', async () => {

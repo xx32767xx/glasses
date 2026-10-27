@@ -25,7 +25,8 @@ import java.util.Locale;
  *
  * <p>协议（都是 JSON 文本帧）：
  * <pre>
- *   服务端 → 客户端  {type:'floor', holder, locked, leaseMs, roomId, at}
+ *   服务端 → 客户端  {type:'floor', ...} / {type:'frame', seq, frame}
+ *                  {type:'closed', reason}（会议结束，随后连接被服务端关闭）
  *   客户端 → 服务端  {type:'ping'} / {type:'snapshot'}
  * </pre>
  * 连上立刻会收到一条 floor，不需要客户端再问一次。
@@ -44,6 +45,14 @@ public class FloorSocket {
          * 界面自己决定怎么渲染，这条通道只负责"来了一帧、别等了"。
          */
         void onFrame(JSONObject message);
+
+        /**
+         * 会议结束了（发起者退出，服务端把房间标成 closed 并主动断开，4.44）。
+         *
+         * <p>为什么必须由服务端**主动**说：轮询是秒级的，而"会议结束"意味着屋里所有人的
+         * 身份当场作废。让用户在已结束的会议里继续开麦、锁定，比"卡一下"糟得多。
+         */
+        void onRoomClosed(String reason);
 
         /** 连接层的一行状态（连上 / 断开 / 出错）。失败不是错误，轮询会兜住。 */
         void onState(String message);
@@ -184,6 +193,8 @@ public class FloorSocket {
                 listener.onFloor(parsed);
             } else if ("frame".equals(type)) {
                 listener.onFrame(parsed);
+            } else if ("closed".equals(type)) {
+                listener.onRoomClosed(parsed.optString("reason", ""));
             }
         }
 

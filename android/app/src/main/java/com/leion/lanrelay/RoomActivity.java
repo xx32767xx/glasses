@@ -178,6 +178,11 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             }
 
             @Override
+            public void onRoomClosed(String reason) {
+                ui.post(() -> leaveBecauseClosed(reason));
+            }
+
+            @Override
             public void onState(String message) {
                 ui.post(() -> statusLine.setText(message));
             }
@@ -260,12 +265,50 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         holding = holder != null && holder.equals(myName) && !holder.isEmpty();
         locked = isLocked;
         boolean anyHolder = holder != null && !holder.isEmpty();
+        boolean iAmHost = myName.equals(hostName());
         micButton.setText(holding ? "正在发言 · 点此结束" : "点击开麦");
         micButton.setBackgroundColor(holding ? 0xFF2E7D32 : 0xFF37474F);
-        lockButton.setText(isLocked ? "解锁" : "锁定发言");
-        lockButton.setEnabled(holding || (anyHolder && myName.equals(hostName())));
-        lockButton.setAlpha(lockButton.isEnabled() ? 1f : 0.5f);
+
+        // 锁定按钮的文案必须与"我能不能按"一致（4.44 修）。
+        //
+        // 原来的写法是所有人统一 `isLocked ? "解锁" : "锁定发言"`，于是：A（发起者）锁了麦，
+        // B 那边明明按不动，按钮却写着「解锁」—— 用户会以为自己也握着这把锁，
+        // 点了没反应就更困惑。规则应该是：
+        //   · 持麦者：自己锁自己 / 自己解自己      → 解锁 / 锁定发言
+        //   · 发起者：可以解**他人**的锁           → 解锁（他人）/ 锁定发言（他人）
+        //   · 其他人：不能动锁，只显示状态          → 发言已锁定 / 锁定发言（灰）
+        boolean canLock = holding || (anyHolder && iAmHost);
+        if (holding) {
+            lockButton.setText(isLocked ? "解锁" : "锁定发言");
+        } else if (anyHolder && iAmHost) {
+            lockButton.setText(isLocked ? "解锁（他人）" : "锁定他人");
+        } else if (isLocked) {
+            lockButton.setText("发言已锁定");
+        } else {
+            lockButton.setText("锁定发言");
+        }
+        lockButton.setEnabled(canLock);
+        lockButton.setAlpha(canLock ? 1f : 0.5f);
         speakerBar.setText(anyHolder ? ("发言人：" + holder + (isLocked ? "（已锁定）" : "")) : "麦克风空闲");
+    }
+
+    /**
+     * 会议结束了（发起者退出）：提示原因并退出房间（4.44）。
+     *
+     * <p>以前发起者一退，服务端把房间标成 closed，但屋里的人什么都不知道 ——
+     * 界面照旧、按钮照旧，直到某次操作失败。现在服务端会主动推送并断开连接，
+     * 轮询那条路也判 `closed`/410 作为兜底。
+     */
+    private void leaveBecauseClosed(String reason) {
+        if (isFinishing()) return;
+        String message = "会议已结束"
+                + (reason == null || reason.isEmpty() ? "" : "（" + reason + "）")
+                + "，已退出房间";
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+        hintLine.setText(message);
+        stopUpload(null);
+        if (mic != null) { mic.stop(); mic = null; }
+        ui.postDelayed(this::finish, 1200);
     }
 
     /**
@@ -461,6 +504,13 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                     // （点按钮才发现的话，用户已经对着"没反应"愣了几秒）
                     if (body != null && body.optInt("httpStatus", 0) == 401) {
                         showKicked(body.optString("hint", body.optString("error", "")));
+                        return;
+                    }
+                    // 会议已结束（发起者退出）：WS 那条路会立刻收到 closed，
+                    // 这里是兜底 —— WS 断了的时候靠轮询也能发现，不能把人留在空屋里。
+                    if (body != null && (body.optBoolean("closed", false)
+                            || body.optInt("httpStatus", 0) == 410)) {
+                        leaveBecauseClosed(body.optString("error", "会议已结束"));
                         return;
                     }
                     if (body != null && body.optBoolean("ok", false)) {

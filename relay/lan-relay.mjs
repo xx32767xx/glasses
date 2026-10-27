@@ -1644,8 +1644,15 @@ export async function startRelay(rawOptions = {}) {
               wsHub.broadcastFloor(decodeURIComponent(floorMatch[1]))
             }
           } else if (url.pathname === '/org/rooms/leave') {
+            const leftRoomId = decodeURIComponent(String(body.roomId ?? body.code ?? ''))
             // 持麦者退出时服务端会把麦清空（lib/rooms.mjs）→ 留下的人也要立刻看到
-            wsHub.broadcastFloor(decodeURIComponent(String(body.roomId ?? body.code ?? '')))
+            wsHub.broadcastFloor(leftRoomId)
+            // 发起者退出 = 整场结束：立刻把还连着的人赶出去（4.44）。
+            // 只广播状态不够 —— 他们会留在"已结束的会议"里继续点按钮。
+            if (result.json !== null && result.json.closed === true) {
+              const kicked = wsHub.closeRoom(leftRoomId, 'host-left')
+              if (kicked > 0) debug(`🚪 会议已结束（发起者退出），已断开 ${kicked} 个在线连接`)
+            }
           }
         }
         return

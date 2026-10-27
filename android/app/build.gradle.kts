@@ -64,8 +64,10 @@ android {
     //       「XX 掉线，麦克风已释放」。见 docs/21 §4.42。
     // 4.43：字幕也走 WS 推送（与发言权同一条连接），/frame 长轮询保留兜底；
     //       两条通道共用 RoomActivity.applyFrame，不会各自渲染得不一样。见 docs/21 §4.43。
-        versionCode = 72
-        versionName = "4.43"
+    // 4.44：修 4.41 带出来的选库框（setMessage 挤掉多选列表）；锁定按钮文案与权限一致；
+    //       发起者退出 = 整场结束 → 服务端主动推 closed 并断开（轮询兜底判 410）。见 docs/21 §4.44。
+        versionCode = 73
+        versionName = "4.44"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

@@ -308,6 +308,11 @@ export async function handleOrg(input) {
     const rawF = decodeURIComponent(segments[2])
     const roomF = roomById(root, rawF) ?? roomByCode(root, rawF)
     if (roomF === null) return bad(404, `room not found: ${rawF}`)
+    // 已结束的会议：不再给状态、也不再接受开麦/锁定（4.44）。
+    // 客户端拿到 closed:true 就该退出房间 —— 让它继续待在屋里是最糟的选择。
+    if (isRoomClosed(root, roomF.id)) {
+      return { status: 410, json: { ok: false, closed: true, roomId: roomF.id, error: '这个会议已经结束' } }
+    }
     if (method === 'GET') {
       // 先清掉"锁着麦但人已经不在"的状态（4.42）：没人来抢时，这里就是唯一的清理点。
       // 清掉了就把原因带回给客户端，让界面能说一句"XX 掉线，麦克风已释放"。
