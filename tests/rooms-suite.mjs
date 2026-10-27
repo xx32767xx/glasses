@@ -2,7 +2,7 @@
 import { mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createRoom, joinRoom, listMembers, roomByCode, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
+import { createRoom, isRoomClosed, joinRoom, leaveRoom, listMembers, roomByCode, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
 
 export async function runRoomsSuite({ it, check }) {
   const dir = mkdtempSync(join(tmpdir(), 'leion-rooms-'))
@@ -48,5 +48,19 @@ export async function runRoomsSuite({ it, check }) {
     check('顺序正确（建房者 boss 也在成员里，按时间排在最后）', members.join(',') === 'first,second', members.join(','))
   })
 
+  await it('普通成员退出不影响房间；发起者退出 = 整场结束', () => {
+    const room = createRoom(dir, { name: '退出测试', host: 'boss', code: '777777' }).room
+    joinRoom(dir, { room, username: 'dev1' })
+    const memberLeft = leaveRoom(dir, { room, username: 'dev1' })
+    check('成员退出后房间仍开着', memberLeft.ok === true && memberLeft.closed === false, JSON.stringify(memberLeft))
+    check('成员不再在列表里', listMembers(dir, room.id).every((m) => m.username !== 'dev1'))
+    check('房间未关闭', isRoomClosed(dir, room.id) === false)
+
+    const hostLeft = leaveRoom(dir, { room, username: 'boss' })
+    check('发起者退出 → closed:true', hostLeft.ok === true && hostLeft.closed === true, JSON.stringify(hostLeft))
+    check('房间标记为结束', isRoomClosed(dir, room.id) === true)
+    const rejoin = joinRoom(dir, { code: '777777', username: 'dev1' })
+    check('结束后凭码进不来', rejoin.ok === false, JSON.stringify(rejoin))
+  })
   rmSync(dir, { recursive: true, force: true })
 }

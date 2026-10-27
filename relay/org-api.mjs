@@ -29,7 +29,7 @@ import { readJson, writeJsonAtomic } from '../lib/store.mjs'
 import { listLibraries, loadLibrary, loadCategories, saveLibrary, importLibraries } from '../lib/libraries.mjs'
 import { createRequest, decideRequest, loadRequests, pendingOf, withdrawRequest } from '../lib/requests.mjs'
 import { writeMeetingSnapshot } from '../lib/snapshot.mjs'
-import { createRoom, joinRoom, listMembers, roomByCode, roomById, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
+import { createRoom, isRoomClosed, joinRoom, leaveRoom, listMembers, roomByCode, roomById, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
 import { publishMeetingTerms } from '../lib/meeting-terms.mjs'
 
 export function selectionPath(root, meetingId) {
@@ -291,6 +291,13 @@ export async function handleOrg(input) {
     const joined = joinRoom(root, { code: body.code, username: user, lang: body.lang, now })
     if (joined.ok !== true) return bad(400, joined.error)
     return { status: 200, json: { ok: true, room: joined.room, members: joined.members } }
+  }
+
+  if (method === 'POST' && segments[1] === 'rooms' && segments[2] === 'leave' && segments.length === 3) {
+    const left = leaveRoom(root, { code: body.code ?? null, roomId: body.roomId ?? null, username: user, now })
+    if (left.ok !== true) return bad(400, left.error)
+    // 发起者退出 = 整场结束（原型规则）；其他人退出只是离开
+    return { status: 200, json: { ok: true, closed: left.closed, roomId: left.roomId, members: left.members } }
   }
 
   if (segments[1] === 'rooms' && segments.length === 3) {
