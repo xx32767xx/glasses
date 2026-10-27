@@ -123,7 +123,9 @@ public class HomeActivity extends android.app.Activity {
         sendCodeButton.setVisibility(registerMode ? View.VISIBLE : View.GONE);
         loginButton.setText(registerMode ? "注册并登录" : "登录");
         registerButton.setText(registerMode ? "已有账号？去登录" : "注册新账号");
-        status.setText(registerMode ? "注册需要邮箱 + 验证码（点击获取验证码）" : "用用户名 + 密码登录");
+        if (debugLines.isEmpty()) {
+            status.setText(registerMode ? "注册需要邮箱 + 验证码（点击获取验证码）" : "用用户名 + 密码登录");
+        }
     }
 
     private void toggleRegisterMode() {
@@ -159,7 +161,7 @@ public class HomeActivity extends android.app.Activity {
             } catch (Exception e) {
                 error = e.getMessage() == null ? e.toString() : e.getMessage();
             }
-            final JSONObject result = body;
+            final JSONObject result = unwrapLogin(body);
             final String failure = error;
             ui.post(() -> {
                 sendCodeButton.setEnabled(true);
@@ -182,6 +184,19 @@ public class HomeActivity extends android.app.Activity {
         return value;
     }
 
+    /** requestWithCode 返回的是 {code, json} 包一层；登录/注册要的是里面那层。 */
+    private static JSONObject unwrapLogin(JSONObject raw) {
+        if (raw == null) {
+            return null;
+        }
+        if (raw.has("code") && raw.has("json")) {
+            JSONObject inner = raw.optJSONObject("json");
+            if (inner != null) {
+                return inner;
+            }
+        }
+        return raw;
+    }
     /** 状态区追加一行调试信息（同时写 logcat），没有 adb 也能看到。 */
     private void debugLine(final String text) {
         String stamp = new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(new java.util.Date());
@@ -251,7 +266,7 @@ public class HomeActivity extends android.app.Activity {
                 error = e.getClass().getSimpleName() + ": " + (e.getMessage() == null ? "" : e.getMessage());
                 Log.e("LeionHome", "login failed", e);
             }
-            final JSONObject result = body;
+            final JSONObject result = unwrapLogin(body);
             final String failure = error;
             ui.post(() -> {
                 loginButton.setEnabled(true);
@@ -265,6 +280,7 @@ public class HomeActivity extends android.app.Activity {
                     }
                     status.setText((registerMode ? "注册失败：" : "登录失败：") + reason);
                     Toast.makeText(this, reason, Toast.LENGTH_LONG).show();
+                    debugLine("fail: " + reason);
                     return;
                 }
                 String token = result.optString("token", "");
