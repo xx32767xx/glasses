@@ -6,6 +6,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
+import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
@@ -219,13 +220,15 @@ public class HomeActivity extends android.app.Activity {
                 body = registerMode
                         ? client.authRegisterEmail(email, user, pass, code)
                         : client.authLogin(user, pass);
-            } catch (Exception e) {
-                error = e.getMessage() == null ? e.toString() : e.getMessage();
+            } catch (Throwable e) {
+                error = e.getClass().getSimpleName() + ": " + (e.getMessage() == null ? "" : e.getMessage());
+                Log.e("LeionHome", "login failed", e);
             }
             final JSONObject result = body;
             final String failure = error;
             ui.post(() -> {
                 loginButton.setEnabled(true);
+                Log.i("LeionHome", "login result=" + result + " failure=" + failure);
                 if (result == null || !result.optBoolean("ok", false)) {
                     String reason = failure;
                     if (result != null) {
@@ -233,6 +236,7 @@ public class HomeActivity extends android.app.Activity {
                         reason = hint.isEmpty() ? result.optString("error", failure) : hint;
                     }
                     status.setText((registerMode ? "注册失败：" : "登录失败：") + reason);
+                    Toast.makeText(this, reason, Toast.LENGTH_LONG).show();
                     return;
                 }
                 String token = result.optString("token", "");
