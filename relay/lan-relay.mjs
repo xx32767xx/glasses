@@ -122,6 +122,10 @@ const HELP = `lan-relay —— 手机 ↔ 电脑 的局域网转发进程
   --audio-lang <path>   语种旁文件（缺省 <data-dir>/audio-in.lang）
   --poll-hold-ms <n>    长轮询最长挂起时间（缺省 25000）
   --bus-poll-ms <n>     字幕总线轮询间隔（缺省 60）
+  --audio-max-bytes <n> 音频文件上限（缺省 1 GB，0 = 不轮转）。**只增不减的文件**：
+                        超过就把旧的改名成 <audio>.1 再开一个新的，磁盘占用约 2×上限。
+                        为什么是"轮转"而不是原地清空：原地清空会把**还没被识别读走的**
+                        音频永久删掉（那样一段话就没了），轮转至少留着上一份可供排查。
   --utterance-retention-days <n>
                         字幕保留天数（缺省 7）：超过的按天自动删除（隐私要求，
                         见 docs/21 §10 的 P4）。启动时先清一次，之后每小时清一次。
@@ -207,8 +211,8 @@ export function createRateLimiter({ windowMs, maxRequests }) {
   }
 }
 
-export function parseArgs(argv) {  const options = { port: 8788, host: '0.0.0.0', pollHoldMs: 25000, busPollMs: 60, quiet: false, lint: true, utteranceRetentionDays: 7 }
-  const takesValue = new Set(['port', 'host', 'secret', 'data-dir', 'inbox', 'bus', 'audio', 'audio-rate', 'audio-lang', 'poll-hold-ms', 'bus-poll-ms', 'utterance-retention-days'])
+export function parseArgs(argv) {  const options = { port: 8788, host: '0.0.0.0', pollHoldMs: 25000, busPollMs: 60, quiet: false, lint: true, utteranceRetentionDays: 7, audioMaxBytes: 1024 * 1024 * 1024 }
+  const takesValue = new Set(['port', 'host', 'secret', 'data-dir', 'inbox', 'bus', 'audio', 'audio-rate', 'audio-lang', 'poll-hold-ms', 'bus-poll-ms', 'utterance-retention-days', 'audio-max-bytes'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -229,6 +233,7 @@ export function parseArgs(argv) {  const options = { port: 8788, host: '0.0.0.0'
     else if (key === 'poll-hold-ms') options.pollHoldMs = Number(value)
     else if (key === 'bus-poll-ms') options.busPollMs = Number(value)
       else if (key === 'utterance-retention-days') options.utteranceRetentionDays = Number(value)
+      else if (key === 'audio-max-bytes') options.audioMaxBytes = Number(value)
     else if (key === 'data-dir') options.dataDir = value
     else if (key === 'inbox') options.inbox = value
     else if (key === 'bus') options.bus = value
@@ -459,6 +464,7 @@ export async function startRelay(rawOptions = {}) {
   const options = Object.assign({
     port: 0, host: '127.0.0.1', pollHoldMs: 25000, busPollMs: 60,
     dataDir: DEFAULT_DATA_DIR, quiet: true, utteranceRetentionDays: 7,
+    audioMaxBytes: 1024 * 1024 * 1024,
   }, rawOptions)
   options.inbox = options.inbox ?? defaultInbox(options.dataDir)
   options.bus = options.bus ?? defaultBus(options.dataDir)
@@ -574,6 +580,8 @@ export async function startRelay(rawOptions = {}) {
     /** 音频：已落盘字节数 / 已收块数 / 当前采样率（null = 还没收到过） */
     audioBytes: 0,
     audioChunks: 0,
+    /** 音频轮转次数（超过 --audio-max-bytes 就把旧文件改名成 .1 再来一个）。 */
+    audioRotations: 0,
     /** 音频日志聚合用：上次打印到第几块、什么时候、当时的 rate/lang。 */
     audioLoggedChunk: 0,
     audioLoggedAt: 0,
@@ -737,8 +745,41 @@ export async function startRelay(rawOptions = {}) {
     state.audioLoggedLang = info.lang
   }
 
+  // 音频文件在重启后**不会**被清（以前清，会把还没识别完的音频吃掉；见 /audio 的注释）。
+  // 所以计数要从文件真实大小起步，否则"上限"每次重启都从头算，等于没设。
+  try {
+    const existing = await stat(options.audio)
+    state.audioBytes = existing.size
+  } catch {
+    state.audioBytes = 0
+  }
+
   const busTimer = setInterval(() => { void pollBus() }, options.busPollMs)
   busTimer.unref?.()
+
+  /**
+   * 音频文件超限就轮转：`audio-in.pcm` → `audio-in.pcm.1`（覆盖上一份），再开一个新的空文件。
+   *
+   * 为什么不是"原地清空"：那会把**还没被识别进程读走的**音频永久删掉 —— 曾经在 fresh=1
+   * 上这么干过，用户录了三段、每段都被下一次清掉，一条都没识别出来（见 /audio 的注释）。
+   * 轮转只是换了个文件继续写，旧的一份留着排查；识别进程发现路径上的文件变小了，
+   * 会按既有逻辑把读指针退回 0（PcmFollower.read 里那条分支，python-suite 钉着）。
+   *
+   * 代价：磁盘占用约 2× 上限（`.1` 只留一份）。这在"写满磁盘"面前是划算的。
+   */
+  async function rotateAudio() {
+    const backup = options.audio + '.1'
+    try {
+      await rename(options.audio, backup)
+    } catch (error) {
+      if (error && error.code !== 'ENOENT') throw error
+    }
+    await writeFile(options.audio, Buffer.alloc(0))
+    state.audioBytes = 0
+    state.audioRotations += 1
+    debug(`🔁 音频已轮转（上限 ${(options.audioMaxBytes / 1024 / 1024).toFixed(0)} MB）：`
+      + `旧的一段存为 ${backup}，接下来写新文件`)
+  }
 
   // ── 字幕保留期清理（P4，docs/21 §10）─────────────────────────────────────
   //
@@ -1190,6 +1231,11 @@ export async function startRelay(rawOptions = {}) {
           //   · 文件会一直长（16k 单声道 = 32KB/秒，一小时约 115MB），可在重启时清掉 ——
           //     start-all 每次启动都会清，识别进程自己也会从文件末尾开始跟（不重放旧的）。
           if (body.length > 0) {
+            // 先判上限再写：这样一块音频要么整块进老文件、要么整块进新文件，不会被劈成两半
+            if (options.audioMaxBytes > 0
+                && state.audioBytes + body.length > options.audioMaxBytes) {
+              await rotateAudio()
+            }
             await appendFile(options.audio, body)
             state.audioBytes += body.length
           }
@@ -1362,6 +1408,9 @@ export async function startRelay(rawOptions = {}) {
           bus: options.bus,
           audio: options.audio,
           audioBytes: state.audioBytes,
+          // 音频文件上限与已轮转次数（长期跑时"磁盘会不会被写满"的两个答案）
+          audioMaxBytes: options.audioMaxBytes,
+          audioRotations: state.audioRotations,
           audioChunks: state.audioChunks,
           audioRate: state.audioRateValue,
           audioLang: state.audioLangValue,

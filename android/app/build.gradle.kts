@@ -52,8 +52,10 @@ android {
     //       保留天数可用 --utterance-retention-days 调。见 docs/21 §4.36。
     // 4.37：删掉 --from/--to —— 语种改成跟着每一句话走（手机上报 → 识别进程写进收件箱
     //       每一行的 from → 插件按行定方向）。见 docs/21 §4.37。
-        versionCode = 66
-        versionName = "4.37"
+    // 4.38：音频文件不再无限增长 —— 超过 --audio-max-bytes（缺省 1 GB）就轮转成 .1
+    //       再开新文件；计数跨重启有效。/status 报 audioMaxBytes 与 audioRotations。见 docs/21 §4.38。
+        versionCode = 67
+        versionName = "4.38"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

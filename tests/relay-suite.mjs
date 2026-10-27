@@ -280,6 +280,59 @@ export async function runRelaySuite({ it, check, assert }) {
 
   // ── 4. 错误与边界 ──────────────────────────────────────────────────────────
 
+  await it('音频轮转：超过上限就把旧的改名成 .1 再开新文件（不原地清空）', async () => {
+    // 为什么要这条：/audio 只追加、从不清空（清空会吃掉还没被识别的音频）。
+    // 但那样文件会一直长 —— 长期跑必然把磁盘写满。轮转是"留着旧的一份 + 继续写新的"，
+    // 而识别进程发现文件变小会把读指针退回 0（PcmFollower 那条分支 python-suite 钉着）。
+    const dir = join(TMP, 'audio-rotate')
+    const audioPath = join(dir, 'audio-in.pcm')
+    const tiny = await startRelay({
+      port: 0, host: '127.0.0.1', secret: 'rotate-secret',
+      dataDir: dir, audio: audioPath, audioRate: join(dir, 'audio-in.rate'),
+      audioLang: join(dir, 'audio-in.lang'), inbox: join(dir, 'asr-inbox.jsonl'),
+      bus: join(dir, 'subtitle-bus.json'),
+      pollHoldMs: 200, busPollMs: 30, quiet: true,
+      audioMaxBytes: 2048,        // 只装得下 2 块（每块 1024 字节）
+    })
+    const push = async index => {
+      const body = Buffer.alloc(1024, index + 1)      // 每块内容不同，便于后面核对
+      const response = await fetch(`http://127.0.0.1:${tiny.port}/audio?rate=16000`, {
+        method: 'POST',
+        headers: { 'x-leion-secret': 'rotate-secret', 'content-type': 'application/octet-stream' },
+        body,
+      })
+      return { status: response.status, json: await response.json() }
+    }
+    try {
+      const first = await push(0)
+      const second = await push(1)
+      check('前两块正常收下（共 2048 字节，正好到上限）',
+        first.status === 200 && second.status === 200 && second.json.totalBytes === 2048,
+        JSON.stringify(second.json))
+
+      const third = await push(2)
+      check('第三块触发轮转后仍然成功', third.status === 200, JSON.stringify(third.json))
+      check('计数重置成只有新这一块', third.json.totalBytes === 1024, JSON.stringify(third.json))
+
+      const backup = await readFile(audioPath + '.1')
+      check('旧的一段被完整保留在 .1 里', backup.length === 2048, String(backup.length))
+      check('.1 里是前两块的内容', backup[0] === 1 && backup[2048 - 1] === 2, `${backup[0]},${backup[2048 - 1]}`)
+
+      const current = await readFile(audioPath)
+      check('新文件只装第三块', current.length === 1024, String(current.length))
+      check('新文件里是第三块的内容', current[0] === 3, String(current[0]))
+
+      const status = await fetch(`http://127.0.0.1:${tiny.port}/status`, {
+        headers: { 'x-leion-secret': 'rotate-secret' },
+      })
+      const json = await status.json()
+      check('/status 报得出轮转次数', json.audioRotations === 1, String(json.audioRotations))
+      check('/status 报得出上限', json.audioMaxBytes === 2048, String(json.audioMaxBytes))
+    } finally {
+      await tiny.close()
+    }
+  })
+
   await it('字幕保留期清理（P4）：超过保留期的字幕会被删，新的留下', async () => {
     // relay 的定时器是每小时一次，测试不等待它 —— 直接调它暴露出来的那一次，
     // 验的是"数据目录 → 删对了行"这条链（定时器本身只是一行 setInterval）。
