@@ -84,8 +84,10 @@ android {
     //       底部开麦胶囊（M3 原文开关 + 红色脉冲）；开麦与上传合成一个按钮。见 docs/21 §4.52。
     // 4.53：修字幕流重复（同一句三帧按「上一帧是增量」合并）；修顶部邀请码/主题不显示
     //       （房间详情在 client 之前拉、异常被吞）；成员按 username 读；调试文本不进状态行。见 docs/21 §4.53。
-        versionCode = 82
-        versionName = "4.53"
+    // 4.54：M2 收尾 —— 移出成员接口（仅发起者，顺带释放他的麦）+ 抽屉里的管理者操作
+    //       + 系统事件行（弱化居中，插在字幕流里）。见 docs/21 §4.54。
+        versionCode = 83
+        versionName = "4.54"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

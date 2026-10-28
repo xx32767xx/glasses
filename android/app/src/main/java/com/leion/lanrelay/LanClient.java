@@ -791,6 +791,14 @@ public class LanClient {
     }
 
     // ── Speaking right (P2b) ───────────────────────────────────────────
+    /** 移出成员（仅发起者）；服务端会顺手释放他占着的麦。 */
+    public JSONObject orgRemoveMember(String roomIdOrCode, String user)
+            throws IOException, org.json.JSONException {
+        JSONObject body = new JSONObject();
+        body.put("user", user);
+        return unwrap(requestWithCode("/org/rooms/" + roomIdOrCode + "/members/remove", "POST", body, 8000));
+    }
+
     /** Current floor state: holder / locked / leaseMs. */
     public JSONObject floorGet(String roomIdOrCode) throws IOException, org.json.JSONException {
         return unwrap(requestWithCode("/org/rooms/" + roomIdOrCode + "/floor", "GET", null, 8000));

@@ -29,7 +29,7 @@ import { readJson, writeJsonAtomic } from '../lib/store.mjs'
 import { listLibraries, loadLibrary, loadCategories, saveLibrary, importLibraries } from '../lib/libraries.mjs'
 import { createRequest, decideRequest, loadRequests, pendingOf, withdrawRequest } from '../lib/requests.mjs'
 import { writeMeetingSnapshot } from '../lib/snapshot.mjs'
-import { createRoom, isRoomClosed, joinRoom, leaveRoom, listMembers, listRooms, roomByCode, roomById, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
+import { createRoom, isRoomClosed, joinRoom, leaveRoom, listMembers, listRooms, removeMember, roomByCode, roomById, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
 import { FLOOR_LOCKED_LEASE_MS, FLOOR_LEASE_MS, floorState, forceReleaseFloor, heartbeatFloor, releaseFloor, setFloorLock, sweepExpiredFloor, takeFloor } from '../lib/floor.mjs'
 import { publishMeetingTerms } from '../lib/meeting-terms.mjs'
 
@@ -302,6 +302,20 @@ export async function handleOrg(input) {
     return { status: 200, json: { ok: true, closed: left.closed, roomId: left.roomId, members: left.members } }
   }
 
+
+  // ── 成员管理：移出成员（仅发起者，docs/21 §4.54）──────────────────────
+  if (method === 'POST' && segments[1] === 'rooms' && segments[3] === 'members'
+      && segments[4] === 'remove' && segments.length === 5) {
+    const rawMember = decodeURIComponent(segments[2])
+    const roomMember = roomById(root, rawMember) ?? roomByCode(root, rawMember)
+    if (roomMember === null) return bad(404, `room not found: ${rawMember}`)
+    const removed = removeMember(root, { roomId: roomMember.id, username: String(body.user ?? ''), by: user, now })
+    if (removed.ok !== true) return bad(409, removed.error)
+    return {
+      status: 200,
+      json: { ok: true, members: removed.members, releasedFloor: removed.releasedFloor === true, removed: removed.username },
+    }
+  }
 
   // ── 发言权互斥（P2b）────────────────────────────────────────────────
   if (segments[1] === 'rooms' && segments[3] === 'floor' && segments.length === 4) {

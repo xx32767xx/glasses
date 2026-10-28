@@ -2,7 +2,8 @@
 import { mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createRoom, isRoomClosed, joinRoom, leaveRoom, listMembers, roomByCode, roomLibraries, setRoomLibraries, roomById } from '../lib/rooms.mjs'
+import { createRoom, isRoomClosed, joinRoom, leaveRoom, listMembers, roomByCode, roomLibraries, setRoomLibraries, roomById, removeMember } from '../lib/rooms.mjs'
+import { floorState, takeFloor } from '../lib/floor.mjs'
 
 export async function runRoomsSuite({ it, check }) {
   const dir = mkdtempSync(join(tmpdir(), 'leion-rooms-'))
@@ -62,6 +63,33 @@ export async function runRoomsSuite({ it, check }) {
     const rejoin = joinRoom(dir, { code: '777777', username: 'dev1' })
     check('结束后凭码进不来', rejoin.ok === false, JSON.stringify(rejoin))
   })
+  await it('移出成员：仅发起者、不能移自己、同时释放他的麦（4.54）', () => {
+    const room = createRoom(dir, { name: '移出测试', host: 'boss', code: '999111' }).room
+    joinRoom(dir, { code: '999111', username: 'dev1' })
+    joinRoom(dir, { code: '999111', username: 'dev2' })
+    takeFloor(dir, { roomId: room.id, username: 'dev1' })
+
+    const byDev = removeMember(dir, { roomId: room.id, username: 'dev2', by: 'dev1' })
+    check('非发起者不能移人', byDev.ok === false && /只有发起者/.test(byDev.error), JSON.stringify(byDev))
+
+    const self = removeMember(dir, { roomId: room.id, username: 'boss', by: 'boss' })
+    check('发起者不能移出自己', self.ok === false && /不能移出自己/.test(self.error), JSON.stringify(self))
+
+    const ghost = removeMember(dir, { roomId: room.id, username: 'nobody', by: 'boss' })
+    check('不在房间里的人 → 报错', ghost.ok === false && /不在这个房间/.test(ghost.error), JSON.stringify(ghost))
+
+    const removed = removeMember(dir, { roomId: room.id, username: 'dev1', by: 'boss' })
+    check('发起者可以移出成员', removed.ok === true, JSON.stringify(removed))
+    check('成员列表少了一个', removed.members.length === 2 && !removed.members.some(m => m.username === 'dev1'),
+      JSON.stringify(removed.members.map(m => m.username)))
+    check('他占着的麦被释放了', removed.releasedFloor === true, JSON.stringify(removed))
+    check('发言权确实空了', floorState(dir, room.id).holder === null)
+
+    // 软移除：被移出的人再凭码进来还能加入（想"再也进不来"要另做黑名单）
+    const rejoin = joinRoom(dir, { code: '999111', username: 'dev1' })
+    check('被移出的人仍能重新加入（这是软移除）', rejoin.ok === true, JSON.stringify(rejoin))
+  })
+
   await it('房间详情带 closed：散会后 byId 也说得清（4.46）', () => {
     const room = createRoom(dir, { name: '散会测试', host: 'boss', code: '888888' }).room
     const before = roomById(dir, room.id)

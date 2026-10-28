@@ -1664,6 +1664,12 @@ export async function startRelay(rawOptions = {}) {
             if (body.action !== 'heartbeat') {
               wsHub.broadcastFloor(decodeURIComponent(floorMatch[1]))
             }
+          } else if (/^\/org\/rooms\/[^/]+\/members\/remove$/.test(url.pathname)) {
+            // 被移出的人可能正持麦：服务端已经清空了，这里推一次让全屋立刻看到
+            const removedMatch = /^\/org\/rooms\/([^/]+)\/members\/remove$/.exec(url.pathname)
+            if (removedMatch !== null) {
+              wsHub.broadcastFloor(decodeURIComponent(removedMatch[1]))
+            }
           } else if (url.pathname === '/org/rooms/leave') {
             const leftRoomId = decodeURIComponent(String(body.roomId ?? body.code ?? ''))
             // 持麦者退出时服务端会把麦清空（lib/rooms.mjs）→ 留下的人也要立刻看到

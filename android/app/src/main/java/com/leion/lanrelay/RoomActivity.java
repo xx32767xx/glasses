@@ -92,6 +92,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     /** 我从什么时候开始持麦（用来在按钮上显示"正在发言 00:12"）。 */
     private long holdingSinceMs = 0L;
 
+    /** 我是不是发起者（决定抽屉里显不显示"移出成员/解除锁定"）。 */
+    private boolean iAmHost = false;
+
     /** 会议计时（从进房那一刻算）。 */
     private long startedAtMs = 0L;
     private boolean timerRunning = false;
@@ -153,6 +156,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         infoBar.setOnClickListener(v -> toggleDrawer());
         findViewById(R.id.roomDrawerClose).setOnClickListener(v -> toggleDrawer());
         sourceToggle.setOnClickListener(v -> toggleSource());
+
+        addSystemEvent("会议开始 · 发言权互斥已启用：同一时刻仅一人开麦");
 
         // 外设（投屏/扩声）**还没接入**：这里只把事实写清楚，不做假开关。
         castState.setText("手机屏");
@@ -382,6 +387,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 }
                 String holder = holderOf(body);
                 takingChanged(holder, body.optBoolean("locked", false));
+                if ("lock".equals(action)) addSystemEvent((holder.isEmpty() ? "发言" : holder + " 的发言") + "已锁定");
+                if ("unlock".equals(action)) addSystemEvent("发言已解锁");
+                if ("force-release".equals(action)) addSystemEvent("发起者收回了发言权");
                 if (body.optString("tookOver", "").length() > 0) {
                     hintLine.setText("你已接管麦克风 · " + body.optString("tookOver") + " 已被自动静音");
                 }
@@ -731,7 +739,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                     String name = room.optString("name", "");
                     if (!name.isEmpty()) titleView.setText(name);
                     String host = room.optString("host", "");
-                    boolean iAmHost = myName != null && myName.equals(host);
+                    iAmHost = myName != null && myName.equals(host);
                     roleTag.setText(iAmHost ? "发起者" : "参与者");
                     roleTag.setBackgroundResource(iAmHost ? R.drawable.bg_chip_brand : R.drawable.bg_chip);
                     roleTag.setTextColor(getColor(iAmHost ? R.color.brand : R.color.ink_soft));
@@ -744,16 +752,21 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         }, "room-header").start();
     }
 
-    /** 抽屉里的成员列表：头像首字 + 姓名（真头像还没做）。 */
+    /**
+     * 抽屉里的成员列表：头像首字 + 姓名 +（发起者才有的）管理操作。
+     *
+     * <p>管理者能做的两件事对应两处真实能力：
+     *   · 「移出」→ `POST /org/rooms/:id/members/remove`（服务端会顺手释放他占着的麦）；
+     *   · 「解除锁定」→ 现有 `force-release`（只对当前持麦者出现，且仅发起者可见）。
+     */
     private void renderMembers(org.json.JSONArray members) {
-        if (membersList == null) return;
+        if (membersList == null || members == null) return;
         membersList.removeAllViews();
         for (int i = 0; i < members.length(); i++) {
-            // 服务端 listMembers 返回的是对象：{username, lang, joinedAt}。
-            // 之前按字符串取（optString(i)）会拿到空串 —— 抽屉里一个成员都不显示。
             JSONObject one = members.optJSONObject(i);
             String name = one == null ? members.optString(i, "") : one.optString("username", "");
             if (name.isEmpty()) continue;
+
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(android.view.Gravity.CENTER_VERTICAL);
@@ -770,16 +783,86 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             row.addView(avatar, new LinearLayout.LayoutParams(dot, dot));
 
             TextView label = new TextView(this);
-            label.setText(name);
+            String suffix = name.equals(myName) ? "（我）" : "";
+            label.setText(name + suffix);
             label.setTextColor(getColor(R.color.ink));
             label.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12);
             LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
             labelParams.leftMargin = dp(8);
             row.addView(label, labelParams);
 
+            // 管理者操作：只对"别人"显示移出（移自己要走退出，那是结束会议）
+            if (iAmHost && !name.equals(myName)) {
+                TextView remove = new TextView(this);
+                remove.setText("移出");
+                remove.setTextColor(getColor(R.color.err));
+                remove.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 11);
+                remove.setPadding(dp(8), dp(4), dp(4), dp(4));
+                remove.setOnClickListener(v -> confirmRemove(name));
+                row.addView(remove, new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+            }
             membersList.addView(row);
         }
+
+        // 当前持麦者 + 已锁定时，发起者可以"解除锁定"（复用 force-release）
+        if (iAmHost && locked && holder() != null && !holder().isEmpty()) {
+            TextView force = new TextView(this);
+            force.setText("解除 " + holder() + " 的锁定");
+            force.setTextColor(getColor(R.color.brand));
+            force.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 11);
+            force.setPadding(0, dp(6), 0, dp(6));
+            force.setOnClickListener(v -> act("force-release"));
+            membersList.addView(force);
+        }
+    }
+
+    private String holder() {
+        String text = speakerBar.getText() == null ? "" : speakerBar.getText().toString();
+        if (!text.startsWith("发言人：")) return "";
+        text = text.substring("发言人：".length());
+        int cut = text.indexOf('（');
+        return cut > 0 ? text.substring(0, cut) : text;
+    }
+
+    /** 移出成员要二次确认：这是个不可撤销（对方视角）的动作。 */
+    private void confirmRemove(final String name) {
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("移出 " + name)
+                .setMessage("他会立刻离开这场会议；如果他正在发言，麦克风会被释放。"
+                        + "（他仍可以凭邀请码重新加入）")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("移出", (dialog, which) -> doRemove(name))
+                .show();
+    }
+
+    private void doRemove(final String name) {
+        new Thread(() -> {
+            JSONObject result = null;
+            String failure = "";
+            try {
+                result = client.orgRemoveMember(roomKey, name);
+            } catch (Exception e) {
+                failure = e.getMessage() == null ? e.toString() : e.getMessage();
+            }
+            final JSONObject body = result;
+            final String error = failure;
+            ui.post(() -> {
+                if (body == null || !body.optBoolean("ok", false)) {
+                    String reason = body == null ? error : body.optString("error", error);
+                    Toast.makeText(this, "移出失败：" + reason, Toast.LENGTH_LONG).show();
+                    return;
+                }
+                addSystemEvent(name + " 已被移出会议");
+                org.json.JSONArray members = body.optJSONArray("members");
+                if (members != null) {
+                    membersView.setText(members.length() + " 人");
+                    renderMembers(members);
+                }
+                loadRoomHeader();
+            });
+        }, "room-remove-member").start();
     }
 
     /** 复制邀请码（对方凭它入会）。 */
@@ -851,6 +934,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             return;
         }
         stopUpload(message);
+        addSystemEvent(message);
         // 字幕流会不断改写 hint 行，所以这条提示再用 Toast 说一次（否则一闪就没了）
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
     }
@@ -1057,6 +1141,25 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             if (oldest == null || oldest == lastSegmentView) break;
             subtitleList.removeViewAt(1);
         }
+        scrollToBottom();
+    }
+
+    /**
+     * 系统事件行（原型：以**弱化的居中文字**出现在字幕流里）。
+     *
+     * <p>它与字幕卡片的区别是刻意的：事件不是"谁说了什么"，所以不带头像、不加边框、
+     * 用次要色居中 —— 扫读字幕时它退到背景里，需要时又能看到。
+     */
+    private void addSystemEvent(String text) {
+        if (text == null || text.isEmpty()) return;
+        if (emptyView.getVisibility() == View.VISIBLE) emptyView.setVisibility(View.GONE);
+        TextView event = new TextView(this);
+        event.setText("— " + text + " —");
+        event.setGravity(android.view.Gravity.CENTER);
+        event.setTextColor(getColor(R.color.ink_faint));
+        event.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 11);
+        event.setPadding(0, dp(6), 0, dp(6));
+        subtitleList.addView(event);
         scrollToBottom();
     }
 

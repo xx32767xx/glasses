@@ -1025,7 +1025,7 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('顶部真的会写房间号与主题',
       /codeView\.setText\("#" \+ code\)/.test(activity) && /titleView\.setText\(name\)/.test(activity))
     check('角色按 host 判定（发起者/参与者）',
-      /boolean iAmHost = myName != null && myName\.equals\(host\)/.test(activity)
+      /iAmHost = myName != null && myName\.equals\(host\)/.test(activity)
       && /roleTag\.setText\(iAmHost \? "发起者" : "参与者"\)/.test(activity))
 
     // ② 成员是对象数组 {username, lang, joinedAt}，不能按字符串取
@@ -1039,6 +1039,35 @@ export async function runAndroidOrderSuite({ it, check }) {
       && !/onState\(String message\)\s*\{[\s\S]{0,120}statusLine\.setText/.test(activity),
       '「发言权推送已连上」这类字样不该给用户看')
     check('连上后状态行清空（不再显示"已连接 · 40×3"）', /statusLine\.setText\(""\)/.test(activity))
+  })
+
+  await it('M2 收尾：抽屉管理者操作 + 系统事件行（4.54）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const activity = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+    const client = readFileSync(join(javaDir, 'LanClient.java'), 'utf-8')
+    const rooms = readFileSync(join(ROOT, 'lib', 'rooms.mjs'), 'utf-8')
+    const api = readFileSync(join(ROOT, 'relay', 'org-api.mjs'), 'utf-8')
+
+    // 服务端：移出成员（仅发起者）+ 顺手释放他的麦
+    check('rooms.mjs 有 removeMember', /export function removeMember\(/.test(rooms))
+    check('只有发起者能移人', /只有发起者可以移出成员/.test(rooms))
+    check('移出时释放他的麦', /releasedFloor = true/.test(rooms))
+    check('org-api 有移出成员路由', /segments\[4\] === 'remove'/.test(api))
+    check('客户端有对应接口', /public JSONObject orgRemoveMember\(/.test(client))
+
+    // 抽屉：管理者看得到"移出"，且不给自己显示
+    check('成员行带移出按钮', /remove\.setText\("移出"\)/.test(activity))
+    check('移出只对别人显示（自己要走退出）', /iAmHost && !name\.equals\(myName\)/.test(activity))
+    check('移出要二次确认', /private void confirmRemove\(/.test(activity) && /AlertDialog/.test(activity))
+    check('锁定中时发起者可解除他人锁定', /force-release/.test(activity) && /解除 .* 的锁定/.test(activity))
+
+    // 系统事件行：弱化、居中、插进字幕流
+    check('有 addSystemEvent', /private void addSystemEvent\(String text\)/.test(activity))
+    check('事件行是弱化居中文字', /setGravity\(android\.view\.Gravity\.CENTER\)/.test(activity)
+      && /R\.color\.ink_faint/.test(activity))
+    check('会议开始写一条事件', /会议开始 · 发言权互斥已启用/.test(activity))
+    check('被顶替/掉线释放写进事件行', /addSystemEvent\(message\)/.test(activity))
+    check('锁定/解锁写进事件行', /已锁定/.test(activity) && /发言已解锁/.test(activity))
   })
 
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {
