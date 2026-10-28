@@ -76,8 +76,10 @@ android {
     //       + scripts/fake-frames.mjs（三条命令跑起假字幕）；首页旧版入口默认隐藏。见 docs/23。
     // 4.49：注册/登录页按原型重做（品牌圆 + 标语 + 三颗语言胶囊 + 邮箱/验证码同排 +
     //       协议勾选 + 全宽主按钮）；M4 门禁落地；出厂默认服务器地址可预填（密钥留空）。见 docs/21 §4.49。
-        versionCode = 78
-        versionName = "4.49"
+    // 4.50：登录/注册改回显式切换（登录不显示邮箱与验证码）；修「同一台设备把自己踢下线」——
+    //       注销没断会话推送 + 服务端只踢旧 token 的连接 + 客户端收到 kicked 先核实。见 docs/21 §4.50。
+        versionCode = 79
+        versionName = "4.50"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

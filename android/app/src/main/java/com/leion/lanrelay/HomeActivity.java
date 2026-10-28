@@ -56,6 +56,17 @@ public class HomeActivity extends android.app.Activity {
     private TextView langPtButton;
     private TextView serverToggle;
     private android.widget.CheckBox agreeBox;
+    private LinearLayout emailRow;
+    private TextView registerToggle;
+
+    /**
+     * 当前是"注册"还是"登录"（4.50）。
+     *
+     * <p>为什么要这个开关：登录根本用不到邮箱和验证码，一直摆着只会让人以为"都要填"。
+     * 原型虽然只有一个「注册／登录」按钮，但表单里那几项只在注册时有意义 ——
+     * 所以做成**一个按钮 + 一个切换链接**：登录态只留 用户名/密码，注册态才放出邮箱与验证码。
+     */
+    private boolean registerMode = false;
     /** 屏幕调试行（无 adb 时靠它定位） */
     private final java.util.ArrayDeque<String> debugLines = new java.util.ArrayDeque<>();
 
@@ -78,6 +89,8 @@ public class HomeActivity extends android.app.Activity {
         whoLine = findViewById(R.id.homeWho);
         langZhButton = findViewById(R.id.homeLangZh);
         langPtButton = findViewById(R.id.homeLangPt);
+        emailRow = findViewById(R.id.homeEmailRow);
+        registerToggle = findViewById(R.id.homeRegisterToggle);
         serverToggle = findViewById(R.id.homeServerToggle);
         serverBox = findViewById(R.id.homeServerBox);
         agreeBox = findViewById(R.id.homeAgree);
@@ -101,6 +114,7 @@ public class HomeActivity extends android.app.Activity {
         });
         langZhButton.setOnClickListener(v -> applySpeakLang("zh-CN"));
         langPtButton.setOnClickListener(v -> applySpeakLang("pt-BR"));
+        registerToggle.setOnClickListener(v -> setRegisterMode(!registerMode));
         findViewById(R.id.homeCreate).setOnClickListener(v -> openRooms());
         findViewById(R.id.homeSettings).setOnClickListener(v ->
                 startActivity(new Intent(this, SettingsActivity.class)));
@@ -109,6 +123,7 @@ public class HomeActivity extends android.app.Activity {
         findViewById(R.id.homeLogout).setOnClickListener(v -> logout());
 
         refreshLangPills(prefs.getString("speakLang", "zh-CN"));
+        setRegisterMode(false);   // 默认是登录态：登录不需要邮箱与验证码
         restoreSession();
     }
 
@@ -175,6 +190,28 @@ public class HomeActivity extends android.app.Activity {
     }
 
     /**
+     * 在「登录」与「注册」之间切换（4.50）。
+     *
+     * <p>登录：只要 用户名 + 密码；邮箱、验证码、获取验证码按钮**全部收起**。
+     * <p>注册：放出 邮箱 + 验证码（服务端 /auth/register-email 要四样：邮箱、用户名、密码、验证码）。
+     * <p>按钮文案跟着变 —— 一个按钮，但绝不让人猜"我现在点的是登录还是注册"。
+     */
+    private void setRegisterMode(boolean register) {
+        registerMode = register;
+        int emailVisibility = register ? View.VISIBLE : View.GONE;
+        emailRow.setVisibility(emailVisibility);
+        codeInput.setVisibility(emailVisibility);
+        loginButton.setText(register ? "注册并登录" : "登录");
+        registerToggle.setText(register ? "已有账号？用密码登录" : "没有账号？用邮箱验证码注册");
+        passInput.setHint(register ? "设置密码" : "密码");
+        // 收起邮箱时把内容清掉：留着会让"登录却要求验证码"这种困惑再次出现
+        if (!register) {
+            emailInput.setText("");
+            codeInput.setText("");
+        }
+    }
+
+    /**
      * 「我的语言」三颗胶囊的外观（原型：中文 / English / 巴西葡语）。
      *
      * <p>English 是**禁用**的：服务端 `LANGS` 只有 `zh-CN` / `pt-BR`，加了只会让用户选完发现翻不了。
@@ -233,17 +270,40 @@ public class HomeActivity extends android.app.Activity {
                 new SessionSocket.Listener() {
                     @Override
                     public void onKicked(String reason) {
-                        ui.post(() -> {
-                            Toast.makeText(HomeActivity.this,
-                                    "账号已在别处登录，这台设备的登录已失效", Toast.LENGTH_LONG).show();
-                            status.setText("账号已在别处登录，请重新登录");
-                            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                                    .remove("accountToken").remove("termsUser").remove("roomHost").apply();
-                            client.setToken("");
-                            if (sessionWatch != null) sessionWatch.stop();
-                            if (sessionSocket != null) sessionSocket.stop();
-                            showLogin();
-                        });
+                        // ⚠️ 服务端只会踢"用旧 token 的连接"。但客户端这一侧仍要**核实**：
+                        // 如果我手上的 token 还能通过 whoami，那被踢的只是一条陈旧连接
+                        // （典型场景：注销后又登录、或服务端重启过），不该把我赶回登录页。
+                        new Thread(() -> {
+                            boolean reallyExpired;
+                            try {
+                                client.checkSession();
+                                reallyExpired = false;
+                            } catch (LanClient.SessionExpiredException expired) {
+                                reallyExpired = true;
+                            } catch (Exception other) {
+                                // 连不上服务器：无法确认，按"不踢人"处理（4.33 的教训）
+                                reallyExpired = false;
+                            }
+                            final boolean kick = reallyExpired;
+                            ui.post(() -> {
+                                if (sessionSocket != null) {
+                                    sessionSocket.stop();
+                                    sessionSocket = null;
+                                }
+                                if (!kick) {
+                                    debugLine("收到 kicked，但 whoami 仍有效 —— 判为陈旧连接，忽略");
+                                    return;
+                                }
+                                Toast.makeText(HomeActivity.this,
+                                        "账号已在别处登录，这台设备的登录已失效", Toast.LENGTH_LONG).show();
+                                status.setText("账号已在别处登录，请重新登录");
+                                getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                                        .remove("accountToken").remove("termsUser").remove("roomHost").apply();
+                                client.setToken("");
+                                if (sessionWatch != null) sessionWatch.stop();
+                                showLogin();
+                            });
+                        }, "home-kick-verify").start();
                     }
 
                     @Override
@@ -378,14 +438,13 @@ public class HomeActivity extends android.app.Activity {
             Toast.makeText(this, "用户名和密码都要填", Toast.LENGTH_SHORT).show();
             return;
         }
-        // 一个按钮两种意图（原型只有一个「注册／登录」）：填了邮箱+验证码就是注册，否则登录。
-        // 这样既保留了原型的"单按钮"，又不至于让人猜"我到底在注册还是在登录"。
-        final boolean registerMode = !email.isEmpty() || !code.isEmpty();
-        if (registerMode && (email.isEmpty() || code.isEmpty())) {
-            Toast.makeText(this, "注册需要邮箱和验证码（只想登录就把这两项留空）", Toast.LENGTH_LONG).show();
+        // 由「登录 / 注册」开关决定，不看"填了没"（4.50：以前靠字段推断，
+        // 用户填了邮箱去登录会被当成注册，报错还看不懂）。
+        final boolean isRegister = registerMode;
+        if (isRegister && (email.isEmpty() || code.isEmpty())) {
+            Toast.makeText(this, "注册需要邮箱和验证码（先点「获取验证码」）", Toast.LENGTH_LONG).show();
             return;
         }
-        final boolean isRegister = registerMode;
         debugLine("tap login host=" + host + " secretLen=" + secret.length() + " user=" + user
                 + (isRegister ? " (注册)" : " (登录)"));
         loginButton.setEnabled(false);
@@ -442,6 +501,14 @@ public class HomeActivity extends android.app.Activity {
                 if (sessionWatch != null) {
                     sessionWatch.stop();
                     sessionWatch = null;
+                }
+                // ⚠️ 4.50 修：注销时**必须**也断开会话推送。
+                // 否则这条连接（用的还是刚才被吊销的 token）会一直挂在服务端的「该用户会话」上；
+                // 下次登录时服务端会"通知别处登录"—— 通知的正是这台的陈旧连接，于是自己弹
+                // 「账号已在别处登录」，服务端日志也会打出"被别处登录挤下线"。
+                if (sessionSocket != null) {
+                    sessionSocket.stop();
+                    sessionSocket = null;
                 }
                 getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                         .remove("accountToken").remove("termsUser").remove("roomHost").apply();

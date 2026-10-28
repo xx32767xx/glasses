@@ -705,8 +705,8 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('有"慢速间隔"常量（兜底不必跑那么勤）', /INTERVAL_SLOW_MS/.test(watch))
 
     for (const [name, src] of [['首页', home], ['大厅', rooms]]) {
-      check(`${name}连了会话通道`, /new SessionSocket\([\s\S]{0,2500}sessionSocket\.start\(\)/.test(src), name)
-      check(`${name}收到 kicked 会清 token 并退出`, /onKicked\(String reason\)[\s\S]{0,1200}remove\("accountToken"\)/.test(src), name)
+      check(`${name}连了会话通道`, /new SessionSocket\([\s\S]{0,8000}sessionSocket\.start\(\)/.test(src), name)
+      check(`${name}收到 kicked 会清 token 并退出`, /onKicked\(String reason\)[\s\S]{0,2400}remove\("accountToken"\)/.test(src), name)
       check(`${name}按推送是否在线调整轮询间隔`,
         /setIntervalMs\(online[\s\S]{0,120}INTERVAL_SLOW_MS/.test(src), name)
       check(`${name}销毁时断开推送`, /onDestroy\(\)[\s\S]{0,800}sessionSocket\.stop\(\)/.test(src), name)
@@ -826,10 +826,16 @@ export async function runAndroidOrderSuite({ it, check }) {
       '必须在任何网络请求之前拦住')
     check('点协议文字能打开隐私页', /homeAgreeText[\s\S]{0,200}PrivacyActivity\.class/.test(homeJava))
 
-    // 单按钮：填了邮箱+验证码=注册，否则=登录
-    check('一个按钮两种意图', /boolean registerMode = !email\.isEmpty\(\) \|\| !code\.isEmpty\(\)/.test(homeJava))
+    // 登录 / 注册 是**开关**，不是"看用户填了没"（4.50）
+    check('有 setRegisterMode 切换', /private void setRegisterMode\(boolean register\)/.test(homeJava))
+    check('切换链接能来回切', /registerToggle\.setOnClickListener\(v -> setRegisterMode\(!registerMode\)\)/.test(homeJava))
+    check('默认是登录态', /setRegisterMode\(false\)/.test(homeJava), '登录不需要邮箱')
+    check('邮箱那一排跟着切', /emailRow\.setVisibility\(emailVisibility\)/.test(homeJava))
+    check('验证码跟着切', /codeInput\.setVisibility\(emailVisibility\)/.test(homeJava))
+    check('按钮文案跟着变', /loginButton\.setText\(register \? "注册并登录" : "登录"\)/.test(homeJava))
     check('注册走 authRegisterEmail', /isRegister[\s\S]{0,200}authRegisterEmail/.test(homeJava))
     check('登录走 authLogin', /authLogin\(user, pass\)/.test(homeJava))
+    check('判定用开关而不是字段内容', /final boolean isRegister = registerMode;/.test(homeJava))
 
     // 出厂默认配置：地址可预填、密钥默认空（安全取舍写进了资源文件注释）
     const cfg = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'values', 'app_config.xml'), 'utf-8')
@@ -838,6 +844,35 @@ export async function runAndroidOrderSuite({ it, check }) {
       /<string name="default_shared_secret"><\/string>/.test(cfg), cfg.slice(0, 120))
     check('注释里说清了为什么密钥不打包', /反编译|apktool/.test(cfg))
     check('登录页会回落到出厂默认值', /R\.string\.default_server_url/.test(homeJava))
+  })
+
+  await it('同一台设备不许把自己踢下线（4.50）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const home = readFileSync(join(javaDir, 'HomeActivity.java'), 'utf-8')
+    const hub = readFileSync(join(ROOT, 'lib', 'ws-hub.mjs'), 'utf-8')
+    const relay = readFileSync(join(ROOT, 'relay', 'lan-relay.mjs'), 'utf-8')
+
+    // ① 注销时必须断开会话推送：否则旧连接挂在服务端，下次登录会"通知别处登录"通知到自己
+    const logoutAt = home.indexOf('private void logout()')
+    const logoutBody = home.slice(logoutAt, home.indexOf('\n    }', logoutAt))
+    check('注销会停掉 sessionWatch', /sessionWatch\.stop\(\)/.test(logoutBody))
+    check('注销也会停掉会话推送（sessionSocket）', /sessionSocket\.stop\(\)/.test(logoutBody),
+      '漏了它 = 下次登录时自己踢自己')
+
+    // ② 服务端只踢"旧 token"的连接
+    check('会话连接记下自己的 token 哈希', /tokenHash:/.test(hub))
+    check('notifyKicked 接受 keepToken 并跳过它',
+      /function notifyKicked\(user, reason = 'elsewhere-login', keepToken = null\)/.test(hub)
+      && /conn\.tokenHash === keepHash\) return false/.test(hub),
+    )
+    check('登录成功时把新 token 一起传下去',
+      /notifyKickedIfReplaced\(result\.username, result\.token\)/.test(relay))
+
+    // ③ 客户端收到 kicked 先核实（陈旧连接不算被踢）
+    check('onKicked 先 checkSession 再决定',
+      /onKicked\(String reason\)[\s\S]{0,700}checkSession\(\)/.test(home),
+      '只信推送、不核实，就会被陈旧连接骗回登录页')
+    check('核实失败才回登录页', /reallyExpired[\s\S]{0,1200}showLogin\(\)/.test(home))
   })
 
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {

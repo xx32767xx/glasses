@@ -1016,10 +1016,11 @@ export async function startRelay(rawOptions = {}) {
    * 轮询才知道 —— 用户体感就是"被踢了却不吭声"。现在它只要连着会话通道，
    * 一秒之内就会收到 `{type:'kicked'}` 并被断开。
    */
-  function notifyKickedIfReplaced(username) {
+  function notifyKickedIfReplaced(username, newToken) {
     if (wsHub === null || typeof username !== 'string' || username === '') return
     try {
-      if (wsHub.notifyKicked(username, 'elsewhere-login')) {
+      // 把"刚发的 token"传下去：连着的若是它自己（同一台设备重新登录），不踢。
+      if (wsHub.notifyKicked(username, 'elsewhere-login', newToken ?? null)) {
         debug(`[账户] ${username} 在别处登录，已通知旧会话下线`)
       }
     } catch (error) {
@@ -1523,7 +1524,7 @@ export async function startRelay(rawOptions = {}) {
         await saveAccounts(options.dataDir, result.doc)
         debug(`[账户] 邮箱注册成功：${result.username}（${result.email}）`)
         send(response, 200, { ok: true, user: result.username, role: result.role, token: result.token })
-        notifyKickedIfReplaced(result.username)
+        notifyKickedIfReplaced(result.username, result.token)
         return
       }
       if (request.method === 'POST' && url.pathname === '/auth/login') {
@@ -1538,7 +1539,7 @@ export async function startRelay(rawOptions = {}) {
         }
         await saveAccounts(options.dataDir, result.doc)
         send(response, 200, { ok: true, user: result.username, role: roleOf(result.doc, result.username), token: result.token })
-        notifyKickedIfReplaced(result.username)
+        notifyKickedIfReplaced(result.username, result.token)
         return
       }
 

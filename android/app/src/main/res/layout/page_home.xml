@@ -185,12 +185,14 @@
                 android:textColorHint="@color/ink_faint"
                 android:textSize="@dimen/text_body" />
 
-            <!-- 邮箱 + 获取验证码（同排） -->
+            <!-- 邮箱 + 获取验证码（同排）：**仅注册时显示**（登录不需要邮箱） -->
             <LinearLayout
+                android:id="@+id/homeEmailRow"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="@dimen/space_gap_small"
-                android:orientation="horizontal">
+                android:orientation="horizontal"
+                android:visibility="gone">
 
                 <EditText
                     android:id="@+id/homeEmail"
@@ -229,6 +231,7 @@
                 android:background="@drawable/bg_input"
                 android:hint="邮箱验证码"
                 android:inputType="number"
+                android:visibility="gone"
                 android:paddingStart="@dimen/space_gap"
                 android:paddingEnd="@dimen/space_gap"
                 android:singleLine="true"
@@ -239,6 +242,7 @@
             <!--
               密码：**原型表单里没有这一项**。保留是因为服务端目前的注册与登录都要密码
               （/auth/register-email 与 /auth/login）。等"验证码直登"的契约定下来再删。
+              提示文案随「登录/注册」切换（Java 里改 hint），所以这里给个 id。
             -->
             <EditText
                 android:id="@+id/homePass"
@@ -293,6 +297,17 @@
                 android:textAllCaps="false"
                 android:textColor="@color/on_brand"
                 android:textSize="@dimen/text_button" />
+
+            <!-- 登录 / 注册 切换：登录时**不显示**邮箱与验证码（4.50） -->
+            <TextView
+                android:id="@+id/homeRegisterToggle"
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/touch_min"
+                android:layout_marginTop="@dimen/space_gap_tiny"
+                android:gravity="center"
+                android:text="没有账号？用邮箱验证码注册"
+                android:textColor="@color/brand"
+                android:textSize="@dimen/text_secondary" />
 
             <!-- 服务器设置（高级）：默认收起，原型主表单里不出现 -->
             <TextView
