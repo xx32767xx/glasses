@@ -529,10 +529,13 @@ export async function runAndroidOrderSuite({ it, check }) {
 
     // 2) 首页能进得去（否则页面存在也白做）
     // 4.60：设置不再是一个按钮，而是底部导航的「我的」
-    check('首页底部导航能进设置', homeXml.includes('@+id/homeNavMe')
-      && /homeNavMe[\s\S]{0,200}SettingsActivity\.class/.test(homeJava), '没有入口')
-    check('首页按钮真的打开设置页',
-      /homeNavMe[\s\S]{0,200}SettingsActivity\.class/.test(homeJava), homeJava.slice(0, 80))
+    check('首页底部导航能进「我的」', homeXml.includes('@layout/inc_bottom_nav')
+      && /homeNavMe[\s\S]{0,200}MeActivity\.class/.test(homeJava), '没有入口')
+    check('设置从「我的」里的翻译服务那行进',
+      /meRowService[\s\S]{0,120}SettingsActivity\.class/.test(
+        readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay', 'MeActivity.java'), 'utf-8')))
+    check('首页底部导航打开「我的」页',
+      /homeNavMe[\s\S]{0,200}MeActivity\.class/.test(homeJava), homeJava.slice(0, 80))
     check('设置页能进隐私页',
       /setAppPrivacy[\s\S]{0,160}PrivacyActivity\.class/.test(settingsJava))
 
@@ -1402,17 +1405,22 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('有语言扩展提示', /home_supported_more/.test(supported))
 
     // 底部三项一级导航
-    check('底部有三个导航项', /@\+id\/homeNavHome/.test(home) && /@\+id\/homeNavHistory/.test(home)
-      && /@\+id\/homeNavMe/.test(home))
-    check('导航文案是首页/历史/我的', /@string\/nav_home/.test(home) && /@string\/nav_history/.test(home)
-      && /@string\/nav_me/.test(home))
+    const navXml = readFileSync(join(resDir, 'layout', 'inc_bottom_nav.xml'), 'utf-8')
+    check('底部有三个导航项（公共片段）', /@\+id\/homeNavHome/.test(navXml)
+      && /@\+id\/homeNavHistory/.test(navXml) && /@\+id\/homeNavMe/.test(navXml))
+    check('导航文案是首页/历史/我的',
+      /@string\/nav_home/.test(navXml) && /@string\/nav_history/.test(navXml)
+      && /@string\/nav_me/.test(navXml))
     check('历史暂时没有动作（下一步才做）', !/homeNavHistory\)\.setOnClickListener/.test(java))
-    check('我的进设置', /homeNavMe\)\.setOnClickListener[\s\S]{0,200}SettingsActivity\.class/.test(java))
+    check('我的进「我的」页', /homeNavMe\)\.setOnClickListener[\s\S]{0,200}MeActivity\.class/.test(java))
+    // 4.62：导航抽成公共片段，所以这里只验"include 在 ScrollView 之后"
     check('底部导航固定（不在 ScrollView 里）',
-      home.indexOf('</ScrollView>') < home.indexOf('@+id/homeBottomNav'))
-    check('导航只在登录后出现',
-      /@\+id\/homeBottomNav[\s\S]{0,400}visibility="gone"/.test(home)
-      && /bottomNav\.setVisibility\(View\.VISIBLE\)/.test(java)
+      home.indexOf('</ScrollView>') < home.indexOf('@layout/inc_bottom_nav'))
+    check('导航片段自己不是 ScrollView 的子节点',
+      /@layout\/inc_bottom_nav/.test(home) && !/ScrollView[\s\S]*@layout\/inc_bottom_nav[\s\S]*<\/ScrollView>/.test(home))
+    check('导航只在登录后出现（片段里默认 gone，登录后才点亮）',
+      /@\+id\/homeBottomNav[\s\S]{0,400}visibility="gone"/.test(navXml)
+      && /NavTabs\.apply\(this, NavTabs\.HOME\)/.test(java)
       && /bottomNav\.setVisibility\(View\.GONE\)/.test(java))
     check('登录页抬头在进首页后收起（不能两套抬头）',
       /loginHeader\.setVisibility\(View\.GONE\)/.test(java))
@@ -1444,6 +1452,79 @@ export async function runAndroidOrderSuite({ it, check }) {
     }
     // 4.60 重构时删掉过 homeWho/homeCreate/homeSettings —— 这个断言就是为了那种情况
     check('没有指向不存在控件的 findViewById', missing.length === 0, missing.join(' | '))
+  })
+
+  await it('4.62：「我的」页面 + 术语库管理（只能提申请）', () => {
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const layout = (f) => readFileSync(join(resDir, 'layout', f), 'utf-8')
+    const java = (f) => readFileSync(join(javaDir, f), 'utf-8')
+
+    const me = layout('page_me.xml')
+    const meJava = java('MeActivity.java')
+
+    // ① 顶部标题 + 渐变个人卡片（头像 / 姓名 / 组织 / 版本）
+    check('有页面标题「我的」', /@string\/nav_me/.test(me))
+    check('个人卡片是蓝绿渐变', /@drawable\/bg_card_gradient/.test(me)
+      && /brand_grad_start/.test(readFileSync(join(resDir, 'drawable', 'bg_card_gradient.xml'), 'utf-8'))
+      && /brand_grad_end/.test(readFileSync(join(resDir, 'drawable', 'bg_card_gradient.xml'), 'utf-8')))
+    check('卡片里有头像 / 姓名 / 组织 / 版本',
+      ['meAvatar', 'meName', 'meOrg', 'meVersion'].every((id) => me.includes('@+id/' + id)))
+    check('组织那行按角色写（没有就编一个组织名）',
+      /me_org_role_admin/.test(meJava) && /me_org_role_user/.test(meJava))
+
+    // ② 四行依次：设备 / 术语库 / 翻译服务 / 帮助，再退出登录
+    const order = ['meRowDevice', 'meRowTerms', 'meRowService', 'meRowHelp', 'meLogout']
+      .map((id) => me.indexOf('@+id/' + id))
+    check('四行顺序符合设计', order.every((v, i) => v > 0 && (i === 0 || v > order[i - 1])),
+      JSON.stringify(order))
+    check('我的设备：名称 + 能力摘要 + 连接状态',
+      /me_device_summary/.test(meJava) && /android\.os\.Build\.MODEL/.test(meJava)
+      && /@\+id\/meDeviceState/.test(me))
+    check('连接状态用真实在线结果（不是假开关）',
+      /state_online/.test(meJava) && /state_offline/.test(meJava)
+      && /client\.authWhoAmI\(\)/.test(meJava))
+    check('翻译服务显示有效期（读不到就说未知）',
+      /me_service_expires/.test(meJava) && /me_service_unknown/.test(meJava))
+    check('帮助与反馈有隐私政策入口',
+      /me_help_body/.test(meJava) && /PrivacyActivity\.class/.test(meJava))
+    check('退出登录要二次确认', /me_logout_confirm/.test(meJava))
+    check('退出走服务端注销并清本地', /authLogout\(\)/.test(meJava)
+      && /remove\("accountToken"\)/.test(meJava))
+
+    // ③ 底部导航共用片段，且高亮当前页
+    check('我的页面也带底部导航', /@layout\/inc_bottom_nav/.test(me))
+    const nav = java('NavTabs.java')
+    check('导航高亮只有一处实现', /public static void apply\(/.test(nav)
+      && /NavTabs\.apply\(this, NavTabs\.ME\)/.test(meJava)
+      && /NavTabs\.apply\(this, NavTabs\.HOME\)/.test(java('HomeActivity.java')))
+    check('历史那项永远灰（还没做）',
+      /style\(activity, R\.id\.homeNavHistoryIcon, R\.id\.homeNavHistoryLabel, active == HISTORY\)/.test(nav))
+
+    // ④ 术语库管理：只能提申请，不许直接改库
+    const terms = layout('page_terms_lib.xml')
+    const termsJava = java('TermLibActivity.java')
+    check('术语库页列出库与我的申请',
+      /termsLibList/.test(terms) && /termsRequestList/.test(terms))
+    check('用的是审批接口（提申请）', /orgCreateRequest\(/.test(termsJava))
+    check('列出我的申请与撤回', /orgMyRequests\(\)/.test(termsJava)
+      && /orgWithdrawRequest\(/.test(termsJava))
+    check('三种申请类型都在', /terms_req_add/.test(termsJava) && /terms_req_update/.test(termsJava)
+      && /terms_req_delete/.test(termsJava))
+    check('删除只填中文、新增/修改要双语',
+      /ptInput\.setVisibility\(needPt \? View\.VISIBLE : View\.GONE\)/.test(termsJava))
+    check('申请人由服务端定（请求体里不放 applicant）',
+      /不要放 applicant|不放进去/.test(termsJava) && !/body\.put\("applicant"/.test(termsJava))
+    check('申请表单在独立的对话框布局里', /dialog_term_request/.test(termsJava))
+
+    // ⑤ 注册进 manifest
+    const manifest = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'AndroidManifest.xml'), 'utf-8')
+    check('两个新页面都注册了', /\.MeActivity/.test(manifest) && /\.TermLibActivity/.test(manifest))
+
+    // ⑥ 服务端 whoami 带上账号状态与到期时间（老服务端没有时客户端要能显示"未知"）
+    const relay = readFileSync(join(ROOT, 'relay', 'lan-relay.mjs'), 'utf-8')
+    check('whoami 返回账号状态与到期时间', /status: typeof record\.status/.test(relay)
+      && /expiresAt: typeof record\.expiresAt/.test(relay))
   })
 
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {

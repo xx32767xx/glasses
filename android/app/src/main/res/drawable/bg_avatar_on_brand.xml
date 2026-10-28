@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 渐变卡片上的头像圆：白色实心圆，里面的字用品牌色（4.62） -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="@color/surface" />
+</shape>

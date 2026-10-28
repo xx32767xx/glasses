@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  page_terms_lib.xml —— 术语库管理（4.62）。
+
+  ⚠️ 这一页**只能提申请**，不能直接改库：改库要管理员审批（docs/19 的审批流，
+  也是用户 2026-10-23 明确要求的）。所以按钮叫「申请修改」，提交后进「我的申请」，
+  等管理员审批。别把这里做成"直接编辑" —— 那会绕过审计。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/page"
+    android:orientation="vertical">
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="@color/page"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="@dimen/space_page">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/me_terms_title"
+                android:textColor="@color/ink"
+                android:textSize="@dimen/text_page_title"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap_tiny"
+                android:text="@string/terms_lib_hint"
+                android:textColor="@color/ink_soft"
+                android:textSize="@dimen/text_secondary" />
+
+            <TextView
+                android:id="@+id/termsLibHint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap"
+                android:background="@drawable/bg_card"
+                android:padding="@dimen/space_card"
+                android:text="@string/terms_lib_loading"
+                android:textColor="@color/ink_soft"
+                android:textSize="@dimen/text_caption" />
+
+            <!-- 库列表（运行时填充） -->
+            <LinearLayout
+                android:id="@+id/termsLibList"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap"
+                android:orientation="vertical" />
+
+            <!-- 我的申请 -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_section"
+                android:text="@string/terms_my_requests"
+                android:textColor="@color/ink"
+                android:textSize="@dimen/text_title"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:id="@+id/termsRequestList"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap_small"
+                android:orientation="vertical" />
+
+            <Button
+                android:id="@+id/termsBack"
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/height_field"
+                android:layout_marginTop="@dimen/space_section"
+                android:background="@drawable/tap_btn_secondary"
+                android:text="@string/common_back"
+                android:textAllCaps="false"
+                android:textColor="@color/ink"
+                android:textSize="@dimen/text_body" />
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>

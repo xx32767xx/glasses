@@ -142,6 +142,15 @@
             android:exported="false"
             android:label="设置"
             android:configChanges="orientation|screenSize|keyboardHidden" />
+        <!-- 4.62：底部导航「我的」与其下的术语库管理 -->
+        <activity
+            android:name=".MeActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".TermLibActivity"
+            android:exported="false" />
+
         <activity
             android:name=".PrivacyActivity"
             android:exported="false"

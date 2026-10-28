@@ -601,4 +601,70 @@
     <string name="nav_me">我的</string>
     <string name="nav_history_soon">历史（下一步开发）</string>
     <string name="home_lang_entry_desc">切换界面语言</string>
+    <string name="me_org_role_admin">管理员 · 组织账号</string>
+    <string name="me_org_role_user">普通成员 · 个人账号</string>
+    <string name="me_org_role_dev">开发账号</string>
+    <string name="me_version">服务版本 %1$s（%2$d）</string>
+    <string name="me_device_title">我的设备</string>
+    <string name="me_device_summary">%1$s · Android %2$s · 手机麦克风</string>
+    <string name="me_device_unknown">未知设备</string>
+    <string name="me_device_detail_title">设备详情</string>
+    <string name="me_device_detail">设备：%1$s
+系统：Android %2$s
+收音：手机麦克风（在用）
+投屏 / 外放：未接入
+服务器：%3$s
+状态：%4$s</string>
+    <string name="me_terms_title">术语库管理</string>
+    <string name="me_terms_desc">查看术语库，申请新增 / 修改 / 删除条目（需管理员审批）</string>
+    <string name="terms_lib_hint">你改不了库本身：提交申请后由管理员审批，通过才会写进库里。</string>
+    <string name="terms_lib_loading">正在读取术语库…</string>
+    <string name="terms_lib_empty">服务端还没有术语库（手机开麦同传后会自动生成一份）</string>
+    <string name="terms_lib_row">%1$s 条</string>
+    <string name="terms_apply">申请修改</string>
+    <string name="terms_my_requests">我的申请</string>
+    <string name="terms_requests_empty">还没有提交过申请</string>
+    <string name="terms_req_pick">要对这个术语库做什么？</string>
+    <string name="terms_req_add">新增条目</string>
+    <string name="terms_req_update">修改条目</string>
+    <string name="terms_req_delete">删除条目</string>
+    <string name="terms_req_form_title">%1$s · %2$s</string>
+    <string name="terms_req_zh">中文条目</string>
+    <string name="terms_req_pt">葡萄牙语译文</string>
+    <string name="terms_req_sent">申请已提交，等管理员审批</string>
+    <string name="terms_req_need_zh">先填中文条目</string>
+    <string name="terms_req_need_pt">新增/修改要把葡语译文也填上</string>
+    <string name="terms_req_failed">提交失败：%1$s</string>
+    <string name="terms_status_pending">待审批</string>
+    <string name="terms_status_approved">已通过</string>
+    <string name="terms_status_rejected">已驳回</string>
+    <string name="terms_status_withdrawn">已撤回</string>
+    <string name="terms_withdraw">撤回</string>
+    <string name="terms_withdrawn_ok">已撤回这条申请</string>
+    <string name="terms_withdraw_failed">撤回失败：%1$s</string>
+    <string name="terms_kind_add">新增</string>
+    <string name="terms_kind_update">修改</string>
+    <string name="terms_kind_delete">删除</string>
+    <string name="terms_load_failed">读不到术语库：%1$s</string>
+    <string name="me_service_title">翻译服务及有效状态</string>
+    <string name="me_service_summary">%1$s · 校对%2$s · 账号%3$s</string>
+    <string name="me_service_no_host">还没配服务器</string>
+    <string name="me_service_proof_on">开</string>
+    <string name="me_service_proof_off">关</string>
+    <string name="me_service_proof_unknown">未知</string>
+    <string name="me_service_expires">有效期至 %1$s</string>
+    <string name="me_service_permanent">长期有效</string>
+    <string name="me_service_unknown">有效期未知（服务端未提供）</string>
+    <string name="me_service_disabled">已停用</string>
+    <string name="me_help_title">帮助与反馈</string>
+    <string name="me_help_desc">常见问题、隐私政策与反馈渠道</string>
+    <string name="me_help_body">· 听不到字幕：先看首页的在线状态，再看对方是否正在发言。
+· 开不了麦：检查「我的设备」里的麦克风与录音权限。
+· 需要电脑端配合的问题，把下面的版本号与服务器地址一起发给管理员。
+
+版本 %1$s
+服务器 %2$s</string>
+    <string name="me_help_privacy">隐私政策</string>
+    <string name="me_logout_confirm">退出后这台设备要重新登录才能开会。</string>
+    <string name="me_logged_out">已退出登录</string>
 </resources>

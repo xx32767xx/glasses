@@ -1,0 +1,327 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  page_me.xml —— 「我的」页面（4.62，用户给的结构）。
+
+  结构（自上而下）：
+    页面标题「我的」
+    蓝绿色渐变个人卡片：头像 / 姓名 / 组织（角色）/ 服务版本
+    一张白卡里四行：我的设备 · 术语库管理 · 翻译服务及有效状态 · 帮助与反馈
+    退出登录
+    底部一级导航（与首页共用 inc_bottom_nav）
+
+  ⚠️ 不写色值与裸 dp/sp：一律 @color / @dimen。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/page"
+    android:orientation="vertical">
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="@color/page"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="@dimen/space_page">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/nav_me"
+                android:textColor="@color/ink"
+                android:textSize="@dimen/text_page_title"
+                android:textStyle="bold" />
+
+            <!-- ── 个人卡片：蓝绿渐变 ───────────────────────────────── -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_card"
+                android:background="@drawable/bg_card_gradient"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="@dimen/space_card">
+
+                <TextView
+                    android:id="@+id/meAvatar"
+                    android:layout_width="@dimen/avatar_size"
+                    android:layout_height="@dimen/avatar_size"
+                    android:background="@drawable/bg_avatar_on_brand"
+                    android:gravity="center"
+                    android:textColor="@color/brand"
+                    android:textSize="@dimen/text_page_title"
+                    android:textStyle="bold" />
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="@dimen/space_gap"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:id="@+id/meName"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textColor="@color/on_brand"
+                        android:textSize="@dimen/text_title"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/meOrg"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/space_gap_tiny"
+                        android:textColor="@color/on_brand_dim"
+                        android:textSize="@dimen/text_secondary" />
+
+                    <TextView
+                        android:id="@+id/meVersion"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/space_gap_tiny"
+                        android:textColor="@color/on_brand_dim"
+                        android:textSize="@dimen/text_caption" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- ── 四行入口 ───────────────────────────────────────────── -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_card"
+                android:background="@drawable/bg_card"
+                android:orientation="vertical">
+
+                <!-- 我的设备 -->
+                <LinearLayout
+                    android:id="@+id/meRowDevice"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center_vertical"
+                    android:minHeight="@dimen/touch_min"
+                    android:orientation="horizontal"
+                    android:padding="@dimen/space_card">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="@string/me_device_title"
+                            android:textColor="@color/ink"
+                            android:textSize="@dimen/text_body"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/meDeviceSummary"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/space_gap_tiny"
+                            android:textColor="@color/ink_soft"
+                            android:textSize="@dimen/text_caption" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/meDeviceState"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="@dimen/space_gap"
+                        android:background="@drawable/bg_chip"
+                        android:paddingStart="@dimen/space_gap_small"
+                        android:paddingTop="@dimen/space_gap_tiny"
+                        android:paddingEnd="@dimen/space_gap_small"
+                        android:paddingBottom="@dimen/space_gap_tiny"
+                        android:textSize="@dimen/text_caption" />
+
+                    <ImageView
+                        android:layout_width="@dimen/icon_size_nav"
+                        android:layout_height="@dimen/icon_size_nav"
+                        android:layout_marginStart="@dimen/space_gap_small"
+                        android:contentDescription="@null"
+                        android:src="@drawable/ic_chevron"
+                        android:tint="@color/ink_faint" />
+                </LinearLayout>
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/stroke_hairline"
+                    android:layout_marginStart="@dimen/space_card"
+                    android:layout_marginEnd="@dimen/space_card"
+                    android:background="@color/line_soft" />
+
+                <!-- 术语库管理 -->
+                <LinearLayout
+                    android:id="@+id/meRowTerms"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center_vertical"
+                    android:minHeight="@dimen/touch_min"
+                    android:orientation="horizontal"
+                    android:padding="@dimen/space_card">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="@string/me_terms_title"
+                            android:textColor="@color/ink"
+                            android:textSize="@dimen/text_body"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/space_gap_tiny"
+                            android:text="@string/me_terms_desc"
+                            android:textColor="@color/ink_soft"
+                            android:textSize="@dimen/text_caption" />
+                    </LinearLayout>
+
+                    <ImageView
+                        android:layout_width="@dimen/icon_size_nav"
+                        android:layout_height="@dimen/icon_size_nav"
+                        android:layout_marginStart="@dimen/space_gap_small"
+                        android:contentDescription="@null"
+                        android:src="@drawable/ic_chevron"
+                        android:tint="@color/ink_faint" />
+                </LinearLayout>
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/stroke_hairline"
+                    android:layout_marginStart="@dimen/space_card"
+                    android:layout_marginEnd="@dimen/space_card"
+                    android:background="@color/line_soft" />
+
+                <!-- 翻译服务及有效状态 -->
+                <LinearLayout
+                    android:id="@+id/meRowService"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center_vertical"
+                    android:minHeight="@dimen/touch_min"
+                    android:orientation="horizontal"
+                    android:padding="@dimen/space_card">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="@string/me_service_title"
+                            android:textColor="@color/ink"
+                            android:textSize="@dimen/text_body"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/meServiceSummary"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/space_gap_tiny"
+                            android:textColor="@color/ink_soft"
+                            android:textSize="@dimen/text_caption" />
+                    </LinearLayout>
+
+                    <ImageView
+                        android:layout_width="@dimen/icon_size_nav"
+                        android:layout_height="@dimen/icon_size_nav"
+                        android:layout_marginStart="@dimen/space_gap_small"
+                        android:contentDescription="@null"
+                        android:src="@drawable/ic_chevron"
+                        android:tint="@color/ink_faint" />
+                </LinearLayout>
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/stroke_hairline"
+                    android:layout_marginStart="@dimen/space_card"
+                    android:layout_marginEnd="@dimen/space_card"
+                    android:background="@color/line_soft" />
+
+                <!-- 帮助与反馈 -->
+                <LinearLayout
+                    android:id="@+id/meRowHelp"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center_vertical"
+                    android:minHeight="@dimen/touch_min"
+                    android:orientation="horizontal"
+                    android:padding="@dimen/space_card">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="@string/me_help_title"
+                            android:textColor="@color/ink"
+                            android:textSize="@dimen/text_body"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/space_gap_tiny"
+                            android:text="@string/me_help_desc"
+                            android:textColor="@color/ink_soft"
+                            android:textSize="@dimen/text_caption" />
+                    </LinearLayout>
+
+                    <ImageView
+                        android:layout_width="@dimen/icon_size_nav"
+                        android:layout_height="@dimen/icon_size_nav"
+                        android:layout_marginStart="@dimen/space_gap_small"
+                        android:contentDescription="@null"
+                        android:src="@drawable/ic_chevron"
+                        android:tint="@color/ink_faint" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- ── 退出登录 ──────────────────────────────────────────── -->
+            <Button
+                android:id="@+id/meLogout"
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/height_button"
+                android:layout_marginTop="@dimen/space_section"
+                android:background="@drawable/tap_btn_secondary"
+                android:text="@string/home_logout"
+                android:textAllCaps="false"
+                android:textColor="@color/err"
+                android:textSize="@dimen/text_button" />
+        </LinearLayout>
+    </ScrollView>
+
+    <include layout="@layout/inc_bottom_nav" />
+</LinearLayout>

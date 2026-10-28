@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 展开/收起的小箭头（用于「连接设置」折叠区） -->
+<!-- 行尾的箭头（4.62）：24dp 视口、单色，颜色由 android:tint 决定 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="18dp"
-    android:height="18dp"
+    android:width="@dimen/icon_size_nav"
+    android:height="@dimen/icon_size_nav"
     android:viewportWidth="24"
     android:viewportHeight="24">
     <path
-        android:fillColor="#FF80868B"
-        android:pathData="M7.41,8.59L12,13.17l4.59,-4.58L18,10l-6,6 -6,-6 1.41,-1.41z" />
+        android:fillColor="@color/ink"
+        android:pathData="M9.3,6.7L14.6,12l-5.3,5.3 1.4,1.4L17.4,12 10.7,5.3z" />
 </vector>

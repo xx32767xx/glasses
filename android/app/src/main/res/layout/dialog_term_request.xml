@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  dialog_term_request.xml —— 术语库"申请修改"的表单（4.62）。
+
+  三种申请共用这一张表单，靠 Java 里控制可见性：
+    新增 / 修改 → 中文 + 葡语译文 + 理由
+    删除       → 只填中文（要删的那条）+ 理由
+  ⚠️ 不写色值与裸 dp/sp。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="@dimen/space_card">
+
+    <TextView
+        android:id="@+id/reqLibLine"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="@color/ink_soft"
+        android:textSize="@dimen/text_caption" />
+
+    <EditText
+        android:id="@+id/reqZh"
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/height_field"
+        android:layout_marginTop="@dimen/space_gap"
+        android:background="@drawable/bg_input"
+        android:hint="@string/terms_req_zh"
+        android:inputType="text"
+        android:paddingStart="@dimen/space_gap"
+        android:paddingEnd="@dimen/space_gap"
+        android:singleLine="true"
+        android:textColor="@color/ink"
+        android:textColorHint="@color/ink_faint"
+        android:textSize="@dimen/text_body" />
+
+    <EditText
+        android:id="@+id/reqPt"
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/height_field"
+        android:layout_marginTop="@dimen/space_gap_small"
+        android:background="@drawable/bg_input"
+        android:hint="@string/terms_req_pt"
+        android:inputType="text"
+        android:paddingStart="@dimen/space_gap"
+        android:paddingEnd="@dimen/space_gap"
+        android:singleLine="true"
+        android:textColor="@color/ink"
+        android:textColorHint="@color/ink_faint"
+        android:textSize="@dimen/text_body" />
+
+    <EditText
+        android:id="@+id/reqReason"
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/height_field"
+        android:layout_marginTop="@dimen/space_gap_small"
+        android:background="@drawable/bg_input"
+        android:hint="@string/terms_req_reason"
+        android:inputType="text"
+        android:maxLength="300"
+        android:paddingStart="@dimen/space_gap"
+        android:paddingEnd="@dimen/space_gap"
+        android:singleLine="true"
+        android:textColor="@color/ink"
+        android:textColorHint="@color/ink_faint"
+        android:textSize="@dimen/text_body" />
+</LinearLayout>

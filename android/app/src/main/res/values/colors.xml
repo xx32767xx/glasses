@@ -31,6 +31,8 @@
     <color name="brand_soft">#E6F4F7</color>
     <color name="on_brand">#FFFFFF</color>
     <!-- 主按钮渐变的两端（drawable/bg_btn_primary.xml 用，135° = Android 的 315） -->
+    <!-- 渐变卡上的次要文字（4.62）：白色压暗，别用 alpha 拼一个色值出来容易糊 -->
+    <color name="on_brand_dim">#D8EEF3</color>
     <color name="brand_grad_start">#0E7490</color>
     <color name="brand_grad_end">#0891B2</color>
 

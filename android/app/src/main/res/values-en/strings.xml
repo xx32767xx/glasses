@@ -317,4 +317,73 @@ If you do not want to be recorded, do not tap Start. To delete records on the ph
     <string name="nav_me">Me</string>
     <string name="nav_history_soon">History (coming next)</string>
     <string name="home_lang_entry_desc">Switch the interface language</string>
+    <string name="me_org_role_admin">Administrator · organization account</string>
+    <string name="me_org_role_user">Member · personal account</string>
+    <string name="me_org_role_dev">Developer account</string>
+    <string name="me_version">Service version %1$s (%2$d)</string>
+    <string name="me_device_title">My device</string>
+    <string name="me_device_summary">%1$s · Android %2$s · phone microphone</string>
+    <string name="me_device_unknown">Unknown device</string>
+    <string name="me_device_detail_title">Device details</string>
+    <string name="me_device_detail">Device: %1$s
+System: Android %2$s
+Microphone: phone microphone (in use)
+Cast / speaker: not connected
+Server: %3$s
+State: %4$s</string>
+    <string name="me_terms_title">Term bases</string>
+    <string name="me_terms_desc">Browse term bases and request additions, edits or deletions (approved by an admin)</string>
+    <string name="terms_lib_hint">You cannot edit a term base directly: submit a request and an admin approves it before it is applied.</string>
+    <string name="terms_lib_loading">Loading term bases…</string>
+    <string name="terms_lib_empty">The server has no term base yet (one is created when interpreting starts)</string>
+    <string name="terms_lib_row">%1$s entries</string>
+    <string name="terms_apply">Request a change</string>
+    <string name="terms_my_requests">My requests</string>
+    <string name="terms_requests_empty">No requests yet</string>
+    <string name="terms_req_pick">What do you want to do with this term base?</string>
+    <string name="terms_req_add">Add an entry</string>
+    <string name="terms_req_update">Edit an entry</string>
+    <string name="terms_req_delete">Delete an entry</string>
+    <string name="terms_req_form_title">%1$s · %2$s</string>
+    <string name="terms_req_zh">Chinese term</string>
+    <string name="terms_req_pt">Portuguese translation</string>
+    <string name="terms_req_reason">Reason (for the reviewer)</string>
+    <string name="terms_req_submit">Submit</string>
+    <string name="terms_req_sent">Request submitted, waiting for approval</string>
+    <string name="terms_req_need_zh">Fill in the Chinese term first</string>
+    <string name="terms_req_need_pt">Adds and edits need the Portuguese translation too</string>
+    <string name="terms_req_failed">Could not submit: %1$s</string>
+    <string name="terms_status_pending">Pending</string>
+    <string name="terms_status_approved">Approved</string>
+    <string name="terms_status_rejected">Rejected</string>
+    <string name="terms_status_withdrawn">Withdrawn</string>
+    <string name="terms_withdraw">Withdraw</string>
+    <string name="terms_withdrawn_ok">Request withdrawn</string>
+    <string name="terms_withdraw_failed">Could not withdraw: %1$s</string>
+    <string name="terms_kind_add">Add</string>
+    <string name="terms_kind_update">Edit</string>
+    <string name="terms_kind_delete">Delete</string>
+    <string name="terms_load_failed">Could not load term bases: %1$s</string>
+    <string name="terms_need_login">Sign in to manage term bases</string>
+    <string name="me_service_title">Translation service and validity</string>
+    <string name="me_service_summary">%1$s · proofreading %2$s · account %3$s</string>
+    <string name="me_service_no_host">No server configured</string>
+    <string name="me_service_proof_on">on</string>
+    <string name="me_service_proof_off">off</string>
+    <string name="me_service_proof_unknown">unknown</string>
+    <string name="me_service_expires">Valid until %1$s</string>
+    <string name="me_service_permanent">No expiry</string>
+    <string name="me_service_unknown">Expiry unknown (the server did not say)</string>
+    <string name="me_service_disabled">Disabled</string>
+    <string name="me_help_title">Help and feedback</string>
+    <string name="me_help_desc">FAQ, privacy policy and how to reach us</string>
+    <string name="me_help_body">· No subtitles: check the online state on the home screen, then whether the other side is speaking.
+· Cannot speak: check the microphone and the recording permission under My device.
+· For anything that needs the desktop side, send the administrator the version and server address below.
+
+Version %1$s
+Server %2$s</string>
+    <string name="me_help_privacy">Privacy policy</string>
+    <string name="me_logout_confirm">After signing out this device must sign in again to hold meetings.</string>
+    <string name="me_logged_out">Signed out</string>
 </resources>

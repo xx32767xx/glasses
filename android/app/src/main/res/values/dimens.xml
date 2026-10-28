@@ -60,4 +60,7 @@
     <dimen name="icon_size_nav">24dp</dimen>
     <dimen name="card_task_min_height">112dp</dimen>
     <dimen name="nav_height">68dp</dimen>
+
+    <!-- 「我的」页个人卡片（4.62） -->
+    <dimen name="avatar_size">48dp</dimen>
 </resources>

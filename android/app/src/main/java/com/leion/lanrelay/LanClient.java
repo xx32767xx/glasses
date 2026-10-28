@@ -435,6 +435,12 @@ public class LanClient {
         return unwrap(requestWithCode("/org/requests", "POST", request, 8000));
     }
 
+    /** 撤回自己还没被审批的申请（只有 pending 能撤，审批过的不行）。 */
+    public JSONObject orgWithdrawRequest(String requestId) throws IOException, org.json.JSONException {
+        return unwrap(requestWithCode("/org/requests/" + requestId + "/withdraw", "POST",
+                new JSONObject(), 8000));
+    }
+
     /** 邮箱验证码登录：先取码（码打印在电脑端 relay 控制台），再登录拿 token。 */
     public JSONObject authRequestCode(String email) throws IOException, org.json.JSONException {
         JSONObject body = new JSONObject();

@@ -173,7 +173,7 @@ public class HomeActivity extends android.app.Activity {
         findViewById(R.id.homeNavHome).setOnClickListener(v -> { });
         // 历史：下一步才做（会议记录），现在不接任何动作
         findViewById(R.id.homeNavMe).setOnClickListener(v ->
-                startActivity(new Intent(this, SettingsActivity.class)));
+                startActivity(new Intent(this, MeActivity.class)));
         findViewById(R.id.homeLegacy).setOnClickListener(v ->
                 startActivity(new Intent(this, MainActivity.class)));
         findViewById(R.id.homeLogout).setOnClickListener(v -> logout());
@@ -312,7 +312,7 @@ public class HomeActivity extends android.app.Activity {
         homeBox.setVisibility(View.VISIBLE);
         // 首页有自己的问候与语言入口，登录页那套抬头要收起来，否则一屏两个"标题"（4.60）
         if (loginHeader != null) loginHeader.setVisibility(View.GONE);
-        if (bottomNav != null) bottomNav.setVisibility(View.VISIBLE);
+        if (bottomNav != null) NavTabs.apply(this, NavTabs.HOME);
         greetingView.setText(greetingFor(user));
         refreshHomeSummary();
         setStatus("");

@@ -317,4 +317,73 @@ Se não quiser ser gravado, não toque em Iniciar. Para apagar os registros do c
     <string name="nav_me">Perfil</string>
     <string name="nav_history_soon">Histórico (em breve)</string>
     <string name="home_lang_entry_desc">Mudar o idioma da interface</string>
+    <string name="me_org_role_admin">Administrador · conta da organização</string>
+    <string name="me_org_role_user">Membro · conta pessoal</string>
+    <string name="me_org_role_dev">Conta de desenvolvimento</string>
+    <string name="me_version">Versão do serviço %1$s (%2$d)</string>
+    <string name="me_device_title">Meu aparelho</string>
+    <string name="me_device_summary">%1$s · Android %2$s · microfone do celular</string>
+    <string name="me_device_unknown">Aparelho desconhecido</string>
+    <string name="me_device_detail_title">Detalhes do aparelho</string>
+    <string name="me_device_detail">Aparelho: %1$s
+Sistema: Android %2$s
+Microfone: microfone do celular (em uso)
+Transmissão / caixa: não conectado
+Servidor: %3$s
+Estado: %4$s</string>
+    <string name="me_terms_title">Glossários</string>
+    <string name="me_terms_desc">Veja os glossários e peça inclusões, edições ou remoções (aprovadas por um administrador)</string>
+    <string name="terms_lib_hint">Você não edita o glossário diretamente: envie um pedido e um administrador aprova antes de aplicar.</string>
+    <string name="terms_lib_loading">Carregando glossários…</string>
+    <string name="terms_lib_empty">O servidor ainda não tem glossário (um é criado quando a interpretação começa)</string>
+    <string name="terms_lib_row">%1$s entradas</string>
+    <string name="terms_apply">Pedir alteração</string>
+    <string name="terms_my_requests">Meus pedidos</string>
+    <string name="terms_requests_empty">Nenhum pedido ainda</string>
+    <string name="terms_req_pick">O que você quer fazer com este glossário?</string>
+    <string name="terms_req_add">Incluir entrada</string>
+    <string name="terms_req_update">Editar entrada</string>
+    <string name="terms_req_delete">Remover entrada</string>
+    <string name="terms_req_form_title">%1$s · %2$s</string>
+    <string name="terms_req_zh">Termo em chinês</string>
+    <string name="terms_req_pt">Tradução em português</string>
+    <string name="terms_req_reason">Motivo (para quem aprova)</string>
+    <string name="terms_req_submit">Enviar</string>
+    <string name="terms_req_sent">Pedido enviado, aguardando aprovação</string>
+    <string name="terms_req_need_zh">Preencha o termo em chinês</string>
+    <string name="terms_req_need_pt">Inclusões e edições também precisam da tradução em português</string>
+    <string name="terms_req_failed">Falha ao enviar: %1$s</string>
+    <string name="terms_status_pending">Pendente</string>
+    <string name="terms_status_approved">Aprovado</string>
+    <string name="terms_status_rejected">Rejeitado</string>
+    <string name="terms_status_withdrawn">Retirado</string>
+    <string name="terms_withdraw">Retirar</string>
+    <string name="terms_withdrawn_ok">Pedido retirado</string>
+    <string name="terms_withdraw_failed">Falha ao retirar: %1$s</string>
+    <string name="terms_kind_add">Incluir</string>
+    <string name="terms_kind_update">Editar</string>
+    <string name="terms_kind_delete">Remover</string>
+    <string name="terms_load_failed">Não foi possível carregar os glossários: %1$s</string>
+    <string name="terms_need_login">Entre na conta para gerenciar glossários</string>
+    <string name="me_service_title">Serviço de tradução e validade</string>
+    <string name="me_service_summary">%1$s · revisão %2$s · conta %3$s</string>
+    <string name="me_service_no_host">Servidor não configurado</string>
+    <string name="me_service_proof_on">ligada</string>
+    <string name="me_service_proof_off">desligada</string>
+    <string name="me_service_proof_unknown">desconhecida</string>
+    <string name="me_service_expires">Válida até %1$s</string>
+    <string name="me_service_permanent">Sem prazo</string>
+    <string name="me_service_unknown">Validade desconhecida (o servidor não informou)</string>
+    <string name="me_service_disabled">Desativada</string>
+    <string name="me_help_title">Ajuda e feedback</string>
+    <string name="me_help_desc">Dúvidas frequentes, privacidade e contato</string>
+    <string name="me_help_body">· Sem legendas: veja o estado online na tela inicial e se a outra pessoa está falando.
+· Não consigo falar: confira o microfone e a permissão de gravação em Meu aparelho.
+· Para casos que envolvem o computador, envie ao administrador a versão e o servidor abaixo.
+
+Versão %1$s
+Servidor %2$s</string>
+    <string name="me_help_privacy">Privacidade</string>
+    <string name="me_logout_confirm">Depois de sair, este aparelho precisa entrar de novo para ter reuniões.</string>
+    <string name="me_logged_out">Você saiu da conta</string>
 </resources>

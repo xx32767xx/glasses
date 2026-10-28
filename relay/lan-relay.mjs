@@ -51,7 +51,7 @@ import {
   TERMS_LIMITS, getTable, loadTerms, mergePending, normalizeUser, putTable, saveActiveUser, saveTerms, validateTerms,
 } from '../lib/terms.mjs'
 import {
-  ACCOUNT_LIMITS, hasAccounts, issueCode, loadAccounts, login, registerWithEmail, revokeToken,
+  ACCOUNT_LIMITS, hasAccounts, issueCode, loadAccounts, login, recordOf, registerWithEmail, revokeToken,
   roleOf, saveAccounts, userForToken, verifyCode,
 } from '../lib/accounts.mjs'
 
@@ -1482,7 +1482,14 @@ export async function startRelay(rawOptions = {}) {
           send(response, 401, { ok: false, error: 'auth-required', hint: 'token 无效或已注销' })
           return
         }
-        send(response, 200, { ok: true, user, role: roleOf(doc, user), accounts: hasAccounts(doc) })
+        // 4.62："我的"页面要显示「翻译服务及有效状态」，所以 whoami 顺带把账号的
+        // 状态与到期时间给出来（永久账号没有 expiresAt，字段就省略，不是 null）。
+        const record = recordOf(doc, user) ?? {}
+        send(response, 200, {
+          ok: true, user, role: roleOf(doc, user), accounts: hasAccounts(doc),
+          status: typeof record.status === 'string' ? record.status : 'active',
+          expiresAt: typeof record.expiresAt === 'string' ? record.expiresAt : '',
+        })
         return
       }
 
