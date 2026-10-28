@@ -968,9 +968,15 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('没有字幕时有空态提示', /@\+id\/roomEmpty/.test(room))
 
     // M1 的关键不变量：partial 帧**原位更新**，不许新起一条
-    check('partial 原位更新（复用 lastSegment）',
-      /if \(partial && lastSegmentView != null\)[\s\S]{0,400}lastSegmentTarget\.setText/.test(activity),
-      '新起一条会让同一句话出现两次')
+    // 一句话会来三帧（增量 / 定稿 / 校对），必须按**原文**判同一段，三帧合成一张卡
+    check('同一段按原文去重', /boolean sameSegment = lastSegmentView != null && \(/.test(activity)
+      && /key\.equals\(lastSegmentKey\)/.test(activity),
+      '只按 partial 判会让定稿帧新起一条 → 同一句叠三张、还留一张"识别中"')
+    check('去重命中就原位更新文字与状态',
+      /if \(sameSegment\)\s*\{[\s\S]{0,400}lastSegmentTarget\.setText/.test(activity))
+    check('增量→定稿 用"上一帧是增量"兜住（原文是流式不完整的，不能只按原文判）',
+      /lastWasPartial\s*\/\//.test(activity) || /and ①[\s\S]{0,400}lastWasPartial/.test(activity) || /\n\s*lastWasPartial\s*\n/.test(activity),
+      '只按原文判会把「增量 + 定稿」拆成两条')
     check('新句追加后滚到底部', /scrollToBottom\(\)/.test(activity) && /fullScroll\(View\.FOCUS_DOWN\)/.test(activity))
     check('自己的发言换底色（浅主色+主色边框）', /bg_subtitle_self/.test(activity) && /bg_subtitle_self/.test(room) === false)
     check('每条字幕有头像/姓名/源语言/状态', /bg_avatar/.test(activity) && /识别中|已完成/.test(activity))
@@ -1005,6 +1011,34 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('有抽屉覆盖层', /@\+id\/roomDrawer\b/.test(room))
     check('抽屉列成员', /@\+id\/roomMembersList/.test(room) && /renderMembers/.test(activity))
     check('抽屉列设备状态', /@\+id\/roomDrawerDevices/.test(room) && /未接入/.test(activity))
+  })
+
+  await it('房间页四个修复：顶部信息 / 成员形状 / 不显示调试文本（4.53）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const activity = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+
+    // ① 房间详情必须在 client 建好之后才拉，否则线程里 NPE 被静默吞掉
+    const clientAt = activity.indexOf('client = new LanClient(')
+    const headerCallAt = activity.indexOf('loadRoomHeader();')
+    check('loadRoomHeader 在 client 创建之后调用', headerCallAt > clientAt,
+      `client@${clientAt} header@${headerCallAt}`)
+    check('顶部真的会写房间号与主题',
+      /codeView\.setText\("#" \+ code\)/.test(activity) && /titleView\.setText\(name\)/.test(activity))
+    check('角色按 host 判定（发起者/参与者）',
+      /boolean iAmHost = myName != null && myName\.equals\(host\)/.test(activity)
+      && /roleTag\.setText\(iAmHost \? "发起者" : "参与者"\)/.test(activity))
+
+    // ② 成员是对象数组 {username, lang, joinedAt}，不能按字符串取
+    check('成员按 username 字段读', /optString\("username", ""\)/.test(activity),
+      '按 optString(i) 取会拿到空串，抽屉里一个成员都没有')
+
+    // ③ 调试性文本不许进状态行
+    const socketState = activity.slice(activity.indexOf('public void onState(String message)'))
+    check('推送状态只写 logcat，不写状态行',
+      /Log\.i\("LeionRoom", "floor-socket: "/.test(activity)
+      && !/onState\(String message\)\s*\{[\s\S]{0,120}statusLine\.setText/.test(activity),
+      '「发言权推送已连上」这类字样不该给用户看')
+    check('连上后状态行清空（不再显示"已连接 · 40×3"）', /statusLine\.setText\(""\)/.test(activity))
   })
 
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {

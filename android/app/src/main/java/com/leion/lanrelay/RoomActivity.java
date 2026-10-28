@@ -71,7 +71,18 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     private TextView sourceToggle;
     private boolean showSource = true;
 
-    /** 当前这一条字幕（用于 partial 帧**原位更新**，而不是新起一条）。 */
+    /**
+     * 最后一条字幕的身份：**原文**（source）。
+     *
+     * <p>为什么用原文而不是"是不是增量帧"：一句话在产线上会来**三帧** ——
+     * 增量帧（partial）、定稿帧、校对修订帧。它们共用同一句原文，只有原文相同才算同一段。
+     * 之前只按 `partial` 判断，于是定稿帧被当成新的一句 → 同一句话叠成三张卡，
+     * 其中一张还停在"识别中"，并且只显示半句译文（4.53 修）。
+     */
+    private String lastSegmentKey = null;
+    private boolean lastWasPartial = false;
+
+    /** 当前这一条字幕（用于同一段的**原位更新**，而不是新起一条）。 */
     private View lastSegmentView;
     private TextView lastSegmentSource;
     private TextView lastSegmentTarget;
@@ -150,7 +161,6 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         drawerDevices.setText("扩展屏（眼镜 / 投屏器）：未接入\n外放（耳机 / 音箱）：未接入\n麦克风：手机麦克风（在用）");
         startedAtMs = System.currentTimeMillis();
         startTimer();
-        loadRoomHeader();
         updateMicButton();
         toggleSource();          // 先把"原文 开/关"的外观刷成与 showSource 一致
         showSource = true;       // toggleSource 会翻转，这里翻回来
@@ -158,7 +168,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         sourceToggle.setBackgroundResource(R.drawable.bg_pill_active);
         sourceToggle.setTextColor(getColor(R.color.on_brand));
 
-        statusLine.setText((roomName == null ? "房间" : roomName) + " · 连接中…");
+        statusLine.setText("");
 
         SharedPreferences prefs = getSharedPreferences("leion", MODE_PRIVATE);
         String host = prefs.getString("host", "");
@@ -171,6 +181,11 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         if (myName != null && !myName.isEmpty()) client.setUser(myName);
         client.start();
         startFloorSocket(host, secret, token);
+
+        // ⚠️ 4.53 修：**必须**在 client 建好之后才拉房间详情。
+        // 原来这行写在 client = new LanClient(...) 之前，于是线程里 NPE、被 catch 静默吞掉，
+        // 表现就是顶部一直是「#------」占位、角色永远显示「参与者」。
+        loadRoomHeader();
 
         micUploadButton = findViewById(R.id.roomUpload);
         // 隐藏的「开始同传」：原型里没有它，开麦即开始上传；这里只留一个落点备用
@@ -269,7 +284,10 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
 
             @Override
             public void onState(String message) {
-                ui.post(() -> statusLine.setText(message));
+                // 4.53：这些是**调试**信息（"发言权推送已连上/断开"），不该占用户的状态行。
+                // 真正需要用户知道的事（连接失败、被顶替、会议结束）走 onError / showKicked /
+                // leaveBecauseClosed 三条通道。这里只留一行 logcat，方便排查。
+                android.util.Log.i("LeionRoom", "floor-socket: " + message);
             }
 
             @Override
@@ -731,7 +749,10 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         if (membersList == null) return;
         membersList.removeAllViews();
         for (int i = 0; i < members.length(); i++) {
-            String name = members.optString(i, "");
+            // 服务端 listMembers 返回的是对象：{username, lang, joinedAt}。
+            // 之前按字符串取（optString(i)）会拿到空串 —— 抽屉里一个成员都不显示。
+            JSONObject one = members.optJSONObject(i);
+            String name = one == null ? members.optString(i, "") : one.optString("username", "");
             if (name.isEmpty()) continue;
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
@@ -869,11 +890,11 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // 4.46：服务端版本老的时候要**说出来** —— 老服务端不会推"会议结束"，
         // 用户会以为是"点了没反应"，而不是"服务器没更新"。
         ui.post(() -> {
-            String base = "已连接 · " + cols + "×" + lineBudget;
+            // 连上了就把状态行清空（"已连接 · 40×3"是开发期信息，用户不需要看）。
+            statusLine.setText("");
+            // 但"服务端版本较旧"是**会影响功能**的，必须说，而且要说清后果。
             if (!client.hasFeature("room-closed-push")) {
-                statusLine.setText(base + " · ⚠️ 服务端版本较旧：会议结束时不会主动通知");
-            } else {
-                statusLine.setText(base);
+                statusLine.setText("服务端版本较旧：会议结束时不会主动通知");
             }
         });
     }
@@ -916,11 +937,30 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         if (emptyView.getVisibility() == View.VISIBLE) emptyView.setVisibility(View.GONE);
 
         boolean mine = myName != null && !myName.isEmpty() && holding;
-        if (partial && lastSegmentView != null) {
-            // 原位更新：只改文字与状态，不动卡片身份
+
+        // ── 同一段判定（4.53）────────────────────────────────────────
+        // 一句话会来三帧：增量 / 定稿 / 校对修订。它们的**原文相同**，
+        // 所以"原文相同"就是同一段；原文缺失时退化成"上一条还是增量态"也算同一段。
+        String key = source.isEmpty() ? null : source;
+        boolean sameSegment = lastSegmentView != null && (
+                // ① 上一帧还是增量态 → 这一帧一定是它的定稿/校对修订。
+                //    这条最硬：产线是**逐句串行**的，一句话的增量之后不可能突然变成另一句。
+                //    为什么不能只靠原文：增量帧的原文是**流式不完整**的，定稿帧才是完整原文，
+                //    两者不相等 —— 只按原文判，恰好会把"增量 + 定稿"拆成两条（用户报的现象）。
+                lastWasPartial
+                        // ② 原文一致 → 同一句（校对修订帧走这条，它带的原文与定稿相同）
+                        || (key != null && key.equals(lastSegmentKey))
+                        // ③ 增量帧没带原文、且上一张就是它
+                        || (key == null && partial));
+        if (sameSegment) {
             lastSegmentTarget.setText(target);
             if (!source.isEmpty()) lastSegmentSource.setText(source);
-            lastSegmentState.setText("识别中…");
+            boolean hasSource = lastSegmentSource.getText() != null && lastSegmentSource.getText().length() > 0;
+            lastSegmentSource.setVisibility(showSource && hasSource ? View.VISIBLE : View.GONE);
+            lastSegmentState.setText(partial ? "识别中…" : "已完成");
+            lastSegmentState.setTextColor(getColor(partial ? R.color.accent : R.color.ok));
+            if (key != null) lastSegmentKey = key;
+            lastWasPartial = partial;
             scrollToBottom();
             return;
         }
@@ -1008,6 +1048,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         lastSegmentSource = sourceLine;
         lastSegmentTarget = targetLine;
         lastSegmentState = state;
+        lastSegmentKey = key != null ? key : target;
+        lastWasPartial = partial;
 
         // 超过上限就丢最老的那张（连同它的引用）
         while (subtitleList.getChildCount() > MAX_SEGMENTS + 1) {   // +1 是 roomEmpty

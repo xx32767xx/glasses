@@ -82,8 +82,10 @@ android {
     //       顺手加一道 findViewById 类型一致性门禁（带反向自检）。见 docs/21 §4.51。
     // 4.52：房间页按原型重做 —— 顶部两行信息 / 中央字幕流（M1）/ 右侧三态悬浮条 /
     //       底部开麦胶囊（M3 原文开关 + 红色脉冲）；开麦与上传合成一个按钮。见 docs/21 §4.52。
-        versionCode = 81
-        versionName = "4.52"
+    // 4.53：修字幕流重复（同一句三帧按「上一帧是增量」合并）；修顶部邀请码/主题不显示
+    //       （房间详情在 client 之前拉、异常被吞）；成员按 username 读；调试文本不进状态行。见 docs/21 §4.53。
+        versionCode = 82
+        versionName = "4.53"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），
