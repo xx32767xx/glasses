@@ -12,181 +12,197 @@
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#101418"
+    android:background="@color/page"
     android:fillViewport="true">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="20dp">
+        android:padding="@dimen/space_page">
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="设置"
-            android:textColor="#FFFFFF"
-            android:textSize="24sp"
+            android:textColor="@color/ink"
+            android:textSize="@dimen/text_page_title"
             android:textStyle="bold" />
 
         <TextView
             android:id="@+id/setAppStatus"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:padding="8dp"
-            android:background="#1B2228"
-            android:textColor="#B0BEC5"
-            android:textSize="12sp"
-            android:minHeight="36dp"
+            android:layout_marginTop="@dimen/space_gap_small"
+            android:padding="@dimen/space_gap_small"
+            android:background="@drawable/bg_card"
+            android:textColor="@color/ink_soft"
+            android:textSize="@dimen/text_secondary"
+            android:minHeight="@dimen/touch_min"
             android:text="" />
 
         <!-- ── 连接 ───────────────────────────────────────────────────── -->
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
+            android:layout_marginTop="@dimen/space_section"
             android:text="服务器"
-            android:textColor="#E0B341"
-            android:textSize="14sp" />
+            android:textColor="@color/ink"
+            android:textSize="@dimen/text_title"
+            android:textStyle="bold" />
 
         <EditText
             android:id="@+id/setAppServer"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:hint="http://117.50.180.93:8788"
+            android:background="@drawable/bg_input"
             android:inputType="textUri"
-            android:textColor="#FFFFFF"
-            android:textColorHint="#64748B" />
+            android:paddingStart="@dimen/space_gap"
+            android:paddingEnd="@dimen/space_gap"
+            android:singleLine="true"
+            android:textColor="@color/ink"
+            android:textColorHint="@color/ink_faint"
+            android:textSize="@dimen/text_body" />
 
         <EditText
             android:id="@+id/setAppSecret"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:hint="共享密钥（start-all 横幅里那串）"
+            android:background="@drawable/bg_input"
             android:inputType="text"
-            android:textColor="#FFFFFF"
-            android:textColorHint="#64748B" />
+            android:paddingStart="@dimen/space_gap"
+            android:paddingEnd="@dimen/space_gap"
+            android:singleLine="true"
+            android:textColor="@color/ink"
+            android:textColorHint="@color/ink_faint"
+            android:textSize="@dimen/text_body" />
 
         <Button
             android:id="@+id/setAppSave"
             android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="8dp"
+            android:layout_height="@dimen/height_button"
+            android:layout_marginTop="@dimen/space_gap_small"
+            android:background="@drawable/tap_btn_primary"
             android:text="保存连接设置"
-            android:textColor="#FFFFFF"
-            android:background="#1565C0" />
+            android:textAllCaps="false"
+            android:textColor="@color/on_brand"
+            android:textSize="@dimen/text_button" />
 
         <!-- ── 我说什么语言 ────────────────────────────────────────────── -->
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
+            android:layout_marginTop="@dimen/space_section"
             android:text="我在会里说哪种语言"
-            android:textColor="#E0B341"
-            android:textSize="14sp" />
+            android:textColor="@color/ink"
+            android:textSize="@dimen/text_title"
+            android:textStyle="bold" />
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="决定识别与翻译方向：我说中文，对方的话译成葡语；反之亦然。"
-            android:textColor="#94A3B8"
-            android:textSize="12sp" />
+            android:textColor="@color/ink_soft"
+            android:textSize="@dimen/text_secondary" />
 
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
+            android:layout_marginTop="@dimen/space_gap_tiny"
             android:orientation="horizontal">
 
             <Button
                 android:id="@+id/setAppLangZh"
                 android:layout_width="0dp"
-                android:layout_height="48dp"
+                android:layout_height="@dimen/height_field"
                 android:layout_weight="1"
                 android:text="我说中文"
-                android:textColor="#FFFFFF"
-                android:background="#263238" />
+                android:textColor="@color/ink"
+                android:background="@drawable/tap_btn_secondary" />
 
             <Button
                 android:id="@+id/setAppLangPt"
                 android:layout_width="0dp"
-                android:layout_height="48dp"
-                android:layout_marginLeft="8dp"
+                android:layout_height="@dimen/height_field"
+                android:layout_marginStart="@dimen/space_gap_small"
                 android:layout_weight="1"
                 android:text="我说葡语"
-                android:textColor="#FFFFFF"
-                android:background="#263238" />
+                android:textColor="@color/ink"
+                android:background="@drawable/tap_btn_secondary" />
         </LinearLayout>
 
         <!-- ── 校对 ──────────────────────────────────────────────────── -->
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
+            android:layout_marginTop="@dimen/space_section"
             android:text="译文校对（第二遍）"
-            android:textColor="#E0B341"
-            android:textSize="14sp" />
+            android:textColor="@color/ink"
+            android:textSize="@dimen/text_title"
+            android:textStyle="bold" />
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="以电脑端为准：这个开关真正生效的地方在服务器，手机只是遥控器。"
-            android:textColor="#94A3B8"
-            android:textSize="12sp" />
+            android:textColor="@color/ink_soft"
+            android:textSize="@dimen/text_secondary" />
 
         <Button
             android:id="@+id/setAppProofread"
             android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="6dp"
+            android:layout_height="@dimen/height_field"
+            android:layout_marginTop="@dimen/space_gap_tiny"
             android:text="读取中…"
-            android:textColor="#FFFFFF"
-            android:background="#263238" />
+            android:textColor="@color/ink"
+            android:background="@drawable/tap_btn_secondary" />
 
         <!-- ── 隐私 ──────────────────────────────────────────────────── -->
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
+            android:layout_marginTop="@dimen/space_section"
             android:text="隐私"
-            android:textColor="#E0B341"
-            android:textSize="14sp" />
+            android:textColor="@color/ink"
+            android:textSize="@dimen/text_title"
+            android:textStyle="bold" />
 
         <Button
             android:id="@+id/setAppPrivacy"
             android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="6dp"
+            android:layout_height="@dimen/height_field"
+            android:layout_marginTop="@dimen/space_gap_tiny"
             android:text="隐私政策（音频与字幕去哪了）"
-            android:textColor="#FFFFFF"
-            android:background="#263238" />
+            android:textColor="@color/ink"
+            android:background="@drawable/tap_btn_secondary" />
 
         <Button
             android:id="@+id/setAppClearRecords"
             android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="8dp"
+            android:layout_height="@dimen/height_field"
+            android:layout_marginTop="@dimen/space_gap_small"
             android:text="清空本机记录（原文与译文）"
-            android:textColor="#EF9A9A"
-            android:background="#263238" />
+            android:textColor="@color/err"
+            android:background="@drawable/tap_btn_secondary" />
 
         <Button
             android:id="@+id/setAppBack"
             android:layout_width="match_parent"
-            android:layout_height="44dp"
-            android:layout_marginTop="20dp"
+            android:layout_height="@dimen/touch_min"
+            android:layout_marginTop="@dimen/space_section"
             android:text="返回"
-            android:textColor="#B0BEC5"
-            android:background="#00000000" />
+            android:textColor="@color/ink_soft"
+            android:background="@android:color/transparent" />
 
         <TextView
             android:id="@+id/setAppVersion"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:textColor="#64748B"
-            android:textSize="11sp"
+            android:layout_marginTop="@dimen/space_card"
+            android:textColor="@color/ink_faint"
+            android:textSize="@dimen/text_caption"
             android:text="" />
     </LinearLayout>
 </ScrollView>

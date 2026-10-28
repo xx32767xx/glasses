@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 输入框 / 次要填充面：比白卡片略深一档，在浅灰底上也分得出来 -->
+<!-- 输入框：白底 + 细描边（原型：按钮/输入框圆角约 12）。
+     为什么不是"比卡片更深一档"的填充：浅灰底 + 白卡片的版式里，
+     描边比色块更能表达"这里可以输入" —— 也跟卡片保持同一套边框语言。 -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
-    <solid android:color="@color/surface_alt" />
-    <corners android:radius="12dp" />
+    <solid android:color="@color/surface" />
+    <stroke android:width="@dimen/stroke_hairline" android:color="@color/line" />
+    <corners android:radius="@dimen/radius_control" />
 </shape>

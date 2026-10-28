@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 语言方向胶囊（未选中）：浅灰底 + 灰字，点一下可切换 -->
+<!-- 语言方向胶囊（未选中）：浅灰底 + 次要字色 -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
-    <solid android:color="@color/page" />
-    <corners android:radius="22dp" />
+    <solid android:color="@color/surface_alt" />
+    <corners android:radius="@dimen/radius_control" />
 </shape>

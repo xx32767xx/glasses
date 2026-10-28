@@ -1,190 +1,283 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- page_home.xml — 新入口：登录/注册 与 首页 二选一；整体可滚动，状态区置顶（否则小屏会被挤出屏幕） -->
+<!--
+  page_home.xml —— 启动后的第一屏：① 登录/注册 ② 首页（建房/加入/设置）。
+
+  视觉按原型的浅色商务工具风格（4.47）：
+    页面底 @color/page（#F2F5F7）· 卡片白 + 细描边 + 14dp 圆角
+    主按钮走渐变（bg_btn_primary）· 次按钮白底描边（bg_btn_secondary）
+    文字只有三级：ink（主）/ ink_soft（次）/ ink_faint（说明）
+  ⚠️ 这里**不写任何色值与裸 dp/sp**：一律 @color/... 与 @dimen/...（深色模式与改版才不用改布局）。
+-->
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#101418"
+    android:background="@color/page"
     android:fillViewport="true">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="20dp">
+        android:padding="@dimen/space_page">
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="译连 TransLink"
-            android:textColor="#FFFFFF"
-            android:textSize="26sp"
+            android:textColor="@color/ink"
+            android:textSize="@dimen/text_page_title"
             android:textStyle="bold" />
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
+            android:layout_marginTop="@dimen/space_gap_tiny"
             android:text="中 ↔ 巴西葡语 同声传译"
-            android:textColor="#94A3B8"
-            android:textSize="13sp" />
+            android:textColor="@color/ink_soft"
+            android:textSize="@dimen/text_secondary" />
 
+        <!-- 状态区：一行人类可读的信息（连接/错误/被顶下线都显示在这里） -->
         <TextView
             android:id="@+id/homeStatus"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:padding="8dp"
-            android:background="#1B2228"
-            android:textColor="#B0BEC5"
-            android:textSize="12sp"
-            android:minHeight="40dp"
-            android:text="" />
+            android:layout_marginTop="@dimen/space_gap"
+            android:background="@drawable/bg_card"
+            android:minHeight="@dimen/touch_min"
+            android:padding="@dimen/space_gap"
+            android:text=""
+            android:textColor="@color/ink_soft"
+            android:textSize="@dimen/text_caption" />
 
+        <!-- ── ① 登录 / 注册 ─────────────────────────────────────────── -->
         <LinearLayout
             android:id="@+id/homeLoginBox"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_card"
+            android:background="@drawable/bg_card"
             android:orientation="vertical"
-            android:layout_marginTop="16dp"
+            android:padding="@dimen/space_card"
             android:visibility="gone">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="连接服务器"
+                android:textColor="@color/ink"
+                android:textSize="@dimen/text_title"
+                android:textStyle="bold" />
 
             <EditText
                 android:id="@+id/homeServer"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_height="@dimen/height_field"
+                android:layout_marginTop="@dimen/space_gap"
+                android:background="@drawable/bg_input"
                 android:hint="服务器地址，例如 http://117.50.180.93:8788"
                 android:inputType="textUri"
-                android:textColor="#FFFFFF"
-                android:textColorHint="#64748B" />
+                android:paddingStart="@dimen/space_gap"
+                android:paddingEnd="@dimen/space_gap"
+                android:singleLine="true"
+                android:textColor="@color/ink"
+                android:textColorHint="@color/ink_faint"
+                android:textSize="@dimen/text_body" />
 
             <EditText
                 android:id="@+id/homeSecret"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_height="@dimen/height_field"
+                android:layout_marginTop="@dimen/space_gap_small"
+                android:background="@drawable/bg_input"
                 android:hint="共享密钥（start-all 横幅里那串）"
                 android:inputType="text"
-                android:textColor="#FFFFFF"
-                android:textColorHint="#64748B" />
+                android:paddingStart="@dimen/space_gap"
+                android:paddingEnd="@dimen/space_gap"
+                android:singleLine="true"
+                android:textColor="@color/ink"
+                android:textColorHint="@color/ink_faint"
+                android:textSize="@dimen/text_body" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/stroke_hairline"
+                android:layout_marginTop="@dimen/space_card"
+                android:background="@color/line_soft" />
 
             <EditText
                 android:id="@+id/homeUser"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_height="@dimen/height_field"
+                android:layout_marginTop="@dimen/space_gap"
+                android:background="@drawable/bg_input"
                 android:hint="用户名"
                 android:inputType="text"
-                android:textColor="#FFFFFF"
-                android:textColorHint="#64748B" />
+                android:paddingStart="@dimen/space_gap"
+                android:paddingEnd="@dimen/space_gap"
+                android:singleLine="true"
+                android:textColor="@color/ink"
+                android:textColorHint="@color/ink_faint"
+                android:textSize="@dimen/text_body" />
 
             <EditText
                 android:id="@+id/homePass"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_height="@dimen/height_field"
+                android:layout_marginTop="@dimen/space_gap_small"
+                android:background="@drawable/bg_input"
                 android:hint="密码"
                 android:inputType="textPassword"
-                android:textColor="#FFFFFF"
-                android:textColorHint="#64748B" />
+                android:paddingStart="@dimen/space_gap"
+                android:paddingEnd="@dimen/space_gap"
+                android:singleLine="true"
+                android:textColor="@color/ink"
+                android:textColorHint="@color/ink_faint"
+                android:textSize="@dimen/text_body" />
 
             <EditText
                 android:id="@+id/homeEmail"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_height="@dimen/height_field"
+                android:layout_marginTop="@dimen/space_gap_small"
+                android:background="@drawable/bg_input"
                 android:hint="邮箱（注册用）"
                 android:inputType="textEmailAddress"
-                android:visibility="gone"
-                android:textColor="#FFFFFF"
-                android:textColorHint="#64748B" />
+                android:paddingStart="@dimen/space_gap"
+                android:paddingEnd="@dimen/space_gap"
+                android:singleLine="true"
+                android:textColor="@color/ink"
+                android:textColorHint="@color/ink_faint"
+                android:textSize="@dimen/text_body"
+                android:visibility="gone" />
 
             <EditText
                 android:id="@+id/homeCode"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_height="@dimen/height_field"
+                android:layout_marginTop="@dimen/space_gap_small"
+                android:background="@drawable/bg_input"
                 android:hint="邮箱验证码"
                 android:inputType="number"
-                android:visibility="gone"
-                android:textColor="#FFFFFF"
-                android:textColorHint="#64748B" />
+                android:paddingStart="@dimen/space_gap"
+                android:paddingEnd="@dimen/space_gap"
+                android:singleLine="true"
+                android:textColor="@color/ink"
+                android:textColorHint="@color/ink_faint"
+                android:textSize="@dimen/text_body"
+                android:visibility="gone" />
 
             <Button
                 android:id="@+id/homeSendCode"
                 android:layout_width="match_parent"
-                android:layout_height="44dp"
-                android:layout_marginTop="6dp"
+                android:layout_height="@dimen/height_field"
+                android:layout_marginTop="@dimen/space_gap_small"
+                android:background="@drawable/tap_btn_secondary"
                 android:text="获取验证码"
-                android:textColor="#FFFFFF"
-                android:background="#263238"
+                android:textAllCaps="false"
+                android:textColor="@color/ink"
+                android:textSize="@dimen/text_body"
                 android:visibility="gone" />
 
             <Button
                 android:id="@+id/homeLogin"
                 android:layout_width="match_parent"
-                android:layout_height="54dp"
-                android:layout_marginTop="12dp"
+                android:layout_height="@dimen/height_button"
+                android:layout_marginTop="@dimen/space_card"
+                android:background="@drawable/tap_btn_primary"
                 android:text="登录"
-                android:textColor="#FFFFFF"
-                android:background="#1565C0" />
+                android:textAllCaps="false"
+                android:textColor="@color/on_brand"
+                android:textSize="@dimen/text_button" />
 
             <Button
                 android:id="@+id/homeRegisterToggle"
                 android:layout_width="match_parent"
-                android:layout_height="44dp"
-                android:layout_marginTop="6dp"
+                android:layout_height="@dimen/touch_min"
+                android:layout_marginTop="@dimen/space_gap_tiny"
+                android:background="@android:color/transparent"
                 android:text="注册新账号"
-                android:textColor="#90CAF9"
-                android:background="#00000000" />
+                android:textAllCaps="false"
+                android:textColor="@color/brand"
+                android:textSize="@dimen/text_body" />
         </LinearLayout>
 
+        <!-- ── ② 首页 ────────────────────────────────────────────────── -->
         <LinearLayout
             android:id="@+id/homeMainBox"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_card"
             android:orientation="vertical"
-            android:layout_marginTop="16dp"
             android:visibility="gone">
 
-            <TextView
-                android:id="@+id/homeWho"
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:textColor="#E0B341"
-                android:textSize="15sp"
-                android:text="" />
+                android:background="@drawable/bg_card"
+                android:orientation="vertical"
+                android:padding="@dimen/space_card">
 
-            <Button
-                android:id="@+id/homeCreate"
-                android:layout_width="match_parent"
-                android:layout_height="64dp"
-                android:layout_marginTop="16dp"
-                android:text="会议房间（创建 / 加入）"
-                android:textColor="#FFFFFF"
-                android:textSize="16sp"
-                android:background="#2E7D32" />
+                <TextView
+                    android:id="@+id/homeWho"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text=""
+                    android:textColor="@color/brand"
+                    android:textSize="@dimen/text_body"
+                    android:textStyle="bold" />
 
-            <Button
-                android:id="@+id/homeLegacy"
-                android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:layout_marginTop="10dp"
-                android:text="旧版界面（对比 / 回退）"
-                android:textColor="#B0BEC5"
-                android:background="#263238" />
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap_tiny"
+                    android:text="今天要开会吗？建一间房，把 6 位邀请码发给对方。"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_secondary" />
 
-            <Button
-                android:id="@+id/homeSettings"
-                android:layout_width="match_parent"
-                android:layout_height="48dp"
-                android:layout_marginTop="10dp"
-                android:text="设置（服务器 / 语言 / 校对 / 隐私）"
-                android:textColor="#FFFFFF"
-                android:background="#263238" />
+                <Button
+                    android:id="@+id/homeCreate"
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/height_button"
+                    android:layout_marginTop="@dimen/space_card"
+                    android:background="@drawable/tap_btn_primary"
+                    android:text="会议房间（创建 / 加入）"
+                    android:textAllCaps="false"
+                    android:textColor="@color/on_brand"
+                    android:textSize="@dimen/text_button" />
+
+                <Button
+                    android:id="@+id/homeSettings"
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/height_field"
+                    android:layout_marginTop="@dimen/space_gap"
+                    android:background="@drawable/tap_btn_secondary"
+                    android:text="设置（服务器 / 语言 / 校对 / 隐私）"
+                    android:textAllCaps="false"
+                    android:textColor="@color/ink"
+                    android:textSize="@dimen/text_body" />
+
+                <Button
+                    android:id="@+id/homeLegacy"
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/height_field"
+                    android:layout_marginTop="@dimen/space_gap_small"
+                    android:background="@drawable/tap_btn_secondary"
+                    android:text="旧版界面（对比 / 回退）"
+                    android:textAllCaps="false"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_body" />
+            </LinearLayout>
 
             <Button
                 android:id="@+id/homeLogout"
                 android:layout_width="match_parent"
-                android:layout_height="44dp"
-                android:layout_marginTop="10dp"
+                android:layout_height="@dimen/touch_min"
+                android:layout_marginTop="@dimen/space_gap"
+                android:background="@android:color/transparent"
                 android:text="退出登录"
-                android:textColor="#EF9A9A"
-                android:background="#00000000" />
+                android:textAllCaps="false"
+                android:textColor="@color/err"
+                android:textSize="@dimen/text_body" />
         </LinearLayout>
     </LinearLayout>
 </ScrollView>

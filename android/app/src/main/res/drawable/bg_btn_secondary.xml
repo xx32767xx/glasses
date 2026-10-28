@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 次按钮：白底 + 细描边（画在浅灰页面上，"不做主操作"的那一类） -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@color/surface" />
+    <stroke android:width="@dimen/stroke_hairline" android:color="@color/line" />
+    <corners android:radius="@dimen/radius_control" />
+</shape>

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  主按钮（原型：主按钮渐变 #0E7490 → #0891B2，135°，圆角 12）。
+
+  ⚠️ 角度换算：CSS 的 135deg 是"从左上往右下"，而 Android 的 angle 以
+     "从左到右"为 0，正方向**逆时针**。所以 CSS 135° = Android 315°。
+     写错方向（比如照抄 135）会变成"从右下往左上"，两种蓝看着都不对。
+-->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <gradient
+        android:angle="315"
+        android:startColor="@color/brand_grad_start"
+        android:endColor="@color/brand_grad_end"
+        android:type="linear" />
+    <corners android:radius="@dimen/radius_control" />
+</shape>

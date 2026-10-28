@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 行内提示条：琥珀底（原型辅助强调色），只配文字出现，不用来传达唯一信息 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@color/accent_soft" />
+    <corners android:radius="@dimen/radius_chip" />
+</shape>

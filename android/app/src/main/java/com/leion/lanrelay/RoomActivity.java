@@ -270,7 +270,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         boolean anyHolder = holder != null && !holder.isEmpty();
         boolean iAmHost = myName.equals(hostName());
         micButton.setText(holding ? "正在发言 · 点此结束" : "点击开麦");
-        micButton.setBackgroundColor(holding ? 0xFF2E7D32 : 0xFF37474F);
+        // 持麦 = 主操作态（渐变/实色）；空闲 = 白底描边的次按钮。颜色只走 token（4.47）
+        micButton.setBackgroundResource(holding ? R.drawable.tap_btn_primary : R.drawable.tap_btn_secondary);
+        micButton.setTextColor(getColor(holding ? R.color.on_brand : R.color.ink));
 
         // 锁定按钮的文案必须与"我能不能按"一致（4.44 修）。
         //
@@ -568,7 +570,10 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     private void updateUploadButton() {
         boolean uploading = mic != null;
         micUploadButton.setText(uploading ? "停止同传" : "开始同传");
-        micUploadButton.setBackgroundColor(uploading ? 0xFF1565C0 : 0xFF263238);
+        // 蓝（渐变）= 正在上传，白底描边 = 空闲 —— 皮一换，状态一眼能看出来
+        micUploadButton.setBackgroundResource(
+                uploading ? R.drawable.tap_btn_primary : R.drawable.tap_btn_secondary);
+        micUploadButton.setTextColor(getColor(uploading ? R.color.on_brand : R.color.ink));
         micUploadButton.setEnabled(true);
     }
 

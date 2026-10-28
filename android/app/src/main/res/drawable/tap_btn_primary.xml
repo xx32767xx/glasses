@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 主按钮的点击版：涟漪在渐变之上（用 ripple_dark，白字按钮上的涟漪才看得见） -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="@color/ripple_dark">
+    <item android:drawable="@drawable/bg_btn_primary" />
+</ripple>

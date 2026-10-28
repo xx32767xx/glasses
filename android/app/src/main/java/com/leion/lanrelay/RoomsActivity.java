@@ -131,8 +131,10 @@ public class RoomsActivity extends android.app.Activity {
         boolean isZh = "zh-CN".equals(lang);
         zh.setText(isZh ? "我说中文 ✓" : "我说中文");
         pt.setText(isZh ? "我说葡语" : "我说葡语 ✓");
-        zh.setBackgroundColor(isZh ? 0xFF1565C0 : 0xFF263238);
-        pt.setBackgroundColor(isZh ? 0xFF263238 : 0xFF1565C0);
+        zh.setBackgroundResource(isZh ? R.drawable.bg_pill_active : R.drawable.bg_pill);
+        pt.setBackgroundResource(isZh ? R.drawable.bg_pill : R.drawable.bg_pill_active);
+        zh.setTextColor(getColor(isZh ? R.color.on_brand : R.color.ink));
+        pt.setTextColor(getColor(isZh ? R.color.ink : R.color.on_brand));
     }
 
     private void createRoom() {

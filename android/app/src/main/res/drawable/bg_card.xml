@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 卡片：白色 + 轻描边（规范要求"减少大面积阴影"）。16dp 圆角 -->
+<!-- 卡片：白色 + 细描边 + 轻微阴影（原型：卡片 #FFFFFF / 描边 #E3E8EE / 圆角 14） -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
     <solid android:color="@color/surface" />
-    <stroke android:width="1dp" android:color="@color/line" />
-    <corners android:radius="16dp" />
+    <stroke android:width="@dimen/stroke_hairline" android:color="@color/line" />
+    <corners android:radius="@dimen/radius_card" />
 </shape>

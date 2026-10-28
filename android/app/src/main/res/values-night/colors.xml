@@ -20,14 +20,21 @@
     <color name="line">#2A2E3C</color>
     <color name="line_soft">#232633</color>
 
-    <color name="ink">#ECEFF4</color>
-    <color name="ink_soft">#A9B0C0</color>
-    <color name="ink_faint">#7A8194</color>
+    <color name="ink">#E8EEF2</color>
+    <color name="ink_soft">#94A3B8</color>
+    <color name="ink_faint">#64748B</color>
 
-    <color name="brand">#5B8DEF</color>
-    <color name="brand_dark">#4A7BE0</color>
-    <color name="brand_soft">#1B2436</color>
-    <color name="on_brand">#0F1116</color>
+    <color name="brand">#22B8CE</color>
+    <color name="brand_dark">#0E7490</color>
+    <color name="brand_soft">#10333B</color>
+    <color name="on_brand">#052A32</color>
+    <!-- 渐变两端：深色下保持同一条渐变（饱和色在深底上也成立） -->
+    <color name="brand_grad_start">#0E7490</color>
+    <color name="brand_grad_end">#0891B2</color>
+
+    <!-- 辅助强调（琥珀）：深色下提亮，否则看着像棕色 -->
+    <color name="accent">#F0A93B</color>
+    <color name="accent_soft">#2C2417</color>
 
     <color name="ok">#3ED598</color>
     <color name="ok_soft">#132A22</color>
@@ -35,7 +42,7 @@
     <color name="warn_soft">#2C2417</color>
     <color name="err">#F2685C</color>
     <color name="err_soft">#2E1A18</color>
-    <color name="idle">#7A8194</color>
+    <color name="idle">#64748B</color>
 
     <color name="rec">#F2685C</color>
     <color name="rec_dark">#D9534A</color>
@@ -43,12 +50,12 @@
     <!-- 深色模式下这块"设备屏幕"保持原样：它模拟的是眼镜，不是页面 -->
     <color name="screen">#0A0E11</color>
     <color name="screen_line">#2A3439</color>
-    <color name="screen_ink">#E8F0F2</color>
+    <color name="screen_ink">#4ADE80</color>
     <color name="screen_ink_dim">#7C8B93</color>
 
     <color name="ripple_light">#33FFFFFF</color>
     <color name="ripple_dark">#1FFFFFFF</color>
 
     <color name="meter_track">#2A2E3C</color>
-    <color name="meter_on">#5B8DEF</color>
+    <color name="meter_on">#22B8CE</color>
 </resources>

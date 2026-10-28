@@ -464,10 +464,14 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('心跳被拒绝也立刻停',
       /heartbeat[\s\S]{0,600}stopUpload\(/.test(roomActivity), '服务端说"不是持麦者"时不能等下一轮')
 
-    // 按钮要能一眼看出"在传/没传"：两态颜色不同，否则用户无法判断自己是否还在占麦
+    // 按钮要能一眼看出"在传/没传"：两态外观不同，否则用户无法判断自己是否还在占麦。
+    // 4.47 起不再是写死的色值，而是两种 drawable（渐变=在传 / 白底描边=空闲）+ 文字色 token。
     const button = methodBody('updateUploadButton')
-    check('上传与空闲用两种颜色', button.includes('0xFF1565C0') && button.includes('0xFF263238'),
-      '蓝 = 正在上传，灰 = 空闲')
+    check('上传态用主按钮皮', button.includes('R.drawable.tap_btn_primary'))
+    check('空闲态用次按钮皮', button.includes('R.drawable.tap_btn_secondary'))
+    check('两态文字色也跟着变（白字 / 主文字）',
+      button.includes('R.color.on_brand') && button.includes('R.color.ink'),
+      '换了皮不换字色，深色模式下会看不清')
   })
 
   await it('发言权推送（/ws）接得对：轮询与推送共用一条应用路径，断了自动退回轮询', () => {
@@ -707,6 +711,50 @@ export async function runAndroidOrderSuite({ it, check }) {
         /setIntervalMs\(online[\s\S]{0,120}INTERVAL_SLOW_MS/.test(src), name)
       check(`${name}销毁时断开推送`, /onDestroy\(\)[\s\S]{0,800}sessionSocket\.stop\(\)/.test(src), name)
     }
+  })
+
+  await it('视觉体系：新页面只走 token，不写死色值与裸尺寸（4.47）', () => {
+    const layoutDir = join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout')
+    const pages = ['page_home', 'page_rooms', 'page_room', 'page_settings_app', 'page_privacy']
+
+    for (const name of pages) {
+      const xml = readFileSync(join(layoutDir, `${name}.xml`), 'utf-8')
+      const hexes = xml.match(/"#[0-9A-Fa-f]{3,8}"/g) || []
+      check(`${name} 没有硬编码色值`, hexes.length === 0, hexes.join(','))
+      // 裸 dp/sp 只允许 0dp（layout_weight 的标准写法）
+      const raws = (xml.match(/"([1-9][0-9]*(?:\.[0-9]+)?)(dp|sp)"/g) || [])
+      check(`${name} 没有裸 dp/sp`, raws.length === 0, raws.join(','))
+      check(`${name} 用了尺寸 token`, /@dimen\//.test(xml))
+      check(`${name} 用了颜色 token`, /@color\//.test(xml))
+    }
+
+    // 主操作按钮必须是渐变那条（原型：主按钮渐变 #0E7490 → #0891B2，135°）
+    const home = readFileSync(join(layoutDir, 'page_home.xml'), 'utf-8')
+    check('首页主按钮用 tap_btn_primary', /homeLogin[\s\S]{0,400}tap_btn_primary/.test(home))
+    const room = readFileSync(join(layoutDir, 'page_room.xml'), 'utf-8')
+    check('房间页"开始同传"用 tap_btn_primary', /roomUpload[\s\S]{0,400}tap_btn_primary/.test(room))
+
+    // 原型色值必须真的落在 token 文件里
+    const colors = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'values', 'colors.xml'), 'utf-8')
+    for (const [token, value] of [
+      ['brand', '#0E7490'], ['brand_dark', '#0B5C73'], ['brand_grad_end', '#0891B2'],
+      ['page', '#F2F5F7'], ['surface', '#FFFFFF'], ['ink', '#16242F'],
+      ['ink_soft', '#64748B'], ['line', '#E3E8EE'], ['accent', '#D97706'],
+      ['screen', '#0A0F14'], ['screen_ink', '#4ADE80'],
+    ]) {
+      check(`@color/${token} = ${value}`, new RegExp(`name="${token}">${value}<`).test(colors), token)
+    }
+
+    // 尺寸 token：卡片 14 / 控件 12（原型），且是 dp/sp 而不是照抄 px
+    const dimens = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'values', 'dimens.xml'), 'utf-8')
+    check('卡片圆角 14dp', /name="radius_card">14dp</.test(dimens))
+    check('控件圆角 12dp', /name="radius_control">12dp</.test(dimens))
+    check('尺寸用 dp/sp ではなく px ではない', /<dimen [^>]*>\d+dp<\/dimen>/.test(dimens) && dimens.includes('sp</dimen>'))
+
+    // 渐变角度：CSS 135° = Android 315°（照抄 135 会反过来）
+    const btn = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'drawable', 'bg_btn_primary.xml'), 'utf-8')
+    check('渐变角度写成 315（= CSS 135°）', /android:angle="315"/.test(btn), btn.slice(0, 120))
+    check('渐变两端用 token', /brand_grad_start/.test(btn) && /brand_grad_end/.test(btn))
   })
 
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {

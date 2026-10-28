@@ -2,5 +2,5 @@
 <!-- 语言方向胶囊（选中）：主色底 + 白字。当前"在听谁说"的那一侧用这个 -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
     <solid android:color="@color/brand" />
-    <corners android:radius="22dp" />
+    <corners android:radius="@dimen/radius_control" />
 </shape>

@@ -146,8 +146,10 @@ public class SettingsActivity extends android.app.Activity {
         boolean pt = "pt-BR".equals(lang);
         boolean zh = !pt;
         // 蓝 = 选中，深灰 = 未选。两个按钮都必须能点（不能把选中的那个禁掉，否则会"卡死"）
-        langZhButton.setBackgroundColor(zh ? 0xFF1565C0 : 0xFF263238);
-        langPtButton.setBackgroundColor(pt ? 0xFF1565C0 : 0xFF263238);
+        langZhButton.setBackgroundResource(zh ? R.drawable.bg_pill_active : R.drawable.bg_pill);
+        langPtButton.setBackgroundResource(pt ? R.drawable.bg_pill_active : R.drawable.bg_pill);
+        langZhButton.setTextColor(getColor(zh ? R.color.on_brand : R.color.ink));
+        langPtButton.setTextColor(getColor(pt ? R.color.on_brand : R.color.ink));
         langZhButton.setEnabled(true);
         langPtButton.setEnabled(true);
     }
@@ -175,8 +177,7 @@ public class SettingsActivity extends android.app.Activity {
             ui.post(() -> {
                 proofread = read;
                 proofreadButton.setText(label);
-                proofreadButton.setBackgroundColor(
-                        read != null && read ? 0xFF2E7D32 : 0xFF263238);
+                applyProofreadLook(read != null && read);
             });
         }, "settings-proofread-get").start();
     }
@@ -218,7 +219,7 @@ public class SettingsActivity extends android.app.Activity {
                 }
                 proofread = result;
                 proofreadButton.setText(result ? "校对：开（点一下关掉）" : "校对：关（点一下打开）");
-                proofreadButton.setBackgroundColor(result ? 0xFF2E7D32 : 0xFF263238);
+                applyProofreadLook(result);
                 status.setText("校对已" + (result ? "打开" : "关闭") + "（下一场同传生效）");
             });
         }, "settings-proofread-put").start();
@@ -236,6 +237,12 @@ public class SettingsActivity extends android.app.Activity {
                     Toast.makeText(this, "已清空", Toast.LENGTH_SHORT).show();
                 })
                 .show();
+    }
+
+    /** 校对按钮的外观：开着 = 主色实底（绿太跳，且语义是"已启用"不是"正常"）。 */
+    private void applyProofreadLook(boolean enabled) {
+        proofreadButton.setBackgroundResource(enabled ? R.drawable.bg_pill_active : R.drawable.tap_btn_secondary);
+        proofreadButton.setTextColor(getColor(enabled ? R.color.on_brand : R.color.ink));
     }
 
     // ── 小工具 ─────────────────────────────────────────────────────────

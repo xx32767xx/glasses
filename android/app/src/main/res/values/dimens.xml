@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  尺寸与字号 token（4.47 起）。
+
+  为什么单独抽一份：原型给的是 **CSS 像素**（14px 圆角、13~14px 正文…），
+  而 Android 要用 dp/sp。直接照抄 px 会在不同密度屏上失真 —— 所以这里建立
+  自己的尺度，只搬运"层级关系"（标题 > 正文 > 次要 > 说明），不搬运数字。
+
+  用法：布局里一律 `@dimen/...`，不要在 layout 里写裸数字。
+-->
+<resources>
+    <!-- 圆角：原型 卡片 14px / 按钮与输入框 12px -->
+    <dimen name="radius_card">14dp</dimen>
+    <dimen name="radius_control">12dp</dimen>
+    <dimen name="radius_chip">10dp</dimen>
+
+    <!-- 间距：内容区水平留白原型 16px -->
+    <dimen name="space_page">16dp</dimen>
+    <dimen name="space_card">16dp</dimen>
+    <dimen name="space_gap">12dp</dimen>
+    <dimen name="space_gap_small">8dp</dimen>
+    <dimen name="space_gap_tiny">6dp</dimen>
+    <dimen name="space_section">20dp</dimen>
+
+    <!-- 触控高度：不小于 48dp（Material 的可点最小尺寸，也是无障碍要求） -->
+    <dimen name="touch_min">48dp</dimen>
+    <dimen name="height_button">52dp</dimen>
+    <dimen name="height_field">48dp</dimen>
+
+    <!-- 字号：标题 17 / 正文 14 / 实时译文 15（粗）/ 次要 12 / 说明 11 -->
+    <dimen name="text_title">17sp</dimen>
+    <dimen name="text_page_title">22sp</dimen>
+    <dimen name="text_body">14sp</dimen>
+    <dimen name="text_live">15sp</dimen>
+    <dimen name="text_button">15sp</dimen>
+    <dimen name="text_secondary">12sp</dimen>
+    <dimen name="text_caption">11sp</dimen>
+
+    <!-- 卡片描边与"轻微阴影" -->
+    <dimen name="stroke_hairline">1dp</dimen>
+    <dimen name="elevation_card">1dp</dimen>
+
+    <!-- 房间页右侧竖向悬浮条宽度（发言人 + 投屏/扩声/收音三格） -->
+    <dimen name="speaker_bar_width">92dp</dimen>
+</resources>
