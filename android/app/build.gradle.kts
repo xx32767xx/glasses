@@ -74,8 +74,10 @@ android {
     //       尺寸走 dimens token）；页面里不再有硬编码色值与裸 dp/sp。见 docs/21 §4.47。
     // 4.48：档 1 —— 旧版 App 冻结（作为翻译官 App 的参考实现）+ docs/23 集成契约
     //       + scripts/fake-frames.mjs（三条命令跑起假字幕）；首页旧版入口默认隐藏。见 docs/23。
-        versionCode = 77
-        versionName = "4.48"
+    // 4.49：注册/登录页按原型重做（品牌圆 + 标语 + 三颗语言胶囊 + 邮箱/验证码同排 +
+    //       协议勾选 + 全宽主按钮）；M4 门禁落地；出厂默认服务器地址可预填（密钥留空）。见 docs/21 §4.49。
+        versionCode = 78
+        versionName = "4.49"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

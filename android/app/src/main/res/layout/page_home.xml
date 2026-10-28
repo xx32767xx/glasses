@@ -49,61 +49,127 @@
             android:textColor="@color/ink_soft"
             android:textSize="@dimen/text_caption" />
 
-        <!-- ── ① 登录 / 注册 ─────────────────────────────────────────── -->
+        <!-- ── ① 注册 / 登录（原型：居中单列表单）────────────────────── -->
         <LinearLayout
             android:id="@+id/homeLoginBox"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="@dimen/space_card"
-            android:background="@drawable/bg_card"
+            android:layout_marginTop="@dimen/space_section"
+            android:gravity="center_horizontal"
             android:orientation="vertical"
-            android:padding="@dimen/space_card"
             android:visibility="gone">
+
+            <!-- 品牌图标：两个重叠的圆形，分别含「中」「A」 -->
+            <FrameLayout
+                android:layout_width="@dimen/brand_mark_width"
+                android:layout_height="@dimen/brand_mark_height"
+                android:layout_gravity="center_horizontal">
+
+                <TextView
+                    android:layout_width="@dimen/brand_dot_size"
+                    android:layout_height="@dimen/brand_dot_size"
+                    android:background="@drawable/bg_brand_circle"
+                    android:gravity="center"
+                    android:text="中"
+                    android:textColor="@color/on_brand"
+                    android:textSize="@dimen/text_page_title"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="@dimen/brand_dot_size"
+                    android:layout_height="@dimen/brand_dot_size"
+                    android:layout_gravity="end|bottom"
+                    android:background="@drawable/bg_brand_circle_alt"
+                    android:gravity="center"
+                    android:text="A"
+                    android:textColor="@color/on_brand"
+                    android:textSize="@dimen/text_page_title"
+                    android:textStyle="bold" />
+            </FrameLayout>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap"
+                android:text="译连 TransLink"
+                android:textColor="@color/ink"
+                android:textSize="@dimen/text_page_title"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap_tiny"
+                android:gravity="center"
+                android:text="巴别塔之后，不同语言，自在交流。"
+                android:textColor="@color/ink_soft"
+                android:textSize="@dimen/text_secondary" />
+
+            <!-- 我的语言 -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_section"
+                android:text="我的语言"
+                android:textColor="@color/ink_soft"
+                android:textSize="@dimen/text_secondary" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap_small"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/homeLangZh"
+                    android:layout_width="0dp"
+                    android:layout_height="@dimen/touch_min"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_pill"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:text="中文"
+                    android:textColor="@color/ink"
+                    android:textSize="@dimen/text_body" />
+
+                <TextView
+                    android:id="@+id/homeLangEn"
+                    android:layout_width="0dp"
+                    android:layout_height="@dimen/touch_min"
+                    android:layout_marginStart="@dimen/space_gap_small"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_pill"
+                    android:gravity="center"
+                    android:enabled="false"
+                    android:text="English"
+                    android:textColor="@color/ink_faint"
+                    android:textSize="@dimen/text_body" />
+
+                <TextView
+                    android:id="@+id/homeLangPt"
+                    android:layout_width="0dp"
+                    android:layout_height="@dimen/touch_min"
+                    android:layout_marginStart="@dimen/space_gap_small"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_pill"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:text="巴西葡语"
+                    android:textColor="@color/ink"
+                    android:textSize="@dimen/text_body" />
+            </LinearLayout>
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="连接服务器"
-                android:textColor="@color/ink"
-                android:textSize="@dimen/text_title"
-                android:textStyle="bold" />
+                android:layout_marginTop="@dimen/space_gap_tiny"
+                android:text="英文暂不支持（服务端只做中 ↔ 巴葡）"
+                android:textColor="@color/ink_faint"
+                android:textSize="@dimen/text_caption" />
 
-            <EditText
-                android:id="@+id/homeServer"
-                android:layout_width="match_parent"
-                android:layout_height="@dimen/height_field"
-                android:layout_marginTop="@dimen/space_gap"
-                android:background="@drawable/bg_input"
-                android:hint="服务器地址，例如 http://117.50.180.93:8788"
-                android:inputType="textUri"
-                android:paddingStart="@dimen/space_gap"
-                android:paddingEnd="@dimen/space_gap"
-                android:singleLine="true"
-                android:textColor="@color/ink"
-                android:textColorHint="@color/ink_faint"
-                android:textSize="@dimen/text_body" />
-
-            <EditText
-                android:id="@+id/homeSecret"
-                android:layout_width="match_parent"
-                android:layout_height="@dimen/height_field"
-                android:layout_marginTop="@dimen/space_gap_small"
-                android:background="@drawable/bg_input"
-                android:hint="共享密钥（start-all 横幅里那串）"
-                android:inputType="text"
-                android:paddingStart="@dimen/space_gap"
-                android:paddingEnd="@dimen/space_gap"
-                android:singleLine="true"
-                android:textColor="@color/ink"
-                android:textColorHint="@color/ink_faint"
-                android:textSize="@dimen/text_body" />
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="@dimen/stroke_hairline"
-                android:layout_marginTop="@dimen/space_card"
-                android:background="@color/line_soft" />
-
+            <!-- 用户名 -->
             <EditText
                 android:id="@+id/homeUser"
                 android:layout_width="match_parent"
@@ -119,6 +185,61 @@
                 android:textColorHint="@color/ink_faint"
                 android:textSize="@dimen/text_body" />
 
+            <!-- 邮箱 + 获取验证码（同排） -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap_small"
+                android:orientation="horizontal">
+
+                <EditText
+                    android:id="@+id/homeEmail"
+                    android:layout_width="0dp"
+                    android:layout_height="@dimen/height_field"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_input"
+                    android:hint="邮箱（首次使用需验证码注册）"
+                    android:inputType="textEmailAddress"
+                    android:paddingStart="@dimen/space_gap"
+                    android:paddingEnd="@dimen/space_gap"
+                    android:singleLine="true"
+                    android:textColor="@color/ink"
+                    android:textColorHint="@color/ink_faint"
+                    android:textSize="@dimen/text_body" />
+
+                <Button
+                    android:id="@+id/homeSendCode"
+                    android:layout_width="wrap_content"
+                    android:layout_height="@dimen/height_field"
+                    android:layout_marginStart="@dimen/space_gap_small"
+                    android:background="@drawable/tap_btn_secondary"
+                    android:minWidth="@dimen/button_compact_width"
+                    android:text="获取验证码"
+                    android:textAllCaps="false"
+                    android:textColor="@color/brand"
+                    android:textSize="@dimen/text_secondary" />
+            </LinearLayout>
+
+            <!-- 邮箱验证码 -->
+            <EditText
+                android:id="@+id/homeCode"
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/height_field"
+                android:layout_marginTop="@dimen/space_gap_small"
+                android:background="@drawable/bg_input"
+                android:hint="邮箱验证码"
+                android:inputType="number"
+                android:paddingStart="@dimen/space_gap"
+                android:paddingEnd="@dimen/space_gap"
+                android:singleLine="true"
+                android:textColor="@color/ink"
+                android:textColorHint="@color/ink_faint"
+                android:textSize="@dimen/text_body" />
+
+            <!--
+              密码：**原型表单里没有这一项**。保留是因为服务端目前的注册与登录都要密码
+              （/auth/register-email 与 /auth/login）。等"验证码直登"的契约定下来再删。
+            -->
             <EditText
                 android:id="@+id/homePass"
                 android:layout_width="match_parent"
@@ -134,71 +255,93 @@
                 android:textColorHint="@color/ink_faint"
                 android:textSize="@dimen/text_body" />
 
-            <EditText
-                android:id="@+id/homeEmail"
+            <!-- 用户协议与录音隐私政策（M4：不勾不许注册） -->
+            <LinearLayout
                 android:layout_width="match_parent"
-                android:layout_height="@dimen/height_field"
-                android:layout_marginTop="@dimen/space_gap_small"
-                android:background="@drawable/bg_input"
-                android:hint="邮箱（注册用）"
-                android:inputType="textEmailAddress"
-                android:paddingStart="@dimen/space_gap"
-                android:paddingEnd="@dimen/space_gap"
-                android:singleLine="true"
-                android:textColor="@color/ink"
-                android:textColorHint="@color/ink_faint"
-                android:textSize="@dimen/text_body"
-                android:visibility="gone" />
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
 
-            <EditText
-                android:id="@+id/homeCode"
-                android:layout_width="match_parent"
-                android:layout_height="@dimen/height_field"
-                android:layout_marginTop="@dimen/space_gap_small"
-                android:background="@drawable/bg_input"
-                android:hint="邮箱验证码"
-                android:inputType="number"
-                android:paddingStart="@dimen/space_gap"
-                android:paddingEnd="@dimen/space_gap"
-                android:singleLine="true"
-                android:textColor="@color/ink"
-                android:textColorHint="@color/ink_faint"
-                android:textSize="@dimen/text_body"
-                android:visibility="gone" />
+                <CheckBox
+                    android:id="@+id/homeAgree"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:minWidth="@dimen/touch_min"
+                    android:text="已阅读并同意" />
 
-            <Button
-                android:id="@+id/homeSendCode"
-                android:layout_width="match_parent"
-                android:layout_height="@dimen/height_field"
-                android:layout_marginTop="@dimen/space_gap_small"
-                android:background="@drawable/tap_btn_secondary"
-                android:text="获取验证码"
-                android:textAllCaps="false"
-                android:textColor="@color/ink"
-                android:textSize="@dimen/text_body"
-                android:visibility="gone" />
+                <TextView
+                    android:id="@+id/homeAgreeText"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:text="《用户协议》与《录音与隐私政策》"
+                    android:textColor="@color/brand"
+                    android:textSize="@dimen/text_secondary" />
+            </LinearLayout>
 
+            <!-- 全宽主按钮 -->
             <Button
                 android:id="@+id/homeLogin"
                 android:layout_width="match_parent"
                 android:layout_height="@dimen/height_button"
-                android:layout_marginTop="@dimen/space_card"
+                android:layout_marginTop="@dimen/space_gap"
                 android:background="@drawable/tap_btn_primary"
-                android:text="登录"
+                android:text="注册／登录"
                 android:textAllCaps="false"
                 android:textColor="@color/on_brand"
                 android:textSize="@dimen/text_button" />
 
-            <Button
-                android:id="@+id/homeRegisterToggle"
-                android:layout_width="match_parent"
+            <!-- 服务器设置（高级）：默认收起，原型主表单里不出现 -->
+            <TextView
+                android:id="@+id/homeServerToggle"
+                android:layout_width="wrap_content"
                 android:layout_height="@dimen/touch_min"
-                android:layout_marginTop="@dimen/space_gap_tiny"
-                android:background="@android:color/transparent"
-                android:text="注册新账号"
-                android:textAllCaps="false"
-                android:textColor="@color/brand"
-                android:textSize="@dimen/text_body" />
+                android:layout_marginTop="@dimen/space_gap_small"
+                android:gravity="center"
+                android:text="服务器设置（高级）"
+                android:textColor="@color/ink_faint"
+                android:textSize="@dimen/text_caption" />
+
+            <LinearLayout
+                android:id="@+id/homeServerBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <EditText
+                    android:id="@+id/homeServer"
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/height_field"
+                    android:layout_marginTop="@dimen/space_gap_small"
+                    android:background="@drawable/bg_input"
+                    android:hint="服务器地址，例如 http://117.50.180.93:8788"
+                    android:inputType="textUri"
+                    android:paddingStart="@dimen/space_gap"
+                    android:paddingEnd="@dimen/space_gap"
+                    android:singleLine="true"
+                    android:textColor="@color/ink"
+                    android:textColorHint="@color/ink_faint"
+                    android:textSize="@dimen/text_body" />
+
+                <EditText
+                    android:id="@+id/homeSecret"
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/height_field"
+                    android:layout_marginTop="@dimen/space_gap_small"
+                    android:background="@drawable/bg_input"
+                    android:hint="共享密钥（start-all 横幅里那串）"
+                    android:inputType="text"
+                    android:paddingStart="@dimen/space_gap"
+                    android:paddingEnd="@dimen/space_gap"
+                    android:singleLine="true"
+                    android:textColor="@color/ink"
+                    android:textColorHint="@color/ink_faint"
+                    android:textSize="@dimen/text_body" />
+            </LinearLayout>
         </LinearLayout>
 
         <!-- ── ② 首页 ────────────────────────────────────────────────── -->

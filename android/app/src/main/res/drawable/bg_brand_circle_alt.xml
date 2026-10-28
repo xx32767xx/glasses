@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 品牌图标的另一枚圆：渐变亮端（#0891B2），压在主色圆上形成"重叠" -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
+    <solid android:color="@color/brand_grad_end" />
+    <stroke android:width="@dimen/stroke_hairline" android:color="@color/surface" />
+</shape>

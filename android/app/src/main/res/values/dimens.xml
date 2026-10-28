@@ -40,6 +40,13 @@
     <dimen name="stroke_hairline">1dp</dimen>
     <dimen name="elevation_card">1dp</dimen>
 
+    <!-- 品牌图标：两枚重叠的圆（原型「中 / A」） -->
+    <dimen name="brand_dot_size">56dp</dimen>
+    <dimen name="brand_mark_width">96dp</dimen>
+    <dimen name="brand_mark_height">64dp</dimen>
+    <!-- 紧凑的次按钮最小宽度（“获取验证码”这种四个字的） -->
+    <dimen name="button_compact_width">96dp</dimen>
+
     <!-- 房间页右侧竖向悬浮条宽度（发言人 + 投屏/扩声/收音三格） -->
     <dimen name="speaker_bar_width">92dp</dimen>
 </resources>

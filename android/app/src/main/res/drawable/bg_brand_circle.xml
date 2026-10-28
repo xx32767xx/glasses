@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 品牌图标的一枚圆：主色实底（原型：#0E7490 → 图标里用主色，另一枚用渐变的亮端） -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
+    <solid android:color="@color/brand" />
+</shape>

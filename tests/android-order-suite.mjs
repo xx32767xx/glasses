@@ -797,6 +797,49 @@ export async function runAndroidOrderSuite({ it, check }) {
       /speaker/.test(fake) && /sourceLang/.test(fake) && /partial/.test(fake))
   })
 
+  await it('注册/登录页按原型：居中单列 + 品牌图标 + 语言胶囊 + 协议勾选（4.49）', () => {
+    const layoutDir = join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout')
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const home = readFileSync(join(layoutDir, 'page_home.xml'), 'utf-8')
+    const homeJava = readFileSync(join(javaDir, 'HomeActivity.java'), 'utf-8')
+
+    for (const id of ['homeAgree', 'homeAgreeText', 'homeLangZh', 'homeLangPt', 'homeLangEn',
+      'homeEmail', 'homeSendCode', 'homeCode', 'homeUser', 'homeLogin', 'homeServerToggle']) {
+      check(`登录页有 ${id}`, new RegExp(`@\\+id/${id}\\b`).test(home), id)
+    }
+
+    // 品牌：两枚圆（中 / A）+ 产品名 + 标语
+    check('品牌图标两枚圆', /bg_brand_circle"/.test(home) && /bg_brand_circle_alt"/.test(home))
+    check('圆里是「中」与「A」', /text="中"/.test(home) && /text="A"/.test(home))
+    check('产品名', /译连 TransLink/.test(home))
+    check('品牌标语', /巴别塔之后，不同语言，自在交流。/.test(home))
+
+    // 语言胶囊：英文必须禁用（服务端只做中↔巴葡，能点就是骗人）
+    check('三颗语言胶囊', /homeLangZh/.test(home) && /homeLangEn/.test(home) && /homeLangPt/.test(home))
+    const enBlock = home.slice(home.indexOf('@+id/homeLangEn'), home.indexOf('@+id/homeLangPt'))
+    check('English 是禁用的', /android:enabled="false"/.test(enBlock), '能点就会让人选完发现翻不了')
+    check('语言选择写进 speakLang', /putString\("speakLang"/.test(homeJava))
+
+    // M4：不勾协议不许继续（注册/登录都要）
+    check('协议勾选的门禁在 doLogin 最前面',
+      /private void doLogin\(\)[\s\S]{0,400}agreeBox\.isChecked\(\)/.test(homeJava),
+      '必须在任何网络请求之前拦住')
+    check('点协议文字能打开隐私页', /homeAgreeText[\s\S]{0,200}PrivacyActivity\.class/.test(homeJava))
+
+    // 单按钮：填了邮箱+验证码=注册，否则=登录
+    check('一个按钮两种意图', /boolean registerMode = !email\.isEmpty\(\) \|\| !code\.isEmpty\(\)/.test(homeJava))
+    check('注册走 authRegisterEmail', /isRegister[\s\S]{0,200}authRegisterEmail/.test(homeJava))
+    check('登录走 authLogin', /authLogin\(user, pass\)/.test(homeJava))
+
+    // 出厂默认配置：地址可预填、密钥默认空（安全取舍写进了资源文件注释）
+    const cfg = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'values', 'app_config.xml'), 'utf-8')
+    check('默认服务器地址可预填', /default_server_url/.test(cfg))
+    check('默认密钥留空（不把口令写进仓库）',
+      /<string name="default_shared_secret"><\/string>/.test(cfg), cfg.slice(0, 120))
+    check('注释里说清了为什么密钥不打包', /反编译|apktool/.test(cfg))
+    check('登录页会回落到出厂默认值', /R\.string\.default_server_url/.test(homeJava))
+  })
+
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {
     const targets = [
       ...collectSources(join(ROOT, 'android', 'app', 'src', 'main', 'java'), ['.java']),

@@ -41,6 +41,7 @@ public class HomeActivity extends android.app.Activity {
 
     private LinearLayout loginBox;
     private LinearLayout homeBox;
+    private LinearLayout serverBox;
     private EditText serverInput;
     private EditText secretInput;
     private EditText userInput;
@@ -49,11 +50,12 @@ public class HomeActivity extends android.app.Activity {
     private EditText codeInput;
     private TextView status;
     private Button loginButton;
-    private Button registerButton;
     private Button sendCodeButton;
     private TextView whoLine;
-
-    private boolean registerMode = false;
+    private TextView langZhButton;
+    private TextView langPtButton;
+    private TextView serverToggle;
+    private android.widget.CheckBox agreeBox;
     /** 屏幕调试行（无 adb 时靠它定位） */
     private final java.util.ArrayDeque<String> debugLines = new java.util.ArrayDeque<>();
 
@@ -72,18 +74,33 @@ public class HomeActivity extends android.app.Activity {
         codeInput = findViewById(R.id.homeCode);
         status = findViewById(R.id.homeStatus);
         loginButton = findViewById(R.id.homeLogin);
-        registerButton = findViewById(R.id.homeRegisterToggle);
         sendCodeButton = findViewById(R.id.homeSendCode);
         whoLine = findViewById(R.id.homeWho);
+        langZhButton = findViewById(R.id.homeLangZh);
+        langPtButton = findViewById(R.id.homeLangPt);
+        serverToggle = findViewById(R.id.homeServerToggle);
+        serverBox = findViewById(R.id.homeServerBox);
+        agreeBox = findViewById(R.id.homeAgree);
 
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        serverInput.setText(prefs.getString("host", ""));
-        secretInput.setText(prefs.getString("secret", ""));
-        client = new LanClient(prefs.getString("host", ""), prefs.getString("secret", ""), null);
+        // 出厂默认值（res/values/app_config.xml）：装了就能用，用户仍可在「服务器设置（高级）」里改
+        String host = prefs.getString("host", "");
+        if (host == null || host.isEmpty()) host = getString(R.string.default_server_url);
+        String secret = prefs.getString("secret", "");
+        if (secret == null || secret.isEmpty()) secret = getString(R.string.default_shared_secret);
+        serverInput.setText(host);
+        secretInput.setText(secret);
+        client = new LanClient(host, secret, null);
 
         loginButton.setOnClickListener(v -> doLogin());
-        registerButton.setOnClickListener(v -> toggleRegisterMode());
         sendCodeButton.setOnClickListener(v -> sendCode());
+        findViewById(R.id.homeAgreeText).setOnClickListener(v ->
+                startActivity(new Intent(this, PrivacyActivity.class)));
+        serverToggle.setOnClickListener(v -> {
+            serverBox.setVisibility(serverBox.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
+        });
+        langZhButton.setOnClickListener(v -> applySpeakLang("zh-CN"));
+        langPtButton.setOnClickListener(v -> applySpeakLang("pt-BR"));
         findViewById(R.id.homeCreate).setOnClickListener(v -> openRooms());
         findViewById(R.id.homeSettings).setOnClickListener(v ->
                 startActivity(new Intent(this, SettingsActivity.class)));
@@ -91,8 +108,7 @@ public class HomeActivity extends android.app.Activity {
                 startActivity(new Intent(this, MainActivity.class)));
         findViewById(R.id.homeLogout).setOnClickListener(v -> logout());
 
-        // 版本号显示在状态行，便于确认"装的是不是最新构建"
-        applyMode();
+        refreshLangPills(prefs.getString("speakLang", "zh-CN"));
         restoreSession();
     }
 
@@ -158,21 +174,23 @@ public class HomeActivity extends android.app.Activity {
         }, "home-restore").start();
     }
 
-    private void applyMode() {
-        emailInput.setVisibility(registerMode ? View.VISIBLE : View.GONE);
-        codeInput.setVisibility(registerMode ? View.VISIBLE : View.GONE);
-        sendCodeButton.setVisibility(registerMode ? View.VISIBLE : View.GONE);
-        loginButton.setText(registerMode ? "注册并登录" : "登录");
-        registerButton.setText(registerMode ? "已有账号？去登录" : "注册新账号");
-        if (debugLines.isEmpty()) {
-            status.setText(registerMode ? "注册需要邮箱 + 验证码（点击获取验证码）" : "用用户名 + 密码登录");
-        }
+    /**
+     * 「我的语言」三颗胶囊的外观（原型：中文 / English / 巴西葡语）。
+     *
+     * <p>English 是**禁用**的：服务端 `LANGS` 只有 `zh-CN` / `pt-BR`，加了只会让用户选完发现翻不了。
+     * 灰着显示比藏起来好 —— 让人知道"这个产品将来支持英文"，也知道"现在别选"。
+     */
+    private void applySpeakLang(String lang) {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("speakLang", lang).apply();
+        refreshLangPills(lang);
     }
 
-    private void toggleRegisterMode() {
-        registerMode = !registerMode;
-        // 版本号显示在状态行，便于确认"装的是不是最新构建"
-        applyMode();
+    private void refreshLangPills(String lang) {
+        boolean pt = "pt-BR".equals(lang);
+        langZhButton.setBackgroundResource(pt ? R.drawable.bg_pill : R.drawable.bg_pill_active);
+        langPtButton.setBackgroundResource(pt ? R.drawable.bg_pill_active : R.drawable.bg_pill);
+        langZhButton.setTextColor(getColor(pt ? R.color.ink : R.color.on_brand));
+        langPtButton.setTextColor(getColor(pt ? R.color.on_brand : R.color.ink));
     }
 
     private void showLogin() {
@@ -326,15 +344,21 @@ public class HomeActivity extends android.app.Activity {
     }
 
     private void doLogin() {
+        // M4：用户协议与录音隐私政策必须勾选才继续（注册/登录都要）
+        if (agreeBox == null || !agreeBox.isChecked()) {
+            status.setText("请先阅读并同意《用户协议》与《录音与隐私政策》");
+            Toast.makeText(this, "请先勾选同意用户协议与录音隐私政策", Toast.LENGTH_LONG).show();
+            return;
+        }
         final String host = normalizeHost(serverInput.getText().toString());
         final String secret = secretInput.getText().toString().trim();
         if (host.isEmpty()) {
-            status.setText("先填服务器地址，例如 http://117.50.180.93:8788");
+            status.setText("先填服务器地址，例如 http://117.50.180.93:8788（在「服务器设置（高级）」里）");
             Toast.makeText(this, "缺少服务器地址", Toast.LENGTH_SHORT).show();
             return;
         }
         if (secret.isEmpty()) {
-            status.setText("先填共享密钥（服务器 start-all 横幅里打印的那串）");
+            status.setText("先填共享密钥（服务器 start-all 横幅里打印的那串，在「服务器设置（高级）」里）");
             Toast.makeText(this, "缺少共享密钥", Toast.LENGTH_SHORT).show();
             return;
         }
@@ -354,18 +378,23 @@ public class HomeActivity extends android.app.Activity {
             Toast.makeText(this, "用户名和密码都要填", Toast.LENGTH_SHORT).show();
             return;
         }
+        // 一个按钮两种意图（原型只有一个「注册／登录」）：填了邮箱+验证码就是注册，否则登录。
+        // 这样既保留了原型的"单按钮"，又不至于让人猜"我到底在注册还是在登录"。
+        final boolean registerMode = !email.isEmpty() || !code.isEmpty();
         if (registerMode && (email.isEmpty() || code.isEmpty())) {
-            Toast.makeText(this, "注册需要邮箱和验证码", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "注册需要邮箱和验证码（只想登录就把这两项留空）", Toast.LENGTH_LONG).show();
             return;
         }
-        debugLine("tap login host=" + host + " secretLen=" + secret.length() + " user=" + user);
+        final boolean isRegister = registerMode;
+        debugLine("tap login host=" + host + " secretLen=" + secret.length() + " user=" + user
+                + (isRegister ? " (注册)" : " (登录)"));
         loginButton.setEnabled(false);
-        status.setText(registerMode ? "注册中…" : "登录中…");
+        status.setText(isRegister ? "注册中…" : "登录中…");
         new Thread(() -> {
             JSONObject body = null;
             String error = "";
             try {
-                body = registerMode
+                body = isRegister
                         ? client.authRegisterEmail(email, user, pass, code)
                         : client.authLogin(user, pass);
             } catch (Throwable e) {
@@ -384,7 +413,7 @@ public class HomeActivity extends android.app.Activity {
                         String hint = result.optString("hint", "");
                         reason = hint.isEmpty() ? result.optString("error", failure) : hint;
                     }
-                    status.setText((registerMode ? "注册失败：" : "登录失败：") + reason);
+                    status.setText((isRegister ? "注册失败：" : "登录失败：") + reason);
                     Toast.makeText(this, reason, Toast.LENGTH_LONG).show();
                     debugLine("fail: " + reason);
                     return;
