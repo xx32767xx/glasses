@@ -824,11 +824,19 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('产品名', /@string\/app_brand/.test(home))
     check('品牌标语', /@string\/home_slogan/.test(home))
 
-    // 语言胶囊：英文必须禁用（服务端只做中↔巴葡，能点就是骗人）
+    // 语言胶囊：三颗「我的语言」= 界面语言（4.59 澄清），三种都能选
+    //
+    // ⚠️ 4.49 当时断言「English 必须禁用」，因为它当时管的是**说话语言**（服务端只做中↔巴葡）。
+    // 现在它管的是界面文字，英文必须可选；而「说话」那一侧仍只有中文/巴葡两种。
     check('三颗语言胶囊', /homeLangZh/.test(home) && /homeLangEn/.test(home) && /homeLangPt/.test(home))
     const enBlock = home.slice(home.indexOf('@+id/homeLangEn'), home.indexOf('@+id/homeLangPt'))
-    check('English 是禁用的', /android:enabled="false"/.test(enBlock), '能点就会让人选完发现翻不了')
-    check('语言选择写进 speakLang', /putString\("speakLang"/.test(homeJava))
+    check('界面语言里 English 可选', !/android:enabled="false"/.test(enBlock)
+      && /android:clickable="true"/.test(enBlock))
+    const roomsXml = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout', 'page_rooms.xml'), 'utf-8')
+    check('说话语言仍只有中文与巴葡两颗（服务端只做这两种）',
+      /roomsLangZh/.test(roomsXml) && /roomsLangPt/.test(roomsXml) && !/roomsLangEn/.test(roomsXml))
+    check('说话语言写进 speakLang（建会议时）', /putString\("speakLang"/.test(
+      readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay', 'RoomsActivity.java'), 'utf-8')))
 
     // M4：不勾协议不许继续（注册/登录都要）
     check('协议勾选的门禁在 doLogin 最前面',
@@ -1210,16 +1218,48 @@ export async function runAndroidOrderSuite({ it, check }) {
       check(`${f} 回前台会自检语言`, /UiLang\.trackShown\(this\)/.test(body))
     }
 
-    // ⑥ 选择器：登录页右上角 + 设置页各一组，语言名用它自己的语言写
+    // ⑥ 选择器：登录页的「我的语言」 + 设置页各一组，语言名用它自己的语言写
     const home = readFileSync(join(resDir, 'layout', 'page_home.xml'), 'utf-8')
     const setPage = readFileSync(join(resDir, 'layout', 'page_settings_app.xml'), 'utf-8')
-    check('登录页有界面语言三选一', /@\+id\/homeUiLangZh/.test(home) && /@\+id\/homeUiLangPt/.test(home)
-      && /@\+id\/homeUiLangEn/.test(home))
+    check('登录页「我的语言」就是界面语言三选一',
+      /@\+id\/homeLangZh/.test(home) && /@\+id\/homeLangEn/.test(home) && /@\+id\/homeLangPt/.test(home))
+    check('登录页只有这一组选择器（不另外挂一排）', !/homeUiLang/.test(home))
+    check('English 可选（它现在只影响界面）', !/android:enabled="false"/.test(home))
     check('设置页有界面语言三选一', /@\+id\/setAppUiLangZh/.test(setPage) && /@\+id\/setAppUiLangPt/.test(setPage)
       && /@\+id\/setAppUiLangEn/.test(setPage))
-    check('语言名不翻译（Português / English 原样）', /text="Português"/.test(home) && /text="Português"/.test(setPage))
+    check('语言名不翻译（Português / English 原样）',
+      /@string\/lang_pt_native/.test(home) && /@string\/lang_en/.test(home)
+      && /text="Português"/.test(setPage) && /@string\/lang_en/.test(setPage))
+    check('Português 三种语言下写法一致', ['values', 'values-en', 'values-pt-rBR'].every((d) =>
+      /name="lang_pt_native">Português</.test(readFileSync(join(resDir, d, 'strings.xml'), 'utf-8'))))
     check('界面语言与「我说话用什么语言」是两个开关', /ui_lang_hint/.test(setPage)
       && /rooms_my_lang_title/.test(setPage))
+  })
+
+  await it('4.59：「我的语言」是界面语言，说话语言在创建会议时选', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const layoutDir = join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout')
+    const home = readFileSync(join(javaDir, 'HomeActivity.java'), 'utf-8')
+    const rooms = readFileSync(join(javaDir, 'RoomsActivity.java'), 'utf-8')
+    const roomsXml = readFileSync(join(layoutDir, 'page_rooms.xml'), 'utf-8')
+    const homeXml = readFileSync(join(layoutDir, 'page_home.xml'), 'utf-8')
+
+    // 登录页：三颗胶囊 = 界面语言，点了就存 uiLang 并重建
+    check('登录页三颗胶囊切的是界面语言',
+      /langZhButton\.setOnClickListener\(v -> applyUiLang\(UiLang\.ZH\)\)/.test(home)
+      && /langEnButton\.setOnClickListener\(v -> applyUiLang\(UiLang\.EN\)\)/.test(home)
+      && /langPtButton\.setOnClickListener\(v -> applyUiLang\(UiLang\.PT\)\)/.test(home))
+    check('登录页不再自己决定说话语言（那件事在建会议时选）',
+      !/applySpeakLang/.test(home) && !/retrieveSpeakLang/.test(home) && !/"speakLang"/.test(home))
+    check('登录页三颗胶囊的名字：中文 / English / Português',
+      /@string\/lang_zh/.test(homeXml) && /@string\/lang_en/.test(homeXml)
+      && /@string\/lang_pt_native/.test(homeXml))
+    check('说明写清这只改界面文字', /@string\/home_my_lang_hint/.test(homeXml))
+
+    // 房间列表（建会议）：这里才是说话/翻译方向
+    check('建会议时选说话语言', /@\+id\/roomsLangZh/.test(roomsXml) && /@\+id\/roomsLangPt/.test(roomsXml)
+      && /putString\("speakLang"/.test(rooms))
+    check('房间列表说明写的是识别方向', /@string\/rooms_my_lang_hint/.test(roomsXml))
   })
 
   await it('4.56：登录页那行空状态栏不再挂着', () => {

@@ -93,9 +93,11 @@ android {
     //       UiLang 管切换（登录页右上角 + 设置页）；登录页那条空状态栏不再挂着。见 docs/21 §4.56。
     // 4.58：服务端返回的 error / hint 也走三语（ServerText 三层查表：整句/前缀/机器码），
     //       WS 推的 host-left 不再原样显示；MicUploader 的中文提示一并收编。见 docs/21 §4.59。
+    // 4.59：澄清——登录页「我的语言」选的是**界面语言**（中文/English/Português，English 不再禁用），
+    //       说话语言在建会议时选；顶那排重复的选择器删掉。见 docs/21 §4.60。
     // 4.57：三语的一处安全细节——房间页在**正在开麦上传时不自动 recreate**（换语言会把这一段发言打断）。
-        versionCode = 87
-        versionName = "4.58"
+        versionCode = 88
+        versionName = "4.59"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

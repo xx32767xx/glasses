@@ -12,7 +12,6 @@
     <string name="home_subtitle">Chinese ↔ Brazilian Portuguese · simultaneous interpreting</string>
     <string name="home_slogan">After Babel: different languages, talk freely.</string>
     <string name="home_my_lang">My language</string>
-    <string name="home_lang_en_locked">English not supported yet (the server only does Chinese ↔ Brazilian Portuguese)</string>
     <string name="home_hint_user">Username</string>
     <string name="home_hint_email">Email (first time: sign up with a code)</string>
     <string name="home_send_code">Get code</string>
@@ -296,4 +295,6 @@ If you do not want to be recorded, do not tap Start. To delete records on the ph
     <string name="up_status">Uploading: %1$ds sent (%2$ds recorded, %3$d Hz)</string>
     <string name="up_interrupted">Recording stopped: %1$s</string>
     <string name="up_upload_failed">Uploading audio failed: %1$s</string>
+    <string name="lang_pt_native">Português</string>
+    <string name="home_my_lang_hint">This only changes the interface wording; the language you speak is chosen when you create a meeting</string>
 </resources>

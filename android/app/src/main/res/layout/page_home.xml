@@ -36,60 +36,6 @@
             android:textColor="@color/ink_soft"
             android:textSize="@dimen/text_secondary" />
 
-        <!-- 界面语言（4.56）：中文 / Português / English。
-             ⚠️ 与表单里的「我的语言」不是一回事：那个决定**我说话**用哪种语言（影响识别与翻译方向），
-             这个只决定按钮和标题用哪种语言写字。语言名一律用它自己的语言写
-             （Português / English），否则还没切过去的人根本认不出来。 -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="@dimen/space_gap_tiny"
-            android:gravity="end"
-            android:orientation="horizontal">
-
-            <TextView
-                android:id="@+id/homeUiLangZh"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:clickable="true"
-                android:focusable="true"
-                android:paddingStart="@dimen/space_gap_small"
-                android:paddingTop="@dimen/space_gap_tiny"
-                android:paddingEnd="@dimen/space_gap_small"
-                android:paddingBottom="@dimen/space_gap_tiny"
-                android:text="@string/lang_zh"
-                android:textColor="@color/ink_soft"
-                android:textSize="@dimen/text_caption" />
-
-            <TextView
-                android:id="@+id/homeUiLangPt"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:clickable="true"
-                android:focusable="true"
-                android:paddingStart="@dimen/space_gap_small"
-                android:paddingTop="@dimen/space_gap_tiny"
-                android:paddingEnd="@dimen/space_gap_small"
-                android:paddingBottom="@dimen/space_gap_tiny"
-                android:text="Português"
-                android:textColor="@color/ink_soft"
-                android:textSize="@dimen/text_caption" />
-
-            <TextView
-                android:id="@+id/homeUiLangEn"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:clickable="true"
-                android:focusable="true"
-                android:paddingStart="@dimen/space_gap_small"
-                android:paddingTop="@dimen/space_gap_tiny"
-                android:paddingEnd="@dimen/space_gap_small"
-                android:paddingBottom="@dimen/space_gap_tiny"
-                android:text="@string/lang_en"
-                android:textColor="@color/ink_soft"
-                android:textSize="@dimen/text_caption" />
-        </LinearLayout>
-
         <!-- 状态区：一行人类可读的信息（连接/错误/被顶下线都显示在这里） -->
         <TextView
             android:id="@+id/homeStatus"
@@ -160,7 +106,9 @@
                 android:textColor="@color/ink_soft"
                 android:textSize="@dimen/text_secondary" />
 
-            <!-- 我的语言 -->
+            <!-- 我的语言 = **界面语言**（4.59 澄清：这里选的是按钮和标题用哪种语言写；
+                 说话用哪种语言在建会议时选）。语言名用它自己的语言写，
+                 否则一个被切到巴葡、看不懂中文的人就再也切不回来了。 -->
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -195,10 +143,11 @@
                     android:layout_marginStart="@dimen/space_gap_small"
                     android:layout_weight="1"
                     android:background="@drawable/bg_pill"
+                    android:clickable="true"
+                    android:focusable="true"
                     android:gravity="center"
-                    android:enabled="false"
                     android:text="@string/lang_en"
-                    android:textColor="@color/ink_faint"
+                    android:textColor="@color/ink"
                     android:textSize="@dimen/text_body" />
 
                 <TextView
@@ -211,7 +160,7 @@
                     android:clickable="true"
                     android:focusable="true"
                     android:gravity="center"
-                    android:text="@string/lang_pt_br"
+                    android:text="@string/lang_pt_native"
                     android:textColor="@color/ink"
                     android:textSize="@dimen/text_body" />
             </LinearLayout>
@@ -220,7 +169,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="@dimen/space_gap_tiny"
-                android:text="@string/home_lang_en_locked"
+                android:text="@string/home_my_lang_hint"
                 android:textColor="@color/ink_faint"
                 android:textSize="@dimen/text_caption" />
 

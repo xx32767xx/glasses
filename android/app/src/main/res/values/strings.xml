@@ -297,7 +297,6 @@
     <string name="home_subtitle">中 ↔ 巴西葡语 同声传译</string>
     <string name="home_slogan">巴别塔之后，不同语言，自在交流。</string>
     <string name="home_my_lang">我的语言</string>
-    <string name="home_lang_en_locked">英文暂不支持（服务端只做中 ↔ 巴葡）</string>
     <string name="home_hint_user">用户名</string>
     <string name="home_hint_email">邮箱（首次使用需验证码注册）</string>
     <string name="home_send_code">获取验证码</string>
@@ -581,4 +580,6 @@
     <string name="up_status">录音上传中：已上传 %1$d 秒（已录 %2$d 秒，采样率 %3$d Hz）</string>
     <string name="up_interrupted">录音中断：%1$s</string>
     <string name="up_upload_failed">上传音频失败：%1$s</string>
+    <string name="lang_pt_native">Português</string>
+    <string name="home_my_lang_hint">只改界面文字；说话用哪种语言在创建会议时选</string>
 </resources>

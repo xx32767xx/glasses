@@ -52,21 +52,19 @@ public class HomeActivity extends android.app.Activity {
     private Button loginButton;
     private Button sendCodeButton;
     private TextView whoLine;
+    /**
+     * 「我的语言」三颗胶囊 —— **界面语言**（4.59 澄清）。
+     *
+     * <p>它改的只是按钮/标题用哪种语言文字，与"我说话用哪种语言"无关：后者（{@code speakLang}）
+     * 在建会议那一步选（房间列表页），因为那才是它真正影响识别方向的时候。
+     */
     private TextView langZhButton;
+    private TextView langEnButton;
     private TextView langPtButton;
     private TextView serverToggle;
     private android.widget.CheckBox agreeBox;
     private LinearLayout emailRow;
     private TextView registerToggle;
-    /**
-     * 界面语言三颗小胶囊（4.56）。
-     *
-     * <p>⚠️ 和上面那对 {@code langZhButton/langPtButton}（「我的语言」= 我说话用什么）**不是一回事**：
-     * 这三颗只换界面文字用哪种语言写。
-     */
-    private TextView uiLangZh;
-    private TextView uiLangPt;
-    private TextView uiLangEn;
 
     /**
      * 当前是"注册"还是"登录"（4.50）。
@@ -122,12 +120,10 @@ public class HomeActivity extends android.app.Activity {
         sendCodeButton = findViewById(R.id.homeSendCode);
         whoLine = findViewById(R.id.homeWho);
         langZhButton = findViewById(R.id.homeLangZh);
+        langEnButton = findViewById(R.id.homeLangEn);
         langPtButton = findViewById(R.id.homeLangPt);
         emailRow = findViewById(R.id.homeEmailRow);
         registerToggle = findViewById(R.id.homeRegisterToggle);
-        uiLangZh = findViewById(R.id.homeUiLangZh);
-        uiLangPt = findViewById(R.id.homeUiLangPt);
-        uiLangEn = findViewById(R.id.homeUiLangEn);
         serverToggle = findViewById(R.id.homeServerToggle);
         serverBox = findViewById(R.id.homeServerBox);
         agreeBox = findViewById(R.id.homeAgree);
@@ -149,11 +145,9 @@ public class HomeActivity extends android.app.Activity {
         serverToggle.setOnClickListener(v -> {
             serverBox.setVisibility(serverBox.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
         });
-        uiLangZh.setOnClickListener(v -> applyUiLang(UiLang.ZH));
-        uiLangPt.setOnClickListener(v -> applyUiLang(UiLang.PT));
-        uiLangEn.setOnClickListener(v -> applyUiLang(UiLang.EN));
-        langZhButton.setOnClickListener(v -> applySpeakLang("zh-CN"));
-        langPtButton.setOnClickListener(v -> applySpeakLang("pt-BR"));
+        langZhButton.setOnClickListener(v -> applyUiLang(UiLang.ZH));
+        langEnButton.setOnClickListener(v -> applyUiLang(UiLang.EN));
+        langPtButton.setOnClickListener(v -> applyUiLang(UiLang.PT));
         registerToggle.setOnClickListener(v -> setRegisterMode(!registerMode));
         findViewById(R.id.homeCreate).setOnClickListener(v -> openRooms());
         findViewById(R.id.homeSettings).setOnClickListener(v ->
@@ -162,7 +156,6 @@ public class HomeActivity extends android.app.Activity {
                 startActivity(new Intent(this, MainActivity.class)));
         findViewById(R.id.homeLogout).setOnClickListener(v -> logout());
 
-        refreshLangPills(prefs.getString("speakLang", "zh-CN"));
         refreshUiLangPills();
         setRegisterMode(false);   // 默认是登录态：登录不需要邮箱与验证码
         restoreSession();
@@ -270,33 +263,17 @@ public class HomeActivity extends android.app.Activity {
         recreate();
     }
 
-    /** 当前生效的那颗用品牌色，其余次要色 —— 让人一眼看出现在是哪种语言。 */
+    /** 当前生效的那颗：品牌色底 + 白字，其余白底主色 —— 一眼看出现在是哪种语言。 */
     private void refreshUiLangPills() {
         String cur = UiLang.effective(this);
-        TextView[] pills = {uiLangZh, uiLangPt, uiLangEn};
-        String[] tags = {UiLang.ZH, UiLang.PT, UiLang.EN};
+        TextView[] pills = {langZhButton, langEnButton, langPtButton};
+        String[] tags = {UiLang.ZH, UiLang.EN, UiLang.PT};
         for (int i = 0; i < pills.length; i++) {
             if (pills[i] == null) continue;
             boolean on = tags[i].equals(cur);
-            boolean isPt = UiLang.PT.equals(tags[i]);
-            pills[i].setText(isPt ? "Português" : UiLang.nativeLabel(tags[i]));
-            pills[i].setTextColor(getColor(on ? R.color.brand : R.color.ink_soft));
-            pills[i].setTypeface(null, on ? android.graphics.Typeface.BOLD
-                    : android.graphics.Typeface.NORMAL);
+            pills[i].setBackgroundResource(on ? R.drawable.bg_pill_active : R.drawable.bg_pill);
+            pills[i].setTextColor(getColor(on ? R.color.on_brand : R.color.ink));
         }
-    }
-
-    private void applySpeakLang(String lang) {
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("speakLang", lang).apply();
-        refreshLangPills(lang);
-    }
-
-    private void refreshLangPills(String lang) {
-        boolean pt = "pt-BR".equals(lang);
-        langZhButton.setBackgroundResource(pt ? R.drawable.bg_pill : R.drawable.bg_pill_active);
-        langPtButton.setBackgroundResource(pt ? R.drawable.bg_pill_active : R.drawable.bg_pill);
-        langZhButton.setTextColor(getColor(pt ? R.color.ink : R.color.on_brand));
-        langPtButton.setTextColor(getColor(pt ? R.color.on_brand : R.color.ink));
     }
 
     private void showLogin() {

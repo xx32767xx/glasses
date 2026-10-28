@@ -12,7 +12,6 @@
     <string name="home_subtitle">Chinês ↔ Português (Brasil) · interpretação simultânea</string>
     <string name="home_slogan">Depois de Babel: línguas diferentes, conversa livre.</string>
     <string name="home_my_lang">Meu idioma</string>
-    <string name="home_lang_en_locked">Inglês ainda não suportado (o servidor só faz chinês ↔ português do Brasil)</string>
     <string name="home_hint_user">Usuário</string>
     <string name="home_hint_email">E-mail (primeira vez: cadastro com código)</string>
     <string name="home_send_code">Enviar código</string>
@@ -296,4 +295,6 @@ Se não quiser ser gravado, não toque em Iniciar. Para apagar os registros do c
     <string name="up_status">Enviando: %1$ds enviados (%2$ds gravados, %3$d Hz)</string>
     <string name="up_interrupted">Gravação interrompida: %1$s</string>
     <string name="up_upload_failed">Falha ao enviar o áudio: %1$s</string>
+    <string name="lang_pt_native">Português</string>
+    <string name="home_my_lang_hint">Isto muda apenas o texto da interface; o idioma em que você fala é escolhido ao criar a reunião</string>
 </resources>
