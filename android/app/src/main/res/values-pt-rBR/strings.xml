@@ -386,4 +386,6 @@ Servidor %2$s</string>
     <string name="me_help_privacy">Privacidade</string>
     <string name="me_logout_confirm">Depois de sair, este aparelho precisa entrar de novo para ter reuniões.</string>
     <string name="me_logged_out">Você saiu da conta</string>
+    <string name="srv_role_cannot_role">Esta conta (%1$s) não tem permissão para isto (%2$s)</string>
+    <string name="terms_forbidden_role">Esta conta não pode enviar pedidos de glossário (papel: %1$s); peça acesso a um administrador</string>
 </resources>

@@ -37,6 +37,8 @@ public class TermLibActivity extends android.app.Activity {
     private LanClient client;
 
     private TextView hint;
+    /** 当前账号的角色（admin / user / dev）：决定能不能提申请。空 = 还没问到。 */
+    private String role = "";
     private LinearLayout libList;
     private LinearLayout requestList;
 
@@ -82,6 +84,13 @@ public class TermLibActivity extends android.app.Activity {
             JSONObject mine = null;
             String failure = "";
             try {
+                JSONObject who = client.authWhoAmI();
+                if (who != null && who.optBoolean("ok", false)) {
+                    role = who.optString("role", "");
+                    getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                            .putString("role", role)
+                            .putString("termsUser", who.optString("user", "")).apply();
+                }
                 libs = client.orgLibraries();
                 mine = client.orgMyRequests();
             } catch (Exception error) {
@@ -107,7 +116,14 @@ public class TermLibActivity extends android.app.Activity {
             hint.setText(getString(R.string.terms_lib_empty));
             return;
         }
-        hint.setText(getString(R.string.terms_lib_hint));
+        if (!canCreateRequest()) {
+            // 4.63：用户实测提交时只看到一句"没有权限"，不知道是哪出的问题 ——
+            // 现在进页面就说清角色，连按钮都不给（点了才被拒最气人）。
+            hint.setText(getString(R.string.terms_forbidden_role,
+                    role.isEmpty() ? "?" : role));
+        } else {
+            hint.setText(getString(R.string.terms_lib_hint));
+        }
         for (int i = 0; i < libraries.length(); i++) {
             JSONObject one = libraries.optJSONObject(i);
             if (one == null) continue;
@@ -154,8 +170,10 @@ public class TermLibActivity extends android.app.Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(44));
         applyParams.topMargin = dp(12);
         apply.setLayoutParams(applyParams);
-        apply.setOnClickListener(v -> pickRequestType(library));
-        card.addView(apply);
+        if (canCreateRequest()) {
+            apply.setOnClickListener(v -> pickRequestType(library));
+            card.addView(apply);
+        }
         return card;
     }
 
@@ -247,6 +265,16 @@ public class TermLibActivity extends android.app.Activity {
     }
 
     // ── 提申请 ──────────────────────────────────────────────────────────
+    /**
+     * 能不能提申请：与服务端 {@code ROLE_PERMISSIONS['request.create']} 保持一致
+     * （admin / user / dev）。角色**未知**时不拦 —— 也许是老服务端没给 role，
+     * 那时候让服务端自己判并给出准确原因，比客户端瞎猜好。
+     */
+    private boolean canCreateRequest() {
+        if (role == null || role.isEmpty()) return true;
+        return "admin".equals(role) || "user".equals(role) || "dev".equals(role);
+    }
+
     private void pickRequestType(final JSONObject library) {
         final String[] types = {"add", "update", "delete"};
         final String[] labels = {getString(R.string.terms_req_add),

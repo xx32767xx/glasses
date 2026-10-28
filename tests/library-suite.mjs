@@ -123,7 +123,11 @@ export async function runLibrarySuite({ it, check, assert }) {
     check('user 不能 library.write', allowed('user', 'library.write') === false)
     check('user 能 request.create', allowed('user', 'request.create') === true)
     check('admin 能写库与审批', allowed('admin', 'library.write') && allowed('admin', 'request.decide'))
-    check('dev 只读：不能写库、不能提申请', allowed('dev', 'library.write') === false && allowed('dev', 'request.create') === false)
+    // 4.63 改：dev（测试账号）**可以**提申请。原来的"dev 只读"是刻意的，但它把测试账号
+    // 挡在了术语库流程门外 —— 提申请本身没有破坏性（要管理员审批才写库），而测试账号正是
+    // 要走完这条流程的人。写库仍然只有 admin 能做。
+    check('dev 能提申请但仍不能写库',
+      allowed('dev', 'request.create') === true && allowed('dev', 'library.write') === false)
     check('未知动作一律拒绝', allowed('admin', 'library.nuke') === false)
     check('每个动作都至少有一个角色', Object.values(ROLE_PERMISSIONS).every((list) => list.length > 0))
   })

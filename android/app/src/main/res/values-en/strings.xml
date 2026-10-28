@@ -386,4 +386,6 @@ Server %2$s</string>
     <string name="me_help_privacy">Privacy policy</string>
     <string name="me_logout_confirm">After signing out this device must sign in again to hold meetings.</string>
     <string name="me_logged_out">Signed out</string>
+    <string name="srv_role_cannot_role">This account (%1$s) is not allowed to do this (%2$s)</string>
+    <string name="terms_forbidden_role">This account cannot submit term-base requests (role: %1$s); ask an administrator for access</string>
 </resources>

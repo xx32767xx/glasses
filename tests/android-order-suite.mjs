@@ -1527,6 +1527,46 @@ export async function runAndroidOrderSuite({ it, check }) {
       && /expiresAt: typeof record\.expiresAt/.test(relay))
   })
 
+  await it('4.63：提术语库申请被 403 的两件事（权限表 + 提示说不清）', () => {
+    const root = (f) => readFileSync(join(ROOT, f), 'utf-8')
+    const accounts = root('lib/accounts.mjs')
+    const orgApi = root('relay/org-api.mjs')
+    const serverText = root('android/app/src/main/java/com/leion/lanrelay/ServerText.java')
+    const termsJava = root('android/app/src/main/java/com/leion/lanrelay/TermLibActivity.java')
+
+    // ① 权限表：dev（测试账号）也要能提申请 —— 提申请没有破坏性，要管理员审批才写库
+    check('request.create 允许 dev（测试账号）',
+      /'request\.create': \['admin', 'user', 'dev'\]/.test(accounts),
+      '漏掉 dev 的话，测试账号一提交就是 403')
+
+    // ② 403 要能说清"谁不能做什么"：中文原话 + 机器可读字段
+    check('deny 返回 code/role/action', /code: 'forbidden'/.test(orgApi)
+      && /role: role \?\? ''/.test(orgApi) && /action,/.test(orgApi))
+
+    // ③ 客户端两种服务端都能读懂：新服务端看 code，老服务端解析那句中文
+    check('客户端认得结构化 403', /"forbidden"\.equals\(body\.optString\("code", ""\)\)/.test(serverText))
+    check('客户端也解析老服务端的中文原话',
+      /private static String forbiddenDetail/.test(serverText)
+      && /startsWith\("当前角色（"\)/.test(serverText))
+    check('解析出来的角色会显示给人看',
+      /R\.string\.srv_role_cannot_role, role, action/.test(serverText))
+
+    // ④ 没权限就别让人点：进页面先说清角色，按钮干脆不出现
+    check('页面先问一次 whoami 拿角色',
+      /client\.authWhoAmI\(\)/.test(termsJava) && /role = who\.optString\("role"/.test(termsJava))
+    check('没权限时不画「申请修改」按钮',
+      /if \(canCreateRequest\(\)\) \{[\s\S]{0,400}card\.addView\(apply\);/.test(termsJava))
+    check('没权限时把角色写在提示里', /terms_forbidden_role/.test(termsJava))
+    check('权限判定与服务端一致（admin/user/dev）',
+      /"admin"\.equals\(role\) \|\| "user"\.equals\(role\) \|\| "dev"\.equals\(role\)/.test(termsJava))
+
+    // ⑤ 三份资源都有这条提示
+    for (const dir of ['values', 'values-en', 'values-pt-rBR']) {
+      check(`terms_forbidden_role 在 ${dir} 里`,
+        /name="terms_forbidden_role"/.test(readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', dir, 'strings.xml'), 'utf-8')))
+    }
+  })
+
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {
     const targets = [
       ...collectSources(join(ROOT, 'android', 'app', 'src', 'main', 'java'), ['.java']),

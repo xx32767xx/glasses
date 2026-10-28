@@ -158,6 +158,11 @@ public final class ServerText {
         String text = raw.trim();
         if (text.isEmpty()) return "";
 
+        // 「当前角色（dev）不能做 request.create」这种句子，光回一句"没有权限"没法排查。
+        // 把角色与动作抠出来，用户才知道是自己账号的问题还是功能的问题（4.63 用户实测踩到）。
+        String forbidden = forbiddenDetail(ctx, text);
+        if (forbidden != null) return forbidden;
+
         Integer id = lookup(text);
         if (id != null) return ctx.getString(id);
 
@@ -179,12 +184,33 @@ public final class ServerText {
      */
     public static String from(Context ctx, org.json.JSONObject body, String fallback) {
         if (body != null) {
+            // 权限拒绝（4.63）：服务端给了 code/role/action，直接拼一句说清"谁不能做什么"
+            if ("forbidden".equals(body.optString("code", ""))) {
+                return ctx.getString(R.string.srv_role_cannot_role,
+                        body.optString("role", ""), body.optString("action", ""));
+            }
             String hint = body.optString("hint", "").trim();
             if (!hint.isEmpty()) return of(ctx, hint);
             String error = body.optString("error", "").trim();
             if (!error.isEmpty()) return of(ctx, error);
         }
         return of(ctx, fallback);
+    }
+
+    /**
+     * 解析服务端的 403 原话：{@code 当前角色（dev）不能做 request.create}。
+     *
+     * <p>新服务端会直接给 {@code code:'forbidden'} + {@code role}/{@code action}（见
+     * {@link #from});这里兼容**老服务端**只有一句中文的情况 —— 反正格式是固定的。
+     */
+    private static String forbiddenDetail(Context ctx, String text) {
+        if (!text.startsWith("当前角色（")) return null;
+        int close = text.indexOf('）');
+        if (close < 0) return null;
+        String role = text.substring("当前角色（".length(), close);
+        String rest = text.substring(close + 1);
+        String action = rest.startsWith("不能做") ? rest.substring("不能做".length()).trim() : rest.trim();
+        return ctx.getString(R.string.srv_role_cannot_role, role, action);
     }
 
     private static Integer lookup(String text) {

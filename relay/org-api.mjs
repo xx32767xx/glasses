@@ -61,7 +61,18 @@ function bad(status, error) {
 }
 
 function deny(role, action) {
-  return bad(403, `当前角色（${role ?? '未登录'}）不能做 ${action}`)
+  // 除了给人看的中文原话，再给一组机器读的字段：客户端要能说清"哪个角色不能做什么"。
+  // 只丢一句"没有权限"的话，用户和我们都没法判断是账号问题还是代码问题（4.63 踩过）。
+  return {
+    status: 403,
+    json: {
+      ok: false,
+      error: `当前角色（${role ?? '未登录'}）不能做 ${action}`,
+      code: 'forbidden',
+      role: role ?? '',
+      action,
+    },
+  }
 }
 
 /**

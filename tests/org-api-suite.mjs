@@ -172,7 +172,9 @@ export async function runOrgApiSuite({ it, check, assert }) {
       method: 'POST', path: '/org/requests', user: 'dev@example.com', role: 'dev',
       body: { type: 'add', libraryId: 'lib-a', zh: '测试项', pt: 'Test', reason: '看看' },
     })
-    check('dev 提申请 → 403', write.status === 403, String(write.status))
+    // 4.63：dev 也能提申请了（见 library-suite 里那条权限断言）。仍然是"提申请"，
+  // 写库还是要 admin 审批。
+  check('dev 提申请 → 200（待管理员审批）', write.status === 200, String(write.status))
   })
 
   await it('管理员批量导入走同一套校验（一条坏数据不拖垮整批）', async () => {

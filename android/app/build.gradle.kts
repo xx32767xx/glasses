@@ -99,9 +99,11 @@ android {
     //       已支持语言卡、底部三项导航；新增 R.id 存在性门禁。见 docs/21 §4.61。
     // 4.62：「我的」页面（渐变个人卡 + 设备/术语库/翻译服务/帮助/退出）+ 术语库管理（只能提申请）；
     //       底部导航抽成 inc_bottom_nav + NavTabs；whoami 新增 status/expiresAt。见 docs/21 §4.62。
+    // 4.63：术语库提申请被 403 的两件事——权限表漏了 dev（测试账号）；403 现在会说清
+    //       “哪个角色不能做什么”，没权限时连按钮都不画。见 docs/21 §4.63。
     // 4.57：三语的一处安全细节——房间页在**正在开麦上传时不自动 recreate**（换语言会把这一段发言打断）。
-        versionCode = 91
-        versionName = "4.62"
+        versionCode = 92
+        versionName = "4.63"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），
