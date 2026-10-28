@@ -58,6 +58,15 @@ public class HomeActivity extends android.app.Activity {
     private android.widget.CheckBox agreeBox;
     private LinearLayout emailRow;
     private TextView registerToggle;
+    /**
+     * 界面语言三颗小胶囊（4.56）。
+     *
+     * <p>⚠️ 和上面那对 {@code langZhButton/langPtButton}（「我的语言」= 我说话用什么）**不是一回事**：
+     * 这三颗只换界面文字用哪种语言写。
+     */
+    private TextView uiLangZh;
+    private TextView uiLangPt;
+    private TextView uiLangEn;
 
     /**
      * 当前是"注册"还是"登录"（4.50）。
@@ -69,6 +78,31 @@ public class HomeActivity extends android.app.Activity {
     private boolean registerMode = false;
     /** 屏幕调试行（无 adb 时靠它定位） */
     private final java.util.ArrayDeque<String> debugLines = new java.util.ArrayDeque<>();
+
+    /**
+     * 状态行：**只在有话说的时候出现**（4.56）。
+     *
+     * <p>原来它是一块永远存在的卡片，空文本时也画出一个带边框的空条 —— 用户看到的就是
+     * 登录页顶上那行莫名其妙的小横条（注销后还写着「已注销」）。现在空字符串直接整块隐藏。
+     */
+    private void setStatus(String msg) {
+        if (status == null) return;
+        boolean show = msg != null && !msg.isEmpty();
+        status.setText(show ? msg : "");
+        status.setVisibility(show ? View.VISIBLE : View.GONE);
+    }
+
+    @Override
+    protected void attachBaseContext(android.content.Context base) {
+        // 4.56：界面语言必须在这里换 —— 每个界面都要，否则只有先建的那个生效
+        super.attachBaseContext(UiLang.wrap(base));
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        UiLang.trackShown(this);   // 4.56：从设置页改完界面语言回来，本页要跟上
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -91,6 +125,9 @@ public class HomeActivity extends android.app.Activity {
         langPtButton = findViewById(R.id.homeLangPt);
         emailRow = findViewById(R.id.homeEmailRow);
         registerToggle = findViewById(R.id.homeRegisterToggle);
+        uiLangZh = findViewById(R.id.homeUiLangZh);
+        uiLangPt = findViewById(R.id.homeUiLangPt);
+        uiLangEn = findViewById(R.id.homeUiLangEn);
         serverToggle = findViewById(R.id.homeServerToggle);
         serverBox = findViewById(R.id.homeServerBox);
         agreeBox = findViewById(R.id.homeAgree);
@@ -112,6 +149,9 @@ public class HomeActivity extends android.app.Activity {
         serverToggle.setOnClickListener(v -> {
             serverBox.setVisibility(serverBox.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
         });
+        uiLangZh.setOnClickListener(v -> applyUiLang(UiLang.ZH));
+        uiLangPt.setOnClickListener(v -> applyUiLang(UiLang.PT));
+        uiLangEn.setOnClickListener(v -> applyUiLang(UiLang.EN));
         langZhButton.setOnClickListener(v -> applySpeakLang("zh-CN"));
         langPtButton.setOnClickListener(v -> applySpeakLang("pt-BR"));
         registerToggle.setOnClickListener(v -> setRegisterMode(!registerMode));
@@ -123,6 +163,7 @@ public class HomeActivity extends android.app.Activity {
         findViewById(R.id.homeLogout).setOnClickListener(v -> logout());
 
         refreshLangPills(prefs.getString("speakLang", "zh-CN"));
+        refreshUiLangPills();
         setRegisterMode(false);   // 默认是登录态：登录不需要邮箱与验证码
         restoreSession();
     }
@@ -162,7 +203,7 @@ public class HomeActivity extends android.app.Activity {
                 if (body == null) {
                     // 连不上服务器：保留登录态，先按已登录进首页；真正的失效会在下一次请求里暴露
                     showHome(user, "");
-                    status.setText("离线：连不上服务器（" + error + "），登录状态先保留");
+                    setStatus(getString(R.string.st_offline_keep, error));
                     debugLine("restore offline: " + error);
                     return;
                 }
@@ -176,14 +217,14 @@ public class HomeActivity extends android.app.Activity {
                     prefs.edit().remove("accountToken").remove("termsUser").remove("roomHost").apply();
                     client.setToken("");
                     showLogin();
-                    status.setText("登录已失效，请重新登录"
-                            + (hint.isEmpty() ? "" : ("（" + hint + "）")));
+                    setStatus(hint.isEmpty() ? getString(R.string.st_session_expired)
+                            : getString(R.string.st_session_expired_hint, hint));
                     debugLine("restore 401: " + hint);
                     return;
                 }
                 // 其他非 2xx：服务端有问题，但**不一定**是会话失效 —— 同样不动登录态
                 showHome(user, "");
-                status.setText("无法确认登录状态（HTTP " + code + "），登录状态先保留");
+                setStatus(getString(R.string.st_unknown_keep, code));
                 debugLine("restore unexpected: " + body);
             });
         }, "home-restore").start();
@@ -201,9 +242,9 @@ public class HomeActivity extends android.app.Activity {
         int emailVisibility = register ? View.VISIBLE : View.GONE;
         emailRow.setVisibility(emailVisibility);
         codeInput.setVisibility(emailVisibility);
-        loginButton.setText(register ? "注册并登录" : "登录");
-        registerToggle.setText(register ? "已有账号？用密码登录" : "没有账号？用邮箱验证码注册");
-        passInput.setHint(register ? "设置密码" : "密码");
+        loginButton.setText(getString(register ? R.string.btn_register_login : R.string.btn_login));
+        registerToggle.setText(getString(register ? R.string.home_toggle_login : R.string.home_toggle_register));
+        passInput.setHint(getString(register ? R.string.home_hint_pass_set : R.string.home_hint_pass));
         // 收起邮箱时把内容清掉：留着会让"登录却要求验证码"这种困惑再次出现
         if (!register) {
             emailInput.setText("");
@@ -217,6 +258,34 @@ public class HomeActivity extends android.app.Activity {
      * <p>English 是**禁用**的：服务端 `LANGS` 只有 `zh-CN` / `pt-BR`，加了只会让用户选完发现翻不了。
      * 灰着显示比藏起来好 —— 让人知道"这个产品将来支持英文"，也知道"现在别选"。
      */
+    /**
+     * 换界面语言（4.56）：存下来 + 重建本页。
+     *
+     * <p>为什么必须重建：已经画出来的文字不会自己变；{@code recreate()} 之后
+     * {@code attachBaseContext} 会用新的 Configuration 重新取资源。
+     */
+    private void applyUiLang(String tag) {
+        if (tag.equals(UiLang.saved(this))) return;     // 点了当前这颗，什么都不做
+        UiLang.save(this, tag);
+        recreate();
+    }
+
+    /** 当前生效的那颗用品牌色，其余次要色 —— 让人一眼看出现在是哪种语言。 */
+    private void refreshUiLangPills() {
+        String cur = UiLang.effective(this);
+        TextView[] pills = {uiLangZh, uiLangPt, uiLangEn};
+        String[] tags = {UiLang.ZH, UiLang.PT, UiLang.EN};
+        for (int i = 0; i < pills.length; i++) {
+            if (pills[i] == null) continue;
+            boolean on = tags[i].equals(cur);
+            boolean isPt = UiLang.PT.equals(tags[i]);
+            pills[i].setText(isPt ? "Português" : UiLang.nativeLabel(tags[i]));
+            pills[i].setTextColor(getColor(on ? R.color.brand : R.color.ink_soft));
+            pills[i].setTypeface(null, on ? android.graphics.Typeface.BOLD
+                    : android.graphics.Typeface.NORMAL);
+        }
+    }
+
     private void applySpeakLang(String lang) {
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("speakLang", lang).apply();
         refreshLangPills(lang);
@@ -239,7 +308,7 @@ public class HomeActivity extends android.app.Activity {
         loginBox.setVisibility(View.GONE);
         homeBox.setVisibility(View.VISIBLE);
         whoLine.setText(user + (role.isEmpty() ? "" : " · " + role));
-        status.setText("已登录");
+        setStatus(getString(R.string.st_logged_in));
         startSessionWatch();
     }
 
@@ -254,7 +323,7 @@ public class HomeActivity extends android.app.Activity {
         if (sessionSocket != null) sessionSocket.stop();
         sessionWatch = new SessionWatch(client, message -> ui.post(() -> {
             Toast.makeText(this, message, Toast.LENGTH_LONG).show();
-            status.setText(message);
+            setStatus(message);
             getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                     .remove("accountToken").remove("termsUser").remove("roomHost").apply();
             client.setToken("");
@@ -295,8 +364,8 @@ public class HomeActivity extends android.app.Activity {
                                     return;
                                 }
                                 Toast.makeText(HomeActivity.this,
-                                        "账号已在别处登录，这台设备的登录已失效", Toast.LENGTH_LONG).show();
-                                status.setText("账号已在别处登录，请重新登录");
+                                        getString(R.string.st_kicked_other), Toast.LENGTH_LONG).show();
+                                setStatus(getString(R.string.st_kicked_relogin));
                                 getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                                         .remove("accountToken").remove("termsUser").remove("roomHost").apply();
                                 client.setToken("");
@@ -333,7 +402,7 @@ public class HomeActivity extends android.app.Activity {
     private void sendCode() {
         final String email = emailInput.getText().toString().trim();
         if (email.isEmpty()) {
-            Toast.makeText(this, "先填邮箱", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, getString(R.string.toast_need_email), Toast.LENGTH_SHORT).show();
             return;
         }
         sendCodeButton.setEnabled(false);
@@ -351,9 +420,11 @@ public class HomeActivity extends android.app.Activity {
                 sendCodeButton.setEnabled(true);
                 if (result != null && result.optBoolean("ok", false)) {
                     String code = result.optString("code", "");
-                    status.setText(code.isEmpty() ? "验证码已发送到邮箱" : ("验证码：" + code + "（开发环境直接返回）"));
+                    setStatus(code.isEmpty() ? getString(R.string.st_code_sent)
+                            : getString(R.string.st_code_dev, code));
                 } else {
-                    status.setText("获取验证码失败：" + (result == null ? failure : result.optString("error", failure)));
+                    setStatus(getString(R.string.st_code_failed,
+                            result == null ? failure : result.optString("error", failure)));
                 }
             });
         }, "home-code").start();
@@ -398,7 +469,7 @@ public class HomeActivity extends android.app.Activity {
                     }
                     sb.append(line);
                 }
-                status.setText(sb.toString());
+                setStatus(sb.toString());
             }
         });
     }
@@ -406,20 +477,20 @@ public class HomeActivity extends android.app.Activity {
     private void doLogin() {
         // M4：用户协议与录音隐私政策必须勾选才继续（注册/登录都要）
         if (agreeBox == null || !agreeBox.isChecked()) {
-            status.setText("请先阅读并同意《用户协议》与《录音与隐私政策》");
-            Toast.makeText(this, "请先勾选同意用户协议与录音隐私政策", Toast.LENGTH_LONG).show();
+            setStatus(getString(R.string.st_need_agree_links));
+            Toast.makeText(this, getString(R.string.toast_need_agree), Toast.LENGTH_LONG).show();
             return;
         }
         final String host = normalizeHost(serverInput.getText().toString());
         final String secret = secretInput.getText().toString().trim();
         if (host.isEmpty()) {
-            status.setText("先填服务器地址，例如 http://117.50.180.93:8788（在「服务器设置（高级）」里）");
-            Toast.makeText(this, "缺少服务器地址", Toast.LENGTH_SHORT).show();
+            setStatus(getString(R.string.st_fill_server));
+            Toast.makeText(this, getString(R.string.toast_missing_server), Toast.LENGTH_SHORT).show();
             return;
         }
         if (secret.isEmpty()) {
-            status.setText("先填共享密钥（服务器 start-all 横幅里打印的那串，在「服务器设置（高级）」里）");
-            Toast.makeText(this, "缺少共享密钥", Toast.LENGTH_SHORT).show();
+            setStatus(getString(R.string.st_fill_secret));
+            Toast.makeText(this, getString(R.string.toast_missing_secret), Toast.LENGTH_SHORT).show();
             return;
         }
         // 地址或密钥变了 → 重建客户端（否则还在用启动时那份空配置）
@@ -435,20 +506,20 @@ public class HomeActivity extends android.app.Activity {
         final String email = emailInput.getText().toString().trim();
         final String code = codeInput.getText().toString().trim();
         if (user.isEmpty() || pass.isEmpty()) {
-            Toast.makeText(this, "用户名和密码都要填", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, getString(R.string.toast_need_user_pass), Toast.LENGTH_SHORT).show();
             return;
         }
         // 由「登录 / 注册」开关决定，不看"填了没"（4.50：以前靠字段推断，
         // 用户填了邮箱去登录会被当成注册，报错还看不懂）。
         final boolean isRegister = registerMode;
         if (isRegister && (email.isEmpty() || code.isEmpty())) {
-            Toast.makeText(this, "注册需要邮箱和验证码（先点「获取验证码」）", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, getString(R.string.toast_need_email_code), Toast.LENGTH_LONG).show();
             return;
         }
         debugLine("tap login host=" + host + " secretLen=" + secret.length() + " user=" + user
-                + (isRegister ? " (注册)" : " (登录)"));
+                + getString(isRegister ? R.string.debug_suffix_register : R.string.debug_suffix_login));
         loginButton.setEnabled(false);
-        status.setText(isRegister ? "注册中…" : "登录中…");
+        setStatus(getString(isRegister ? R.string.st_registering : R.string.st_logging_in));
         new Thread(() -> {
             JSONObject body = null;
             String error = "";
@@ -472,7 +543,7 @@ public class HomeActivity extends android.app.Activity {
                         String hint = result.optString("hint", "");
                         reason = hint.isEmpty() ? result.optString("error", failure) : hint;
                     }
-                    status.setText((isRegister ? "注册失败：" : "登录失败：") + reason);
+                    setStatus(getString(isRegister ? R.string.st_register_failed : R.string.st_login_failed, reason));
                     Toast.makeText(this, reason, Toast.LENGTH_LONG).show();
                     debugLine("fail: " + reason);
                     return;
@@ -514,7 +585,7 @@ public class HomeActivity extends android.app.Activity {
                         .remove("accountToken").remove("termsUser").remove("roomHost").apply();
                 client.setToken("");
                 showLogin();
-                status.setText("已注销");
+                setStatus("");            // 4.56：注销后不再挂一行「已注销」
             });
         }, "home-logout").start();
     }

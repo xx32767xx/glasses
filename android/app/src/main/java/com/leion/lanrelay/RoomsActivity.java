@@ -41,6 +41,18 @@ public class RoomsActivity extends android.app.Activity {
     private String speakLang = "zh-CN";
 
     @Override
+    protected void attachBaseContext(android.content.Context base) {
+        // 4.56：界面语言必须在这里换（三套资源在 values-en / values-pt-rBR）
+        super.attachBaseContext(UiLang.wrap(base));
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        UiLang.trackShown(this);   // 别处改过界面语言，回到本页要跟上（会自己 recreate）
+    }
+
+    @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.page_rooms);
@@ -55,12 +67,12 @@ public class RoomsActivity extends android.app.Activity {
         SharedPreferences prefs = getSharedPreferences("leion", MODE_PRIVATE);
         myName = prefs.getString("termsUser", "");
         if (myName == null || myName.isEmpty()) {
-            hint.setText("还没登录：请先在主界面用账号登录（房间需要用户名）");
+            hint.setText(getString(R.string.st_rooms_need_login));
             createButton.setEnabled(false);
             joinButton.setEnabled(false);
             return;
         }
-        hint.setText("当前账号：" + myName);
+        hint.setText(getString(R.string.st_current_account, myName));
 
         client = new LanClient(prefs.getString("host", ""), prefs.getString("secret", ""), null);
         String token = prefs.getString("accountToken", "");
@@ -83,7 +95,7 @@ public class RoomsActivity extends android.app.Activity {
                     public void onKicked(String reason) {
                         ui.post(() -> {
                             Toast.makeText(RoomsActivity.this,
-                                    "账号已在别处登录，这台设备的登录已失效", Toast.LENGTH_LONG).show();
+                                    getString(R.string.st_kicked_other), Toast.LENGTH_LONG).show();
                             getSharedPreferences("leion", MODE_PRIVATE).edit()
                                     .remove("accountToken").remove("termsUser").remove("roomHost").apply();
                             client.setToken("");
@@ -131,8 +143,8 @@ public class RoomsActivity extends android.app.Activity {
         TextView zh = findViewById(R.id.roomsLangZh);
         TextView pt = findViewById(R.id.roomsLangPt);
         boolean isZh = "zh-CN".equals(lang);
-        zh.setText(isZh ? "我说中文 ✓" : "我说中文");
-        pt.setText(isZh ? "我说葡语" : "我说葡语 ✓");
+        zh.setText(isZh ? getString(R.string.rooms_speak_zh_on) : getString(R.string.rooms_speak_zh));
+        pt.setText(isZh ? getString(R.string.rooms_speak_pt) : getString(R.string.rooms_speak_pt_on));
         zh.setBackgroundResource(isZh ? R.drawable.bg_pill_active : R.drawable.bg_pill);
         pt.setBackgroundResource(isZh ? R.drawable.bg_pill : R.drawable.bg_pill_active);
         zh.setTextColor(getColor(isZh ? R.color.on_brand : R.color.ink));
@@ -142,7 +154,7 @@ public class RoomsActivity extends android.app.Activity {
     private void createRoom() {
         final String name = nameInput.getText().toString().trim();
         if (name.isEmpty()) {
-            Toast.makeText(this, "先填房间名", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, getString(R.string.toast_need_room_name), Toast.LENGTH_SHORT).show();
             return;
         }
         createButton.setEnabled(false);
@@ -161,23 +173,23 @@ public class RoomsActivity extends android.app.Activity {
                 if (result == null || !result.optBoolean("ok", false)) {
                     String reason = failure;
                     if (result != null) reason = result.optString("error", failure);
-                    hint.setText("建房失败：" + reason);
+                    hint.setText(getString(R.string.st_create_failed, reason));
                     return;
                 }
                 JSONObject room = result.optJSONObject("room");
                 if (room == null) {
-                    hint.setText("建房失败：返回里没有 room");
+                    hint.setText(getString(R.string.st_create_no_room));
                     return;
                 }
                 String code = room.optString("code", "");
                 String id = room.optString("id", "");
-                codeBox.setText("邀请码 " + code + "（告诉对方这 6 位数字）");
+                codeBox.setText(getString(R.string.st_invite_line, code));
                 codeBox.setVisibility(View.VISIBLE);
                 getSharedPreferences("leion", MODE_PRIVATE).edit()
                         .putString("roomHost", myName).apply();
                 // 邀请码只在这几秒里"新鲜"：Toast 会盖在紧接着弹出的选库对话框**上面**，
                 // 让用户不用先关掉对话框才看得到（用户 2026-10-27 报的"来不及看"）。
-                Toast.makeText(this, "本场邀请码：" + code, Toast.LENGTH_LONG).show();
+                Toast.makeText(this, getString(R.string.toast_invite, code), Toast.LENGTH_LONG).show();
                 chooseLibsAfterCreate(id, room.optString("name", name), code);
             });
         }, "rooms-create").start();
@@ -186,7 +198,7 @@ public class RoomsActivity extends android.app.Activity {
     private void joinRoom() {
         final String code = codeInput.getText().toString().trim();
         if (code.isEmpty()) {
-            Toast.makeText(this, "先填邀请码", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, getString(R.string.toast_need_code), Toast.LENGTH_SHORT).show();
             return;
         }
         joinButton.setEnabled(false);
@@ -205,12 +217,12 @@ public class RoomsActivity extends android.app.Activity {
                 if (result == null || !result.optBoolean("ok", false)) {
                     String reason = failure;
                     if (result != null) reason = result.optString("error", failure);
-                    hint.setText("加入失败：" + reason);
+                    hint.setText(getString(R.string.st_join_failed, reason));
                     return;
                 }
                 JSONObject room = result.optJSONObject("room");
                 if (room == null) {
-                    hint.setText("加入失败：返回里没有 room");
+                    hint.setText(getString(R.string.st_join_no_room));
                     return;
                 }
                 // 记录发起者是谁（RoomActivity 的锁定按钮要靠它判定权限）
@@ -237,13 +249,13 @@ public class RoomsActivity extends android.app.Activity {
                 ui.post(new Runnable() {
                     public void run() {
                         if (result == null) {
-                            hint.setText("读不到术语库（可先不选，进房后仍可补选）：" + failure);
+                            hint.setText(getString(R.string.st_terms_read_failed, failure));
                             enter(roomId, roomName);
                             return;
                         }
                         org.json.JSONArray list = result.optJSONArray("libraries");
                         if (list == null || list.length() == 0) {
-                            hint.setText("服务端还没有术语库，本场先不用术语");
+                            hint.setText(getString(R.string.st_terms_none));
                             enter(roomId, roomName);
                             return;
                         }
@@ -273,20 +285,21 @@ public class RoomsActivity extends android.app.Activity {
             ids.add(item.optString("id", ""));
             org.json.JSONArray entries = item.optJSONArray("entries");
             int count = entries != null ? entries.length() : item.optInt("entries", 0);
-            labels.add(item.optString("name", item.optString("id", "")) + "（" + count + " 条）");
+            labels.add(getString(R.string.terms_item,
+                    item.optString("name", item.optString("id", "")), count));
         }
         final boolean[] checked = new boolean[labels.size()];
-        String codeLine = (code == null || code.isEmpty()) ? "" : ("邀请码 " + code + " · ");
+        String codeLine = (code == null || code.isEmpty()) ? "" : getString(R.string.terms_code_prefix, code);
         // ⚠️ 这里**不能**再调 setMessage（4.44 修）：AlertDialog 同时给了 message 与
         // multiChoiceItems 时，AppCompat 会把列表挤掉 —— 表现就是"选库框弹出来了、但里面
         // 一个库都没有"。邀请码只在**标题**里写一次（标题不会被列表挤掉），
         // 另外建房那一刻还有一条长 Toast 报码。
         new android.app.AlertDialog.Builder(this)
-                .setTitle(codeLine + "本场术语库（会中不可改）")
+                .setTitle(codeLine + getString(R.string.terms_dialog_title))
                 .setMultiChoiceItems(labels.toArray(new String[0]), checked,
                         (dialog, which, isChecked) -> checked[which] = isChecked)
-                .setNegativeButton("先不选，直接进房", (dialog, which) -> enter(roomId, roomName))
-                .setPositiveButton("确定并进入", (dialog, which) -> saveLibsThenEnter(roomId, roomName, ids, checked))
+                .setNegativeButton(getString(R.string.terms_dialog_skip), (dialog, which) -> enter(roomId, roomName))
+                .setPositiveButton(getString(R.string.terms_dialog_ok), (dialog, which) -> saveLibsThenEnter(roomId, roomName, ids, checked))
                 .show();
     }
 
@@ -312,10 +325,10 @@ public class RoomsActivity extends android.app.Activity {
                 ui.post(new Runnable() {
                     public void run() {
                         if (result != null && result.optBoolean("ok", false)) {
-                            hint.setText("本场术语已冻结：" + result.optInt("entries", 0) + " 条");
+                            hint.setText(getString(R.string.st_terms_frozen, result.optInt("entries", 0)));
                         } else {
-                            hint.setText("术语库保存失败（可进房后补）："
-                                    + (result == null ? failure : result.optString("error", failure)));
+                            hint.setText(getString(R.string.st_terms_save_failed,
+                                    failure));
                         }
                         enter(roomId, roomName);
                     }
@@ -325,7 +338,7 @@ public class RoomsActivity extends android.app.Activity {
     }
     private void enter(String roomIdOrCode, String roomName) {
         if (roomIdOrCode == null || roomIdOrCode.isEmpty()) {
-            hint.setText("房间标识为空，无法进入");
+            hint.setText(getString(R.string.st_room_id_empty));
             return;
         }
         Intent intent = new Intent(this, RoomActivity.class);

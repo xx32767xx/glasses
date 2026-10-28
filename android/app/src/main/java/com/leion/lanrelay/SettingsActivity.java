@@ -39,9 +39,25 @@ public class SettingsActivity extends android.app.Activity {
     private Button langZhButton;
     private Button langPtButton;
     private Button proofreadButton;
+    /** 界面语言（4.56）：只换界面文字，与上面那两颗「我说话用什么语言」无关。 */
+    private Button uiLangZhButton;
+    private Button uiLangPtButton;
+    private Button uiLangEnButton;
 
     /** 服务端当前的校对开关（null = 还没读到）。 */
     private Boolean proofread = null;
+
+    @Override
+    protected void attachBaseContext(android.content.Context base) {
+        // 4.56：界面语言必须在这里换（三套资源在 values-en / values-pt-rBR）
+        super.attachBaseContext(UiLang.wrap(base));
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        UiLang.trackShown(this);   // 别处改过界面语言，回到本页要跟上（会自己 recreate）
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -54,6 +70,10 @@ public class SettingsActivity extends android.app.Activity {
         langZhButton = findViewById(R.id.setAppLangZh);
         langPtButton = findViewById(R.id.setAppLangPt);
         proofreadButton = findViewById(R.id.setAppProofread);
+        uiLangZhButton = findViewById(R.id.setAppUiLangZh);
+        uiLangPtButton = findViewById(R.id.setAppUiLangPt);
+        uiLangEnButton = findViewById(R.id.setAppUiLangEn);
+        refreshUiLangButtons();
 
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         serverInput.setText(prefs.getString("host", ""));
@@ -68,6 +88,9 @@ public class SettingsActivity extends android.app.Activity {
         }
 
         findViewById(R.id.setAppSave).setOnClickListener(v -> saveConnection());
+        uiLangZhButton.setOnClickListener(v -> applyUiLang(UiLang.ZH));
+        uiLangPtButton.setOnClickListener(v -> applyUiLang(UiLang.PT));
+        uiLangEnButton.setOnClickListener(v -> applyUiLang(UiLang.EN));
         langZhButton.setOnClickListener(v -> setSpeakLanguage("zh-CN"));
         langPtButton.setOnClickListener(v -> setSpeakLanguage("pt-BR"));
         proofreadButton.setOnClickListener(v -> toggleProofread());
@@ -79,17 +102,43 @@ public class SettingsActivity extends android.app.Activity {
         TextView version = findViewById(R.id.setAppVersion);
         version.setText(appVersion());
 
-        status.setText("服务器地址与密钥改了要保存；校对开关以电脑端为准。");
+        status.setText(getString(R.string.set_status_hint));
         fetchProofread();
+    }
+
+    /**
+     * 换界面语言（4.56）：存下来再重建本页。
+     *
+     * <p>只在这一页生效是不够的 —— 别的页面回到前台时靠 {@code UiLang.trackShown()} 自己重建，
+     * 所以用户从设置页切完语言再返回房间列表，列表也是新语言。
+     */
+    private void applyUiLang(String tag) {
+        if (tag.equals(UiLang.saved(this))) return;
+        UiLang.save(this, tag);
+        recreate();
+    }
+
+    /** 当前生效的那颗用品牌色文字，其余用主色。 */
+    private void refreshUiLangButtons() {
+        String cur = UiLang.effective(this);
+        String[] tags = {UiLang.ZH, UiLang.PT, UiLang.EN};
+        Button[] buttons = {uiLangZhButton, uiLangPtButton, uiLangEnButton};
+        for (int i = 0; i < buttons.length; i++) {
+            if (buttons[i] == null) continue;
+            boolean on = tags[i].equals(cur);
+            buttons[i].setTextColor(getColor(on ? R.color.brand : R.color.ink));
+            buttons[i].setTypeface(null, on ? android.graphics.Typeface.BOLD
+                    : android.graphics.Typeface.NORMAL);
+        }
     }
 
     private String appVersion() {
         try {
             android.content.pm.PackageInfo info =
                     getPackageManager().getPackageInfo(getPackageName(), 0);
-            return "译连 TransLink · v" + info.versionName + "(" + info.versionCode + ")";
+            return getString(R.string.brand_version, info.versionName, info.versionCode);
         } catch (Exception error) {
-            return "译连 TransLink";
+            return getString(R.string.app_brand);
         }
     }
 
@@ -98,11 +147,11 @@ public class SettingsActivity extends android.app.Activity {
         String host = normalizeHost(serverInput.getText().toString());
         String secret = secretInput.getText().toString().trim();
         if (host.isEmpty()) {
-            status.setText("服务器地址不能为空，例如 http://117.50.180.93:8788");
+            status.setText(getString(R.string.st_conn_empty));
             return;
         }
         if (secret.isEmpty()) {
-            status.setText("共享密钥不能为空（在服务器 start-all 的横幅里）");
+            status.setText(getString(R.string.st_secret_empty));
             return;
         }
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
@@ -116,9 +165,9 @@ public class SettingsActivity extends android.app.Activity {
             client.setToken(token);
         }
         status.setText(oldHost.equals(host)
-                ? "已保存连接设置"
-                : "已保存。换了服务器后需要重新登录（登录页用同一账号）");
-        Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show();
+                ? getString(R.string.st_saved_conn)
+                : getString(R.string.st_saved_relogin));
+        Toast.makeText(this, getString(R.string.st_saved), Toast.LENGTH_SHORT).show();
         fetchProofread();
     }
 
@@ -138,8 +187,9 @@ public class SettingsActivity extends android.app.Activity {
     private void setSpeakLanguage(String lang) {
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("speakLang", lang).apply();
         applyLanguageButtons(lang);
-        status.setText("已设为：" + ("pt-BR".equals(lang) ? "我说葡语" : "我说中文")
-                + "（下一场同传生效）");
+        status.setText(getString(R.string.st_set_to, "pt-BR".equals(lang)
+                ? getString(R.string.rooms_speak_pt) : getString(R.string.rooms_speak_zh))
+                + getString(R.string.suffix_next_meeting));
     }
 
     private void applyLanguageButtons(String lang) {
@@ -156,7 +206,7 @@ public class SettingsActivity extends android.app.Activity {
 
     // ── 校对开关（以电脑端为准）────────────────────────────────────────
     private void fetchProofread() {
-        proofreadButton.setText("读取中…");
+        proofreadButton.setText(getString(R.string.set_loading));
         new Thread(() -> {
             String text;
             Boolean value = null;
@@ -165,12 +215,12 @@ public class SettingsActivity extends android.app.Activity {
                 JSONObject inner = unwrap(wrapper);
                 if (inner != null && inner.has("proofread")) {
                     value = inner.optBoolean("proofread", false);
-                    text = value ? "校对：开（点一下关掉）" : "校对：关（点一下打开）";
+                    text = value ? getString(R.string.proof_on) : getString(R.string.proof_off);
                 } else {
-                    text = "读不到校对开关（未连接或未登录）";
+                    text = getString(R.string.proof_unread);
                 }
             } catch (Exception error) {
-                text = "读不到校对开关：" + brief(error);
+                text = getString(R.string.proof_unread_reason, brief(error));
             }
             final String label = text;
             final Boolean read = value;
@@ -184,13 +234,13 @@ public class SettingsActivity extends android.app.Activity {
 
     private void toggleProofread() {
         if (proofread == null) {
-            status.setText("还没读到校对开关，先确认服务器与登录状态");
+            status.setText(getString(R.string.proof_need_conn));
             fetchProofread();
             return;
         }
         final boolean next = !proofread;
         proofreadButton.setEnabled(false);
-        proofreadButton.setText("写入中…");
+        proofreadButton.setText(getString(R.string.set_writing));
         new Thread(() -> {
             String failure = "";
             Boolean applied = null;
@@ -199,7 +249,7 @@ public class SettingsActivity extends android.app.Activity {
                 JSONObject inner = unwrap(wrapper);
                 int code = wrapper == null ? 0 : wrapper.optInt("code", 0);
                 if (code >= 400 || inner == null || !inner.optBoolean("ok", false)) {
-                    failure = inner == null ? ("HTTP " + code) : inner.optString("error", "被拒绝");
+                    failure = inner == null ? ("HTTP " + code) : inner.optString("error", getString(R.string.reason_rejected));
                 } else if (inner.has("proofread")) {
                     applied = inner.optBoolean("proofread", next);
                 } else {
@@ -213,14 +263,14 @@ public class SettingsActivity extends android.app.Activity {
             ui.post(() -> {
                 proofreadButton.setEnabled(true);
                 if (result == null) {
-                    status.setText("校对开关设置失败：" + error);
+                    status.setText(getString(R.string.st_write_failed, error));
                     fetchProofread();
                     return;
                 }
                 proofread = result;
-                proofreadButton.setText(result ? "校对：开（点一下关掉）" : "校对：关（点一下打开）");
+                proofreadButton.setText(result ? getString(R.string.proof_on) : getString(R.string.proof_off));
                 applyProofreadLook(result);
-                status.setText("校对已" + (result ? "打开" : "关闭") + "（下一场同传生效）");
+                status.setText(getString(R.string.st_proof_set, result ? getString(R.string.proof_on_word) : getString(R.string.proof_off_word)));
             });
         }, "settings-proofread-put").start();
     }
@@ -228,13 +278,13 @@ public class SettingsActivity extends android.app.Activity {
     // ── 清空本机记录 ───────────────────────────────────────────────────
     private void clearRecords() {
         new android.app.AlertDialog.Builder(this)
-                .setTitle("清空本机记录")
-                .setMessage("会删掉手机里保存的全部历史记录（原文与译文）。服务器上的字幕不受影响。")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("清空", (dialog, which) -> {
+                .setTitle(getString(R.string.clear_title))
+                .setMessage(getString(R.string.clear_msg))
+                .setNegativeButton(getString(R.string.common_cancel), null)
+                .setPositiveButton(getString(R.string.clear_positive), (dialog, which) -> {
                     int removed = new Records(this).clearAll();
-                    status.setText(removed > 0 ? ("已清空 " + removed + " 条本机记录") : "本机没有记录");
-                    Toast.makeText(this, "已清空", Toast.LENGTH_SHORT).show();
+                    status.setText(removed > 0 ? getString(R.string.st_cleared, removed) : getString(R.string.st_no_records));
+                    Toast.makeText(this, getString(R.string.toast_cleared), Toast.LENGTH_SHORT).show();
                 })
                 .show();
     }

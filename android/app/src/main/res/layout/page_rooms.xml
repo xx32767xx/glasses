@@ -20,7 +20,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="会议房间"
+            android:text="@string/rooms_title"
             android:textColor="@color/ink"
             android:textSize="@dimen/text_page_title"
             android:textStyle="bold" />
@@ -48,7 +48,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="我在会里说哪种语言"
+                android:text="@string/rooms_my_lang_title"
                 android:textColor="@color/ink"
                 android:textSize="@dimen/text_title"
                 android:textStyle="bold" />
@@ -57,7 +57,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="@dimen/space_gap_tiny"
-                android:text="它决定识别方向：对方的话会自动译成另一种语言。"
+                android:text="@string/rooms_my_lang_hint"
                 android:textColor="@color/ink_soft"
                 android:textSize="@dimen/text_secondary" />
 
@@ -76,7 +76,7 @@
                     android:clickable="true"
                     android:focusable="true"
                     android:gravity="center"
-                    android:text="我说中文"
+                    android:text="@string/rooms_speak_zh"
                     android:textColor="@color/ink"
                     android:textSize="@dimen/text_body" />
 
@@ -90,7 +90,7 @@
                     android:clickable="true"
                     android:focusable="true"
                     android:gravity="center"
-                    android:text="我说葡语"
+                    android:text="@string/rooms_speak_pt"
                     android:textColor="@color/ink"
                     android:textSize="@dimen/text_body" />
             </LinearLayout>
@@ -108,7 +108,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="创建会议"
+                android:text="@string/rooms_create_title"
                 android:textColor="@color/ink"
                 android:textSize="@dimen/text_title"
                 android:textStyle="bold" />
@@ -119,7 +119,7 @@
                 android:layout_height="@dimen/height_field"
                 android:layout_marginTop="@dimen/space_gap"
                 android:background="@drawable/bg_input"
-                android:hint="会议名称（例如：圣保罗洽谈）"
+                android:hint="@string/rooms_hint_name"
                 android:inputType="text"
                 android:paddingStart="@dimen/space_gap"
                 android:paddingEnd="@dimen/space_gap"
@@ -134,7 +134,7 @@
                 android:layout_height="@dimen/height_button"
                 android:layout_marginTop="@dimen/space_gap"
                 android:background="@drawable/tap_btn_primary"
-                android:text="创建（生成 6 位邀请码）"
+                android:text="@string/rooms_create"
                 android:textAllCaps="false"
                 android:textColor="@color/on_brand"
                 android:textSize="@dimen/text_button" />
@@ -165,7 +165,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="加入会议"
+                android:text="@string/rooms_join_title"
                 android:textColor="@color/ink"
                 android:textSize="@dimen/text_title"
                 android:textStyle="bold" />
@@ -176,7 +176,7 @@
                 android:layout_height="@dimen/height_field"
                 android:layout_marginTop="@dimen/space_gap"
                 android:background="@drawable/bg_input"
-                android:hint="输入对方给的 6 位邀请码"
+                android:hint="@string/rooms_hint_code"
                 android:inputType="number"
                 android:paddingStart="@dimen/space_gap"
                 android:paddingEnd="@dimen/space_gap"
@@ -191,7 +191,7 @@
                 android:layout_height="@dimen/height_button"
                 android:layout_marginTop="@dimen/space_gap"
                 android:background="@drawable/tap_btn_secondary"
-                android:text="加入"
+                android:text="@string/rooms_join"
                 android:textAllCaps="false"
                 android:textColor="@color/ink"
                 android:textSize="@dimen/text_button" />

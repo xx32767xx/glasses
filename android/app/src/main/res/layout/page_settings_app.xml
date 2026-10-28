@@ -24,7 +24,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="设置"
+            android:text="@string/set_title"
             android:textColor="@color/ink"
             android:textSize="@dimen/text_page_title"
             android:textStyle="bold" />
@@ -46,7 +46,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="@dimen/space_section"
-            android:text="服务器"
+            android:text="@string/set_conn_title"
             android:textColor="@color/ink"
             android:textSize="@dimen/text_title"
             android:textStyle="bold" />
@@ -69,7 +69,7 @@
             android:id="@+id/setAppSecret"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="共享密钥（start-all 横幅里那串）"
+            android:hint="@string/home_hint_secret"
             android:background="@drawable/bg_input"
             android:inputType="text"
             android:paddingStart="@dimen/space_gap"
@@ -85,7 +85,7 @@
             android:layout_height="@dimen/height_button"
             android:layout_marginTop="@dimen/space_gap_small"
             android:background="@drawable/tap_btn_primary"
-            android:text="保存连接设置"
+            android:text="@string/set_save_conn"
             android:textAllCaps="false"
             android:textColor="@color/on_brand"
             android:textSize="@dimen/text_button" />
@@ -95,7 +95,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="@dimen/space_section"
-            android:text="我在会里说哪种语言"
+            android:text="@string/rooms_my_lang_title"
             android:textColor="@color/ink"
             android:textSize="@dimen/text_title"
             android:textStyle="bold" />
@@ -103,7 +103,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="决定识别与翻译方向：我说中文，对方的话译成葡语；反之亦然。"
+            android:text="@string/set_lang_hint"
             android:textColor="@color/ink_soft"
             android:textSize="@dimen/text_secondary" />
 
@@ -118,7 +118,7 @@
                 android:layout_width="0dp"
                 android:layout_height="@dimen/height_field"
                 android:layout_weight="1"
-                android:text="我说中文"
+                android:text="@string/rooms_speak_zh"
                 android:textColor="@color/ink"
                 android:background="@drawable/tap_btn_secondary" />
 
@@ -128,17 +128,18 @@
                 android:layout_height="@dimen/height_field"
                 android:layout_marginStart="@dimen/space_gap_small"
                 android:layout_weight="1"
-                android:text="我说葡语"
+                android:text="@string/rooms_speak_pt"
                 android:textColor="@color/ink"
                 android:background="@drawable/tap_btn_secondary" />
         </LinearLayout>
 
-        <!-- ── 校对 ──────────────────────────────────────────────────── -->
+        <!-- ── 界面语言（4.56）：中文 / Português / English ─────────────
+             ⚠️ 与上面那两颗（我说话用什么语言）不是一回事：这里只换界面文字。 -->
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="@dimen/space_section"
-            android:text="译文校对（第二遍）"
+            android:text="@string/ui_lang_title"
             android:textColor="@color/ink"
             android:textSize="@dimen/text_title"
             android:textStyle="bold" />
@@ -146,7 +147,60 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="以电脑端为准：这个开关真正生效的地方在服务器，手机只是遥控器。"
+            android:text="@string/ui_lang_hint"
+            android:textColor="@color/ink_soft"
+            android:textSize="@dimen/text_secondary" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_gap_tiny"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/setAppUiLangZh"
+                android:layout_width="0dp"
+                android:layout_height="@dimen/height_field"
+                android:layout_weight="1"
+                android:background="@drawable/tap_btn_secondary"
+                android:text="@string/lang_zh"
+                android:textColor="@color/ink" />
+
+            <Button
+                android:id="@+id/setAppUiLangPt"
+                android:layout_width="0dp"
+                android:layout_height="@dimen/height_field"
+                android:layout_marginStart="@dimen/space_gap_small"
+                android:layout_weight="1"
+                android:background="@drawable/tap_btn_secondary"
+                android:text="Português"
+                android:textColor="@color/ink" />
+
+            <Button
+                android:id="@+id/setAppUiLangEn"
+                android:layout_width="0dp"
+                android:layout_height="@dimen/height_field"
+                android:layout_marginStart="@dimen/space_gap_small"
+                android:layout_weight="1"
+                android:background="@drawable/tap_btn_secondary"
+                android:text="@string/lang_en"
+                android:textColor="@color/ink" />
+        </LinearLayout>
+
+        <!-- ── 校对 ──────────────────────────────────────────────────── -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_section"
+            android:text="@string/set_proofread_title"
+            android:textColor="@color/ink"
+            android:textSize="@dimen/text_title"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/set_proofread_hint"
             android:textColor="@color/ink_soft"
             android:textSize="@dimen/text_secondary" />
 
@@ -155,7 +209,7 @@
             android:layout_width="match_parent"
             android:layout_height="@dimen/height_field"
             android:layout_marginTop="@dimen/space_gap_tiny"
-            android:text="读取中…"
+            android:text="@string/set_loading"
             android:textColor="@color/ink"
             android:background="@drawable/tap_btn_secondary" />
 
@@ -164,7 +218,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="@dimen/space_section"
-            android:text="隐私"
+            android:text="@string/set_privacy"
             android:textColor="@color/ink"
             android:textSize="@dimen/text_title"
             android:textStyle="bold" />
@@ -174,7 +228,7 @@
             android:layout_width="match_parent"
             android:layout_height="@dimen/height_field"
             android:layout_marginTop="@dimen/space_gap_tiny"
-            android:text="隐私政策（音频与字幕去哪了）"
+            android:text="@string/set_privacy_link"
             android:textColor="@color/ink"
             android:background="@drawable/tap_btn_secondary" />
 
@@ -183,7 +237,7 @@
             android:layout_width="match_parent"
             android:layout_height="@dimen/height_field"
             android:layout_marginTop="@dimen/space_gap_small"
-            android:text="清空本机记录（原文与译文）"
+            android:text="@string/set_clear"
             android:textColor="@color/err"
             android:background="@drawable/tap_btn_secondary" />
 
@@ -192,7 +246,7 @@
             android:layout_width="match_parent"
             android:layout_height="@dimen/touch_min"
             android:layout_marginTop="@dimen/space_section"
-            android:text="返回"
+            android:text="@string/common_back"
             android:textColor="@color/ink_soft"
             android:background="@android:color/transparent" />
 

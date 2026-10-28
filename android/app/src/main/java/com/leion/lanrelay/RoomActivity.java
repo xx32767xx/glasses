@@ -127,6 +127,18 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     private boolean wsOnline = false;
 
     @Override
+    protected void attachBaseContext(android.content.Context base) {
+        // 4.56：界面语言必须在这里换（三套资源在 values-en / values-pt-rBR）
+        super.attachBaseContext(UiLang.wrap(base));
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        UiLang.trackShown(this);   // 别处改过界面语言，回到本页要跟上（会自己 recreate）
+    }
+
+    @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.page_room);
@@ -172,16 +184,16 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             if (syncingSwitch) return;
             showSource = isChecked;
             syncSourceVisibility();
-            addSystemEvent(isChecked ? "原文显示已开启" : "原文显示已关闭");
+            addSystemEvent(isChecked ? getString(R.string.sys_source_on) : getString(R.string.sys_source_off));
         });
 
-        addSystemEvent("会议开始 · 发言权互斥已启用：同一时刻仅一人开麦");
+        addSystemEvent(getString(R.string.sys_meeting_started));
 
         // 外设（投屏/扩声）**还没接入**：这里只把事实写清楚，不做假开关。
-        castState.setText("手机屏");
-        audioState.setText("未接入");
-        micState.setText("手机麦");
-        drawerDevices.setText("扩展屏（眼镜 / 投屏器）：未接入\n外放（耳机 / 音箱）：未接入\n麦克风：手机麦克风（在用）");
+        castState.setText(getString(R.string.room_cast_value));
+        audioState.setText(getString(R.string.room_audio_none));
+        micState.setText(getString(R.string.room_mic_phone));
+        drawerDevices.setText(getString(R.string.room_devices_detail));
         startedAtMs = System.currentTimeMillis();
         startTimer();
         updateMicButton();
@@ -266,8 +278,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 ui.post(() -> {
                     String released = body.optString("released", "");
                     if (!released.isEmpty() && !"null".equals(released)) {
-                        String message = released + " 掉线，麦克风已释放"
-                                + (body.optBoolean("releasedLocked", false) ? "（含锁定）" : "");
+                        String message = getString(R.string.sys_dropped, released)
+                                + (body.optBoolean("releasedLocked", false) ? getString(R.string.sys_locked_suffix) : "");
                         hintLine.setText(message);
                         Toast.makeText(RoomActivity.this, message, Toast.LENGTH_SHORT).show();
                     }
@@ -339,7 +351,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 mic = null;
             }
             updateMicButton();
-            hintLine.setText("已结束发言");
+            hintLine.setText(getString(R.string.st_speaking_done));
             new Thread(() -> {
                 try {
                     client.floorAction(roomKey, "release");
@@ -359,12 +371,13 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         micButton.setTextColor(getColor(R.color.on_brand));
         if (live) {
             long seconds = holdingSinceMs > 0 ? (System.currentTimeMillis() - holdingSinceMs) / 1000 : 0;
-            micButton.setText(String.format(java.util.Locale.US, "正在发言 %02d:%02d", seconds / 60, seconds % 60));
+            micButton.setText(getString(R.string.room_speaking_timer,
+                    String.format(java.util.Locale.US, "%02d:%02d", seconds / 60, seconds % 60)));
             if (micButton.getAnimation() == null) {
                 micButton.startAnimation(android.view.animation.AnimationUtils.loadAnimation(this, R.anim.mic_pulse));
             }
         } else {
-            micButton.setText("点击开麦");
+            micButton.setText(getString(R.string.room_mic_idle));
             micButton.clearAnimation();
         }
         micButton.setEnabled(true);
@@ -389,7 +402,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             ui.post(() -> {
                 micButton.setEnabled(true);
                 if (body == null) {
-                    Toast.makeText(this, "请求失败：" + failure, Toast.LENGTH_LONG).show();
+                    Toast.makeText(this, getString(R.string.toast_request_failed, failure), Toast.LENGTH_LONG).show();
                     return;
                 }
                 int status = body.optInt("_status", 0);
@@ -400,23 +413,23 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 if (status >= 400 || body.optBoolean("ok", false) == false) {
                     // 409 = 被规则拒绝（别人锁定中），这是业务状态，不是网络错误
                     String reason = body.optString("error", "");
-                    Toast.makeText(this, reason.isEmpty() ? ("操作被拒（HTTP " + status + "）") : reason,
+                    Toast.makeText(this, reason.isEmpty() ? getString(R.string.st_rejected_http, status) : reason,
                             Toast.LENGTH_LONG).show();
                     if (action.equals("take")) hintLine.setText(reason);
                     return;
                 }
                 String holder = holderOf(body);
                 takingChanged(holder, body.optBoolean("locked", false));
-                if ("lock".equals(action)) addSystemEvent((holder.isEmpty() ? "发言" : holder + " 的发言") + "已锁定");
-                if ("unlock".equals(action)) addSystemEvent("发言已解锁");
-                if ("force-release".equals(action)) addSystemEvent("发起者收回了发言权");
+                if ("lock".equals(action)) addSystemEvent(holder.isEmpty() ? getString(R.string.sys_lock_self) : getString(R.string.sys_lock_other, holder));
+                if ("unlock".equals(action)) addSystemEvent(getString(R.string.sys_unlocked));
+                if ("force-release".equals(action)) addSystemEvent(getString(R.string.sys_force_released));
                 if (body.optString("tookOver", "").length() > 0) {
-                    hintLine.setText("你已接管麦克风 · " + body.optString("tookOver") + " 已被自动静音");
+                    hintLine.setText(getString(R.string.st_took_over, body.optString("tookOver")));
                 }
                 // 点「开麦」再点回来 = 结束发言：正在上传的话必须跟着停，
                 // 否则会出现"麦已经放了、音频还在往识别流里灌"（4.34 修）
                 if (!holding && mic != null) {
-                    stopUpload("已结束发言 · 已停止同传");
+                    stopUpload(getString(R.string.st_stop_takeover));
                 }
             });
         }, "room-floor-" + action).start();
@@ -453,11 +466,12 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         boolean canLock = holding || (anyHolder && iAmHost);
         boolean showUnlockIcon = isLocked && canLock;
         lockButton.setImageResource(showUnlockIcon ? R.drawable.ic_unlock : R.drawable.ic_lock);
-        lockButton.setContentDescription(showUnlockIcon ? "解锁发言"
-                : (isLocked ? "发言已锁定（只有发起者能解除）" : "锁定发言"));
+        lockButton.setContentDescription(showUnlockIcon ? getString(R.string.cd_unlock_speak)
+                : (isLocked ? getString(R.string.cd_locked) : getString(R.string.cd_lock_speak)));
         lockButton.setEnabled(canLock);
         lockButton.setAlpha(canLock ? 1f : 0.5f);
-        speakerBar.setText(anyHolder ? ("发言人：" + holder + (isLocked ? "（已锁定）" : "")) : "麦克风空闲");
+        speakerBar.setText(anyHolder ? (getString(R.string.room_speaker_prefix) + holder
+                + (isLocked ? getString(R.string.room_locked_suffix) : "")) : getString(R.string.room_no_speaker));
     }
 
     /**
@@ -480,7 +494,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             boolean closed = (room != null && room.optBoolean("closed", false))
                     || info.optBoolean("closed", false);
             if (closed) {
-                ui.post(() -> leaveBecauseClosed("发起者已结束这场会议"));
+                ui.post(() -> leaveBecauseClosed(getString(R.string.st_host_closed)));
                 return;
             }
             // 4.55：被移出的人**不在成员列表里**了。WS 的 removed 推送通常会先到，
@@ -509,8 +523,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
      */
     private void leaveBecauseRemoved() {
         if (isFinishing()) return;
-        Toast.makeText(this, "你已被移出这场会议", Toast.LENGTH_LONG).show();
-        hintLine.setText("你已被移出这场会议");
+        Toast.makeText(this, getString(R.string.st_removed), Toast.LENGTH_LONG).show();
+        hintLine.setText(getString(R.string.st_removed));
         stopUpload(null);
         if (mic != null) { mic.stop(); mic = null; }
         ui.postDelayed(this::finish, 1200);
@@ -541,9 +555,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
      */
     private void leaveBecauseClosed(String reason) {
         if (isFinishing()) return;
-        String message = "会议已结束"
+        String message = getString(R.string.st_meeting_closed)
                 + (reason == null || reason.isEmpty() ? "" : "（" + reason + "）")
-                + "，已退出房间";
+                + getString(R.string.st_left_room_tail);
         Toast.makeText(this, message, Toast.LENGTH_LONG).show();
         hintLine.setText(message);
         stopUpload(null);
@@ -560,7 +574,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     private void showKicked(String hint) {
         if (isFinishing()) return;
         String extra = hint == null || hint.isEmpty() ? "" : ("：" + hint);
-        String message = "登录已失效" + extra + "（账号可能在别处登录），请重新登录";
+        String message = getString(R.string.st_login_expired_extra, extra);
         Toast.makeText(this, message, Toast.LENGTH_LONG).show();
         hintLine.setText(message);
         statusLine.setText(message);
@@ -588,7 +602,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 ui.post(new Runnable() {
                     public void run() {
                         if (!failure.isEmpty()) {
-                            Toast.makeText(RoomActivity.this, "退出时出错：" + failure, Toast.LENGTH_SHORT).show();
+                            Toast.makeText(RoomActivity.this, getString(R.string.toast_leave_error, failure), Toast.LENGTH_SHORT).show();
                         }
                         finish();
                     }
@@ -607,7 +621,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             @Override
             public void onUploadError(String message) {
                 ui.post(() -> {
-                    hintLine.setText("上传出错：" + message);
+                    hintLine.setText(getString(R.string.st_upload_error, message));
                     if (mic != null) {
                         mic.stop();
                         mic = null;
@@ -637,7 +651,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                     public void run() {
                         if (result == null || result.optInt("_status", 0) >= 400 || !result.optBoolean("ok", false)) {
                             String reason = result == null ? error : result.optString("error", error);
-                            hintLine.setText("无法开麦：" + (reason.isEmpty() ? "被拒绝" : reason));
+                            hintLine.setText(getString(R.string.st_cant_speak,
+                        reason.isEmpty() ? getString(R.string.reason_rejected) : reason));
                             micUploadButton.setEnabled(true);
                             return;
                         }
@@ -676,7 +691,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         Runnable after = pendingAfterPermission;
         pendingAfterPermission = null;
         if (!granted) {
-            hintLine.setText("没有麦克风权限：请在系统设置里给「译连 TransLink」录音权限，然后再点开始同传");
+            hintLine.setText(getString(R.string.st_no_mic_permission));
             return;
         }
         if (after != null) {
@@ -694,7 +709,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         String error = mic.start();
         if (error == null) {
             updateUploadButton();
-            hintLine.setText("正在上传麦克风，说话会被识别");
+            hintLine.setText(getString(R.string.st_uploading_mic));
         } else {
             mic = null;
             updateUploadButton();
@@ -736,15 +751,15 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                     // 这里是兜底 —— WS 断了的时候靠轮询也能发现，不能把人留在空屋里。
                     if (body != null && (body.optBoolean("closed", false)
                             || body.optInt("httpStatus", 0) == 410)) {
-                        leaveBecauseClosed(body.optString("error", "会议已结束"));
+                        leaveBecauseClosed(body.optString("error", getString(R.string.st_meeting_closed)));
                         return;
                     }
                     if (body != null && body.optBoolean("ok", false)) {
                         String released = body.optString("released", "");
                         if (!released.isEmpty() && !"null".equals(released)) {
                             // 服务端把"锁着麦但人已经不在"的那位清掉了（4.42）
-                            String message = released + " 掉线，麦克风已释放"
-                                    + (body.optBoolean("releasedLocked", false) ? "（含锁定）" : "");
+                            String message = getString(R.string.sys_dropped, released)
+                                    + (body.optBoolean("releasedLocked", false) ? getString(R.string.sys_locked_suffix) : "");
                             hintLine.setText(message);
                             Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
                         }
@@ -805,12 +820,12 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                     if (!name.isEmpty()) titleView.setText(name);
                     String host = room.optString("host", "");
                     iAmHost = myName != null && myName.equals(host);
-                    roleTag.setText(iAmHost ? "发起者" : "参与者");
+                    roleTag.setText(iAmHost ? getString(R.string.room_role_host) : getString(R.string.room_role_member));
                     roleTag.setBackgroundResource(iAmHost ? R.drawable.bg_chip_brand : R.drawable.bg_chip);
                     roleTag.setTextColor(getColor(iAmHost ? R.color.brand : R.color.ink_soft));
                 }
                 if (members != null) {
-                    membersView.setText(members.length() + " 人");
+                    membersView.setText(getString(R.string.room_members_count, members.length()));
                     renderMembers(members);
                 }
             });
@@ -848,7 +863,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             row.addView(avatar, new LinearLayout.LayoutParams(dot, dot));
 
             TextView label = new TextView(this);
-            String suffix = name.equals(myName) ? "（我）" : "";
+            String suffix = name.equals(myName) ? getString(R.string.room_me_suffix) : "";
             label.setText(name + suffix);
             label.setTextColor(getColor(R.color.ink));
             label.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12);
@@ -860,7 +875,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             // 管理者操作：只对"别人"显示移出（移自己要走退出，那是结束会议）
             if (iAmHost && !name.equals(myName)) {
                 TextView remove = new TextView(this);
-                remove.setText("移出");
+                remove.setText(getString(R.string.btn_remove));
                 remove.setTextColor(getColor(R.color.err));
                 remove.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 11);
                 remove.setPadding(dp(8), dp(4), dp(4), dp(4));
@@ -874,7 +889,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // 当前持麦者 + 已锁定时，发起者可以"解除锁定"（复用 force-release）
         if (iAmHost && locked && holder() != null && !holder().isEmpty()) {
             TextView force = new TextView(this);
-            force.setText("解除 " + holder() + " 的锁定");
+            force.setText(getString(R.string.btn_force_release, holder()));
             force.setTextColor(getColor(R.color.brand));
             force.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 11);
             force.setPadding(0, dp(6), 0, dp(6));
@@ -885,8 +900,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
 
     private String holder() {
         String text = speakerBar.getText() == null ? "" : speakerBar.getText().toString();
-        if (!text.startsWith("发言人：")) return "";
-        text = text.substring("发言人：".length());
+        if (!text.startsWith(getString(R.string.room_speaker_prefix))) return "";
+        text = text.substring(getString(R.string.room_speaker_prefix).length());
         int cut = text.indexOf('（');
         return cut > 0 ? text.substring(0, cut) : text;
     }
@@ -894,11 +909,11 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     /** 移出成员要二次确认：这是个不可撤销（对方视角）的动作。 */
     private void confirmRemove(final String name) {
         new android.app.AlertDialog.Builder(this)
-                .setTitle("移出 " + name)
-                .setMessage("他会立刻离开这场会议；如果他正在发言，麦克风会被释放。"
-                        + "（他仍可以凭邀请码重新加入）")
-                .setNegativeButton("取消", null)
-                .setPositiveButton("移出", (dialog, which) -> doRemove(name))
+                .setTitle(getString(R.string.remove_dialog_title, name))
+                .setMessage(getString(R.string.remove_dialog_msg1)
+                        + getString(R.string.remove_dialog_msg2))
+                .setNegativeButton(getString(R.string.common_cancel), null)
+                .setPositiveButton(getString(R.string.btn_remove), (dialog, which) -> doRemove(name))
                 .show();
     }
 
@@ -916,13 +931,13 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             ui.post(() -> {
                 if (body == null || !body.optBoolean("ok", false)) {
                     String reason = body == null ? error : body.optString("error", error);
-                    Toast.makeText(this, "移出失败：" + reason, Toast.LENGTH_LONG).show();
+                    Toast.makeText(this, getString(R.string.st_remove_failed, reason), Toast.LENGTH_LONG).show();
                     return;
                 }
-                addSystemEvent(name + " 已被移出会议");
+                addSystemEvent(getString(R.string.sys_removed, name));
                 org.json.JSONArray members = body.optJSONArray("members");
                 if (members != null) {
-                    membersView.setText(members.length() + " 人");
+                    membersView.setText(getString(R.string.room_members_count, members.length()));
                     renderMembers(members);
                 }
                 loadRoomHeader();
@@ -935,15 +950,15 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         String text = codeView.getText() == null ? "" : codeView.getText().toString();
         text = text.replace("#", "").trim();
         if (text.isEmpty()) {
-            Toast.makeText(this, "还没拿到邀请码", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, getString(R.string.toast_no_invite), Toast.LENGTH_SHORT).show();
             return;
         }
         android.content.ClipboardManager clipboard =
                 (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
         if (clipboard != null) {
-            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("邀请码", text));
+            clipboard.setPrimaryClip(android.content.ClipData.newPlainText(getString(R.string.clip_invite_label), text));
         }
-        Toast.makeText(this, "邀请码已复制：" + text, Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, getString(R.string.toast_invite_copied, text), Toast.LENGTH_SHORT).show();
     }
 
     /** 「人员与设备」抽屉：点右侧悬浮条开，再点一次/点关闭收。 */
@@ -995,9 +1010,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         String who = holder == null ? "" : holder;
         String message;
         if (!who.isEmpty()) {
-            message = wasUploading ? (who + " 接管了麦克风 · 已自动停止同传") : (who + " 接管了麦克风");
+            message = wasUploading ? getString(R.string.st_took_over_sys, who) : getString(R.string.st_took_over_sys_plain, who);
         } else {
-            message = wasUploading ? "麦克风已释放 · 已自动停止同传" : "";
+            message = wasUploading ? getString(R.string.st_mic_released_sys) : "";
         }
         if (message.isEmpty()) {
             updateUploadButton();
@@ -1026,7 +1041,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 // 服务端说"不是持麦者"：别再等下一轮轮询，那一秒的音频会混进识别流
                 ui.post(() -> {
                     holding = false;
-                    stopUpload("你已不是持麦者 · 已自动停止同传");
+                    stopUpload(getString(R.string.st_not_holder));
                 });
             }
         }, "room-floor-heartbeat").start();
@@ -1048,7 +1063,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             statusLine.setText("");
             // 但"服务端版本较旧"是**会影响功能**的，必须说，而且要说清后果。
             if (!client.hasFeature("room-closed-push")) {
-                statusLine.setText("服务端版本较旧：会议结束时不会主动通知");
+                statusLine.setText(getString(R.string.st_old_server));
             }
         });
     }
@@ -1068,9 +1083,10 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 ? (lines == null ? "" : String.join("\n", lines)) : text;
         renderSegment(target == null ? "" : target, source == null ? "" : source, partial);
         if (partial) {
-            hintLine.setText("正在生成…");
+            hintLine.setText(getString(R.string.st_generating));
         } else if (termsMissing != null && termsMissing.length > 0) {
-            hintLine.setText("术语未按规范写法出现：" + String.join("、", termsMissing));
+            hintLine.setText(getString(R.string.st_terms_missing,
+                    String.join(getString(R.string.list_separator), termsMissing)));
         } else {
             hintLine.setText("");
         }
@@ -1111,7 +1127,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             if (!source.isEmpty()) lastSegmentSource.setText(source);
             boolean hasSource = lastSegmentSource.getText() != null && lastSegmentSource.getText().length() > 0;
             lastSegmentSource.setVisibility(showSource && hasSource ? View.VISIBLE : View.GONE);
-            lastSegmentState.setText(partial ? "识别中…" : "已完成");
+            lastSegmentState.setText(partial ? getString(R.string.st_recognizing) : getString(R.string.st_done));
             lastSegmentState.setTextColor(getColor(partial ? R.color.accent : R.color.ok));
             if (key != null) lastSegmentKey = key;
             lastWasPartial = partial;
@@ -1135,7 +1151,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
 
         TextView avatar = new TextView(this);
-        avatar.setText(mine ? "我" : firstChar(speakerBarName()));
+        avatar.setText(mine ? getString(R.string.room_me_my) : firstChar(speakerBarName()));
         avatar.setGravity(android.view.Gravity.CENTER);
         avatar.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12);
         avatar.setTextColor(getColor(R.color.brand));
@@ -1153,7 +1169,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         head.addView(name, nameParams);
 
         TextView langTag = new TextView(this);
-        langTag.setText(mine ? "我说的话" : "对方");
+        langTag.setText(mine ? getString(R.string.room_i_said) : getString(R.string.room_other));
         langTag.setBackgroundResource(R.drawable.bg_chip);
         langTag.setTextColor(getColor(R.color.ink_faint));
         langTag.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 10);
@@ -1167,7 +1183,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         head.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
 
         final TextView state = new TextView(this);
-        state.setText(partial ? "识别中…" : "已完成");
+        state.setText(partial ? getString(R.string.st_recognizing) : getString(R.string.st_done));
         state.setTextColor(getColor(partial ? R.color.accent : R.color.ok));
         state.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 10);
         head.addView(state, new LinearLayout.LayoutParams(
@@ -1239,12 +1255,12 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
 
     private String speakerBarName() {
         String text = speakerBar.getText() == null ? "" : speakerBar.getText().toString();
-        if (text.startsWith("发言人：")) {
-            text = text.substring("发言人：".length());
+        if (text.startsWith(getString(R.string.room_speaker_prefix))) {
+            text = text.substring(getString(R.string.room_speaker_prefix).length());
         }
         int cut = text.indexOf('（');
         if (cut > 0) text = text.substring(0, cut);
-        return text.isEmpty() ? "对方" : text;
+        return text.isEmpty() ? getString(R.string.room_other) : text;
     }
 
     private static String firstChar(String text) {
@@ -1284,6 +1300,6 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
 
     @Override
     public void onError(String message) {
-        ui.post(() -> statusLine.setText("连接异常：" + message));
+        ui.post(() -> statusLine.setText(getString(R.string.st_conn_error, message)));
     }
 }

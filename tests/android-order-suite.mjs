@@ -472,7 +472,7 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('空闲用蓝绿胶囊皮', button.includes('R.drawable.btn_mic_idle'))
     check('白字（两种皮上都得能看清）', button.includes('R.color.on_brand'))
     check('发言中带呼吸动画', button.includes('R.anim.mic_pulse'))
-    check('停止发言要清掉动画与文案', /clearAnimation\(\)/.test(button) && /点击开麦/.test(button))
+    check('停止发言要清掉动画与文案', /clearAnimation\(\)/.test(button) && /R\.string\.room_mic_idle/.test(button))
   })
 
   await it('发言权推送（/ws）接得对：轮询与推送共用一条应用路径，断了自动退回轮询', () => {
@@ -515,6 +515,8 @@ export async function runAndroidOrderSuite({ it, check }) {
     const privacyJava = readFileSync(join(javaDir, 'PrivacyActivity.java'), 'utf-8')
     const settingsXml = readFileSync(join(layoutDir, 'page_settings_app.xml'), 'utf-8')
     const privacyXml = readFileSync(join(layoutDir, 'page_privacy.xml'), 'utf-8')
+    // 4.56：隐私页正文在 strings.xml 里了（布局只留 @string/priv_sN）
+    const privacyText = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml'), 'utf-8')
     const homeXml = readFileSync(join(layoutDir, 'page_home.xml'), 'utf-8')
     const homeJava = readFileSync(join(javaDir, 'HomeActivity.java'), 'utf-8')
     const manifest = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'AndroidManifest.xml'), 'utf-8')
@@ -558,11 +560,14 @@ export async function runAndroidOrderSuite({ it, check }) {
       '只返回条数不写盘 = 按钮点了没反应')
 
     // 5) 隐私文案必须覆盖"这套系统真实做过的事"，不能是一句空话
-    check('写了字幕保留期（7 天）', privacyXml.includes('7 天'))
-    check('写了音频轮转上限（1 GB）', privacyXml.includes('1 GB'))
-    check('写了本机记录上限（200 条）', privacyXml.includes('200 条'))
-    check('写了公网明文的风险（TLS）', privacyXml.includes('明文') && privacyXml.includes('TLS'))
-    check('写了不采集画面', privacyXml.includes('摄像头'))
+    // 4.56 起隐私页文案在 strings.xml（priv_s3），不在布局里
+    check('写了字幕保留期（7 天）', /name="priv_s3">[^<]*7 天/.test(readFileSync(
+      join(ROOT, 'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml'), 'utf-8'))
+      || privacyXml.includes('@string/priv_s3'))
+    check('写了音频轮转上限（1 GB）', privacyText.includes('1 GB'))
+    check('写了本机记录上限（200 条）', privacyText.includes('200 条'))
+    check('写了公网明文的风险（TLS）', privacyText.includes('明文') && privacyText.includes('TLS'))
+    check('写了不采集画面', privacyText.includes('摄像头'))
   })
 
   await it('主动停止上传不许报错（"上传出错：thread interrupted" 的回归）', () => {
@@ -612,10 +617,11 @@ export async function runAndroidOrderSuite({ it, check }) {
 
     // 现象：建房成功立刻弹术语库对话框，页面上的邀请码被整个盖住，用户来不及抄。
     check('建房成功后先弹一条长 Toast 报邀请码（Toast 显示在对话框之上）',
-      /Toast\.makeText\(this, "本场邀请码：" \+ code, Toast\.LENGTH_LONG\)/.test(src),
+      /Toast\.makeText\(this, getString\(R\.string\.toast_invite, code\), Toast\.LENGTH_LONG\)/.test(src),
       '没有它，邀请码就被对话框盖住了')
     check('邀请码被传进选库框', /chooseLibsAfterCreate\(id, room\.optString\("name", name\), code\)/.test(src))
-    check('选库框的标题里带着邀请码', /codeLine[^\n]*本场术语库/.test(src), '标题要能直接看到码')
+    check('选库框的标题里带着邀请码',
+      /codeLine \+ getString\(R\.string\.terms_dialog_title\)/.test(src), '标题要能直接看到码')
     // 4.44：**不能**再给这个对话框加 setMessage —— AppCompat 在同时设置了 message 与
     // multiChoiceItems 时会把列表挤掉，表现就是"框弹出来了但一个库都没有"（用户报过）。
     check('选库框没有 setMessage（否则列表会被挤掉）',
@@ -674,8 +680,8 @@ export async function runAndroidOrderSuite({ it, check }) {
     const body = room.slice(room.indexOf('private void takingChanged('), room.indexOf('\n    }', room.indexOf('private void takingChanged(')))
 
     // 4.55 起按钮上一律是图标，文案/无障碍描述仍要区分"我能不能按"
-    check('持麦者解除的是自己的锁', body.includes('"解锁发言"'))
-    check('不能按的人看到的是状态而不是动作', body.includes('"发言已锁定（只有发起者能解除）"'),
+    check('持麦者解除的是自己的锁', body.includes('R.string.cd_unlock_speak'))
+    check('不能按的人看到的是状态而不是动作', body.includes('R.string.cd_locked'),
       '既不是持麦者也不是发起者时，不该出现「解锁」这个动作')
     check('按不动就真的点不了', /lockButton\.setEnabled\(canLock\)/.test(body))
     check('按不动时视觉也弱化', /lockButton\.setAlpha\(canLock \? 1f : 0\.5f\)/.test(body))
@@ -814,9 +820,9 @@ export async function runAndroidOrderSuite({ it, check }) {
 
     // 品牌：两枚圆（中 / A）+ 产品名 + 标语
     check('品牌图标两枚圆', /bg_brand_circle"/.test(home) && /bg_brand_circle_alt"/.test(home))
-    check('圆里是「中」与「A」', /text="中"/.test(home) && /text="A"/.test(home))
-    check('产品名', /译连 TransLink/.test(home))
-    check('品牌标语', /巴别塔之后，不同语言，自在交流。/.test(home))
+    check('圆里是「中」与「A」', /text="@string\/brand_mark_zh"/.test(home) && /text="A"/.test(home))
+    check('产品名', /@string\/app_brand/.test(home))
+    check('品牌标语', /@string\/home_slogan/.test(home))
 
     // 语言胶囊：英文必须禁用（服务端只做中↔巴葡，能点就是骗人）
     check('三颗语言胶囊', /homeLangZh/.test(home) && /homeLangEn/.test(home) && /homeLangPt/.test(home))
@@ -836,7 +842,8 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('默认是登录态', /setRegisterMode\(false\)/.test(homeJava), '登录不需要邮箱')
     check('邮箱那一排跟着切', /emailRow\.setVisibility\(emailVisibility\)/.test(homeJava))
     check('验证码跟着切', /codeInput\.setVisibility\(emailVisibility\)/.test(homeJava))
-    check('按钮文案跟着变', /loginButton\.setText\(register \? "注册并登录" : "登录"\)/.test(homeJava))
+    check('按钮文案跟着变',
+      /loginButton\.setText\(getString\(register \? R\.string\.btn_register_login : R\.string\.btn_login\)\)/.test(homeJava))
     check('注册走 authRegisterEmail', /isRegister[\s\S]{0,200}authRegisterEmail/.test(homeJava))
     check('登录走 authLogin', /authLogin\(user, pass\)/.test(homeJava))
     check('判定用开关而不是字段内容', /final boolean isRegister = registerMode;/.test(homeJava))
@@ -986,7 +993,7 @@ export async function runAndroidOrderSuite({ it, check }) {
 
     // M3：原文显示开关
     check('底部有原文开关（Switch）', /@\+id\/roomSourceSwitch/.test(room) && /<Switch/.test(room))
-    check('开关旁边写着「原文」', /text="原文"/.test(room))
+    check('开关旁边写着「原文」', /text="@string\/room_source"/.test(room))
     check('切换会影响已画出来的卡片', /private void syncSourceVisibility\(\)[\s\S]{0,900}setVisibility/.test(activity))
     check('防止 setChecked 自己触发自己', /syncingSwitch/.test(activity))
 
@@ -996,7 +1003,7 @@ export async function runAndroidOrderSuite({ it, check }) {
       check(`右侧条有 ${id}`, new RegExp(`@\\+id/${id}\\b`).test(room), id)
     }
     check('外设没接入就直说"未接入"（不做假开关）',
-      /audioState\.setText\("未接入"\)/.test(activity), '没有真实设备时不许假装可用')
+      /audioState\.setText\(getString\(R\.string\.room_audio_none\)\)/.test(activity), '没有真实设备时不许假装可用')
     check('点右侧条开抽屉', /infoBar\.setOnClickListener\(v -> toggleDrawer\(\)\)/.test(activity))
 
     // 底部：开麦胶囊（红/蓝绿两态 + 呼吸）
@@ -1013,7 +1020,10 @@ export async function runAndroidOrderSuite({ it, check }) {
     // 抽屉：人员与设备
     check('有抽屉覆盖层', /@\+id\/roomDrawer\b/.test(room))
     check('抽屉列成员', /@\+id\/roomMembersList/.test(room) && /renderMembers/.test(activity))
-    check('抽屉列设备状态', /@\+id\/roomDrawerDevices/.test(room) && /未接入/.test(activity))
+    check('抽屉列设备状态', /@\+id\/roomDrawerDevices/.test(room)
+      && /drawerDevices\.setText\(getString\(R\.string\.room_devices_detail\)\)/.test(activity)
+      && readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml'), 'utf-8')
+        .includes('未接入'))
   })
 
   await it('房间页四个修复：顶部信息 / 成员形状 / 不显示调试文本（4.53）', () => {
@@ -1035,7 +1045,7 @@ export async function runAndroidOrderSuite({ it, check }) {
       /codeView\.setText\("#" \+ code\)/.test(activity) && /titleView\.setText\(name\)/.test(activity))
     check('角色按 host 判定（发起者/参与者）',
       /iAmHost = myName != null && myName\.equals\(host\)/.test(activity)
-      && /roleTag\.setText\(iAmHost \? "发起者" : "参与者"\)/.test(activity))
+      && /roleTag\.setText\(iAmHost \? getString\(R\.string\.room_role_host\) : getString\(R\.string\.room_role_member\)\)/.test(activity))
 
     // ② 成员是对象数组 {username, lang, joinedAt}，不能按字符串取
     check('成员按 username 字段读', /optString\("username", ""\)/.test(activity),
@@ -1065,18 +1075,21 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('客户端有对应接口', /public JSONObject orgRemoveMember\(/.test(client))
 
     // 抽屉：管理者看得到"移出"，且不给自己显示
-    check('成员行带移出按钮', /remove\.setText\("移出"\)/.test(activity))
+    check('成员行带移出按钮', /remove\.setText\(getString\(R\.string\.btn_remove\)\)/.test(activity))
     check('移出只对别人显示（自己要走退出）', /iAmHost && !name\.equals\(myName\)/.test(activity))
     check('移出要二次确认', /private void confirmRemove\(/.test(activity) && /AlertDialog/.test(activity))
-    check('锁定中时发起者可解除他人锁定', /force-release/.test(activity) && /解除 .* 的锁定/.test(activity))
+    check('锁定中时发起者可解除他人锁定',
+      /force-release/.test(activity) && /getString\(R\.string\.btn_force_release/.test(activity))
 
     // 系统事件行：弱化、居中、插进字幕流
     check('有 addSystemEvent', /private void addSystemEvent\(String text\)/.test(activity))
     check('事件行是弱化居中文字', /setGravity\(android\.view\.Gravity\.CENTER\)/.test(activity)
       && /R\.color\.ink_faint/.test(activity))
-    check('会议开始写一条事件', /会议开始 · 发言权互斥已启用/.test(activity))
+    check('会议开始写一条事件',
+      /addSystemEvent\(getString\(R\.string\.sys_meeting_started\)\)/.test(activity))
     check('被顶替/掉线释放写进事件行', /addSystemEvent\(message\)/.test(activity))
-    check('锁定/解锁写进事件行', /已锁定/.test(activity) && /发言已解锁/.test(activity))
+    check('锁定/解锁写进事件行',
+      /R\.string\.sys_lock_self|R\.string\.sys_lock_other/.test(activity) && /R\.string\.sys_unlocked/.test(activity))
   })
 
   await it('4.55：抽屉实时刷新 / 被移出即离场 / 锁定图标 / 原文开关', () => {
@@ -1112,6 +1125,111 @@ export async function runAndroidOrderSuite({ it, check }) {
     // ④ 原文开关：文字 + Switch
     check('原文是文字 + Switch', /@\+id\/roomSourceSwitch/.test(room) && /<Switch/.test(room))
     check('Switch 默认打开', /android:checked="true"/.test(room))
+  })
+
+  await it('4.56：界面三语（中文 / 巴葡 / 英文）', () => {
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const readRes = (p) => readFileSync(join(resDir, p), 'utf-8')
+    const keysOf = (xml) => new Set([...xml.matchAll(/<string name="([A-Za-z0-9_]+)"/g)].map((m) => m[1]))
+
+    const zh = keysOf(readRes(join('values', 'strings.xml')))
+    const en = keysOf(readRes(join('values-en', 'strings.xml')))
+    const pt = keysOf(readRes(join('values-pt-rBR', 'strings.xml')))
+
+    // ① 英 / 巴葡键必须一一对应，且都在中文（默认资源）里
+    const onlyEn = [...en].filter((k) => !pt.has(k))
+    const onlyPt = [...pt].filter((k) => !en.has(k))
+    check('英文与巴葡的键完全一致', onlyEn.length === 0 && onlyPt.length === 0,
+      `en-only=${onlyEn.join(',')} pt-only=${onlyPt.join(',')}`)
+    const missingZh = [...en].filter((k) => !zh.has(k))
+    check('英文/巴葡用到的键在中文里都有', missingZh.length === 0, missingZh.join(','))
+
+    // ② 会议室五页真正引用到的键，三份都得有（漏一个就是运行时崩溃或空白）
+    const pages = ['page_home.xml', 'page_rooms.xml', 'page_room.xml', 'page_settings_app.xml', 'page_privacy.xml']
+    const acts = ['HomeActivity.java', 'RoomsActivity.java', 'RoomActivity.java', 'SettingsActivity.java', 'PrivacyActivity.java']
+    const refs = new Set()
+    for (const f of pages) {
+      for (const m of readFileSync(join(resDir, 'layout', f), 'utf-8').matchAll(/@string\/([A-Za-z0-9_]+)/g)) refs.add(m[1])
+    }
+    for (const f of acts) {
+      for (const m of readFileSync(join(javaDir, f), 'utf-8').matchAll(/R\.string\.([A-Za-z0-9_]+)/g)) refs.add(m[1])
+    }
+    // 出厂默认值不在界面文案里（它们是配置，不是句子）
+    for (const k of ['default_server_url', 'default_shared_secret']) refs.delete(k)
+    const noZh = [...refs].filter((k) => !zh.has(k))
+    const noEn = [...refs].filter((k) => !en.has(k))
+    const noPt = [...refs].filter((k) => !pt.has(k))
+    check('界面引用的键在中文里有', noZh.length === 0, noZh.join(','))
+    check('界面引用的键在英文里有', noEn.length === 0, noEn.join(','))
+    check('界面引用的键在巴葡里有', noPt.length === 0, noPt.join(','))
+
+    // ③ 五页布局里不再有裸中文（所有文案都走 @string）
+    const cjk = /[\u4e00-\u9fff]/
+    const rawLayout = []
+    for (const f of pages) {
+      const body = readFileSync(join(resDir, 'layout', f), 'utf-8').replace(/<!--[\s\S]*?-->/g, '')
+      for (const m of body.matchAll(/(?:android:(?:text|hint|contentDescription))="([^"]*)"/g)) {
+        if (cjk.test(m[1])) rawLayout.push(`${f}:${m[1].slice(0, 12)}`)
+      }
+      for (const m of body.matchAll(/>([^<>]*[\u4e00-\u9fff][^<>]*)</g)) {
+        if (!m[1].trim().startsWith('@')) rawLayout.push(`${f}:node:${m[1].trim().slice(0, 12)}`)
+      }
+    }
+    check('五个页面的布局里没有裸中文', rawLayout.length === 0, rawLayout.slice(0, 6).join(' | '))
+
+    // ④ 五个页面的 Java 里没有裸中文界面串（日志与 debugLine 除外）
+    const rawJava = []
+    for (const f of acts) {
+      const lines = readFileSync(join(javaDir, f), 'utf-8').split('\n')
+      let inBlock = false
+      for (const line of lines) {
+        const s = line.trim()
+        if (inBlock) { if (s.includes('*/')) inBlock = false; continue }
+        if (s.startsWith('/*')) { if (!s.includes('*/')) inBlock = true; continue }
+        if (s.startsWith('//') || s.startsWith('*')) continue
+        const code = s.split('//')[0]
+        if (!cjk.test(code)) continue
+        if (/Log\.[iwevd]\(|debugLine\(/.test(code)) continue    // 诊断日志不进界面文案
+        rawJava.push(`${f}:${code.slice(0, 24)}`)
+      }
+    }
+    check('五页 Java 里没有裸中文界面串', rawJava.length === 0, rawJava.slice(0, 6).join(' | '))
+
+    // ⑤ 机制：每个页面都要在 attachBaseContext 里换语言，否则只有先建的那页生效
+    const uiLang = readFileSync(join(javaDir, 'UiLang.java'), 'utf-8')
+    check('UiLang 认三种语言', /public static final String ZH = "zh"/.test(uiLang)
+      && /public static final String PT = "pt-BR"/.test(uiLang)
+      && /public static final String EN = "en"/.test(uiLang))
+    check('没选过就跟随系统（不硬压成中文）', /if \(tag\.isEmpty\(\)\) return base;/.test(uiLang))
+    check('回到前台发现语言变了会自己重建', /public static void trackShown\(/.test(uiLang)
+      && /activity\.recreate\(\)/.test(uiLang))
+    for (const f of acts) {
+      const body = readFileSync(join(javaDir, f), 'utf-8')
+      check(`${f} 在 attachBaseContext 里换语言`, /super\.attachBaseContext\(UiLang\.wrap\(base\)\)/.test(body))
+      check(`${f} 回前台会自检语言`, /UiLang\.trackShown\(this\)/.test(body))
+    }
+
+    // ⑥ 选择器：登录页右上角 + 设置页各一组，语言名用它自己的语言写
+    const home = readFileSync(join(resDir, 'layout', 'page_home.xml'), 'utf-8')
+    const setPage = readFileSync(join(resDir, 'layout', 'page_settings_app.xml'), 'utf-8')
+    check('登录页有界面语言三选一', /@\+id\/homeUiLangZh/.test(home) && /@\+id\/homeUiLangPt/.test(home)
+      && /@\+id\/homeUiLangEn/.test(home))
+    check('设置页有界面语言三选一', /@\+id\/setAppUiLangZh/.test(setPage) && /@\+id\/setAppUiLangPt/.test(setPage)
+      && /@\+id\/setAppUiLangEn/.test(setPage))
+    check('语言名不翻译（Português / English 原样）', /text="Português"/.test(home) && /text="Português"/.test(setPage))
+    check('界面语言与「我说话用什么语言」是两个开关', /ui_lang_hint/.test(setPage)
+      && /rooms_my_lang_title/.test(setPage))
+  })
+
+  await it('4.56：登录页那行空状态栏不再挂着', () => {
+    const layoutDir = join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout')
+    const home = readFileSync(join(layoutDir, 'page_home.xml'), 'utf-8')
+    const activity = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay', 'HomeActivity.java'), 'utf-8')
+    check('状态行默认隐藏', /@\+id\/homeStatus[\s\S]{0,900}android:visibility="gone"/.test(home))
+    check('没话说时整块收起来（不是画一条空卡片）',
+      /private void setStatus\(String msg\)[\s\S]{0,400}View\.GONE/.test(activity))
+    check('注销后不再写「已注销」', !/setStatus\("已注销"\)/.test(activity) && /setStatus\(""\)/.test(activity))
   })
 
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {

@@ -89,8 +89,10 @@ android {
     // 4.55：用户实测三处 —— 人员/设备抽屉实时刷新（开着才轮询）；被移出的人立刻离场
     //       （WS 推 removed + 轮询兜底）；锁定按钮换成上锁/解锁图标、原文换成文字 + Switch。
     //       见 docs/21 §4.55。
-        versionCode = 84
-        versionName = "4.55"
+    // 4.56：界面三语（中文 / 巴西葡语 / 英文）—— 会议室五页文案全部抽进 strings.xml，
+    //       UiLang 管切换（登录页右上角 + 设置页）；登录页那条空状态栏不再挂着。见 docs/21 §4.56。
+        versionCode = 85
+        versionName = "4.56"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

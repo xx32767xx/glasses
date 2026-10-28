@@ -15,6 +15,18 @@ import android.os.Bundle;
  */
 public class PrivacyActivity extends android.app.Activity {
     @Override
+    protected void attachBaseContext(android.content.Context base) {
+        // 4.56：界面语言必须在这里换（三套资源在 values-en / values-pt-rBR）
+        super.attachBaseContext(UiLang.wrap(base));
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        UiLang.trackShown(this);   // 别处改过界面语言，回到本页要跟上（会自己 recreate）
+    }
+
+    @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.page_privacy);
