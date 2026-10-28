@@ -91,8 +91,9 @@ android {
     //       见 docs/21 §4.55。
     // 4.56：界面三语（中文 / 巴西葡语 / 英文）—— 会议室五页文案全部抽进 strings.xml，
     //       UiLang 管切换（登录页右上角 + 设置页）；登录页那条空状态栏不再挂着。见 docs/21 §4.56。
-        versionCode = 85
-        versionName = "4.56"
+    // 4.57：三语的一处安全细节——房间页在**正在开麦上传时不自动 recreate**（换语言会把这一段发言打断）。
+        versionCode = 86
+        versionName = "4.57"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

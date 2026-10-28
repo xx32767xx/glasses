@@ -135,7 +135,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     @Override
     protected void onResume() {
         super.onResume();
-        UiLang.trackShown(this);   // 别处改过界面语言，回到本页要跟上（会自己 recreate）
+        // 4.56：换语言会 recreate 本页，而本顿重建会**打断正在进行的发言**。
+        // 所以只有没开麦时才自检；开着麦就先用旧语言，等这一段说完再说。
+        if (mic == null) UiLang.trackShown(this);
     }
 
     @Override
