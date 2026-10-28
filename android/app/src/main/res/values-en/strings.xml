@@ -297,4 +297,24 @@ If you do not want to be recorded, do not tap Start. To delete records on the ph
     <string name="up_upload_failed">Uploading audio failed: %1$s</string>
     <string name="lang_pt_native">Português</string>
     <string name="home_my_lang_hint">This only changes the interface wording; the language you speak is chosen when you create a meeting</string>
+    <string name="greet_morning">Good morning, %1$s</string>
+    <string name="greet_afternoon">Good afternoon, %1$s</string>
+    <string name="greet_evening">Good evening, %1$s</string>
+    <string name="state_online">Online</string>
+    <string name="state_offline">Offline</string>
+    <string name="card_create_title">Create a session</string>
+    <string name="card_create_desc">Open a room and share a 6-digit code</string>
+    <string name="card_join_title">Join a session</string>
+    <string name="card_join_desc">Enter the code you were given</string>
+    <string name="card_interp_title">Interpreter</string>
+    <string name="card_interp_desc">Built for the glasses and long-form speaking</string>
+    <string name="card_interp_soon">Coming soon</string>
+    <string name="home_supported_title">Supported languages</string>
+    <string name="lang_pt_full">Brazilian Portuguese</string>
+    <string name="home_supported_more">More languages on the way</string>
+    <string name="nav_home">Home</string>
+    <string name="nav_history">History</string>
+    <string name="nav_me">Me</string>
+    <string name="nav_history_soon">History (coming next)</string>
+    <string name="home_lang_entry_desc">Switch the interface language</string>
 </resources>

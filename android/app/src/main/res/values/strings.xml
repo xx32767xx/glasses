@@ -582,4 +582,23 @@
     <string name="up_upload_failed">上传音频失败：%1$s</string>
     <string name="lang_pt_native">Português</string>
     <string name="home_my_lang_hint">只改界面文字；说话用哪种语言在创建会议时选</string>
+    <string name="greet_morning">早上好，%1$s</string>
+    <string name="greet_afternoon">下午好，%1$s</string>
+    <string name="greet_evening">晚上好，%1$s</string>
+    <string name="state_online">在线</string>
+    <string name="state_offline">离线</string>
+    <string name="card_create_title">创建同传会议</string>
+    <string name="card_create_desc">建一间房，生成 6 位邀请码给对方</string>
+    <string name="card_join_title">加入同传会议</string>
+    <string name="card_join_desc">用对方给的邀请码进房</string>
+    <string name="card_interp_title">同传翻译官</string>
+    <string name="card_interp_desc">面向眼镜与连续讲话的同传场景</string>
+    <string name="card_interp_soon">即将上线</string>
+    <string name="home_supported_title">已支持语言</string>
+    <string name="home_supported_more">更多语言持续扩展中</string>
+    <string name="nav_home">首页</string>
+    <string name="nav_history">历史</string>
+    <string name="nav_me">我的</string>
+    <string name="nav_history_soon">历史（下一步开发）</string>
+    <string name="home_lang_entry_desc">切换界面语言</string>
 </resources>

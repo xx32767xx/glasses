@@ -297,4 +297,24 @@ Se não quiser ser gravado, não toque em Iniciar. Para apagar os registros do c
     <string name="up_upload_failed">Falha ao enviar o áudio: %1$s</string>
     <string name="lang_pt_native">Português</string>
     <string name="home_my_lang_hint">Isto muda apenas o texto da interface; o idioma em que você fala é escolhido ao criar a reunião</string>
+    <string name="greet_morning">Bom dia, %1$s</string>
+    <string name="greet_afternoon">Boa tarde, %1$s</string>
+    <string name="greet_evening">Boa noite, %1$s</string>
+    <string name="state_online">Online</string>
+    <string name="state_offline">Offline</string>
+    <string name="card_create_title">Criar uma sessão</string>
+    <string name="card_create_desc">Abra uma sala e envie um código de 6 dígitos</string>
+    <string name="card_join_title">Entrar em uma sessão</string>
+    <string name="card_join_desc">Digite o código que você recebeu</string>
+    <string name="card_interp_title">Intérprete</string>
+    <string name="card_interp_desc">Feito para os óculos e para falas longas</string>
+    <string name="card_interp_soon">Em breve</string>
+    <string name="home_supported_title">Idiomas suportados</string>
+    <string name="lang_pt_full">Português (Brasil)</string>
+    <string name="home_supported_more">Mais idiomas a caminho</string>
+    <string name="nav_home">Início</string>
+    <string name="nav_history">Histórico</string>
+    <string name="nav_me">Perfil</string>
+    <string name="nav_history_soon">Histórico (em breve)</string>
+    <string name="home_lang_entry_desc">Mudar o idioma da interface</string>
 </resources>

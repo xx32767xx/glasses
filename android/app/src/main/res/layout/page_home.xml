@@ -8,17 +8,32 @@
     文字只有三级：ink（主）/ ink_soft（次）/ ink_faint（说明）
   ⚠️ 这里**不写任何色值与裸 dp/sp**：一律 @color/... 与 @dimen/...（深色模式与改版才不用改布局）。
 -->
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/page"
-    android:fillViewport="true">
+    android:orientation="vertical">
 
-    <LinearLayout
+    <ScrollView
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="@dimen/space_page">
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="@color/page"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="@dimen/space_page">
+
+        <!-- 登录态才有的抬头（品牌 / 标语 / 我的语言）：进了首页就收起，
+             首页有自己的问候与语言入口，不能两套抬头同时出现（4.60） -->
+        <LinearLayout
+            android:id="@+id/homeLoginHeader"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
 
         <TextView
             android:layout_width="match_parent"
@@ -35,6 +50,8 @@
             android:text="@string/home_subtitle"
             android:textColor="@color/ink_soft"
             android:textSize="@dimen/text_secondary" />
+
+        </LinearLayout>
 
         <!-- 状态区：一行人类可读的信息（连接/错误/被顶下线都显示在这里） -->
         <TextView
@@ -363,7 +380,11 @@
             </LinearLayout>
         </LinearLayout>
 
-        <!-- ── ② 首页 ────────────────────────────────────────────────── -->
+        <!-- ── ② 首页（4.60 按原型重做）─────────────────────────────────
+             结构：顶部问候 + 界面语言入口 → 三张任务卡（创建 / 加入同级，同传翻译官通栏）
+                   → 已支持语言卡片 → 两个弱化效用入口（旧版界面 / 退出登录）
+             底部三项一级导航固定在屏幕底部（不在 ScrollView 里）。
+             ⚠️ 这里不写色值与裸 dp：一律 @color / @dimen。 -->
         <LinearLayout
             android:id="@+id/homeMainBox"
             android:layout_width="match_parent"
@@ -372,82 +393,406 @@
             android:orientation="vertical"
             android:visibility="gone">
 
+            <!-- 顶部：问候语 + 状态摘要，右侧是界面语言入口 -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:background="@drawable/bg_card"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="@dimen/space_card">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:id="@+id/homeGreeting"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:textColor="@color/ink"
+                        android:textSize="@dimen/text_page_title"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/homeSummary"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/space_gap_tiny"
+                        android:textColor="@color/ink_soft"
+                        android:textSize="@dimen/text_secondary" />
+                </LinearLayout>
+
+                <!-- 界面语言入口：显示当前语言，点开三选一 -->
+                <TextView
+                    android:id="@+id/homeLangEntry"
+                    android:layout_width="wrap_content"
+                    android:layout_height="@dimen/touch_min"
+                    android:layout_marginStart="@dimen/space_gap"
+                    android:background="@drawable/bg_chip_brand"
+                    android:clickable="true"
+                    android:contentDescription="@string/home_lang_entry_desc"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:paddingStart="@dimen/space_gap"
+                    android:paddingEnd="@dimen/space_gap"
+                    android:textColor="@color/brand"
+                    android:textSize="@dimen/text_body"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <!-- ── 第一行：创建 / 加入（两个平级入口）────────────────── -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_card"
+                android:baselineAligned="false"
+                android:orientation="horizontal">
+
+                <LinearLayout
+                    android:id="@+id/homeCardCreate"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_card_tap"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center_horizontal"
+                    android:minHeight="@dimen/card_task_min_height"
+                    android:orientation="vertical"
+                    android:padding="@dimen/space_card">
+
+                    <ImageView
+                        android:layout_width="@dimen/icon_size_card"
+                        android:layout_height="@dimen/icon_size_card"
+                        android:contentDescription="@null"
+                        android:src="@drawable/ic_card_create"
+                        android:tint="@color/brand" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/space_gap_small"
+                        android:gravity="center"
+                        android:text="@string/card_create_title"
+                        android:textColor="@color/ink"
+                        android:textSize="@dimen/text_title"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/space_gap_tiny"
+                        android:gravity="center"
+                        android:text="@string/card_create_desc"
+                        android:textColor="@color/ink_soft"
+                        android:textSize="@dimen/text_caption" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/homeCardJoin"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="@dimen/space_gap_small"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_card_tap"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center_horizontal"
+                    android:minHeight="@dimen/card_task_min_height"
+                    android:orientation="vertical"
+                    android:padding="@dimen/space_card">
+
+                    <ImageView
+                        android:layout_width="@dimen/icon_size_card"
+                        android:layout_height="@dimen/icon_size_card"
+                        android:contentDescription="@null"
+                        android:src="@drawable/ic_card_join"
+                        android:tint="@color/brand" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/space_gap_small"
+                        android:gravity="center"
+                        android:text="@string/card_join_title"
+                        android:textColor="@color/ink"
+                        android:textSize="@dimen/text_title"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/space_gap_tiny"
+                        android:gravity="center"
+                        android:text="@string/card_join_desc"
+                        android:textColor="@color/ink_soft"
+                        android:textSize="@dimen/text_caption" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- ── 第二行：同传翻译官（独立场景，通栏；还没做，只摆前端）────
+                 ⚠️ 不做假可用：卡上明写「即将上线」，点了没有反应（没有点击监听）。 -->
+            <LinearLayout
+                android:id="@+id/homeCardInterpreter"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap_small"
+                android:background="@drawable/bg_card_brand_tint"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="@dimen/space_card">
+
+                <ImageView
+                    android:layout_width="@dimen/icon_size_card"
+                    android:layout_height="@dimen/icon_size_card"
+                    android:contentDescription="@null"
+                    android:src="@drawable/ic_card_interpreter"
+                    android:tint="@color/brand" />
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="@dimen/space_gap"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="@string/card_interp_title"
+                            android:textColor="@color/ink"
+                            android:textSize="@dimen/text_title"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="@dimen/space_gap_small"
+                            android:background="@drawable/bg_chip"
+                            android:paddingStart="@dimen/space_gap_small"
+                            android:paddingTop="@dimen/space_gap_tiny"
+                            android:paddingEnd="@dimen/space_gap_small"
+                            android:paddingBottom="@dimen/space_gap_tiny"
+                            android:text="@string/card_interp_soon"
+                            android:textColor="@color/ink_soft"
+                            android:textSize="@dimen/text_caption" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/space_gap_tiny"
+                        android:text="@string/card_interp_desc"
+                        android:textColor="@color/ink_soft"
+                        android:textSize="@dimen/text_secondary" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- ── 已支持语言 ─────────────────────────────────────────── -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_card"
                 android:background="@drawable/bg_card"
                 android:orientation="vertical"
                 android:padding="@dimen/space_card">
 
                 <TextView
-                    android:id="@+id/homeWho"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text=""
-                    android:textColor="@color/brand"
+                    android:text="@string/home_supported_title"
+                    android:textColor="@color/ink"
                     android:textSize="@dimen/text_body"
                     android:textStyle="bold" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap_small"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:background="@drawable/bg_chip_brand"
+                        android:paddingStart="@dimen/space_gap"
+                        android:paddingTop="@dimen/space_gap_tiny"
+                        android:paddingEnd="@dimen/space_gap"
+                        android:paddingBottom="@dimen/space_gap_tiny"
+                        android:text="@string/lang_zh"
+                        android:textColor="@color/brand"
+                        android:textSize="@dimen/text_secondary" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="@dimen/space_gap_small"
+                        android:background="@drawable/bg_chip_brand"
+                        android:paddingStart="@dimen/space_gap"
+                        android:paddingTop="@dimen/space_gap_tiny"
+                        android:paddingEnd="@dimen/space_gap"
+                        android:paddingBottom="@dimen/space_gap_tiny"
+                        android:text="@string/lang_pt_full"
+                        android:textColor="@color/brand"
+                        android:textSize="@dimen/text_secondary" />
+                </LinearLayout>
 
                 <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="@dimen/space_gap_tiny"
-                    android:text="@string/home_greeting"
-                    android:textColor="@color/ink_soft"
-                    android:textSize="@dimen/text_secondary" />
-
-                <Button
-                    android:id="@+id/homeCreate"
-                    android:layout_width="match_parent"
-                    android:layout_height="@dimen/height_button"
-                    android:layout_marginTop="@dimen/space_card"
-                    android:background="@drawable/tap_btn_primary"
-                    android:text="@string/home_rooms"
-                    android:textAllCaps="false"
-                    android:textColor="@color/on_brand"
-                    android:textSize="@dimen/text_button" />
-
-                <Button
-                    android:id="@+id/homeSettings"
-                    android:layout_width="match_parent"
-                    android:layout_height="@dimen/height_field"
-                    android:layout_marginTop="@dimen/space_gap"
-                    android:background="@drawable/tap_btn_secondary"
-                    android:text="@string/home_settings"
-                    android:textAllCaps="false"
-                    android:textColor="@color/ink"
-                    android:textSize="@dimen/text_body" />
-
-                <!--
-                  旧版界面入口：4.48 起**默认隐藏**。
-                  旧版 App 已冻结（不再加功能），但代码保留 —— 它是「同传翻译官」的参考实现
-                  （收音 / 上传 / 长轮询 / 字幕成对 / 眼镜投屏与折行翻页都在里面）。
-                  需要对照或回退时，把 visibility 改成 visible 即可，不用改 Java
-                  （HomeActivity 里的点击监听一直有效）。
-                -->
-                <Button
-                    android:id="@+id/homeLegacy"
-                    android:layout_width="match_parent"
-                    android:layout_height="@dimen/height_field"
                     android:layout_marginTop="@dimen/space_gap_small"
-                    android:background="@drawable/tap_btn_secondary"
-                    android:text="@string/home_legacy"
-                    android:textAllCaps="false"
-                    android:textColor="@color/ink_soft"
-                    android:textSize="@dimen/text_body"
-                    android:visibility="gone" />
+                    android:text="@string/home_supported_more"
+                    android:textColor="@color/ink_faint"
+                    android:textSize="@dimen/text_caption" />
             </LinearLayout>
 
-            <Button
-                android:id="@+id/homeLogout"
+            <!-- ── 弱化效用入口（不属于核心任务，所以只留文字链接）──────── -->
+            <LinearLayout
                 android:layout_width="match_parent"
-                android:layout_height="@dimen/touch_min"
-                android:layout_marginTop="@dimen/space_gap"
-                android:background="@android:color/transparent"
-                android:text="@string/home_logout"
-                android:textAllCaps="false"
-                android:textColor="@color/err"
-                android:textSize="@dimen/text_body" />
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_section"
+                android:orientation="horizontal">
+
+                <!-- 旧版界面：默认隐藏（见下方注释），需要对照/回退时改成 visible -->
+                <TextView
+                    android:id="@+id/homeLegacy"
+                    android:layout_width="0dp"
+                    android:layout_height="@dimen/touch_min"
+                    android:layout_weight="1"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:text="@string/home_legacy"
+                    android:textColor="@color/ink_faint"
+                    android:textSize="@dimen/text_secondary"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/homeLogout"
+                    android:layout_width="0dp"
+                    android:layout_height="@dimen/touch_min"
+                    android:layout_weight="1"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:text="@string/home_logout"
+                    android:textColor="@color/err"
+                    android:textSize="@dimen/text_secondary" />
+            </LinearLayout>
+        </LinearLayout>
+            <!-- 旧版界面入口的历史说明：4.48 起默认隐藏。旧版 App 已冻结（不再加功能），
+                 但代码保留 —— 它是「同传翻译官」的参考实现（收音 / 上传 / 长轮询 / 字幕成对 /
+                 眼镜投屏与折行翻页都在里面）。需要对照或回退时，把上面 homeLegacy 的
+                 visibility 改成 visible 即可，不用改 Java（点击监听一直有效）。 -->
+        </LinearLayout>
+    </ScrollView>
+
+    <!-- ── 底部一级导航（4.60）：首页 / 历史 / 我的 ─────────────────────
+         历史还没做（下一步是会议记录），所以它只是灰着摆在那里、点了没反应；
+         我的 → 设置页。导航只在登录后出现，登录页没有它。 -->
+    <LinearLayout
+        android:id="@+id/homeBottomNav"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/surface"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/stroke_hairline"
+            android:background="@color/line_soft" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/nav_height"
+            android:orientation="horizontal">
+
+            <LinearLayout
+                android:id="@+id/homeNavHome"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:layout_width="@dimen/icon_size_nav"
+                    android:layout_height="@dimen/icon_size_nav"
+                    android:contentDescription="@null"
+                    android:src="@drawable/ic_nav_home"
+                    android:tint="@color/brand" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap_tiny"
+                    android:text="@string/nav_home"
+                    android:textColor="@color/brand"
+                    android:textSize="@dimen/text_caption" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/homeNavHistory"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:contentDescription="@string/nav_history_soon"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:layout_width="@dimen/icon_size_nav"
+                    android:layout_height="@dimen/icon_size_nav"
+                    android:contentDescription="@null"
+                    android:src="@drawable/ic_nav_history"
+                    android:tint="@color/ink_faint" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap_tiny"
+                    android:text="@string/nav_history"
+                    android:textColor="@color/ink_faint"
+                    android:textSize="@dimen/text_caption" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/homeNavMe"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <ImageView
+                    android:layout_width="@dimen/icon_size_nav"
+                    android:layout_height="@dimen/icon_size_nav"
+                    android:contentDescription="@null"
+                    android:src="@drawable/ic_nav_me"
+                    android:tint="@color/ink_soft" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap_tiny"
+                    android:text="@string/nav_me"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_caption" />
+            </LinearLayout>
         </LinearLayout>
     </LinearLayout>
-</ScrollView>
+</LinearLayout>

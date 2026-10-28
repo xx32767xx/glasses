@@ -21,6 +21,9 @@ import org.json.JSONObject;
  */
 public class RoomsActivity extends android.app.Activity {
 
+    /** 首页「创建 / 加入」两张卡带过来的意图：指向要聚焦的那一半（4.60）。 */
+    public static final String EXTRA_FOCUS = "focus";
+
     private final Handler ui = new Handler(Looper.getMainLooper());
     private LanClient client;
 
@@ -73,6 +76,15 @@ public class RoomsActivity extends android.app.Activity {
             return;
         }
         hint.setText(getString(R.string.st_current_account, myName));
+
+        // 4.60：首页的「创建同传会议 / 加入同传会议」是同一页的两个入口 ——
+        // 进来之后直接把光标放到对应那半，省得用户再自己找。
+        String focus = getIntent() == null ? null : getIntent().getStringExtra(EXTRA_FOCUS);
+        if ("create".equals(focus)) {
+            nameInput.requestFocus();
+        } else if ("join".equals(focus)) {
+            codeInput.requestFocus();
+        }
 
         client = new LanClient(prefs.getString("host", ""), prefs.getString("secret", ""), null);
         String token = prefs.getString("accountToken", "");

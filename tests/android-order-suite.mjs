@@ -528,9 +528,11 @@ export async function runAndroidOrderSuite({ it, check }) {
     }
 
     // 2) 首页能进得去（否则页面存在也白做）
-    check('首页有设置按钮', homeXml.includes('@+id/homeSettings'), '没有入口')
+    // 4.60：设置不再是一个按钮，而是底部导航的「我的」
+    check('首页底部导航能进设置', homeXml.includes('@+id/homeNavMe')
+      && /homeNavMe[\s\S]{0,200}SettingsActivity\.class/.test(homeJava), '没有入口')
     check('首页按钮真的打开设置页',
-      /homeSettings[\s\S]{0,160}SettingsActivity\.class/.test(homeJava), homeJava.slice(0, 80))
+      /homeNavMe[\s\S]{0,200}SettingsActivity\.class/.test(homeJava), homeJava.slice(0, 80))
     check('设置页能进隐私页',
       /setAppPrivacy[\s\S]{0,160}PrivacyActivity\.class/.test(settingsJava))
 
@@ -1196,7 +1198,8 @@ export async function runAndroidOrderSuite({ it, check }) {
         if (inBlock) { if (s.includes('*/')) inBlock = false; continue }
         if (s.startsWith('/*')) { if (!s.includes('*/')) inBlock = true; continue }
         if (s.startsWith('//') || s.startsWith('*')) continue
-        const code = s.split('//')[0]
+        // 行内块注释先剥掉（`v -> { /* 已经在首页 */ }` 这种），再判中文
+        const code = s.split('//')[0].replace(/\/\*[\s\S]*?\*\//g, '')
         if (!cjk.test(code)) continue
         if (/Log\.[iwevd]\(|debugLine\(/.test(code)) continue    // 诊断日志不进界面文案
         rawJava.push(`${f}:${code.slice(0, 24)}`)
@@ -1344,6 +1347,103 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('四个页面不再直接显示服务端原文', raw.length === 0, raw.join(','))
     check('接到服务端文本的地方真的调了 ServerText', acts.every((f) =>
       /ServerText\.(of|from)\(/.test(readFileSync(join(javaDir, f), 'utf-8'))))
+  })
+
+  await it('4.60：主页面重构成三入口 + 已支持语言 + 底部导航', () => {
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const home = readFileSync(join(resDir, 'layout', 'page_home.xml'), 'utf-8')
+    const java = readFileSync(join(javaDir, 'HomeActivity.java'), 'utf-8')
+
+    // 顶部：问候 + 摘要 + 右侧语言入口
+    check('顶部有问候语', /@\+id\/homeGreeting/.test(home))
+    check('问候下面有摘要（语言 · 设备 · 在线）',
+      /@\+id\/homeSummary/.test(home)
+      && /UiLang\.nativeLabel\(UiLang\.effective\(this\)\)/.test(java)
+      && /R\.string\.audio_source_phone/.test(java)
+      && /R\.string\.state_online/.test(java))
+    check('右侧有界面语言入口', /@\+id\/homeLangEntry/.test(home)
+      && /langEntry\.setOnClickListener\(v -> showUiLangPicker\(\)\)/.test(java))
+    check('语言入口是三选一，不是循环切换', /AlertDialog\.Builder\(this\)[\s\S]{0,300}setItems/.test(java))
+    check('问候按时段给', /greet_morning/.test(java) && /greet_afternoon/.test(java) && /greet_evening/.test(java))
+
+    // 第一行：创建 / 加入，同级（同样 weight、同样最小高度）
+    const createAt = home.indexOf('@+id/homeCardCreate')
+    const joinAt = home.indexOf('@+id/homeCardJoin')
+    const interpAt = home.indexOf('@+id/homeCardInterpreter')
+    check('创建在左、加入在右', createAt > 0 && joinAt > createAt && interpAt > joinAt)
+    const createBlock = home.slice(createAt, joinAt)
+    const joinBlock = home.slice(joinAt, interpAt)
+    check('两张卡同级（weight=1 + 同最小高度）',
+      /android:layout_weight="1"/.test(createBlock) && /android:layout_weight="1"/.test(joinBlock)
+      && /card_task_min_height/.test(createBlock) && /card_task_min_height/.test(joinBlock))
+    check('卡里都有名称与简短说明',
+      /card_create_title/.test(createBlock) && /card_create_desc/.test(createBlock)
+      && /card_join_title/.test(joinBlock) && /card_join_desc/.test(joinBlock))
+    check('两张卡都带图标', /ic_card_create/.test(createBlock) && /ic_card_join/.test(joinBlock))
+    check('创建/加入进房间列表的对应一半',
+      /homeCardCreate\)\.setOnClickListener\(v -> openRooms\("create"\)\)/.test(java)
+      && /homeCardJoin\)\.setOnClickListener\(v -> openRooms\("join"\)\)/.test(java))
+
+    // 第二行：同传翻译官通栏、独立场景、还没做
+    const interpBlock = home.slice(interpAt, home.indexOf('home_supported_title'))
+    check('同传翻译官通栏', /android:layout_width="match_parent"/.test(interpBlock))
+    check('同传翻译官有图标与说明',
+      /ic_card_interpreter/.test(interpBlock) && /card_interp_title/.test(interpBlock)
+      && /card_interp_desc/.test(interpBlock))
+    check('它标了「即将上线」（不假装能用）', /card_interp_soon/.test(interpBlock))
+    check('它没有点击监听（点了就该没反应）', !/homeCardInterpreter\)\.setOnClickListener/.test(java))
+
+    // 已支持语言：中文 / 巴西葡萄牙语 / 扩展提示
+    const supported = home.slice(home.indexOf('home_supported_title'), home.indexOf('@+id/homeLegacy'))
+    check('已支持语言卡片有标题', /home_supported_title/.test(supported))
+    check('标签列出中文与巴西葡萄牙语',
+      /@string\/lang_zh/.test(supported) && /@string\/lang_pt_full/.test(supported))
+    check('有语言扩展提示', /home_supported_more/.test(supported))
+
+    // 底部三项一级导航
+    check('底部有三个导航项', /@\+id\/homeNavHome/.test(home) && /@\+id\/homeNavHistory/.test(home)
+      && /@\+id\/homeNavMe/.test(home))
+    check('导航文案是首页/历史/我的', /@string\/nav_home/.test(home) && /@string\/nav_history/.test(home)
+      && /@string\/nav_me/.test(home))
+    check('历史暂时没有动作（下一步才做）', !/homeNavHistory\)\.setOnClickListener/.test(java))
+    check('我的进设置', /homeNavMe\)\.setOnClickListener[\s\S]{0,200}SettingsActivity\.class/.test(java))
+    check('底部导航固定（不在 ScrollView 里）',
+      home.indexOf('</ScrollView>') < home.indexOf('@+id/homeBottomNav'))
+    check('导航只在登录后出现',
+      /@\+id\/homeBottomNav[\s\S]{0,400}visibility="gone"/.test(home)
+      && /bottomNav\.setVisibility\(View\.VISIBLE\)/.test(java)
+      && /bottomNav\.setVisibility\(View\.GONE\)/.test(java))
+    check('登录页抬头在进首页后收起（不能两套抬头）',
+      /loginHeader\.setVisibility\(View\.GONE\)/.test(java))
+
+    // 图标风格统一：卡片图标都是品牌色 tint
+    const cardIcons = [...home.matchAll(/android:src="@drawable\/(ic_card_\w+)"[\s\S]{0,80}?android:tint="@color\/(\w+)"/g)]
+    check('三张卡的图标都走品牌色', cardIcons.length === 3
+      && cardIcons.every((m) => m[2] === 'brand'), JSON.stringify(cardIcons.map((m) => m[1])))
+
+    // 只摆三个核心入口：不允许混进营销模块
+    const cardIds = [...home.matchAll(/@\+id\/(homeCard\w+)/g)].map((m) => m[1])
+    check('首页只有三张任务卡', cardIds.length === 3, cardIds.join(','))
+  })
+
+  await it('门禁：Java 里引用的每个 R.id 都真的存在于布局', () => {
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout')
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const layoutIds = new Set()
+    for (const f of readdirSync(resDir)) {
+      if (!f.endsWith('.xml')) continue
+      for (const m of readFileSync(join(resDir, f), 'utf-8').matchAll(/@\+id\/([A-Za-z0-9_]+)/g)) layoutIds.add(m[1])
+    }
+    const missing = []
+    for (const f of readdirSync(javaDir)) {
+      if (!f.endsWith('.java')) continue
+      for (const m of readFileSync(join(javaDir, f), 'utf-8').matchAll(/R\.id\.([A-Za-z0-9_]+)/g)) {
+        if (!layoutIds.has(m[1])) missing.push(`${f}:${m[1]}`)
+      }
+    }
+    // 4.60 重构时删掉过 homeWho/homeCreate/homeSettings —— 这个断言就是为了那种情况
+    check('没有指向不存在控件的 findViewById', missing.length === 0, missing.join(' | '))
   })
 
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {

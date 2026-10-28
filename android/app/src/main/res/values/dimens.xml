@@ -54,4 +54,10 @@
 
     <!-- 房间页右侧竖向悬浮条宽度（发言人 + 投屏/扩声/收音三格） -->
     <dimen name="speaker_bar_width">92dp</dimen>
+
+    <!-- 主页面重构（4.60）：任务卡图标、底部导航、语言横幅 -->
+    <dimen name="icon_size_card">28dp</dimen>
+    <dimen name="icon_size_nav">24dp</dimen>
+    <dimen name="card_task_min_height">112dp</dimen>
+    <dimen name="nav_height">68dp</dimen>
 </resources>

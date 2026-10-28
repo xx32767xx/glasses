@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 「同传翻译官」那张卡：淡品牌底 + 品牌色描边，用来跟上面两张任务卡分出层次（4.60） -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/brand_soft" />
+    <corners android:radius="@dimen/radius_card" />
+    <stroke
+        android:width="@dimen/stroke_hairline"
+        android:color="@color/brand" />
+</shape>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 可点的任务卡：白底 + 细描边 + 14dp 圆角，带水波纹（4.60） -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="@color/ripple_light">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/surface" />
+            <corners android:radius="@dimen/radius_card" />
+            <stroke
+                android:width="@dimen/stroke_hairline"
+                android:color="@color/line" />
+        </shape>
+    </item>
+</ripple>

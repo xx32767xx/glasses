@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 4.60 主页面图标：24dp 视口、单色路径，颜色由布局里的 android:tint 决定 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="@dimen/icon_size_nav"
+    android:height="@dimen/icon_size_nav"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="@color/ink"
+        android:pathData="M5,3h6v2H7v14h4v2H5zM13,8l4,4-4,4v-3H9v-2h4z" />
+</vector>

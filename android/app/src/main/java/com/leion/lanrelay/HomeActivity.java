@@ -51,7 +51,18 @@ public class HomeActivity extends android.app.Activity {
     private TextView status;
     private Button loginButton;
     private Button sendCodeButton;
-    private TextView whoLine;
+    /** 首页顶部问候（「晚上好，张三」）。 */
+    private TextView greetingView;
+    /** 问候下面那行摘要：界面语言 · 设备 · 在线状态。 */
+    private TextView summaryView;
+    /** 顶部的界面语言入口（显示当前语言，点开三选一）。 */
+    private TextView langEntry;
+    /** 底部一级导航（登录后才出现）。 */
+    private View bottomNav;
+    /** 登录态抬头（品牌 / 标语 / 我的语言）：进首页就收起。 */
+    private View loginHeader;
+    /** 当前这台设备是否连着服务器（只用于首页摘要那一行）。 */
+    private boolean serverOnline = false;
     /**
      * 「我的语言」三颗胶囊 —— **界面语言**（4.59 澄清）。
      *
@@ -118,7 +129,11 @@ public class HomeActivity extends android.app.Activity {
         status = findViewById(R.id.homeStatus);
         loginButton = findViewById(R.id.homeLogin);
         sendCodeButton = findViewById(R.id.homeSendCode);
-        whoLine = findViewById(R.id.homeWho);
+        greetingView = findViewById(R.id.homeGreeting);
+        summaryView = findViewById(R.id.homeSummary);
+        langEntry = findViewById(R.id.homeLangEntry);
+        bottomNav = findViewById(R.id.homeBottomNav);
+        loginHeader = findViewById(R.id.homeLoginHeader);
         langZhButton = findViewById(R.id.homeLangZh);
         langEnButton = findViewById(R.id.homeLangEn);
         langPtButton = findViewById(R.id.homeLangPt);
@@ -149,8 +164,15 @@ public class HomeActivity extends android.app.Activity {
         langEnButton.setOnClickListener(v -> applyUiLang(UiLang.EN));
         langPtButton.setOnClickListener(v -> applyUiLang(UiLang.PT));
         registerToggle.setOnClickListener(v -> setRegisterMode(!registerMode));
-        findViewById(R.id.homeCreate).setOnClickListener(v -> openRooms());
-        findViewById(R.id.homeSettings).setOnClickListener(v ->
+        // 首页三张卡：创建 / 加入是同级入口（只是进到房间列表的对应一半），
+        // 同传翻译官那一张**故意没有点击监听** —— 它还没做，点了不该有任何反应。
+        findViewById(R.id.homeCardCreate).setOnClickListener(v -> openRooms("create"));
+        findViewById(R.id.homeCardJoin).setOnClickListener(v -> openRooms("join"));
+        langEntry.setOnClickListener(v -> showUiLangPicker());
+        // 首页这颗已经在这儿了，点了什么都不做（导航项本身要可点，否则看着像坏了）
+        findViewById(R.id.homeNavHome).setOnClickListener(v -> { });
+        // 历史：下一步才做（会议记录），现在不接任何动作
+        findViewById(R.id.homeNavMe).setOnClickListener(v ->
                 startActivity(new Intent(this, SettingsActivity.class)));
         findViewById(R.id.homeLegacy).setOnClickListener(v ->
                 startActivity(new Intent(this, MainActivity.class)));
@@ -195,6 +217,7 @@ public class HomeActivity extends android.app.Activity {
             ui.post(() -> {
                 if (body == null) {
                     // 连不上服务器：保留登录态，先按已登录进首页；真正的失效会在下一次请求里暴露
+                    serverOnline = false;
                     showHome(user, "");
                     setStatus(getString(R.string.st_offline_keep, error));
                     debugLine("restore offline: " + error);
@@ -202,6 +225,7 @@ public class HomeActivity extends android.app.Activity {
                 }
                 int code = body.optInt("_status", 0);
                 if (body.optBoolean("ok", false)) {
+                    serverOnline = true;
                     showHome(body.optString("user", user), body.optString("role", ""));
                     return;
                 }
@@ -279,14 +303,59 @@ public class HomeActivity extends android.app.Activity {
     private void showLogin() {
         loginBox.setVisibility(View.VISIBLE);
         homeBox.setVisibility(View.GONE);
+        if (loginHeader != null) loginHeader.setVisibility(View.VISIBLE);
+        if (bottomNav != null) bottomNav.setVisibility(View.GONE);
     }
 
     private void showHome(String user, String role) {
         loginBox.setVisibility(View.GONE);
         homeBox.setVisibility(View.VISIBLE);
-        whoLine.setText(user + (role.isEmpty() ? "" : " · " + role));
-        setStatus(getString(R.string.st_logged_in));
+        // 首页有自己的问候与语言入口，登录页那套抬头要收起来，否则一屏两个"标题"（4.60）
+        if (loginHeader != null) loginHeader.setVisibility(View.GONE);
+        if (bottomNav != null) bottomNav.setVisibility(View.VISIBLE);
+        greetingView.setText(greetingFor(user));
+        refreshHomeSummary();
+        setStatus("");
         startSessionWatch();
+    }
+
+    /**
+     * 问候语按当前时段给：早上好 / 下午好 / 晚上好。
+     *
+     * <p>为什么不写死「你好」：原型首页第一行就是问候，它承担"这屏是首页"的定位；
+     * 一句话就够，不需要额外的大标题。
+     */
+    private String greetingFor(String user) {
+        int hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY);
+        int res = hour < 12 ? R.string.greet_morning
+                : (hour < 18 ? R.string.greet_afternoon : R.string.greet_evening);
+        return getString(res, user == null ? "" : user);
+    }
+
+    /**
+     * 首页摘要那一行：**界面语言 · 设备 · 在线状态**。
+     *
+     * <p>为什么把"界面语言"也写在这：用户刚在右上角切过语言，这行是他能马上核对的地方；
+     * 设备与在线状态则是"我现在能不能开会"的最短回答。
+     */
+    private void refreshHomeSummary() {
+        if (summaryView == null) return;
+        String lang = UiLang.nativeLabel(UiLang.effective(this));
+        String state = getString(serverOnline ? R.string.state_online : R.string.state_offline);
+        String device = getString(R.string.audio_source_phone);
+        summaryView.setText(lang + " · " + device + " · " + state);
+        if (langEntry != null) langEntry.setText(lang);
+    }
+
+    /** 右上角的界面语言入口：点开三选一（语言名一律用它自己的语言写）。 */
+    private void showUiLangPicker() {
+        final String[] tags = {UiLang.ZH, UiLang.PT, UiLang.EN};
+        final String[] names = new String[tags.length];
+        for (int i = 0; i < tags.length; i++) names[i] = UiLang.nativeLabel(tags[i]);
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(R.string.ui_lang_title)
+                .setItems(names, (dialog, which) -> applyUiLang(tags[which]))
+                .show();
     }
 
     /**
@@ -530,6 +599,7 @@ public class HomeActivity extends android.app.Activity {
                         .putString("termsUser", name)
                         .apply();
                 client.setToken(token);
+                serverOnline = true;
                 showHome(name, role);
             });
         }, "home-login").start();
@@ -564,7 +634,15 @@ public class HomeActivity extends android.app.Activity {
         }, "home-logout").start();
     }
 
-    private void openRooms() {
-        startActivity(new Intent(this, RoomsActivity.class));
+    /**
+     * 进房间列表，并告诉它"用户是想建还是想加入"。
+     *
+     * <p>房间列表一页里有两件事（建房 / 加入）。首页既然给了两个入口，进来之后就该直接
+     * 落在对应那一半上（聚焦到输入框），而不是让人再找一遍。
+     */
+    private void openRooms(String focus) {
+        Intent intent = new Intent(this, RoomsActivity.class);
+        intent.putExtra(RoomsActivity.EXTRA_FOCUS, focus);
+        startActivity(intent);
     }
 }

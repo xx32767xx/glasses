@@ -95,9 +95,11 @@ android {
     //       WS 推的 host-left 不再原样显示；MicUploader 的中文提示一并收编。见 docs/21 §4.59。
     // 4.59：澄清——登录页「我的语言」选的是**界面语言**（中文/English/Português，English 不再禁用），
     //       说话语言在建会议时选；顶那排重复的选择器删掉。见 docs/21 §4.60。
+    // 4.61：主页面重构——问候+界面语言入口、三张任务卡（创建/加入同级、同传翻译官通栏标“即将上线”）、
+    //       已支持语言卡、底部三项导航；新增 R.id 存在性门禁。见 docs/21 §4.61。
     // 4.57：三语的一处安全细节——房间页在**正在开麦上传时不自动 recreate**（换语言会把这一段发言打断）。
-        versionCode = 88
-        versionName = "4.59"
+        versionCode = 90
+        versionName = "4.61"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），
