@@ -46,6 +46,19 @@ import java.util.List;
 import java.util.Locale;
 
 /**
+ * ⚠️ **已冻结（4.48，2026-10-28）**：这是**旧版**同传界面，不再加新功能。
+ *
+ * <p>它现在的身份是「同传翻译官 App」的**参考实现** —— 收音、音频分块上传、
+ * /frame 长轮询、字幕原文+译文成对显示、眼镜投屏与折行翻页，全部在这一个文件里跑通。
+ * 另一个同学要做翻译官 App 时，对照它跑一遍比读文档快（见 docs/23-集成契约.md §11）。
+ *
+ * <p>会议室那条线是 `HomeActivity` → `RoomsActivity` → `RoomActivity`，
+ * 两边共用 `LanClient` / `MicUploader` / `Records` / `GlassesSdk` 这些核心类。
+ *
+ * <p>新界面里的「旧版界面」入口**默认隐藏**（page_home.xml 的 homeLegacy），
+ * 需要对照时改成一个 visible 即可。
+ */
+/**
  * 同传眼镜（安卓端）。
  *
  * 结构：一个 Activity + 三个一级页面（同传 / 记录 / 设置）+ 若干覆盖层

@@ -256,6 +256,13 @@
                     android:textColor="@color/ink"
                     android:textSize="@dimen/text_body" />
 
+                <!--
+                  旧版界面入口：4.48 起**默认隐藏**。
+                  旧版 App 已冻结（不再加功能），但代码保留 —— 它是「同传翻译官」的参考实现
+                  （收音 / 上传 / 长轮询 / 字幕成对 / 眼镜投屏与折行翻页都在里面）。
+                  需要对照或回退时，把 visibility 改成 visible 即可，不用改 Java
+                  （HomeActivity 里的点击监听一直有效）。
+                -->
                 <Button
                     android:id="@+id/homeLegacy"
                     android:layout_width="match_parent"
@@ -265,7 +272,8 @@
                     android:text="旧版界面（对比 / 回退）"
                     android:textAllCaps="false"
                     android:textColor="@color/ink_soft"
-                    android:textSize="@dimen/text_body" />
+                    android:textSize="@dimen/text_body"
+                    android:visibility="gone" />
             </LinearLayout>
 
             <Button

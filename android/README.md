@@ -281,10 +281,24 @@ adb install -r android\app\build\outputs\apk\debug\app-debug.apk
 5. **「实验」「诊断」默认隐藏**：它们由设置里的"开发者模式"开关控制
    （`MainActivity.applyDeveloperMode`）。加新的排障入口时也放到这个开关后面，
    不要默认摊在设置页上。
+6. **尺寸也只走 token**（4.47 起）：圆角/间距/字号一律 `@dimen/...`（见 `res/values/dimens.xml`），
+   布局里不写裸 dp/sp（`0dp` 作为 `layout_weight` 的标准写法除外）。
+   原型给的是 CSS 像素，Android 侧按 dp/sp 重建，只搬"层级关系"。见 `docs/23-集成契约.md`。
 
-配色与尺寸集中在 `res/values/colors.xml`，文字在 `res/values/strings.xml`。
-**主色只有一个（蓝 #2563EB）**，只出现在"主操作"和"当前选中"上；
-状态色（绿/橙/红）必须**配文字**出现，不允许只靠颜色传达信息。
+配色与尺寸集中在 `res/values/colors.xml` + `res/values/dimens.xml`，文字在 `res/values/strings.xml`。
+**主色只有一个（蓝绿 #0E7490，4.47 起）**，只出现在"主操作"和"当前选中"上；
+主按钮走渐变（`drawable/bg_btn_primary.xml`，CSS 135° = Android `angle="315"`）；
+状态色（绿/橙/红/琥珀）必须**配文字**出现，不允许只靠颜色传达信息。
+
+### 两条界面线（4.48 起）
+
+| 线 | 入口 | 状态 |
+|---|---|---|
+| **会议室**（本次任务） | `HomeActivity` → `RoomsActivity` → `RoomActivity` | 正在做 |
+| **旧版同传**（= 翻译官 App 的参考实现） | `MainActivity`（首页入口默认隐藏） | **冻结**：不再加功能，只作对照 |
+
+两边共用 `LanClient` / `MicUploader` / `Records` / `GlassesSdk` 等核心类，
+接口契约见 `docs/23-集成契约.md`。改核心类时**两条线都要能编过**。
 
 ### 「手输一句话」是干什么的
 
@@ -557,6 +571,20 @@ taskkill /PID <那个PID> /F
 
 所以眼镜到手时，唯一要补的是"把 `lines` 推给眼镜"，而**折行/截断的正确性已经验证过了**——
 这一点很重要：字幕太长会不会被截掉，是这类产品最容易出问题的地方，现在就能提前发现。
+
+## 六之二、不用手机、不用识别，也能验"字幕显示"
+
+界面联调最烦的是"没有 GPU/模型就没有字幕"。但 relay 的字幕来源只有一个文件
+（字幕总线），所以**往那个文件里写一帧就够了**：
+
+```bash
+node relay/lan-relay.mjs --data-dir var/dev --port 8799 --secret dev-secret   # ① 假服务器
+node scripts/fake-frames.mjs --bus var/dev/subtitle-bus.json                  # ② 假字幕（循环）
+curl -s "http://127.0.0.1:8799/frame?since=0" -H "X-Leion-Secret: dev-secret"  # ③ 验一下
+```
+
+`fake-frames` 的内置脚本含**中文→葡语 / 葡语→中文 / 超长句**三种，
+`--partial` 会先发增量再发定稿（用来验"原位更新"）。详见 `docs/23-集成契约.md §1`。
 
 ## 七、没有手机时怎么测这条路
 

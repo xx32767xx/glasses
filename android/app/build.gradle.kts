@@ -72,8 +72,10 @@ android {
     //       在状态行直说「服务端版本较旧」。见 docs/21 §4.46。
     // 4.47：按原型视觉体系重做 5 个页面（蓝绿主色 / 白卡片 14dp / 主按钮渐变 315° /
     //       尺寸走 dimens token）；页面里不再有硬编码色值与裸 dp/sp。见 docs/21 §4.47。
-        versionCode = 76
-        versionName = "4.47"
+    // 4.48：档 1 —— 旧版 App 冻结（作为翻译官 App 的参考实现）+ docs/23 集成契约
+    //       + scripts/fake-frames.mjs（三条命令跑起假字幕）；首页旧版入口默认隐藏。见 docs/23。
+        versionCode = 77
+        versionName = "4.48"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

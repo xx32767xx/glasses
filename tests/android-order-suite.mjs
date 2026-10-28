@@ -757,6 +757,46 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('渐变两端用 token', /brand_grad_start/.test(btn) && /brand_grad_end/.test(btn))
   })
 
+  await it('旧版界面：入口默认隐藏、代码保留、且被标注为参考实现（4.48）', () => {
+    const layoutDir = join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout')
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const home = readFileSync(join(layoutDir, 'page_home.xml'), 'utf-8')
+    const homeJava = readFileSync(join(javaDir, 'HomeActivity.java'), 'utf-8')
+    const main = readFileSync(join(javaDir, 'MainActivity.java'), 'utf-8')
+
+    // 入口隐藏：按钮还在（能一键放出来），但默认看不见
+    const legacyBlock = home.slice(home.indexOf('@+id/homeLegacy'))
+    check('旧版入口默认隐藏', /visibility="gone"/.test(legacyBlock.slice(0, 900)),
+      '用户要求"暂时不再显示"')
+    check('隐藏方式是一个属性，不用改 Java',
+      /homeLegacy[\s\S]{0,1600}MainActivity\.class/.test(homeJava),
+      'HomeActivity 的点击监听必须一直有效')
+
+    // 冻结标注：不能悄悄变了语义，也不能被人当成"死代码"删掉
+    check('MainActivity 头部标了冻结', /已冻结（4\.48/.test(main), '没有标注就会被当成死代码删掉')
+    check('标注说清了它是参考实现', /参考实现/.test(main))
+  })
+
+  await it('集成契约文档：三条命令能跑、能力表与错误码都在（4.48）', () => {
+    const doc = readFileSync(join(ROOT, 'docs', '23-集成契约.md'), 'utf-8')
+    for (const needed of [
+      'relay/lan-relay.mjs', 'scripts/fake-frames.mjs',   // 三条命令里至少这两条
+      'X-Leion-Secret', 'X-Leion-Token',                   // 鉴权
+      'cols', 'lineBudget', 'features',                    // 能力协商
+      'frame-ws', 'room-closed-push', 'session-push',      // 能力标记
+      '410', '507', '401',                                 // 错误码
+      'partial', 'source',                                 // 帧的关键字段
+      'label',                                             // 单会话 per-label 待拍板
+    ]) {
+      check(`契约里写了 ${needed}`, doc.includes(needed), needed)
+    }
+    // 假字幕脚本必须真的存在（文档里承诺的命令不能指向不存在的文件）
+    const fake = readFileSync(join(ROOT, 'scripts', 'fake-frames.mjs'), 'utf-8')
+    check('fake-frames 内置换行/长句样例', /超长句|长句/.test(fake) && fake.length > 2000)
+    check('fake-frames 写的是真实帧形状',
+      /speaker/.test(fake) && /sourceLang/.test(fake) && /partial/.test(fake))
+  })
+
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {
     const targets = [
       ...collectSources(join(ROOT, 'android', 'app', 'src', 'main', 'java'), ['.java']),
