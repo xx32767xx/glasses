@@ -126,8 +126,10 @@ public class RoomsActivity extends android.app.Activity {
     private void setSpeakLang(String lang) {
         speakLang = lang;
         getSharedPreferences("leion", MODE_PRIVATE).edit().putString("speakLang", lang).apply();
-        Button zh = findViewById(R.id.roomsLangZh);
-        Button pt = findViewById(R.id.roomsLangPt);
+        // ⚠️ 4.51：这一对在布局里是 **TextView**（4.47 的胶囊改的），原来按 Button 取会
+        // 在 onCreate 里抛 ClassCastException —— 编译能过、一进大厅就崩。
+        TextView zh = findViewById(R.id.roomsLangZh);
+        TextView pt = findViewById(R.id.roomsLangPt);
         boolean isZh = "zh-CN".equals(lang);
         zh.setText(isZh ? "我说中文 ✓" : "我说中文");
         pt.setText(isZh ? "我说葡语" : "我说葡语 ✓");

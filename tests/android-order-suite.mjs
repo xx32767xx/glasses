@@ -875,6 +875,74 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('核实失败才回登录页', /reallyExpired[\s\S]{0,1200}showLogin\(\)/.test(home))
   })
 
+  await it('findViewById 的类型必须和布局里的控件一致（4.51 崩过：TextView 当 Button 取）', () => {
+    // 这类错**编译能过**（findViewById 泛型擦成 View 再强转），一进页面就 ClassCastException。
+    // 4.47 把大厅的语言胶囊从 Button 改成 TextView，RoomsActivity 还在按 Button 取 —— 于是
+    // 点「会议房间」直接崩。这条检查把"id 存在但类型不对"也纳入门禁。
+    const layoutDir = join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout')
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+
+    /** id → 布局里的控件标签名 */
+    const tagOfId = new Map()
+    for (const file of readdirSync(layoutDir)) {
+      if (!file.endsWith('.xml')) continue
+      const xml = readFileSync(join(layoutDir, file), 'utf-8')
+      for (const m of xml.matchAll(/<([A-Za-z.]+)([^>]*?)android:id="@\+id\/(\w+)"/g)) {
+        tagOfId.set(m[3], { tag: m[1].split('.').pop(), file })
+      }
+    }
+    check('扫到了布局里的 id', tagOfId.size > 20, String(tagOfId.size))
+
+    /** View 是任何控件的父类，所以声明成 View 永远安全；其余要求标签名精确相符。 */
+    const compatible = (declared, tag) => declared === tag || declared === 'View' || declared === 'Object'
+
+    /** 在一段 Java 源码里找出"声明类型与布局标签不符"的地方。 */
+    const scan = (src, tagMap) => {
+      const problems = []
+      const fieldTypes = new Map()
+      for (const m of src.matchAll(/private\s+(?:static\s+)?(?:final\s+)?([A-Z][\w.]*)\s+(\w+)\s*;/g)) {
+        fieldTypes.set(m[2], m[1].split('.').pop())
+      }
+      const localTypes = new Map()
+      for (const m of src.matchAll(/\b([A-Z][\w.]*)\s+(\w+)\s*=\s*findViewById\(R\.id\.(\w+)\)/g)) {
+        localTypes.set(`${m[2]}|${m[3]}`, m[1].split('.').pop())
+      }
+      for (const m of src.matchAll(/(\w+)\s*=\s*findViewById\(R\.id\.(\w+)\)/g)) {
+        const [, variable, id] = m
+        const declared = localTypes.get(`${variable}|${id}`) ?? fieldTypes.get(variable)
+        const found = tagMap.get(id)
+        if (declared === undefined || found === undefined) continue
+        if (!compatible(declared, found.tag)) {
+          problems.push(`${variable} 声明为 ${declared}，但布局里 #${id} 是 ${found.tag}`)
+        }
+      }
+      for (const m of src.matchAll(/\(\s*([A-Z][\w.]*)\s*\)\s*findViewById\(R\.id\.(\w+)\)/g)) {
+        const declared = m[1].split('.').pop()
+        const found = tagMap.get(m[2])
+        if (found === undefined) continue
+        if (!compatible(declared, found.tag)) {
+          problems.push(`强转成 ${declared}，但布局里 #${m[2]} 是 ${found.tag}`)
+        }
+      }
+      return problems
+    }
+
+    // 反向自检：伪造"TextView 当 Button 取"，判据必须报出来（否则它可能永远是绿的）
+    const fakeTags = new Map([['someLang', { tag: 'TextView', file: 'fake.xml' }]])
+    const fakeProblems = scan('private Button zh;\n    zh = findViewById(R.id.someLang);', fakeTags)
+    check('判据本身有效（伪造的错必须被抓到）', fakeProblems.length === 1, JSON.stringify(fakeProblems))
+    check('声明成 View 的算安全', scan('private View v;\n    v = findViewById(R.id.someLang);', fakeTags).length === 0)
+
+    const problems = []
+    for (const file of readdirSync(javaDir)) {
+      if (!file.endsWith('.java')) continue
+      for (const one of scan(readFileSync(join(javaDir, file), 'utf-8'), tagOfId)) {
+        problems.push(`${file}: ${one}`)
+      }
+    }
+    check('所有 findViewById 的类型都与布局一致', problems.length === 0, problems.slice(0, 5).join('；'))
+  })
+
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {
     const targets = [
       ...collectSources(join(ROOT, 'android', 'app', 'src', 'main', 'java'), ['.java']),
