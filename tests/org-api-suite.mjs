@@ -177,6 +177,38 @@ export async function runOrgApiSuite({ it, check, assert }) {
   check('dev 提申请 → 200（待管理员审批）', write.status === 200, String(write.status))
   })
 
+  await it('4.64：已有结论的申请可以自己删掉（待审批的不行）', async () => {
+    // alice 那条已经 approved，可以删；先试“拿别人的去删”
+    const mine = await call({ method: 'GET', path: '/org/requests/mine', user: 'alice@example.com', role: 'user' })
+    const id = mine.json.requests[0].id
+    const otherTry = await call({
+      method: 'POST', path: `/org/requests/${id}/delete`, user: 'bob@example.com', role: 'user' })
+    check('删不了别人的申请', otherTry.status === 400, String(otherTry.status))
+
+    const hidden = await call({
+      method: 'POST', path: `/org/requests/${id}/delete`, user: 'alice@example.com', role: 'user' })
+    check('自己已审批的能删', hidden.status === 200, hidden.json.error)
+    const after = await call({ method: 'GET', path: '/org/requests/mine', user: 'alice@example.com', role: 'user' })
+    check('删后列表里不再出现', after.json.requests.length === 0,
+      JSON.stringify(after.json.requests))
+
+    // 待审批的必须先撤回，不能直接删（否则管理员那边会凭空少一条）
+    const created = await call({
+      method: 'POST', path: '/org/requests', user: 'bob@example.com', role: 'user',
+      body: { type: 'add', libraryId: 'lib-a', zh: '蓝牙配对', pt: 'Pareamento Bluetooth', reason: '补一条' },
+    })
+    const pendingId = created.json.id
+    const pendingDelete = await call({
+      method: 'POST', path: `/org/requests/${pendingId}/delete`, user: 'bob@example.com', role: 'user' })
+    check('待审批的不能直接删', pendingDelete.status === 400, String(pendingDelete.status))
+    const withdrew = await call({
+      method: 'POST', path: `/org/requests/${pendingId}/withdraw`, user: 'bob@example.com', role: 'user' })
+    check('先撤回成功', withdrew.status === 200, withdrew.json.error)
+    const deleteAfterWithdraw = await call({
+      method: 'POST', path: `/org/requests/${pendingId}/delete`, user: 'bob@example.com', role: 'user' })
+    check('撤回后可以删', deleteAfterWithdraw.status === 200, deleteAfterWithdraw.json.error)
+  })
+
   await it('管理员批量导入走同一套校验（一条坏数据不拖垮整批）', async () => {
     const imported = await call({
       method: 'POST', path: '/org/libraries/import', user: 'boss@example.com', role: 'admin',

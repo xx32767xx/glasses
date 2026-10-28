@@ -1296,8 +1296,10 @@ export async function runAndroidOrderSuite({ it, check }) {
       && /return ctx\.getString\(R\.string\.srv_unknown\)/.test(serverText))
 
     // ② 服务端源码里的中文错误串，必须条条有映射（或明确列进"不翻译"清单）
+    // 4.64：补上 lib/requests.mjs —— 术语库申请的错误文案全在它里面，
+    // 之前没扫到，于是那句"必须写申请理由"在英文界面上是中文。
     const srvFiles = ['relay/lan-relay.mjs', 'relay/org-api.mjs', 'lib/rooms.mjs',
-      'lib/floor.mjs', 'lib/accounts.mjs', 'lib/ws-hub.mjs']
+      'lib/floor.mjs', 'lib/accounts.mjs', 'lib/ws-hub.mjs', 'lib/requests.mjs']
     const candidates = new Set()
     for (const f of srvFiles) {
       for (const line of readFileSync(join(ROOT, f), 'utf-8').split('\n')) {
@@ -1321,6 +1323,8 @@ export async function runAndroidOrderSuite({ it, check }) {
       'text 必须是非空字符串', 'from 只能是', 'rate 只能是', 'lang 只能是',
       'since 必须是非负数字', 'PCM 数据长度必须是偶数', '写收件箱失败：', '写音频失败：',
       'libraryIds 必须是数组',
+      // 申请审批侧（只有管理员 / 服务端自己会触发，手机上碰不到）
+      '决定只能是', '缺少审批人', '缺少申请人',
     ]
     const ignore = (raw) => IGNORE.some((i) => raw.startsWith(i))
     const matched = (raw) => exact.includes(raw) || pre.some((p) => raw.startsWith(p))
@@ -1565,6 +1569,45 @@ export async function runAndroidOrderSuite({ it, check }) {
       check(`terms_forbidden_role 在 ${dir} 里`,
         /name="terms_forbidden_role"/.test(readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', dir, 'strings.xml'), 'utf-8')))
     }
+  })
+
+  await it('4.64：已决定的申请可删除 + 三语下两张卡要对齐', () => {
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const terms = readFileSync(join(javaDir, 'TermLibActivity.java'), 'utf-8')
+    const lanClient = readFileSync(join(javaDir, 'LanClient.java'), 'utf-8')
+    const requests = readFileSync(join(ROOT, 'lib', 'requests.mjs'), 'utf-8')
+    const store = readFileSync(join(ROOT, 'lib', 'requests-store.mjs'), 'utf-8')
+    const db = readFileSync(join(ROOT, 'lib', 'db.mjs'), 'utf-8')
+
+    // ① 删除：接口 / 客户端 / 只在非 pending 时出现 / 二次确认
+    check('Api：删除自己已决定的申请', /orgDeleteRequest\(/.test(lanClient)
+      && /\/org\/requests\/" \+ requestId \+ "\/delete"/.test(lanClient))
+    check('服务端：hideRequest 只认自己的、且不许删 pending',
+      /export async function hideRequest/.test(requests)
+      && /只能删除自己的申请/.test(requests)
+      && /item.status === 'pending'[\s\S]{0,120}待审批的申请请先撤回/.test(requests))
+    check('隐藏不销毁审计：只打 hidden_at 标记',
+      /UPDATE requests SET hidden_at = \?/.test(store) && /hidden_at  INTEGER/.test(db)
+      && /ALTER TABLE requests ADD COLUMN hidden_at/.test(db))
+    check('我的申请里过滤掉自己删掉的', /visibleOfMine\(items, user\)/.test(
+      readFileSync(join(ROOT, 'relay', 'org-api.mjs'), 'utf-8')))
+    check('界面：非 pending 才给「删除记录」', /if \(!"pending"\.equals\(status\)\) \{[\s\S]{0,600}terms_delete/.test(terms))
+    check('删除有二次确认并说明只删记录', /confirmDelete\(/.test(terms) && /terms_delete_confirm/.test(terms))
+
+    // ② 三语对齐：两张任务卡的说明锁 2 行（中文比英文短一行时最容易露馅）
+    const home = readFileSync(join(resDir, 'layout', 'page_home.xml'), 'utf-8')
+    // 按控件切块再看属性：minLines/maxLines 写在 android:text 之前，不能用"文本之后 N 个字符"取
+    const textViews = [...home.matchAll(/<TextView[\s\S]*?\/>/g)].map((m) => m[0])
+    const cardBlock = (name) => textViews.filter((block) => block.includes(`@string/card_${name}`))
+    const descs = [...cardBlock('create_desc'), ...cardBlock('join_desc')]
+    check('两张卡都有说明', descs.length === 2, String(descs.length))
+    check('两张卡的说明都锁 2 行（minLines + maxLines）',
+      descs.every((block) => /android:minLines="2"/.test(block) && /android:maxLines="2"/.test(block)))
+    const titles = [...cardBlock('create_title'), ...cardBlock('join_title')]
+    check('名称允许换行但不截断（maxLines=2）', titles.length === 2
+      && titles.every((block) => /android:maxLines="2"/.test(block)))
+    check('卡片还有最小高度兜底', /card_task_min_height/.test(home))
   })
 
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {

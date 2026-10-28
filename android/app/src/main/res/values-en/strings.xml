@@ -388,4 +388,26 @@ Server %2$s</string>
     <string name="me_logged_out">Signed out</string>
     <string name="srv_role_cannot_role">This account (%1$s) is not allowed to do this (%2$s)</string>
     <string name="terms_forbidden_role">This account cannot submit term-base requests (role: %1$s); ask an administrator for access</string>
+    <string name="terms_delete">Delete record</string>
+    <string name="terms_delete_confirm">This request disappears from your list; the approval record stays on the server for auditing.</string>
+    <string name="terms_deleted_ok">Deleted</string>
+    <string name="terms_delete_failed">Could not delete: %1$s</string>
+    <string name="srv_req_type_invalid">Invalid request type (add, edit or delete only)</string>
+    <string name="srv_req_need_reason">A reason is required: the reviewer needs to understand why</string>
+    <string name="srv_req_reason_long">The reason is too long, shorten it</string>
+    <string name="srv_entry_invalid">Invalid entry, check the Chinese and Portuguese forms</string>
+    <string name="srv_req_add_exists">That Chinese term already exists; use edit instead of add</string>
+    <string name="srv_req_update_missing">That term is not in the base; use add instead of edit</string>
+    <string name="srv_req_need_target">Say which entry to delete (its Chinese term)</string>
+    <string name="srv_req_delete_missing">That entry is not in the base</string>
+    <string name="srv_req_too_many">Too many pending requests, wait for the review</string>
+    <string name="srv_req_duplicate">The same request is already pending</string>
+    <string name="srv_request_missing">No such request (already handled or deleted)</string>
+    <string name="srv_request_already_decided">This request was already decided</string>
+    <string name="srv_req_stale_add">That term now exists (the request went stale, submit again)</string>
+    <string name="srv_req_stale_update">The entry you wanted to edit is gone</string>
+    <string name="srv_req_stale_delete">The entry you wanted to delete is gone</string>
+    <string name="srv_only_own_request">You can only act on your own requests</string>
+    <string name="srv_pending_withdraw_first">Withdraw a pending request first, then delete it</string>
+    <string name="srv_write_failed">The server could not write the change; check the relay log</string>
 </resources>

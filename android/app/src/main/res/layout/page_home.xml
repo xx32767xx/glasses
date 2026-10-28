@@ -476,6 +476,7 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="@dimen/space_gap_small"
                         android:gravity="center"
+                        android:maxLines="2"
                         android:text="@string/card_create_title"
                         android:textColor="@color/ink"
                         android:textSize="@dimen/text_title"
@@ -486,6 +487,8 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="@dimen/space_gap_tiny"
                         android:gravity="center"
+                        android:maxLines="2"
+                        android:minLines="2"
                         android:text="@string/card_create_desc"
                         android:textColor="@color/ink_soft"
                         android:textSize="@dimen/text_caption" />
@@ -517,6 +520,7 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="@dimen/space_gap_small"
                         android:gravity="center"
+                        android:maxLines="2"
                         android:text="@string/card_join_title"
                         android:textColor="@color/ink"
                         android:textSize="@dimen/text_title"
@@ -527,6 +531,8 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="@dimen/space_gap_tiny"
                         android:gravity="center"
+                        android:maxLines="2"
+                        android:minLines="2"
                         android:text="@string/card_join_desc"
                         android:textColor="@color/ink_soft"
                         android:textSize="@dimen/text_caption" />

@@ -108,6 +108,28 @@ public final class ServerText {
         put("会议已结束", R.string.st_meeting_closed);
         put("只支持 POST", R.string.srv_bad_request);
 
+        // ── 术语库申请（4.64 起也纳入门禁：之前这几句没人译，非中文界面只能回一句通用话）──
+        put("必须写申请理由（审批要看得懂为什么改）", R.string.srv_req_need_reason);
+        put("这个中文名在库里已经有了（应走「修改」申请）", R.string.srv_req_add_exists);
+        put("要修改的条目在库里不存在（应走「新增」申请）", R.string.srv_req_update_missing);
+        put("删除申请必须给出要删的条目（中文名）", R.string.srv_req_need_target);
+        put("要删除的条目在库里不存在", R.string.srv_req_delete_missing);
+        put("库里已经有这个中文名了（申请过期，请让用户重新提交）", R.string.srv_req_stale_add);
+        put("只能撤回自己的申请", R.string.srv_only_own_request);
+        put("只能删除自己的申请", R.string.srv_only_own_request);
+        put("待审批的申请请先撤回（不能被删除）", R.string.srv_pending_withdraw_first);
+        prefix("申请类型只能是", R.string.srv_req_type_invalid);
+        prefix("理由最多", R.string.srv_req_reason_long);
+        prefix("库不存在：", R.string.srv_no_library);
+        prefix("条目不合法：", R.string.srv_entry_invalid);
+        prefix("待审申请太多", R.string.srv_req_too_many);
+        prefix("已经有一条同样的待审申请", R.string.srv_req_duplicate);
+        prefix("没有这条申请", R.string.srv_request_missing);
+        prefix("这条申请已经是", R.string.srv_request_already_decided);
+        prefix("要修改的条目已不在库里", R.string.srv_req_stale_update);
+        prefix("要删除的条目已不在库里", R.string.srv_req_stale_delete);
+        prefix("写库失败：", R.string.srv_write_failed);
+
         // ── 术语库 ────────────────────────────────────────────────────
         put("还没有任何一场会议术语（手机开始同传后会自动生成）", R.string.srv_no_terms);
         put("没有这个库", R.string.srv_no_library);

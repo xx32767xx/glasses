@@ -228,6 +228,22 @@ public class TermLibActivity extends android.app.Activity {
             card.addView(line);
         }
 
+        if (!"pending".equals(status)) {
+            // 4.64：已经有结论的（通过 / 驳回 / 撤回）可以由申请人自己删掉，别一直堆在列表里。
+            // 只是从「我的申请」里藏起来 —— 审批记录留在服务端做审计，不销毁。
+            Button delete = new Button(this);
+            delete.setText(getString(R.string.terms_delete));
+            delete.setAllCaps(false);
+            delete.setBackgroundResource(R.drawable.tap_btn_secondary);
+            delete.setTextColor(getColor(R.color.ink_soft));
+            LinearLayout.LayoutParams deleteParams = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, dp(40));
+            deleteParams.topMargin = dp(10);
+            delete.setLayoutParams(deleteParams);
+            delete.setOnClickListener(v -> confirmDelete(request.optString("id", "")));
+            card.addView(delete);
+        }
+
         if ("pending".equals(status)) {
             Button withdraw = new Button(this);
             withdraw.setText(getString(R.string.terms_withdraw));
@@ -354,6 +370,41 @@ public class TermLibActivity extends android.app.Activity {
                 }
             });
         }, "terms-req-submit").start();
+    }
+
+    /** 删除一条已经有结论的申请（先确认，说清"只删记录、不删审计"）。 */
+    private void confirmDelete(final String requestId) {
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(R.string.terms_delete)
+                .setMessage(R.string.terms_delete_confirm)
+                .setNegativeButton(R.string.common_cancel, null)
+                .setPositiveButton(R.string.terms_delete, (dialog, which) -> deleteRequest(requestId))
+                .show();
+    }
+
+    private void deleteRequest(final String requestId) {
+        new Thread(() -> {
+            String failure = "";
+            try {
+                JSONObject result = client.orgDeleteRequest(requestId);
+                if (result == null || !result.optBoolean("ok", false)) {
+                    failure = ServerText.from(this, result, "");
+                }
+            } catch (Exception error) {
+                failure = error.getMessage() == null ? error.toString() : error.getMessage();
+            }
+            final String failed = failure;
+            ui.post(() -> {
+                if (failed.isEmpty()) {
+                    Toast.makeText(this, getString(R.string.terms_deleted_ok), Toast.LENGTH_SHORT).show();
+                    loadAll();
+                } else {
+                    Toast.makeText(this,
+                            getString(R.string.terms_delete_failed, ServerText.of(this, failed)),
+                            Toast.LENGTH_LONG).show();
+                }
+            });
+        }, "terms-req-delete").start();
     }
 
     private void withdraw(final String requestId) {

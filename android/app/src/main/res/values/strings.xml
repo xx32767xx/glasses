@@ -669,4 +669,25 @@
     <string name="me_logged_out">已退出登录</string>
     <string name="srv_role_cannot_role">当前账号（%1$s）没有权限做这件事（%2$s）</string>
     <string name="terms_forbidden_role">当前账号不能提交术语库申请（角色：%1$s），请找管理员开通权限</string>
+    <string name="terms_delete_confirm">这条申请会从你的列表里删掉；审批记录仍留在服务端（审计用），不会被销毁。</string>
+    <string name="terms_deleted_ok">已删除</string>
+    <string name="terms_delete_failed">删除失败：%1$s</string>
+    <string name="srv_req_type_invalid">申请类型不对（只能是新增 / 修改 / 删除）</string>
+    <string name="srv_req_need_reason">要写申请理由——审批的人得看懂为什么改</string>
+    <string name="srv_req_reason_long">申请理由太长了，短一点</string>
+    <string name="srv_entry_invalid">条目内容不合规，检查一下中文与葡语写法</string>
+    <string name="srv_req_add_exists">这个中文名库里已经有一条了，改它请走「修改」</string>
+    <string name="srv_req_update_missing">库里没有这条，要新增请走「新增」</string>
+    <string name="srv_req_need_target">删除要说清删哪一条（填中文名）</string>
+    <string name="srv_req_delete_missing">库里没有要删的这条</string>
+    <string name="srv_req_too_many">待审批的申请太多了，等管理员处理完再提交</string>
+    <string name="srv_req_duplicate">已经有一条同样的待审申请了，不重复提交</string>
+    <string name="srv_request_missing">没有这条申请（可能已经被处理或删除）</string>
+    <string name="srv_request_already_decided">这条申请已经有结论了</string>
+    <string name="srv_req_stale_add">库里已经有这个中文名了（申请过期，重新提交一次）</string>
+    <string name="srv_req_stale_update">要修改的条目已经不在库里了</string>
+    <string name="srv_req_stale_delete">要删除的条目已经不在库里了</string>
+    <string name="srv_only_own_request">只能操作自己提交的申请</string>
+    <string name="srv_pending_withdraw_first">待审批的申请请先撤回，再删除</string>
+    <string name="srv_write_failed">服务端写入失败，看一下 relay 日志</string>
 </resources>

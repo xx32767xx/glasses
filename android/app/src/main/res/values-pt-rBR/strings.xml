@@ -388,4 +388,26 @@ Servidor %2$s</string>
     <string name="me_logged_out">Você saiu da conta</string>
     <string name="srv_role_cannot_role">Esta conta (%1$s) não tem permissão para isto (%2$s)</string>
     <string name="terms_forbidden_role">Esta conta não pode enviar pedidos de glossário (papel: %1$s); peça acesso a um administrador</string>
+    <string name="terms_delete">Excluir registro</string>
+    <string name="terms_delete_confirm">Este pedido sai da sua lista; o registro de aprovação fica no servidor para auditoria.</string>
+    <string name="terms_deleted_ok">Excluído</string>
+    <string name="terms_delete_failed">Falha ao excluir: %1$s</string>
+    <string name="srv_req_type_invalid">Tipo de pedido inválido (somente incluir, editar ou remover)</string>
+    <string name="srv_req_need_reason">Informe o motivo: quem aprova precisa entender por quê</string>
+    <string name="srv_req_reason_long">O motivo está longo demais, encurte</string>
+    <string name="srv_entry_invalid">Entrada inválida, confira as formas em chinês e português</string>
+    <string name="srv_req_add_exists">Esse termo em chinês já existe; use editar em vez de incluir</string>
+    <string name="srv_req_update_missing">Esse termo não está no glossário; use incluir em vez de editar</string>
+    <string name="srv_req_need_target">Diga qual entrada remover (o termo em chinês)</string>
+    <string name="srv_req_delete_missing">Essa entrada não está no glossário</string>
+    <string name="srv_req_too_many">Há pedidos pendentes demais, espere a análise</string>
+    <string name="srv_req_duplicate">Já existe um pedido igual pendente</string>
+    <string name="srv_request_missing">Esse pedido não existe (já tratado ou excluído)</string>
+    <string name="srv_request_already_decided">Este pedido já foi decidido</string>
+    <string name="srv_req_stale_add">Esse termo já existe (o pedido ficou antigo, envie de novo)</string>
+    <string name="srv_req_stale_update">A entrada que você queria editar não existe mais</string>
+    <string name="srv_req_stale_delete">A entrada que você queria remover não existe mais</string>
+    <string name="srv_only_own_request">Só é possível agir em pedidos seus</string>
+    <string name="srv_pending_withdraw_first">Retire um pedido pendente antes de excluí-lo</string>
+    <string name="srv_write_failed">O servidor não conseguiu gravar a alteração; veja o log do relay</string>
 </resources>

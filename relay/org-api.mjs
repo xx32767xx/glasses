@@ -27,7 +27,7 @@ import { join } from 'node:path'
 import { DEV_TTL_DAYS, allowed, createAccountWithPassword, listAccounts, loadAccounts, renewAccount, saveAccounts, setStatusByUsername } from '../lib/accounts.mjs'
 import { readJson, writeJsonAtomic } from '../lib/store.mjs'
 import { listLibraries, loadLibrary, loadCategories, saveLibrary, importLibraries } from '../lib/libraries.mjs'
-import { createRequest, decideRequest, loadRequests, pendingOf, withdrawRequest } from '../lib/requests.mjs'
+import { createRequest, decideRequest, hideRequest, loadRequests, pendingOf, visibleOfMine, withdrawRequest } from '../lib/requests.mjs'
 import { writeMeetingSnapshot } from '../lib/snapshot.mjs'
 import { createRoom, isRoomClosed, joinRoom, leaveRoom, listMembers, listRooms, removeMember, roomByCode, roomById, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
 import { FLOOR_LOCKED_LEASE_MS, FLOOR_LEASE_MS, floorState, forceReleaseFloor, heartbeatFloor, releaseFloor, setFloorLock, sweepExpiredFloor, takeFloor } from '../lib/floor.mjs'
@@ -182,7 +182,8 @@ export async function handleOrg(input) {
 
   if (method === 'GET' && segments[1] === 'requests' && segments[2] === 'mine') {
     const { items } = await loadRequests(root)
-    const mine = [...items.values()].filter((item) => item.applicant === user)
+    // 4.64：自己删掉（hidden）的不再回到列表里
+    const mine = visibleOfMine(items, user)
     return { status: 200, json: { ok: true, requests: mine } }
   }
 
@@ -206,6 +207,14 @@ export async function handleOrg(input) {
       json: { ok: true, id: decided.id, status: decided.status,
         entries: decided.library ? decided.library.entries.length : null },
     }
+  }
+
+  // 4.64：把自己**已经有结论**的申请从列表里删掉（待审批的必须先撤回）
+  if (method === 'POST' && segments[1] === 'requests' && segments[3] === 'delete' && segments.length === 4) {
+    if (allowed(role, 'request.create') !== true) return deny(role, 'request.create')
+    const hidden = await hideRequest(root, segments[2], { applicant: user, now })
+    if (hidden.ok !== true) return bad(400, hidden.error)
+    return { status: 200, json: { ok: true, id: hidden.id, status: hidden.status } }
   }
 
   if (method === 'POST' && segments[1] === 'requests' && segments[3] === 'withdraw' && segments.length === 4) {
