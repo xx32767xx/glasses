@@ -466,12 +466,13 @@ export async function runAndroidOrderSuite({ it, check }) {
 
     // 按钮要能一眼看出"在传/没传"：两态外观不同，否则用户无法判断自己是否还在占麦。
     // 4.47 起不再是写死的色值，而是两种 drawable（渐变=在传 / 白底描边=空闲）+ 文字色 token。
-    const button = methodBody('updateUploadButton')
-    check('上传态用主按钮皮', button.includes('R.drawable.tap_btn_primary'))
-    check('空闲态用次按钮皮', button.includes('R.drawable.tap_btn_secondary'))
-    check('两态文字色也跟着变（白字 / 主文字）',
-      button.includes('R.color.on_brand') && button.includes('R.color.ink'),
-      '换了皮不换字色，深色模式下会看不清')
+    // 4.52 起"开麦"与"上传"合成一个按钮：皮换成胶囊两态（红色=发言中 / 蓝绿=空闲）
+    const button = methodBody('updateMicButton')
+    check('发言中用红色胶囊皮', button.includes('R.drawable.btn_mic_live'))
+    check('空闲用蓝绿胶囊皮', button.includes('R.drawable.btn_mic_idle'))
+    check('白字（两种皮上都得能看清）', button.includes('R.color.on_brand'))
+    check('发言中带呼吸动画', button.includes('R.anim.mic_pulse'))
+    check('停止发言要清掉动画与文案', /clearAnimation\(\)/.test(button) && /点击开麦/.test(button))
   })
 
   await it('发言权推送（/ws）接得对：轮询与推送共用一条应用路径，断了自动退回轮询', () => {
@@ -732,7 +733,8 @@ export async function runAndroidOrderSuite({ it, check }) {
     const home = readFileSync(join(layoutDir, 'page_home.xml'), 'utf-8')
     check('首页主按钮用 tap_btn_primary', /homeLogin[\s\S]{0,400}tap_btn_primary/.test(home))
     const room = readFileSync(join(layoutDir, 'page_room.xml'), 'utf-8')
-    check('房间页"开始同传"用 tap_btn_primary', /roomUpload[\s\S]{0,400}tap_btn_primary/.test(room))
+    // 4.52：房间页的主操作是**开麦胶囊**（原型：蓝绿胶囊），不再是"开始同传"
+    check('房间页开麦用胶囊皮', /roomMic[\s\S]{0,300}btn_mic_idle/.test(room))
 
     // 原型色值必须真的落在 token 文件里
     const colors = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'values', 'colors.xml'), 'utf-8')
@@ -941,6 +943,68 @@ export async function runAndroidOrderSuite({ it, check }) {
       }
     }
     check('所有 findViewById 的类型都与布局一致', problems.length === 0, problems.slice(0, 5).join('；'))
+  })
+
+  await it('房间页按原型：顶部两行 / 字幕流 / 右侧三态 / 底部三项 / 抽屉（4.52）', () => {
+    const layoutDir = join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout')
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const room = readFileSync(join(layoutDir, 'page_room.xml'), 'utf-8')
+    const activity = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+
+    // 顶部第一行：房间号 · 复制邀请 · 参与方式 · 角色
+    for (const id of ['roomCode', 'roomCopy', 'roomModeTag', 'roomRoleTag']) {
+      check(`顶部第一行有 ${id}`, new RegExp(`@\\+id/${id}\\b`).test(room), id)
+    }
+    // 顶部第二行：主题 · 人数 · 计时 · 退出
+    for (const id of ['roomTitle', 'roomMembers', 'roomTimer', 'roomLeave']) {
+      check(`顶部第二行有 ${id}`, new RegExp(`@\\+id/${id}\\b`).test(room), id)
+    }
+    check('复制邀请真的写剪贴板', /ClipboardManager/.test(activity) && /setPrimaryClip/.test(activity))
+    check('计时每秒走一格', /ui\.postDelayed\(this, 1000\)/.test(activity))
+
+    // 中央字幕流：可滚动容器 + 列表 + 空态
+    check('字幕流是滚动容器', /@\+id\/roomSubtitleScroll/.test(room) && /ScrollView/.test(room))
+    check('字幕列表容器', /@\+id\/roomSubtitles/.test(room))
+    check('没有字幕时有空态提示', /@\+id\/roomEmpty/.test(room))
+
+    // M1 的关键不变量：partial 帧**原位更新**，不许新起一条
+    check('partial 原位更新（复用 lastSegment）',
+      /if \(partial && lastSegmentView != null\)[\s\S]{0,400}lastSegmentTarget\.setText/.test(activity),
+      '新起一条会让同一句话出现两次')
+    check('新句追加后滚到底部', /scrollToBottom\(\)/.test(activity) && /fullScroll\(View\.FOCUS_DOWN\)/.test(activity))
+    check('自己的发言换底色（浅主色+主色边框）', /bg_subtitle_self/.test(activity) && /bg_subtitle_self/.test(room) === false)
+    check('每条字幕有头像/姓名/源语言/状态', /bg_avatar/.test(activity) && /识别中|已完成/.test(activity))
+    check('字幕有上限，防止开两小时把内存吃掉', /MAX_SEGMENTS/.test(activity))
+
+    // M3：原文显示开关
+    check('底部有原文开关', /@\+id\/roomSourceToggle/.test(room))
+    check('切换会影响已画出来的卡片', /private void toggleSource\(\)[\s\S]{0,900}setVisibility/.test(activity))
+    check('开关文案带着状态', /原文 开|原文 关/.test(activity))
+
+    // 右侧竖向条：发言人 + 投屏/扩声/收音 三态，点开抽屉
+    check('右侧条显示发言人', /@\+id\/roomSpeaker/.test(room))
+    for (const id of ['roomCastState', 'roomAudioState', 'roomMicState']) {
+      check(`右侧条有 ${id}`, new RegExp(`@\\+id/${id}\\b`).test(room), id)
+    }
+    check('外设没接入就直说"未接入"（不做假开关）',
+      /audioState\.setText\("未接入"\)/.test(activity), '没有真实设备时不许假装可用')
+    check('点右侧条开抽屉', /infoBar\.setOnClickListener\(v -> toggleDrawer\(\)\)/.test(activity))
+
+    // 底部：开麦胶囊（红/蓝绿两态 + 呼吸）
+    check('开麦是胶囊形', /btn_mic_idle/.test(room) && /btn_mic_live/.test(activity))
+    const pulse = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'anim', 'mic_pulse.xml'), 'utf-8')
+    check('发言中引用脉冲动画', /R\.anim\.mic_pulse/.test(activity))
+    check('脉冲动画是真的循环（scale + alpha，infinite）',
+      /<scale/.test(pulse) && /<alpha/.test(pulse) && /repeatCount="infinite"/.test(pulse))
+    check('脉冲幅度克制（1.06 以内，别做心跳）', /toXScale="1\.0[0-6]"/.test(pulse), pulse.slice(0, 120))
+    check('开麦同时管上传（原型只有一个开麦按钮）',
+      /private void toggleMic\(\)[\s\S]{0,600}mic\.stop\(\)/.test(activity),
+      '分开两个按钮会出现"开了麦却没上传"')
+
+    // 抽屉：人员与设备
+    check('有抽屉覆盖层', /@\+id\/roomDrawer\b/.test(room))
+    check('抽屉列成员', /@\+id\/roomMembersList/.test(room) && /renderMembers/.test(activity))
+    check('抽屉列设备状态', /@\+id\/roomDrawerDevices/.test(room) && /未接入/.test(activity))
   })
 
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {

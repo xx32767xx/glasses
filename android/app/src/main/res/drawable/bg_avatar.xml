@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 头像占位：圆形 + 主色淡底（真头像还没做，先用姓名首字） -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
+    <solid android:color="@color/brand_soft" />
+    <stroke android:width="@dimen/stroke_hairline" android:color="@color/brand" />
+</shape>

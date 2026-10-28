@@ -6,6 +6,8 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
 import android.widget.Button;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -37,12 +39,51 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     private String myName = "";
 
     private TextView statusLine;
-    private TextView mainLine;
-    private TextView subLine;
     private TextView speakerBar;
     private TextView hintLine;
     private Button micButton;
     private Button lockButton;
+
+    // ── 顶部会议信息（两行）──
+    private TextView codeView;
+    private TextView copyView;
+    private TextView modeTag;
+    private TextView roleTag;
+    private TextView titleView;
+    private TextView membersView;
+    private TextView timerView;
+
+    // ── 中央字幕流 ──
+    private ScrollView subtitleScroll;
+    private LinearLayout subtitleList;
+    private TextView emptyView;
+
+    // ── 右侧悬浮条与「人员与设备」抽屉 ──
+    private TextView castState;
+    private TextView audioState;
+    private TextView micState;
+    private LinearLayout infoBar;
+    private LinearLayout drawer;
+    private LinearLayout membersList;
+    private TextView drawerDevices;
+
+    // ── 底部：原文显示开关（M3）──
+    private TextView sourceToggle;
+    private boolean showSource = true;
+
+    /** 当前这一条字幕（用于 partial 帧**原位更新**，而不是新起一条）。 */
+    private View lastSegmentView;
+    private TextView lastSegmentSource;
+    private TextView lastSegmentTarget;
+    private TextView lastSegmentState;
+    /** 字幕卡最多留多少条：多了就丢最老的（防止一场会开两小时把内存吃掉）。 */
+    private static final int MAX_SEGMENTS = 60;
+    /** 我从什么时候开始持麦（用来在按钮上显示"正在发言 00:12"）。 */
+    private long holdingSinceMs = 0L;
+
+    /** 会议计时（从进房那一刻算）。 */
+    private long startedAtMs = 0L;
+    private boolean timerRunning = false;
 
     private boolean holding = false;
     private boolean locked = false;
@@ -71,12 +112,51 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         }
 
         statusLine = findViewById(R.id.roomStatus);
-        mainLine = findViewById(R.id.roomMain);
-        subLine = findViewById(R.id.roomSub);
         speakerBar = findViewById(R.id.roomSpeaker);
         hintLine = findViewById(R.id.roomHint);
         micButton = findViewById(R.id.roomMic);
         lockButton = findViewById(R.id.roomLock);
+
+        codeView = findViewById(R.id.roomCode);
+        copyView = findViewById(R.id.roomCopy);
+        modeTag = findViewById(R.id.roomModeTag);
+        roleTag = findViewById(R.id.roomRoleTag);
+        titleView = findViewById(R.id.roomTitle);
+        membersView = findViewById(R.id.roomMembers);
+        timerView = findViewById(R.id.roomTimer);
+
+        subtitleScroll = findViewById(R.id.roomSubtitleScroll);
+        subtitleList = findViewById(R.id.roomSubtitles);
+        emptyView = findViewById(R.id.roomEmpty);
+
+        castState = findViewById(R.id.roomCastState);
+        audioState = findViewById(R.id.roomAudioState);
+        micState = findViewById(R.id.roomMicState);
+        infoBar = findViewById(R.id.roomInfoBar);
+        drawer = findViewById(R.id.roomDrawer);
+        membersList = findViewById(R.id.roomMembersList);
+        drawerDevices = findViewById(R.id.roomDrawerDevices);
+        sourceToggle = findViewById(R.id.roomSourceToggle);
+
+        copyView.setOnClickListener(v -> copyInvite());
+        infoBar.setOnClickListener(v -> toggleDrawer());
+        findViewById(R.id.roomDrawerClose).setOnClickListener(v -> toggleDrawer());
+        sourceToggle.setOnClickListener(v -> toggleSource());
+
+        // 外设（投屏/扩声）**还没接入**：这里只把事实写清楚，不做假开关。
+        castState.setText("手机屏");
+        audioState.setText("未接入");
+        micState.setText("手机麦");
+        drawerDevices.setText("扩展屏（眼镜 / 投屏器）：未接入\n外放（耳机 / 音箱）：未接入\n麦克风：手机麦克风（在用）");
+        startedAtMs = System.currentTimeMillis();
+        startTimer();
+        loadRoomHeader();
+        updateMicButton();
+        toggleSource();          // 先把"原文 开/关"的外观刷成与 showSource 一致
+        showSource = true;       // toggleSource 会翻转，这里翻回来
+        sourceToggle.setText("原文 开");
+        sourceToggle.setBackgroundResource(R.drawable.bg_pill_active);
+        sourceToggle.setTextColor(getColor(R.color.on_brand));
 
         statusLine.setText((roomName == null ? "房间" : roomName) + " · 连接中…");
 
@@ -93,7 +173,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         startFloorSocket(host, secret, token);
 
         micUploadButton = findViewById(R.id.roomUpload);
-        micUploadButton.setOnClickListener(v -> toggleUpload());
+        // 隐藏的「开始同传」：原型里没有它，开麦即开始上传；这里只留一个落点备用
+        micUploadButton.setOnClickListener(v -> toggleMic());
         updateUploadButton();
         micButton.setOnClickListener(v -> toggleMic());
         lockButton.setOnClickListener(v -> toggleLock());
@@ -119,6 +200,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
 
     @Override
     protected void onDestroy() {
+        timerRunning = false;
         if (floorSocket != null) {
             floorSocket.stop();
             floorSocket = null;
@@ -199,12 +281,50 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     }
 
     // ── 开麦 / 关麦 ──────────────────────────────────────────────────────
+    /**
+     * 底部主按钮：**开麦**（原型只有一个"开麦/关麦"）。
+     *
+     * <p>它同时管两件事：抢发言权 + 开始/停止上传音频。
+     * 以前这是两个按钮（开麦 + 开始同传），对用户是同一个动作却要点两下，
+     * 而且"开了麦却没上传"会表现成"我说话了但没有字幕"。
+     */
     private void toggleMic() {
-        if (holding) {
-            act("release");
-        } else {
-            act("take");
+        if (mic != null || holding) {
+            // 关麦：停上传 + 放发言权（顺序反过来会让服务端把人顶掉再收到释放）
+            if (mic != null) {
+                mic.stop();
+                mic = null;
+            }
+            updateMicButton();
+            hintLine.setText("已结束发言");
+            new Thread(() -> {
+                try {
+                    client.floorAction(roomKey, "release");
+                } catch (Exception ignored) {
+                    // 服务端 15 秒租约兜底
+                }
+            }, "room-release").start();
+            return;
         }
+        ensureRecordPermission(this::takeFloorThenUpload);
+    }
+
+    /** 开麦按钮的外观：空闲=蓝绿胶囊，发言中=红色胶囊+呼吸；文案带秒数。 */
+    private void updateMicButton() {
+        boolean live = mic != null || holding;
+        micButton.setBackgroundResource(live ? R.drawable.btn_mic_live : R.drawable.btn_mic_idle);
+        micButton.setTextColor(getColor(R.color.on_brand));
+        if (live) {
+            long seconds = holdingSinceMs > 0 ? (System.currentTimeMillis() - holdingSinceMs) / 1000 : 0;
+            micButton.setText(String.format(java.util.Locale.US, "正在发言 %02d:%02d", seconds / 60, seconds % 60));
+            if (micButton.getAnimation() == null) {
+                micButton.startAnimation(android.view.animation.AnimationUtils.loadAnimation(this, R.anim.mic_pulse));
+            }
+        } else {
+            micButton.setText("点击开麦");
+            micButton.clearAnimation();
+        }
+        micButton.setEnabled(true);
     }
 
     private void toggleLock() {
@@ -269,10 +389,10 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         locked = isLocked;
         boolean anyHolder = holder != null && !holder.isEmpty();
         boolean iAmHost = myName.equals(hostName());
-        micButton.setText(holding ? "正在发言 · 点此结束" : "点击开麦");
-        // 持麦 = 主操作态（渐变/实色）；空闲 = 白底描边的次按钮。颜色只走 token（4.47）
-        micButton.setBackgroundResource(holding ? R.drawable.tap_btn_primary : R.drawable.tap_btn_secondary);
-        micButton.setTextColor(getColor(holding ? R.color.on_brand : R.color.ink));
+        if (holding && holdingSinceMs == 0L) holdingSinceMs = System.currentTimeMillis();
+        if (!holding) holdingSinceMs = 0L;
+        // 外观统一交给 updateMicButton（4.52：胶囊 + 发言中红色 + 呼吸）
+        updateMicButton();
 
         // 锁定按钮的文案必须与"我能不能按"一致（4.44 修）。
         //
@@ -386,55 +506,31 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             }
         }, "room-leave").start();
     }
-    // ── 音频上传（开始同传）──────────────────────────────────────────────
-    private void toggleUpload() {
-        if (mic != null) {
-            mic.stop();
-            mic = null;
-            updateUploadButton();
-            hintLine.setText("已停止上传");
-            new Thread(new Runnable() {
-                public void run() {
-                    try {
-                        client.floorAction(roomKey, "release");
-                    } catch (Exception ignored) {
-                        // 释放失败由服务端 15 秒租约兜底
-                    }
-                }
-            }, "room-release-floor").start();
-            return;
-        }
+    /** 先抢麦，成功才上传（M1/M3 之后这是"开麦"的唯一实现）。 */
+    private void takeFloorThenUpload() {
         final MicUploader.Listener listener = new MicUploader.Listener() {
+            @Override
             public void onUploadStatus(String message) {
-                ui.post(new Runnable() {
-                    public void run() {
-                        hintLine.setText(message);
-                    }
-                });
+                ui.post(() -> hintLine.setText(message));
             }
 
+            @Override
             public void onUploadError(String message) {
-                ui.post(new Runnable() {
-                    public void run() {
-                        hintLine.setText("上传出错：" + message);
-                        if (mic != null) {
-                            mic.stop();
-                            mic = null;
-                        }
-                        updateUploadButton();
+                ui.post(() -> {
+                    hintLine.setText("上传出错：" + message);
+                    if (mic != null) {
+                        mic.stop();
+                        mic = null;
                     }
+                    updateMicButton();
                 });
             }
 
+            @Override
             public void onLevel(float rms, float peak) {
-                // 电平只做静默反馈，不刷界面（避免每帧刷新拖慢字幕）
+                // 电平只做静默反馈（不刷界面，避免每帧刷新拖慢字幕）
             }
         };
-        ensureRecordPermission(() -> takeFloorThenUpload(listener));
-    }
-
-    /** 先抢麦，成功才上传。 */
-    private void takeFloorThenUpload(final MicUploader.Listener listener) {
         // 发言权互斥：**先抢麦，再上传**。否则"没人占麦却在上传"，对面永远显示空闲。
         new Thread(new Runnable() {
             public void run() {
@@ -464,6 +560,11 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     }
 
     /** 没有录音权限就先申请；授予后再回来继续（新界面不再依赖旧界面的授权流程）。 */
+    /** 先抢麦再上传（开麦按钮走这条）。 */
+    private void ensureRecordPermission() {
+        ensureRecordPermission(this::takeFloorThenUpload);
+    }
+
     private void ensureRecordPermission(Runnable then) {
         if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
                 == android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -566,15 +667,14 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         }, delay);
     }
 
-    /** 上传按钮的文字与颜色：**蓝 = 正在上传**，灰 = 空闲。被顶替时必须回到灰色。 */
+    /**
+     * 上传状态变了 → 刷新**开麦按钮**（4.52 起上传与开麦合成一个按钮）。
+     *
+     * <p>保留这个函数名，是因为它被"被顶替/掉线/出错"好几处调用；
+     * 现在它只负责把外观同步过去，隐藏的 roomUpload 不再参与显示。
+     */
     private void updateUploadButton() {
-        boolean uploading = mic != null;
-        micUploadButton.setText(uploading ? "停止同传" : "开始同传");
-        // 蓝（渐变）= 正在上传，白底描边 = 空闲 —— 皮一换，状态一眼能看出来
-        micUploadButton.setBackgroundResource(
-                uploading ? R.drawable.tap_btn_primary : R.drawable.tap_btn_secondary);
-        micUploadButton.setTextColor(getColor(uploading ? R.color.on_brand : R.color.ink));
-        micUploadButton.setEnabled(true);
+        updateMicButton();
     }
 
     /**
@@ -592,6 +692,111 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             // 我已经不是持麦者：被别人顶替 / 被强制收回 / 租约过期
             onFloorLost(holder);
         }
+    }
+
+    /** 拉一次房间详情：房间号、主题、成员数、我是不是发起者（4.52 顶部两行要用）。 */
+    private void loadRoomHeader() {
+        new Thread(() -> {
+            JSONObject info = null;
+            try {
+                info = client.orgRoomInfo(roomKey);
+            } catch (Exception ignored) {
+                return;
+            }
+            if (info == null) return;
+            final JSONObject room = info.optJSONObject("room");
+            final org.json.JSONArray members = info.optJSONArray("members");
+            ui.post(() -> {
+                if (room != null) {
+                    String code = room.optString("code", "");
+                    if (!code.isEmpty()) codeView.setText("#" + code);
+                    String name = room.optString("name", "");
+                    if (!name.isEmpty()) titleView.setText(name);
+                    String host = room.optString("host", "");
+                    boolean iAmHost = myName != null && myName.equals(host);
+                    roleTag.setText(iAmHost ? "发起者" : "参与者");
+                    roleTag.setBackgroundResource(iAmHost ? R.drawable.bg_chip_brand : R.drawable.bg_chip);
+                    roleTag.setTextColor(getColor(iAmHost ? R.color.brand : R.color.ink_soft));
+                }
+                if (members != null) {
+                    membersView.setText(members.length() + " 人");
+                    renderMembers(members);
+                }
+            });
+        }, "room-header").start();
+    }
+
+    /** 抽屉里的成员列表：头像首字 + 姓名（真头像还没做）。 */
+    private void renderMembers(org.json.JSONArray members) {
+        if (membersList == null) return;
+        membersList.removeAllViews();
+        for (int i = 0; i < members.length(); i++) {
+            String name = members.optString(i, "");
+            if (name.isEmpty()) continue;
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            int pad = dp(4);
+            row.setPadding(0, pad, 0, pad);
+
+            TextView avatar = new TextView(this);
+            avatar.setText(firstChar(name));
+            avatar.setGravity(android.view.Gravity.CENTER);
+            avatar.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 11);
+            avatar.setTextColor(getColor(R.color.brand));
+            avatar.setBackgroundResource(R.drawable.bg_avatar);
+            int dot = dp(22);
+            row.addView(avatar, new LinearLayout.LayoutParams(dot, dot));
+
+            TextView label = new TextView(this);
+            label.setText(name);
+            label.setTextColor(getColor(R.color.ink));
+            label.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12);
+            LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            labelParams.leftMargin = dp(8);
+            row.addView(label, labelParams);
+
+            membersList.addView(row);
+        }
+    }
+
+    /** 复制邀请码（对方凭它入会）。 */
+    private void copyInvite() {
+        String text = codeView.getText() == null ? "" : codeView.getText().toString();
+        text = text.replace("#", "").trim();
+        if (text.isEmpty()) {
+            Toast.makeText(this, "还没拿到邀请码", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        android.content.ClipboardManager clipboard =
+                (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (clipboard != null) {
+            clipboard.setPrimaryClip(android.content.ClipData.newPlainText("邀请码", text));
+        }
+        Toast.makeText(this, "邀请码已复制：" + text, Toast.LENGTH_SHORT).show();
+    }
+
+    /** 「人员与设备」抽屉：点右侧悬浮条开，再点一次/点关闭收。 */
+    private void toggleDrawer() {
+        boolean open = drawer.getVisibility() == View.VISIBLE;
+        drawer.setVisibility(open ? View.GONE : View.VISIBLE);
+        if (!open) loadRoomHeader();
+    }
+
+    /** 会议计时：进房开始走，退出即停。 */
+    private void startTimer() {
+        timerRunning = true;
+        ui.post(new Runnable() {
+            @Override
+            public void run() {
+                if (!timerRunning || isFinishing()) return;
+                long seconds = (System.currentTimeMillis() - startedAtMs) / 1000;
+                timerView.setText(String.format(java.util.Locale.US, "%02d:%02d",
+                        seconds / 60, seconds % 60));
+                ui.postDelayed(this, 1000);
+            }
+        });
     }
 
     /** 停止上传并刷新按钮；`hint` 为空则保留当前提示。 */
@@ -684,16 +889,175 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
      * 迟早出现"长轮询能显示、WS 显示不出来"这种只在一半设备上出现的分裂。
      */
     private void applyFrame(String text, String[] lines, String source, boolean partial, String[] termsMissing) {
-        String main = (text == null || text.isEmpty())
+        String target = (text == null || text.isEmpty())
                 ? (lines == null ? "" : String.join("\n", lines)) : text;
-        mainLine.setText(main == null ? "" : main);
-        subLine.setText(source == null ? "" : source);
+        renderSegment(target == null ? "" : target, source == null ? "" : source, partial);
         if (partial) {
-            hintLine.setText("生成中…");
+            hintLine.setText("正在生成…");
         } else if (termsMissing != null && termsMissing.length > 0) {
             hintLine.setText("术语未按规范写法出现：" + String.join("、", termsMissing));
         } else {
             hintLine.setText("");
+        }
+    }
+
+    /**
+     * 把一帧字幕落到中央字幕流里（M1）。
+     *
+     * <p>两条规矩，都是从旧界面的 `SubtitleList` 学来的：
+     * <ol>
+     *   <li><b>partial 帧原位更新</b>：同一个片段在"生成中 → 定稿"之间只占一张卡。
+     *       新起一条会让同一句话出现两次，用户会以为翻译重复了。</li>
+     *   <li><b>新句从下往上推</b>：追加后自动滚到底，读到的是最新的那句话。</li>
+     * </ol>
+     */
+    private void renderSegment(String target, String source, boolean partial) {
+        if (target.isEmpty() && source.isEmpty()) return;
+        if (emptyView.getVisibility() == View.VISIBLE) emptyView.setVisibility(View.GONE);
+
+        boolean mine = myName != null && !myName.isEmpty() && holding;
+        if (partial && lastSegmentView != null) {
+            // 原位更新：只改文字与状态，不动卡片身份
+            lastSegmentTarget.setText(target);
+            if (!source.isEmpty()) lastSegmentSource.setText(source);
+            lastSegmentState.setText("识别中…");
+            scrollToBottom();
+            return;
+        }
+
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackgroundResource(mine ? R.drawable.bg_subtitle_self : R.drawable.bg_card);
+        int pad = dp(12);
+        card.setPadding(pad, pad, pad, pad);
+        LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        cardParams.bottomMargin = dp(8);
+        card.setLayoutParams(cardParams);
+
+        // 卡片头部：头像 + 姓名 + 源语言标签 + 状态标签
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(android.view.Gravity.CENTER_VERTICAL);
+
+        TextView avatar = new TextView(this);
+        avatar.setText(mine ? "我" : firstChar(speakerBarName()));
+        avatar.setGravity(android.view.Gravity.CENTER);
+        avatar.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12);
+        avatar.setTextColor(getColor(R.color.brand));
+        avatar.setBackgroundResource(R.drawable.bg_avatar);
+        int dot = dp(24);
+        head.addView(avatar, new LinearLayout.LayoutParams(dot, dot));
+
+        TextView name = new TextView(this);
+        name.setText(speakerBarName());
+        name.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12);
+        name.setTextColor(getColor(R.color.ink_soft));
+        LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        nameParams.leftMargin = dp(8);
+        head.addView(name, nameParams);
+
+        TextView langTag = new TextView(this);
+        langTag.setText(mine ? "我说的话" : "对方");
+        langTag.setBackgroundResource(R.drawable.bg_chip);
+        langTag.setTextColor(getColor(R.color.ink_faint));
+        langTag.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 10);
+        langTag.setPadding(dp(6), dp(2), dp(6), dp(2));
+        LinearLayout.LayoutParams langParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        langParams.leftMargin = dp(8);
+        head.addView(langTag, langParams);
+
+        View spacer = new View(this);
+        head.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
+
+        final TextView state = new TextView(this);
+        state.setText(partial ? "识别中…" : "已完成");
+        state.setTextColor(getColor(partial ? R.color.accent : R.color.ok));
+        state.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 10);
+        head.addView(state, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        card.addView(head);
+
+        // 原文（小字、次要色）——受"原文显示"开关控制
+        final TextView sourceLine = new TextView(this);
+        sourceLine.setText(source);
+        sourceLine.setTextColor(getColor(R.color.ink_soft));
+        sourceLine.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12);
+        sourceLine.setVisibility(!showSource || source.isEmpty() ? View.GONE : View.VISIBLE);
+        LinearLayout.LayoutParams sourceParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        sourceParams.topMargin = dp(6);
+        card.addView(sourceLine, sourceParams);
+
+        // 译文（大字、加粗）
+        final TextView targetLine = new TextView(this);
+        targetLine.setText(target);
+        targetLine.setTextColor(getColor(R.color.ink));
+        targetLine.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 15);
+        targetLine.setTypeface(targetLine.getTypeface(), android.graphics.Typeface.BOLD);
+        targetLine.setLineSpacing(dp(4), 1f);
+        LinearLayout.LayoutParams targetParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        targetParams.topMargin = dp(6);
+        card.addView(targetLine, targetParams);
+
+        subtitleList.addView(card);
+        lastSegmentView = card;
+        lastSegmentSource = sourceLine;
+        lastSegmentTarget = targetLine;
+        lastSegmentState = state;
+
+        // 超过上限就丢最老的那张（连同它的引用）
+        while (subtitleList.getChildCount() > MAX_SEGMENTS + 1) {   // +1 是 roomEmpty
+            View oldest = subtitleList.getChildAt(1);
+            if (oldest == null || oldest == lastSegmentView) break;
+            subtitleList.removeViewAt(1);
+        }
+        scrollToBottom();
+    }
+
+    private void scrollToBottom() {
+        subtitleScroll.post(() -> subtitleScroll.fullScroll(View.FOCUS_DOWN));
+    }
+
+    private String speakerBarName() {
+        String text = speakerBar.getText() == null ? "" : speakerBar.getText().toString();
+        if (text.startsWith("发言人：")) {
+            text = text.substring("发言人：".length());
+        }
+        int cut = text.indexOf('（');
+        if (cut > 0) text = text.substring(0, cut);
+        return text.isEmpty() ? "对方" : text;
+    }
+
+    private static String firstChar(String text) {
+        return text == null || text.isEmpty() ? "?" : text.substring(0, 1);
+    }
+
+    /** dip → px（布局里能用 @dimen，代码里这两处间距就地换算，别到处塞 token）。 */
+    private int dp(int value) {
+        return Math.round(getResources().getDisplayMetrics().density * value);
+    }
+
+    /** M3：原文显示开关。已经画出来的卡片也要跟着变。 */
+    private void toggleSource() {
+        showSource = !showSource;
+        sourceToggle.setText(showSource ? "原文 开" : "原文 关");
+        sourceToggle.setBackgroundResource(showSource ? R.drawable.bg_pill_active : R.drawable.bg_pill);
+        sourceToggle.setTextColor(getColor(showSource ? R.color.on_brand : R.color.ink));
+        for (int i = 0; i < subtitleList.getChildCount(); i++) {
+            View child = subtitleList.getChildAt(i);
+            if (!(child instanceof LinearLayout)) continue;
+            LinearLayout card = (LinearLayout) child;
+            if (card.getChildCount() < 3) continue;
+            View sourceView = card.getChildAt(1);   // 头、原文、译文
+            if (sourceView instanceof TextView && sourceView != lastSegmentTarget) {
+                TextView line = (TextView) sourceView;
+                boolean hasText = line.getText() != null && line.getText().length() > 0;
+                line.setVisibility(showSource && hasText ? View.VISIBLE : View.GONE);
+            }
         }
     }
 

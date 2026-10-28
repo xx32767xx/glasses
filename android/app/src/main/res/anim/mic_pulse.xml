@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 发言中的呼吸反馈：轻微放大 + 透明度来回。幅度刻意小（1.0 ↔ 1.06），
+     大到像心跳会让人分心 —— 它只需要"我还活着"这个信息。 -->
+<set xmlns:android="http://schemas.android.com/apk/res/android"
+    android:interpolator="@android:anim/accelerate_decelerate_interpolator">
+    <scale
+        android:duration="900"
+        android:fromXScale="1.0"
+        android:fromYScale="1.0"
+        android:pivotX="50%"
+        android:pivotY="50%"
+        android:repeatCount="infinite"
+        android:repeatMode="reverse"
+        android:toXScale="1.06"
+        android:toYScale="1.06" />
+    <alpha
+        android:duration="900"
+        android:fromAlpha="1.0"
+        android:repeatCount="infinite"
+        android:repeatMode="reverse"
+        android:toAlpha="0.82" />
+</set>

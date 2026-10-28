@@ -1,75 +1,287 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  page_room.xml —— 房间内页（核心页）：主区字幕、底部单行控制、右侧竖向悬浮条。
+  page_room.xml —— 房间内页（核心页）。结构按原型（4.52）：
 
-  视觉按原型（4.47）：
-    · 页面浅灰底，字幕流放在**白卡片**里（14dp 圆角、细描边）—— 主区占绝大部分
-    · 主行 = 我的语言译文（大字、粗体、@color/ink）；副行 = 原始发言（小字、@color/ink_soft）
-    · 右侧竖向条：上格当前发言人，下格 投屏 / 扩声 / 收音 三行
-    · 底部单行控制：主操作（开麦/开始同传）走渐变，其余走白底描边
-  ⚠️ 颜色与尺寸只用 token（@color / @dimen），不写死值。
+    ┌──────────────────────────────────────────────┐
+    │ 顶部会议信息（两行）                          │
+    │  第一行：房间号 · 复制邀请 · 参与方式 · 角色   │
+    │  第二行：会议主题 · 在会人数 · 计时 · 退出     │
+    ├───────────────────────────────┬──────────────┤
+    │ 中央字幕流（纵向滚动卡片）     │ 右侧悬浮条    │
+    │  每张卡：头像/姓名/源语言/状态 │  发言人       │
+    │  原文（小、次要色）            │  投屏状态     │
+    │  译文（大、加粗）              │  扩声状态     │
+    │  自己的发言：浅主色底+主色框    │  收音状态     │
+    ├───────────────────────────────┴──────────────┤
+    │ 底部固定操作区：开麦胶囊 · 锁定 · 原文开关     │
+    └──────────────────────────────────────────────┘
+
+  右下角的「人员与设备」抽屉是叠在这一页之上的覆盖层（roomDrawer），
+  点右侧悬浮条打开 —— 不做成独立 Activity：它只是这一页的一个状态。
+
+  ⚠️ 颜色与尺寸只用 token（@color / @dimen）；外设（投屏/扩声）**尚未接入**，
+     所以那几行只显示文字状态，不做开关。
 -->
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/page"
-    android:orientation="horizontal">
+    android:background="@color/page">
 
     <LinearLayout
-        android:layout_width="0dp"
+        android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:layout_weight="1"
         android:orientation="vertical"
         android:paddingStart="@dimen/space_page"
         android:paddingTop="@dimen/space_gap"
-        android:paddingEnd="@dimen/space_gap_small"
+        android:paddingEnd="@dimen/space_page"
         android:paddingBottom="@dimen/space_gap_small">
 
-        <!-- 连接/推送状态：一行人类可读文字 -->
+        <!-- ══ 顶部会议信息：第一行 ══════════════════════════════════ -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/roomCode"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="#------"
+                android:textColor="@color/ink"
+                android:textSize="@dimen/text_title"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/roomCopy"
+                android:layout_width="wrap_content"
+                android:layout_height="@dimen/touch_min"
+                android:layout_marginStart="@dimen/space_gap_small"
+                android:gravity="center"
+                android:paddingStart="@dimen/space_gap_small"
+                android:paddingEnd="@dimen/space_gap_small"
+                android:text="复制邀请"
+                android:textColor="@color/brand"
+                android:textSize="@dimen/text_secondary" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="@dimen/stroke_hairline"
+                android:layout_weight="1" />
+
+            <TextView
+                android:id="@+id/roomModeTag"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_chip_brand"
+                android:paddingStart="@dimen/space_gap_small"
+                android:paddingTop="@dimen/space_gap_tiny"
+                android:paddingEnd="@dimen/space_gap_small"
+                android:paddingBottom="@dimen/space_gap_tiny"
+                android:text="我说中文"
+                android:textColor="@color/brand"
+                android:textSize="@dimen/text_caption" />
+
+            <TextView
+                android:id="@+id/roomRoleTag"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/space_gap_tiny"
+                android:background="@drawable/bg_chip"
+                android:paddingStart="@dimen/space_gap_small"
+                android:paddingTop="@dimen/space_gap_tiny"
+                android:paddingEnd="@dimen/space_gap_small"
+                android:paddingBottom="@dimen/space_gap_tiny"
+                android:text="参与者"
+                android:textColor="@color/ink_soft"
+                android:textSize="@dimen/text_caption" />
+        </LinearLayout>
+
+        <!-- ══ 顶部会议信息：第二行 ══════════════════════════════════ -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_gap_tiny"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/roomTitle"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:text="会议主题"
+                android:textColor="@color/ink_soft"
+                android:textSize="@dimen/text_secondary" />
+
+            <TextView
+                android:id="@+id/roomMembers"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/space_gap_small"
+                android:text="0 人"
+                android:textColor="@color/ink_soft"
+                android:textSize="@dimen/text_caption" />
+
+            <TextView
+                android:id="@+id/roomTimer"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="@dimen/space_gap_small"
+                android:text="00:00"
+                android:textColor="@color/ink_faint"
+                android:textSize="@dimen/text_caption" />
+        </LinearLayout>
+
+        <!-- 连接/推送状态：一行小字，出问题时才显眼 -->
         <TextView
             android:id="@+id/roomStatus"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_gap_tiny"
             android:ellipsize="end"
-            android:maxLines="2"
+            android:maxLines="1"
             android:text="连接中…"
-            android:textColor="@color/ink_soft"
+            android:textColor="@color/ink_faint"
             android:textSize="@dimen/text_caption" />
 
-        <!-- 主区：字幕流（白卡片 + 底部对齐，新句从下往上推） -->
+        <!-- ══ 中部：字幕流 + 右侧悬浮条 ══════════════════════════════ -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_marginTop="@dimen/space_gap_small"
             android:layout_weight="1"
-            android:background="@drawable/bg_card"
-            android:gravity="bottom"
-            android:orientation="vertical"
-            android:padding="@dimen/space_card">
+            android:orientation="horizontal">
 
-            <TextView
-                android:id="@+id/roomMain"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:lineSpacingExtra="@dimen/space_gap_tiny"
-                android:maxLines="6"
-                android:text=""
-                android:textColor="@color/ink"
-                android:textSize="@dimen/text_live"
-                android:textStyle="bold" />
+            <!-- 中央字幕流：纵向滚动卡片（每帧一张卡，自己的发言换底色） -->
+            <ScrollView
+                android:id="@+id/roomSubtitleScroll"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:clipToPadding="false"
+                android:scrollbars="none">
 
-            <TextView
-                android:id="@+id/roomSub"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="@dimen/space_gap_small"
-                android:maxLines="3"
-                android:text=""
-                android:textColor="@color/ink_soft"
-                android:textSize="@dimen/text_body" />
+                <LinearLayout
+                    android:id="@+id/roomSubtitles"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:id="@+id/roomEmpty"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:background="@drawable/bg_card"
+                        android:gravity="center"
+                        android:padding="@dimen/space_section"
+                        android:text="还没有字幕 · 点下方「开麦」开始说话"
+                        android:textColor="@color/ink_faint"
+                        android:textSize="@dimen/text_secondary" />
+                </LinearLayout>
+            </ScrollView>
+
+            <!-- 右侧竖向悬浮条：发言人 + 投屏/扩声/收音。点它打开「人员与设备」抽屉 -->
+            <LinearLayout
+                android:id="@+id/roomInfoBar"
+                android:layout_width="@dimen/speaker_bar_width"
+                android:layout_height="match_parent"
+                android:layout_marginStart="@dimen/space_gap_small"
+                android:background="@drawable/bg_card"
+                android:clickable="true"
+                android:focusable="true"
+                android:orientation="vertical"
+                android:padding="@dimen/space_gap_small">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="发言人"
+                    android:textColor="@color/ink_faint"
+                    android:textSize="@dimen/text_caption" />
+
+                <TextView
+                    android:id="@+id/roomSpeaker"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap_tiny"
+                    android:text="麦克风空闲"
+                    android:textColor="@color/brand"
+                    android:textSize="@dimen/text_secondary"
+                    android:textStyle="bold" />
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/stroke_hairline"
+                    android:layout_marginTop="@dimen/space_gap_small"
+                    android:layout_marginBottom="@dimen/space_gap_small"
+                    android:background="@color/line_soft" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="投屏"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_caption" />
+
+                <TextView
+                    android:id="@+id/roomCastState"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="手机屏"
+                    android:textColor="@color/ink_faint"
+                    android:textSize="@dimen/text_caption" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap_small"
+                    android:text="扩声"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_caption" />
+
+                <TextView
+                    android:id="@+id/roomAudioState"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="未接入"
+                    android:textColor="@color/ink_faint"
+                    android:textSize="@dimen/text_caption" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap_small"
+                    android:text="收音"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_caption" />
+
+                <TextView
+                    android:id="@+id/roomMicState"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="手机麦"
+                    android:textColor="@color/ink_faint"
+                    android:textSize="@dimen/text_caption" />
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center"
+                    android:text="人员与设备 ›"
+                    android:textColor="@color/brand"
+                    android:textSize="@dimen/text_caption" />
+            </LinearLayout>
         </LinearLayout>
 
-        <!-- 行内提示：琥珀（生成中 / 被顶替 / 掉线释放…） -->
+        <!-- 行内提示（琥珀）：生成中 / 被顶替 / 掉线释放… -->
         <TextView
             android:id="@+id/roomHint"
             android:layout_width="match_parent"
@@ -85,32 +297,21 @@
             android:textColor="@color/accent"
             android:textSize="@dimen/text_caption" />
 
-        <!-- 底部单行控制 -->
+        <!-- ══ 底部固定操作区：开麦胶囊 · 锁定 · 原文开关 · 退出 ══════ -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="@dimen/space_gap_small"
+            android:gravity="center_vertical"
             android:orientation="horizontal">
 
             <Button
                 android:id="@+id/roomMic"
                 android:layout_width="0dp"
                 android:layout_height="@dimen/height_button"
-                android:layout_weight="1.4"
-                android:background="@drawable/tap_btn_secondary"
+                android:layout_weight="1.6"
+                android:background="@drawable/btn_mic_idle"
                 android:text="点击开麦"
-                android:textAllCaps="false"
-                android:textColor="@color/ink"
-                android:textSize="@dimen/text_button" />
-
-            <Button
-                android:id="@+id/roomUpload"
-                android:layout_width="0dp"
-                android:layout_height="@dimen/height_button"
-                android:layout_marginStart="@dimen/space_gap_small"
-                android:layout_weight="1.4"
-                android:background="@drawable/tap_btn_primary"
-                android:text="开始同传"
                 android:textAllCaps="false"
                 android:textColor="@color/on_brand"
                 android:textSize="@dimen/text_button" />
@@ -120,11 +321,25 @@
                 android:layout_width="0dp"
                 android:layout_height="@dimen/height_button"
                 android:layout_marginStart="@dimen/space_gap_small"
-                android:layout_weight="1.2"
+                android:layout_weight="1.1"
                 android:background="@drawable/tap_btn_secondary"
                 android:text="锁定发言"
                 android:textAllCaps="false"
                 android:textColor="@color/ink"
+                android:textSize="@dimen/text_secondary" />
+
+            <TextView
+                android:id="@+id/roomSourceToggle"
+                android:layout_width="0dp"
+                android:layout_height="@dimen/height_button"
+                android:layout_marginStart="@dimen/space_gap_small"
+                android:layout_weight="0.9"
+                android:background="@drawable/bg_pill_active"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:text="原文 开"
+                android:textColor="@color/on_brand"
                 android:textSize="@dimen/text_secondary" />
 
             <Button
@@ -139,87 +354,92 @@
                 android:textColor="@color/err"
                 android:textSize="@dimen/text_secondary" />
         </LinearLayout>
+
+        <!-- 「开始同传」在原型里没有单独按钮：开麦即开始上传。
+             这里保留一个隐藏的真按钮，让旧逻辑（takeFloorThenUpload）继续有落点。 -->
+        <Button
+            android:id="@+id/roomUpload"
+            android:layout_width="0dp"
+            android:layout_height="0dp"
+            android:visibility="gone" />
     </LinearLayout>
 
-    <!-- 右侧竖向悬浮条：当前发言人 + 投屏/扩声/收音 -->
+    <!-- ══ 「人员与设备」抽屉（覆盖层，4.53 补全内容） ═══════════════ -->
     <LinearLayout
-        android:layout_width="@dimen/speaker_bar_width"
+        android:id="@+id/roomDrawer"
+        android:layout_width="@dimen/drawer_width"
         android:layout_height="match_parent"
+        android:layout_gravity="end"
         android:layout_marginTop="@dimen/space_gap"
-        android:layout_marginEnd="@dimen/space_page"
+        android:layout_marginEnd="@dimen/space_gap"
         android:layout_marginBottom="@dimen/space_gap"
         android:background="@drawable/bg_card"
+        android:elevation="@dimen/elevation_card"
         android:orientation="vertical"
-        android:padding="@dimen/space_gap_small">
+        android:padding="@dimen/space_card"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="人员与设备"
+                android:textColor="@color/ink"
+                android:textSize="@dimen/text_title"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/roomDrawerClose"
+                android:layout_width="@dimen/touch_min"
+                android:layout_height="@dimen/touch_min"
+                android:gravity="center"
+                android:text="关闭"
+                android:textColor="@color/ink_soft"
+                android:textSize="@dimen/text_caption" />
+        </LinearLayout>
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="发言人"
-            android:textColor="@color/ink_faint"
+            android:layout_marginTop="@dimen/space_gap"
+            android:text="成员"
+            android:textColor="@color/ink_soft"
             android:textSize="@dimen/text_caption" />
 
-        <TextView
-            android:id="@+id/roomSpeaker"
+        <LinearLayout
+            android:id="@+id/roomMembersList"
             android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_marginTop="@dimen/space_gap_tiny"
-            android:layout_weight="1"
-            android:gravity="top"
-            android:text="麦克风空闲"
-            android:textColor="@color/brand"
-            android:textSize="@dimen/text_secondary"
-            android:textStyle="bold" />
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
 
         <View
             android:layout_width="match_parent"
             android:layout_height="@dimen/stroke_hairline"
-            android:layout_marginTop="@dimen/space_gap_small"
+            android:layout_marginTop="@dimen/space_gap"
             android:layout_marginBottom="@dimen/space_gap_small"
             android:background="@color/line_soft" />
 
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="投屏"
+            android:text="设备"
             android:textColor="@color/ink_soft"
             android:textSize="@dimen/text_caption" />
 
         <TextView
+            android:id="@+id/roomDrawerDevices"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="手机屏"
+            android:layout_marginTop="@dimen/space_gap_tiny"
+            android:lineSpacingExtra="@dimen/space_gap_tiny"
             android:textColor="@color/ink_faint"
-            android:textSize="@dimen/text_caption" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="@dimen/space_gap_small"
-            android:text="扩声"
-            android:textColor="@color/ink_soft"
-            android:textSize="@dimen/text_caption" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="耳机 / 关"
-            android:textColor="@color/ink_faint"
-            android:textSize="@dimen/text_caption" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="@dimen/space_gap_small"
-            android:text="收音"
-            android:textColor="@color/ink_soft"
-            android:textSize="@dimen/text_caption" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="手机麦"
-            android:textColor="@color/ink_faint"
-            android:textSize="@dimen/text_caption" />
+            android:textSize="@dimen/text_caption"
+            android:text="" />
     </LinearLayout>
-</LinearLayout>
+</FrameLayout>

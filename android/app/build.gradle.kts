@@ -80,8 +80,10 @@ android {
     //       注销没断会话推送 + 服务端只踢旧 token 的连接 + 客户端收到 kicked 先核实。见 docs/21 §4.50。
     // 4.51：修「点会议房间崩」——语言胶囊在布局里是 TextView，Activity 还在按 Button 取；
     //       顺手加一道 findViewById 类型一致性门禁（带反向自检）。见 docs/21 §4.51。
-        versionCode = 80
-        versionName = "4.51"
+    // 4.52：房间页按原型重做 —— 顶部两行信息 / 中央字幕流（M1）/ 右侧三态悬浮条 /
+    //       底部开麦胶囊（M3 原文开关 + 红色脉冲）；开麦与上传合成一个按钮。见 docs/21 §4.52。
+        versionCode = 81
+        versionName = "4.52"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

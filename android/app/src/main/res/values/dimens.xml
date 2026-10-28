@@ -13,6 +13,8 @@
     <dimen name="radius_card">14dp</dimen>
     <dimen name="radius_control">12dp</dimen>
     <dimen name="radius_chip">10dp</dimen>
+    <!-- 胶囊（开麦按钮、语言胶囊这类完全圆的）：足够大即被裁成半圆 -->
+    <dimen name="radius_pill">999dp</dimen>
 
     <!-- 间距：内容区水平留白原型 16px -->
     <dimen name="space_page">16dp</dimen>
@@ -46,6 +48,9 @@
     <dimen name="brand_mark_height">64dp</dimen>
     <!-- 紧凑的次按钮最小宽度（“获取验证码”这种四个字的） -->
     <dimen name="button_compact_width">96dp</dimen>
+
+    <!-- 「人员与设备」抽屉宽度 -->
+    <dimen name="drawer_width">280dp</dimen>
 
     <!-- 房间页右侧竖向悬浮条宽度（发言人 + 投屏/扩声/收音三格） -->
     <dimen name="speaker_bar_width">92dp</dimen>
