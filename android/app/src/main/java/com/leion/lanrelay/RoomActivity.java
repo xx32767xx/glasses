@@ -42,7 +42,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     private TextView speakerBar;
     private TextView hintLine;
     private Button micButton;
-    private Button lockButton;
+    private android.widget.ImageButton lockButton;
 
     // ── 顶部会议信息（两行）──
     private TextView codeView;
@@ -67,9 +67,11 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     private LinearLayout membersList;
     private TextView drawerDevices;
 
-    // ── 底部：原文显示开关（M3）──
-    private TextView sourceToggle;
+    // ── 底部：原文显示开关（M3，4.55 起是文字 + Switch）──
+    private android.widget.Switch sourceSwitch;
     private boolean showSource = true;
+    /** 防止 setChecked 触发监听又回头改一次（会来回抖）。 */
+    private boolean syncingSwitch = false;
 
     /**
      * 最后一条字幕的身份：**原文**（source）。
@@ -94,6 +96,17 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
 
     /** 我是不是发起者（决定抽屉里显不显示"移出成员/解除锁定"）。 */
     private boolean iAmHost = false;
+
+    /** 抽屉打开期间的刷新间隔：成员变化没有推送，只能轮询，但只在抽屉开着时轮。 */
+    private static final long DRAWER_REFRESH_MS = 2500L;
+    private final Runnable drawerTick = new Runnable() {
+        @Override
+        public void run() {
+            if (drawer.getVisibility() != View.VISIBLE || isFinishing()) return;
+            loadRoomHeader();
+            ui.postDelayed(this, DRAWER_REFRESH_MS);
+        }
+    };
 
     /** 会议计时（从进房那一刻算）。 */
     private long startedAtMs = 0L;
@@ -150,12 +163,17 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         drawer = findViewById(R.id.roomDrawer);
         membersList = findViewById(R.id.roomMembersList);
         drawerDevices = findViewById(R.id.roomDrawerDevices);
-        sourceToggle = findViewById(R.id.roomSourceToggle);
+        sourceSwitch = findViewById(R.id.roomSourceSwitch);
 
         copyView.setOnClickListener(v -> copyInvite());
         infoBar.setOnClickListener(v -> toggleDrawer());
         findViewById(R.id.roomDrawerClose).setOnClickListener(v -> toggleDrawer());
-        sourceToggle.setOnClickListener(v -> toggleSource());
+        sourceSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            if (syncingSwitch) return;
+            showSource = isChecked;
+            syncSourceVisibility();
+            addSystemEvent(isChecked ? "原文显示已开启" : "原文显示已关闭");
+        });
 
         addSystemEvent("会议开始 · 发言权互斥已启用：同一时刻仅一人开麦");
 
@@ -167,11 +185,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         startedAtMs = System.currentTimeMillis();
         startTimer();
         updateMicButton();
-        toggleSource();          // 先把"原文 开/关"的外观刷成与 showSource 一致
-        showSource = true;       // toggleSource 会翻转，这里翻回来
-        sourceToggle.setText("原文 开");
-        sourceToggle.setBackgroundResource(R.drawable.bg_pill_active);
-        sourceToggle.setTextColor(getColor(R.color.on_brand));
+        syncSourceVisibility();  // 把「原文」开关刷成与 showSource 一致
 
         statusLine.setText("");
 
@@ -221,6 +235,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     @Override
     protected void onDestroy() {
         timerRunning = false;
+        stopDrawerRefresh();
         if (floorSocket != null) {
             floorSocket.stop();
             floorSocket = null;
@@ -285,6 +300,11 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             @Override
             public void onRoomClosed(String reason) {
                 ui.post(() -> leaveBecauseClosed(reason));
+            }
+
+            @Override
+            public void onRemoved(String reason) {
+                ui.post(() -> leaveBecauseRemoved());
             }
 
             @Override
@@ -428,16 +448,13 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         //   · 持麦者：自己锁自己 / 自己解自己      → 解锁 / 锁定发言
         //   · 发起者：可以解**他人**的锁           → 解锁（他人）/ 锁定发言（他人）
         //   · 其他人：不能动锁，只显示状态          → 发言已锁定 / 锁定发言（灰）
+        // 4.55：改成图标按钮（上锁 / 解锁），不再写文字。
+        // 能不能按还是由权限决定：持麦者能锁自己，发起者能解他人，其他人只能看。
         boolean canLock = holding || (anyHolder && iAmHost);
-        if (holding) {
-            lockButton.setText(isLocked ? "解锁" : "锁定发言");
-        } else if (anyHolder && iAmHost) {
-            lockButton.setText(isLocked ? "解锁（他人）" : "锁定他人");
-        } else if (isLocked) {
-            lockButton.setText("发言已锁定");
-        } else {
-            lockButton.setText("锁定发言");
-        }
+        boolean showUnlockIcon = isLocked && canLock;
+        lockButton.setImageResource(showUnlockIcon ? R.drawable.ic_unlock : R.drawable.ic_lock);
+        lockButton.setContentDescription(showUnlockIcon ? "解锁发言"
+                : (isLocked ? "发言已锁定（只有发起者能解除）" : "锁定发言"));
         lockButton.setEnabled(canLock);
         lockButton.setAlpha(canLock ? 1f : 0.5f);
         speakerBar.setText(anyHolder ? ("发言人：" + holder + (isLocked ? "（已锁定）" : "")) : "麦克风空闲");
@@ -464,8 +481,55 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                     || info.optBoolean("closed", false);
             if (closed) {
                 ui.post(() -> leaveBecauseClosed("发起者已结束这场会议"));
+                return;
+            }
+            // 4.55：被移出的人**不在成员列表里**了。WS 的 removed 推送通常会先到，
+            // 这条是兜底（WS 断线时）。注意只在"确实拉到了成员数组"时才判，
+            // 空数组不能当成"我不在了"（否则一次网络抖动就会把人踢出房间）。
+            org.json.JSONArray members = info.optJSONArray("members");
+            if (members != null && members.length() > 0 && myName != null && !myName.isEmpty()) {
+                boolean stillHere = false;
+                for (int i = 0; i < members.length(); i++) {
+                    JSONObject one = members.optJSONObject(i);
+                    String name = one == null ? members.optString(i, "") : one.optString("username", "");
+                    if (myName.equals(name)) { stillHere = true; break; }
+                }
+                if (!stillHere) {
+                    ui.post(this::leaveBecauseRemoved);
+                }
             }
         }, "room-still-open").start();
+    }
+
+    /**
+     * 被发起者移出这场会议（4.55）。
+     *
+     * <p>两条发现路径：WS 的 `removed` 推送（秒级）、轮询时"我不在成员列表里"（兜底）。
+     * 无论哪条先到，处理都一样：停上传、说清原因、退出房间。
+     */
+    private void leaveBecauseRemoved() {
+        if (isFinishing()) return;
+        Toast.makeText(this, "你已被移出这场会议", Toast.LENGTH_LONG).show();
+        hintLine.setText("你已被移出这场会议");
+        stopUpload(null);
+        if (mic != null) { mic.stop(); mic = null; }
+        ui.postDelayed(this::finish, 1200);
+    }
+
+    /**
+     * 抽屉打开期间的**实时刷新**（4.55）。
+     *
+     * <p>用户报的问题：抽屉里的人数/成员要重新打开才变。原因是成员变化没有任何推送，
+     * 而我只在"打开抽屉"那一刻拉了一次。现在抽屉开着就每 2.5 秒拉一次，
+     * 关掉就停（不打开的人不为它付流量）。
+     */
+    private void startDrawerRefresh() {
+        ui.removeCallbacks(drawerTick);
+        ui.postDelayed(drawerTick, DRAWER_REFRESH_MS);
+    }
+
+    private void stopDrawerRefresh() {
+        ui.removeCallbacks(drawerTick);
     }
 
     /**
@@ -722,6 +786,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
 
     /** 拉一次房间详情：房间号、主题、成员数、我是不是发起者（4.52 顶部两行要用）。 */
     private void loadRoomHeader() {
+        if (client == null) return;      // 4.55：抽屉轮询也可能在 client 建好前触发
         new Thread(() -> {
             JSONObject info = null;
             try {
@@ -885,7 +950,12 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     private void toggleDrawer() {
         boolean open = drawer.getVisibility() == View.VISIBLE;
         drawer.setVisibility(open ? View.GONE : View.VISIBLE);
-        if (!open) loadRoomHeader();
+        if (open) {
+            stopDrawerRefresh();
+            return;
+        }
+        loadRoomHeader();
+        startDrawerRefresh();   // 打开期间实时刷新（4.55）
     }
 
     /** 会议计时：进房开始走，退出即停。 */
@@ -1186,12 +1256,18 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         return Math.round(getResources().getDisplayMetrics().density * value);
     }
 
-    /** M3：原文显示开关。已经画出来的卡片也要跟着变。 */
-    private void toggleSource() {
-        showSource = !showSource;
-        sourceToggle.setText(showSource ? "原文 开" : "原文 关");
-        sourceToggle.setBackgroundResource(showSource ? R.drawable.bg_pill_active : R.drawable.bg_pill);
-        sourceToggle.setTextColor(getColor(showSource ? R.color.on_brand : R.color.ink));
+    /**
+     * M3：把「原文显示」的状态同步到**已画出来的卡片**（开关本身由 Switch 负责）。
+     *
+     * <p>4.55 起底部是一个真正的 Switch（原型：原文后面跟一个可点开关），
+     * 所以这个函数不再"翻转"，只按 `showSource` 同步外观与可见性。
+     */
+    private void syncSourceVisibility() {
+        if (sourceSwitch != null) {
+            syncingSwitch = true;
+            sourceSwitch.setChecked(showSource);
+            syncingSwitch = false;
+        }
         for (int i = 0; i < subtitleList.getChildCount(); i++) {
             View child = subtitleList.getChildAt(i);
             if (!(child instanceof LinearLayout)) continue;

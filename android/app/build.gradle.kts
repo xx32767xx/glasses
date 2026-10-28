@@ -86,8 +86,11 @@ android {
     //       （房间详情在 client 之前拉、异常被吞）；成员按 username 读；调试文本不进状态行。见 docs/21 §4.53。
     // 4.54：M2 收尾 —— 移出成员接口（仅发起者，顺带释放他的麦）+ 抽屉里的管理者操作
     //       + 系统事件行（弱化居中，插在字幕流里）。见 docs/21 §4.54。
-        versionCode = 83
-        versionName = "4.54"
+    // 4.55：用户实测三处 —— 人员/设备抽屉实时刷新（开着才轮询）；被移出的人立刻离场
+    //       （WS 推 removed + 轮询兜底）；锁定按钮换成上锁/解锁图标、原文换成文字 + Switch。
+    //       见 docs/21 §4.55。
+        versionCode = 84
+        versionName = "4.55"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

@@ -1668,7 +1668,12 @@ export async function startRelay(rawOptions = {}) {
             // 被移出的人可能正持麦：服务端已经清空了，这里推一次让全屋立刻看到
             const removedMatch = /^\/org\/rooms\/([^/]+)\/members\/remove$/.exec(url.pathname)
             if (removedMatch !== null) {
-              wsHub.broadcastFloor(decodeURIComponent(removedMatch[1]))
+              const removedRoom = decodeURIComponent(removedMatch[1])
+              wsHub.broadcastFloor(removedRoom)
+              // 被移出的人**立刻**离开：推一条 removed 再断连接，别让他自己在屋里再待十几秒
+              if (result.json !== null && typeof result.json.removed === 'string') {
+                wsHub.removeUserFromRoom(removedRoom, result.json.removed, 'removed-by-host')
+              }
             }
           } else if (url.pathname === '/org/rooms/leave') {
             const leftRoomId = decodeURIComponent(String(body.roomId ?? body.code ?? ''))

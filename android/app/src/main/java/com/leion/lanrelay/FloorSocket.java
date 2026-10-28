@@ -26,7 +26,8 @@ import java.util.Locale;
  * <p>协议（都是 JSON 文本帧）：
  * <pre>
  *   服务端 → 客户端  {type:'floor', ...} / {type:'frame', seq, frame}
- *                  {type:'closed', reason}（会议结束，随后连接被服务端关闭）
+ *                  {type:'closed', reason}（会议结束）/ {type:'removed', reason}（被移出）
+ *                  两者之后连接都会被服务端关闭
  *   客户端 → 服务端  {type:'ping'} / {type:'snapshot'}
  * </pre>
  * 连上立刻会收到一条 floor，不需要客户端再问一次。
@@ -53,6 +54,9 @@ public class FloorSocket {
          * 身份当场作废。让用户在已结束的会议里继续开麦、锁定，比"卡一下"糟得多。
          */
         void onRoomClosed(String reason);
+
+        /** 被发起者移出这场会议（4.55）：提示原因并离开房间。 */
+        void onRemoved(String reason);
 
         /** 连接层的一行状态（连上 / 断开 / 出错）。失败不是错误，轮询会兜住。 */
         void onState(String message);
@@ -195,6 +199,8 @@ public class FloorSocket {
                 listener.onFrame(parsed);
             } else if ("closed".equals(type)) {
                 listener.onRoomClosed(parsed.optString("reason", ""));
+            } else if ("removed".equals(type)) {
+                listener.onRemoved(parsed.optString("reason", ""));
             }
         }
 

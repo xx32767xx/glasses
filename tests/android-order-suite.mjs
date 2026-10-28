@@ -673,10 +673,12 @@ export async function runAndroidOrderSuite({ it, check }) {
       'lanrelay', 'RoomActivity.java'), 'utf-8')
     const body = room.slice(room.indexOf('private void takingChanged('), room.indexOf('\n    }', room.indexOf('private void takingChanged(')))
 
-    check('持麦者看到「解锁」', body.includes('"解锁"'))
-    check('发起者解他人锁时文案不同（否则与"解自己"混为一谈）', body.includes('"解锁（他人）"'))
-    check('无关的人看到的是状态而不是动作', body.includes('"发言已锁定"'),
+    // 4.55 起按钮上一律是图标，文案/无障碍描述仍要区分"我能不能按"
+    check('持麦者解除的是自己的锁', body.includes('"解锁发言"'))
+    check('不能按的人看到的是状态而不是动作', body.includes('"发言已锁定（只有发起者能解除）"'),
       '既不是持麦者也不是发起者时，不该出现「解锁」这个动作')
+    check('按不动就真的点不了', /lockButton\.setEnabled\(canLock\)/.test(body))
+    check('按不动时视觉也弱化', /lockButton\.setAlpha\(canLock \? 1f : 0\.5f\)/.test(body))
     check('能不能按由 canLock 决定', /boolean canLock = holding \|\| \(anyHolder && iAmHost\)/.test(body))
   })
 
@@ -983,9 +985,10 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('字幕有上限，防止开两小时把内存吃掉', /MAX_SEGMENTS/.test(activity))
 
     // M3：原文显示开关
-    check('底部有原文开关', /@\+id\/roomSourceToggle/.test(room))
-    check('切换会影响已画出来的卡片', /private void toggleSource\(\)[\s\S]{0,900}setVisibility/.test(activity))
-    check('开关文案带着状态', /原文 开|原文 关/.test(activity))
+    check('底部有原文开关（Switch）', /@\+id\/roomSourceSwitch/.test(room) && /<Switch/.test(room))
+    check('开关旁边写着「原文」', /text="原文"/.test(room))
+    check('切换会影响已画出来的卡片', /private void syncSourceVisibility\(\)[\s\S]{0,900}setVisibility/.test(activity))
+    check('防止 setChecked 自己触发自己', /syncingSwitch/.test(activity))
 
     // 右侧竖向条：发言人 + 投屏/扩声/收音 三态，点开抽屉
     check('右侧条显示发言人', /@\+id\/roomSpeaker/.test(room))
@@ -1018,10 +1021,16 @@ export async function runAndroidOrderSuite({ it, check }) {
     const activity = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
 
     // ① 房间详情必须在 client 建好之后才拉，否则线程里 NPE 被静默吞掉
-    const clientAt = activity.indexOf('client = new LanClient(')
-    const headerCallAt = activity.indexOf('loadRoomHeader();')
-    check('loadRoomHeader 在 client 创建之后调用', headerCallAt > clientAt,
+    // 抓 onCreate 这一段来判先后：loadRoomHeader(); 现在也在抽屉轮询里出现，
+    // 全文件 indexOf 会被前面的那段抢先匹配到（4.55 曾因此误报）
+    const onCreateBody = activity.slice(activity.indexOf('protected void onCreate('),
+      activity.indexOf('private void takingChanged('))
+    const clientAt = onCreateBody.indexOf('client = new LanClient(')
+    const headerCallAt = onCreateBody.indexOf('loadRoomHeader();')
+    check('loadRoomHeader 在 client 创建之后调用', headerCallAt > clientAt && clientAt >= 0,
       `client@${clientAt} header@${headerCallAt}`)
+    check('loadRoomHeader 自己也挡住 client 还没建好的情况',
+      /private void loadRoomHeader\(\) \{\s*\n\s*if \(client == null\) return;/.test(activity))
     check('顶部真的会写房间号与主题',
       /codeView\.setText\("#" \+ code\)/.test(activity) && /titleView\.setText\(name\)/.test(activity))
     check('角色按 host 判定（发起者/参与者）',
@@ -1068,6 +1077,41 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('会议开始写一条事件', /会议开始 · 发言权互斥已启用/.test(activity))
     check('被顶替/掉线释放写进事件行', /addSystemEvent\(message\)/.test(activity))
     check('锁定/解锁写进事件行', /已锁定/.test(activity) && /发言已解锁/.test(activity))
+  })
+
+  await it('4.55：抽屉实时刷新 / 被移出即离场 / 锁定图标 / 原文开关', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const layoutDir = join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout')
+    const activity = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+    const socket = readFileSync(join(javaDir, 'FloorSocket.java'), 'utf-8')
+    const hub = readFileSync(join(ROOT, 'lib', 'ws-hub.mjs'), 'utf-8')
+    const room = readFileSync(join(layoutDir, 'page_room.xml'), 'utf-8')
+
+    // ① 抽屉实时刷新：只在抽屉开着时轮询
+    check('抽屉打开时启动刷新', /private void startDrawerRefresh\(\)/.test(activity))
+    check('抽屉关闭时停止刷新', /stopDrawerRefresh\(\)/.test(activity) && /ui\.removeCallbacks\(drawerTick\)/.test(activity))
+    check('抽屉开着才刷新（关着不花流量）',
+      /drawer\.getVisibility\(\) != View\.VISIBLE/.test(activity))
+
+    // ② 被移出：服务端推送 + 轮询兜底
+    check('服务端能对单个用户推 removed 并断连', /function removeUserFromRoom\(/.test(hub)
+      && /type: 'removed'/.test(hub))
+    check('客户端认得 removed', /"removed"\.equals\(type\)/.test(socket))
+    check('房间页收到就离场', /private void leaveBecauseRemoved\(\)/.test(activity))
+    check('轮询兜底：不在成员列表里也算被移出',
+      /stillHere/.test(activity) && /if \(!stillHere\)/.test(activity))
+    check('空成员数组不当成"我不在了"（防抖动误踢）',
+      /members\.length\(\) > 0/.test(activity), '一次网络抖动不该把人踢出房间')
+
+    // ③ 锁定按钮：图标两态
+    check('锁定按钮是 ImageButton', /<ImageButton[\s\S]{0,200}@\+id\/roomLock/.test(room))
+    check('图标随锁定态切换', /R\.drawable\.ic_unlock/.test(activity) && /R\.drawable\.ic_lock/.test(activity))
+    check('图标只有"能按"时才换（不能解他人锁的人看到的是锁着的锁）',
+      /boolean showUnlockIcon = isLocked && canLock/.test(activity))
+
+    // ④ 原文开关：文字 + Switch
+    check('原文是文字 + Switch', /@\+id\/roomSourceSwitch/.test(room) && /<Switch/.test(room))
+    check('Switch 默认打开', /android:checked="true"/.test(room))
   })
 
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {
