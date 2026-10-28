@@ -1232,6 +1232,80 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('注销后不再写「已注销」', !/setStatus\("已注销"\)/.test(activity) && /setStatus\(""\)/.test(activity))
   })
 
+  await it('4.58：服务端返回的 error/hint 也走三语', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const serverText = readFileSync(join(javaDir, 'ServerText.java'), 'utf-8')
+    const cjk = /[\u4e00-\u9fff]/
+
+    // ① 机制：三层查表 + 「非中文界面不许出现中文」的兜底
+    check('服务端原话有整句映射表', /static \{\s*\n\s*\/\/ ── 账号与登录/.test(serverText)
+      && /put\("用户名或密码不对", R\.string\.srv_auth_failed\)/.test(serverText))
+    check('带变量的句子按前缀/后缀认（变量丢掉）',
+      /prefix\("没有这个接口："/.test(serverText) && /suffix\(" 不在这个房间里"/.test(serverText))
+    check('WS 推送的机器码也翻（host-left 不该出现在界面上）',
+      /CODES\.put\("host-left"/.test(serverText) && /CODES\.put\("removed-by-host"/.test(serverText))
+    check('hint 比 error 更具体，优先用 hint', /String hint = body\.optString\("hint"/.test(serverText))
+    check('非中文界面不给用户看中文', /UiLang\.ZH\.equals\(UiLang\.effective\(ctx\)\)/.test(serverText)
+      && /return ctx\.getString\(R\.string\.srv_unknown\)/.test(serverText))
+
+    // ② 服务端源码里的中文错误串，必须条条有映射（或明确列进"不翻译"清单）
+    const srvFiles = ['relay/lan-relay.mjs', 'relay/org-api.mjs', 'lib/rooms.mjs',
+      'lib/floor.mjs', 'lib/accounts.mjs', 'lib/ws-hub.mjs']
+    const candidates = new Set()
+    for (const f of srvFiles) {
+      for (const line of readFileSync(join(ROOT, f), 'utf-8').split('\n')) {
+        if (!/error|hint|bad\(|reason/.test(line)) continue
+        if (line.includes('⚠️') || line.includes('[ws]')) continue   // 内部日志，永远不到客户端
+        for (const m of line.matchAll(/'([^']*)'|`([^`]*)`|"([^"]*)"/g)) {
+          const v = m[1] ?? m[2] ?? m[3] ?? ''
+          if (cjk.test(v)) candidates.add(v)
+        }
+      }
+    }
+    // Java 源码里的转义要还原成服务端真实文本再比（例如 \"proofread\" 那对引号）
+    const unesc = (s) => s.replace(/\\(.)/g, '$1')
+    const exact = [...serverText.matchAll(/put\("((?:[^"\\]|\\.)*)"/g)].map((m) => unesc(m[1]))
+    const pre = [...serverText.matchAll(/prefix\("((?:[^"\\]|\\.)*)"/g)].map((m) => unesc(m[1]))
+    const suf = [...serverText.matchAll(/suffix\("((?:[^"\\]|\\.)*)"/g)].map((m) => unesc(m[1]))
+    // 明确不翻译的：管理端接口、只有客户端发错类型/参数才会触发、以及 relay 内部 500 详情
+    const IGNORE = [
+      '用户名必须是字符串', '密码必须是字符串', '邮箱必须是字符串', '角色只能是',
+      '状态只能是', '没有这个账户', '续期天数要在', '写账号失败：',
+      'text 必须是非空字符串', 'from 只能是', 'rate 只能是', 'lang 只能是',
+      'since 必须是非负数字', 'PCM 数据长度必须是偶数', '写收件箱失败：', '写音频失败：',
+      'libraryIds 必须是数组',
+    ]
+    const ignore = (raw) => IGNORE.some((i) => raw.startsWith(i))
+    const matched = (raw) => exact.includes(raw) || pre.some((p) => raw.startsWith(p))
+      || suf.some((s) => raw.endsWith(s))
+    const unmapped = [...candidates].filter((raw) => !matched(raw) && !ignore(raw))
+    check('服务端的中文错误串条条有映射', unmapped.length === 0, unmapped.join(' | '))
+
+    // ③ 反向：映射表里的句子必须**还在**服务端源码里（服务端改了措辞就会在这里红，
+    //    否则映射会悄悄失效、非中文用户又看到中文或通用说明）
+    const allServer = srvFiles.map((f) => readFileSync(join(ROOT, f), 'utf-8')).join('\n')
+    const stale = exact.filter((raw) => !allServer.includes(raw))
+    check('映射表里的服务端原话仍然存在', stale.length === 0, stale.join(' | '))
+
+    // ④ 每条映射用到的键，三份资源都得有
+    const keys = new Set([...serverText.matchAll(/R\.string\.([A-Za-z0-9_]+)/g)].map((m) => m[1]))
+    const load = (f) => new Set([...readFileSync(join(resDir, f), 'utf-8')
+      .matchAll(/<string name="([A-Za-z0-9_]+)"/g)].map((m) => m[1]))
+    const zh = load(join('values', 'strings.xml'))
+    const en = load(join('values-en', 'strings.xml'))
+    const pt = load(join('values-pt-rBR', 'strings.xml'))
+    const missing = [...keys].filter((k) => !zh.has(k) || !en.has(k) || !pt.has(k))
+    check('映射用到的键三份资源都有', missing.length === 0, missing.join(','))
+
+    // ⑤ 显示服务端文本的地方都必须过 ServerText（不许再把 optString("error") 直接甩给界面）
+    const acts = ['HomeActivity.java', 'RoomsActivity.java', 'RoomActivity.java', 'SettingsActivity.java']
+    const raw = acts.filter((f) => /optString\("(error|hint)"/.test(readFileSync(join(javaDir, f), 'utf-8')))
+    check('四个页面不再直接显示服务端原文', raw.length === 0, raw.join(','))
+    check('接到服务端文本的地方真的调了 ServerText', acts.every((f) =>
+      /ServerText\.(of|from)\(/.test(readFileSync(join(javaDir, f), 'utf-8'))))
+  })
+
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {
     const targets = [
       ...collectSources(join(ROOT, 'android', 'app', 'src', 'main', 'java'), ['.java']),

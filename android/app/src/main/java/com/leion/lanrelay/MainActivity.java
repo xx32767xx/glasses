@@ -1127,7 +1127,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             Log.w("MainActivity", "眼镜取音失败，改用手机麦克风：" + problem);
             showNote("眼镜取音失败，已切换为手机麦克风：" + problem);
         }
-        MicUploader phone = new MicUploader(client, this);
+        MicUploader phone = new MicUploader(this, client, this);
         phone.setLanguage(sourceLang);
         String problem = phone.start();
         if (problem != null) showNote(problem);

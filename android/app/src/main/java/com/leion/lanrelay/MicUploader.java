@@ -66,6 +66,12 @@ public class MicUploader implements AudioSource {
      */
     private static final long STOP_GRACE_MS = 2000L;
 
+    /**
+     * 用来取文案的 Context（4.59）：本类会产生**给用户看**的句子（麦克风打不开、上传中断…），
+     * 以前这里是写死的中文，英文/巴葡界面上照样冒中文。传的是 Activity（它的 Configuration 已按
+     * 界面语言改过），生命周期与本类相同，不存在泄漏。
+     */
+    private final android.content.Context ctx;
     private final LanClient client;
     private final Listener listener;
 
@@ -94,7 +100,8 @@ public class MicUploader implements AudioSource {
      */
     private volatile String language = "pt-BR";
 
-    public MicUploader(LanClient client, Listener listener) {
+    public MicUploader(android.content.Context ctx, LanClient client, Listener listener) {
+        this.ctx = ctx;
         this.client = client;
         this.listener = listener;
     }
@@ -113,7 +120,7 @@ public class MicUploader implements AudioSource {
 
     @Override
     public String name() {
-        return "手机麦克风";
+        return ctx.getString(R.string.audio_source_phone);
     }
 
     /** 实际用上的采样率（启动后才有意义）。 */
@@ -135,7 +142,7 @@ public class MicUploader implements AudioSource {
         // 这时候再开一个，两块 AudioRecord 抢同一个麦克风，行为不可预期，所以挡掉。
         Thread previous = thread;
         if (previous != null && previous.isAlive()) {
-            return "上一次录音还在收尾，稍等一下再点";
+            return ctx.getString(R.string.up_busy);
         }
         // 1) 挑一个能用的采样率。必须逐个真开一次才算数 ——
         //    getMinBufferSize 返回合法值不代表 AudioRecord 一定能初始化成功。
@@ -147,7 +154,7 @@ public class MicUploader implements AudioSource {
             int buffer = AudioRecord.getMinBufferSize(
                     rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
             if (buffer <= 0) {
-                tried.append(rate).append("(不支持) ");
+                tried.append(rate).append(ctx.getString(R.string.up_rate_unsupported)).append(" ");
                 continue;
             }
             AudioRecord probe = null;
@@ -160,7 +167,7 @@ public class MicUploader implements AudioSource {
                     minBuffer = buffer;
                     break;
                 }
-                tried.append(rate).append("(初始化失败) ");
+                tried.append(rate).append(ctx.getString(R.string.up_rate_failed)).append(" ");
             } catch (Exception error) {
                 tried.append(rate).append("(").append(error.getClass().getSimpleName()).append(") ");
             } finally {
@@ -172,8 +179,7 @@ public class MicUploader implements AudioSource {
             }
         }
         if (candidate == null) {
-            return "麦克风打不开（试过：" + tried.toString().trim() + "）。"
-                    + "检查是否给了录音权限，或这台设备有没有麦克风";
+            return ctx.getString(R.string.up_mic_open_failed, tried.toString().trim());
         }
 
         record = candidate;
@@ -185,8 +191,7 @@ public class MicUploader implements AudioSource {
         running = true;
 
         if (chosen != 16000) {
-            listener.onUploadStatus("注意：这台设备不支持 16 kHz 录音，改用 " + chosen
-                    + " Hz（电脑侧会自动重采样）");
+            listener.onUploadStatus(ctx.getString(R.string.up_rate_fallback, chosen));
         }
 
         thread = new Thread(() -> loop(readBytes, bytesPerChunk), "mic-upload");
@@ -287,7 +292,8 @@ public class MicUploader implements AudioSource {
         } catch (Exception error) {
             running = false;
             releaseRecord();
-            post(() -> listener.onUploadError("开始录音失败：" + describe(error)));
+            post(() -> listener.onUploadError(
+                    ctx.getString(R.string.up_start_failed, describe(error))));
             return;
         }
 
@@ -299,10 +305,10 @@ public class MicUploader implements AudioSource {
                     if (read == AudioRecord.ERROR_DEAD_OBJECT) {
                         // 音频设备被系统收走了（比如别的 App 抢了麦克风）。
                         // 必须 break：负值 continue 会让这个循环 100% 占着 CPU 空转。
-                        throw new IllegalStateException("录音设备已失效（可能被其它应用占用），请重新开始");
+                        throw new IllegalStateException(ctx.getString(R.string.up_device_gone));
                     }
                     if (read == AudioRecord.ERROR_INVALID_OPERATION || read == AudioRecord.ERROR_BAD_VALUE) {
-                        throw new IllegalStateException("录音读取失败（代码 " + read + "）");
+                        throw new IllegalStateException(ctx.getString(R.string.up_read_failed, read));
                     }
                     continue;
                 }
@@ -324,8 +330,8 @@ public class MicUploader implements AudioSource {
                         filled = 0;
                         final long seconds = totalBytes / 2 / sampleRate;
                         final long elapsed = (System.currentTimeMillis() - started) / 1000;
-                        post(() -> listener.onUploadStatus("录音上传中：" + seconds + "s 已上传"
-                                + "（已录 " + elapsed + "s，采样率 " + sampleRate + " Hz）"));
+                        post(() -> listener.onUploadStatus(
+                                ctx.getString(R.string.up_status, seconds, elapsed, sampleRate)));
                     }
                 }
             }
@@ -337,7 +343,7 @@ public class MicUploader implements AudioSource {
         } catch (Exception error) {
             if (running && !stopping) {
                 final String message = describe(error);
-                post(() -> listener.onUploadError("录音中断：" + message));
+                post(() -> listener.onUploadError(ctx.getString(R.string.up_interrupted, message)));
             }
         } finally {
             running = false;
@@ -361,7 +367,7 @@ public class MicUploader implements AudioSource {
                 return false;
             }
             final String message = describe(error);
-            post(() -> listener.onUploadError("上传音频失败：" + message));
+            post(() -> listener.onUploadError(ctx.getString(R.string.up_upload_failed, message)));
             return false;
         }
     }

@@ -171,8 +171,7 @@ public class RoomsActivity extends android.app.Activity {
             ui.post(() -> {
                 createButton.setEnabled(true);
                 if (result == null || !result.optBoolean("ok", false)) {
-                    String reason = failure;
-                    if (result != null) reason = result.optString("error", failure);
+                    String reason = ServerText.from(this, result, failure);
                     hint.setText(getString(R.string.st_create_failed, reason));
                     return;
                 }
@@ -215,8 +214,7 @@ public class RoomsActivity extends android.app.Activity {
             ui.post(() -> {
                 joinButton.setEnabled(true);
                 if (result == null || !result.optBoolean("ok", false)) {
-                    String reason = failure;
-                    if (result != null) reason = result.optString("error", failure);
+                    String reason = ServerText.from(this, result, failure);
                     hint.setText(getString(R.string.st_join_failed, reason));
                     return;
                 }
@@ -249,7 +247,7 @@ public class RoomsActivity extends android.app.Activity {
                 ui.post(new Runnable() {
                     public void run() {
                         if (result == null) {
-                            hint.setText(getString(R.string.st_terms_read_failed, failure));
+                            hint.setText(getString(R.string.st_terms_read_failed, ServerText.of(RoomsActivity.this, failure)));
                             enter(roomId, roomName);
                             return;
                         }
@@ -328,7 +326,7 @@ public class RoomsActivity extends android.app.Activity {
                             hint.setText(getString(R.string.st_terms_frozen, result.optInt("entries", 0)));
                         } else {
                             hint.setText(getString(R.string.st_terms_save_failed,
-                                    failure));
+                                    ServerText.of(RoomsActivity.this, failure)));
                         }
                         enter(roomId, roomName);
                     }

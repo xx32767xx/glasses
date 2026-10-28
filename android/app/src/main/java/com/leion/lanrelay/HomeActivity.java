@@ -213,7 +213,7 @@ public class HomeActivity extends android.app.Activity {
                     return;
                 }
                 if (code == 401) {
-                    String hint = body.optString("hint", body.optString("error", ""));
+                    String hint = ServerText.from(this, body, "");
                     prefs.edit().remove("accountToken").remove("termsUser").remove("roomHost").apply();
                     client.setToken("");
                     showLogin();
@@ -424,7 +424,7 @@ public class HomeActivity extends android.app.Activity {
                             : getString(R.string.st_code_dev, code));
                 } else {
                     setStatus(getString(R.string.st_code_failed,
-                            result == null ? failure : result.optString("error", failure)));
+                            ServerText.from(this, result, failure)));
                 }
             });
         }, "home-code").start();
@@ -538,11 +538,8 @@ public class HomeActivity extends android.app.Activity {
                 debugLine(result == null ? ("exception " + failure) : ("response ok=" + result.optBoolean("ok", false)));
                 Log.i("LeionHome", "login result=" + result + " failure=" + failure);
                 if (result == null || !result.optBoolean("ok", false)) {
-                    String reason = failure;
-                    if (result != null) {
-                        String hint = result.optString("hint", "");
-                        reason = hint.isEmpty() ? result.optString("error", failure) : hint;
-                    }
+                    // 4.58：服务端说的是中文（hint / error），按当前界面语言翻过来再显示
+                    String reason = ServerText.from(this, result, failure);
                     setStatus(getString(isRegister ? R.string.st_register_failed : R.string.st_login_failed, reason));
                     Toast.makeText(this, reason, Toast.LENGTH_LONG).show();
                     debugLine("fail: " + reason);

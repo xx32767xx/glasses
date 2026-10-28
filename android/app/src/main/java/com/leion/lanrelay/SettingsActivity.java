@@ -220,7 +220,7 @@ public class SettingsActivity extends android.app.Activity {
                     text = getString(R.string.proof_unread);
                 }
             } catch (Exception error) {
-                text = getString(R.string.proof_unread_reason, brief(error));
+                text = getString(R.string.proof_unread_reason, ServerText.of(this, brief(error)));
             }
             final String label = text;
             final Boolean read = value;
@@ -249,7 +249,8 @@ public class SettingsActivity extends android.app.Activity {
                 JSONObject inner = unwrap(wrapper);
                 int code = wrapper == null ? 0 : wrapper.optInt("code", 0);
                 if (code >= 400 || inner == null || !inner.optBoolean("ok", false)) {
-                    failure = inner == null ? ("HTTP " + code) : inner.optString("error", getString(R.string.reason_rejected));
+                    failure = inner == null ? ("HTTP " + code)
+                            : ServerText.from(this, inner, getString(R.string.reason_rejected));
                 } else if (inner.has("proofread")) {
                     applied = inner.optBoolean("proofread", next);
                 } else {
@@ -263,7 +264,7 @@ public class SettingsActivity extends android.app.Activity {
             ui.post(() -> {
                 proofreadButton.setEnabled(true);
                 if (result == null) {
-                    status.setText(getString(R.string.st_write_failed, error));
+                    status.setText(getString(R.string.st_write_failed, ServerText.of(this, error)));
                     fetchProofread();
                     return;
                 }

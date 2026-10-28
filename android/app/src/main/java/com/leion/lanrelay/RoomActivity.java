@@ -409,12 +409,12 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 }
                 int status = body.optInt("_status", 0);
                 if (status == 401) {
-                    showKicked(body.optString("hint", body.optString("error", "")));
+                    showKicked(ServerText.from(this, body, ""));
                     return;
                 }
                 if (status >= 400 || body.optBoolean("ok", false) == false) {
                     // 409 = 被规则拒绝（别人锁定中），这是业务状态，不是网络错误
-                    String reason = body.optString("error", "");
+                    String reason = ServerText.from(this, body, "");
                     Toast.makeText(this, reason.isEmpty() ? getString(R.string.st_rejected_http, status) : reason,
                             Toast.LENGTH_LONG).show();
                     if (action.equals("take")) hintLine.setText(reason);
@@ -557,8 +557,10 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
      */
     private void leaveBecauseClosed(String reason) {
         if (isFinishing()) return;
-        String message = getString(R.string.st_meeting_closed)
-                + (reason == null || reason.isEmpty() ? "" : "（" + reason + "）")
+        // 4.58：reason 可能是机器码（WS 推送的 host-left）或服务端中文句子，先翻成当前语言。
+        // 以前这里直接把 reason 拼进括号，用户看到的是"会议已结束（host-left），已退出房间"。
+        String why = ServerText.of(this, reason);
+        String message = (why.isEmpty() ? getString(R.string.st_meeting_closed) : why)
                 + getString(R.string.st_left_room_tail);
         Toast.makeText(this, message, Toast.LENGTH_LONG).show();
         hintLine.setText(message);
@@ -604,7 +606,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 ui.post(new Runnable() {
                     public void run() {
                         if (!failure.isEmpty()) {
-                            Toast.makeText(RoomActivity.this, getString(R.string.toast_leave_error, failure), Toast.LENGTH_SHORT).show();
+                            Toast.makeText(RoomActivity.this,
+                                    getString(R.string.toast_leave_error, ServerText.of(RoomActivity.this, failure)),
+                                    Toast.LENGTH_SHORT).show();
                         }
                         finish();
                     }
@@ -623,7 +627,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             @Override
             public void onUploadError(String message) {
                 ui.post(() -> {
-                    hintLine.setText(getString(R.string.st_upload_error, message));
+                    // 4.59：MicUploader 给的就是完整句子（已按界面语言），这里不再套「上传出错：」
+                    hintLine.setText(message);
                     if (mic != null) {
                         mic.stop();
                         mic = null;
@@ -652,7 +657,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 ui.post(new Runnable() {
                     public void run() {
                         if (result == null || result.optInt("_status", 0) >= 400 || !result.optBoolean("ok", false)) {
-                            String reason = result == null ? error : result.optString("error", error);
+                            String reason = ServerText.from(RoomActivity.this, result, error);
                             hintLine.setText(getString(R.string.st_cant_speak,
                         reason.isEmpty() ? getString(R.string.reason_rejected) : reason));
                             micUploadButton.setEnabled(true);
@@ -702,7 +707,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     }
 
     private void startUpload(MicUploader.Listener listener) {
-        mic = new MicUploader(client, listener);
+        mic = new MicUploader(this, client, listener);
         // 我在会里说的语言（建房/加入时选的）决定识别方向，别再用默认值
         String speak = getSharedPreferences("leion", MODE_PRIVATE).getString("speakLang", "zh-CN");
         if (speak != null && !speak.isEmpty()) {
@@ -746,14 +751,14 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                     // 单会话：被别处登录顶掉时，房间里的轮询是最早能发现的地方
                     // （点按钮才发现的话，用户已经对着"没反应"愣了几秒）
                     if (body != null && body.optInt("httpStatus", 0) == 401) {
-                        showKicked(body.optString("hint", body.optString("error", "")));
+                        showKicked(ServerText.from(this, body, ""));
                         return;
                     }
                     // 会议已结束（发起者退出）：WS 那条路会立刻收到 closed，
                     // 这里是兜底 —— WS 断了的时候靠轮询也能发现，不能把人留在空屋里。
                     if (body != null && (body.optBoolean("closed", false)
                             || body.optInt("httpStatus", 0) == 410)) {
-                        leaveBecauseClosed(body.optString("error", getString(R.string.st_meeting_closed)));
+                        leaveBecauseClosed(ServerText.from(this, body, getString(R.string.st_meeting_closed)));
                         return;
                     }
                     if (body != null && body.optBoolean("ok", false)) {
@@ -932,7 +937,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             final String error = failure;
             ui.post(() -> {
                 if (body == null || !body.optBoolean("ok", false)) {
-                    String reason = body == null ? error : body.optString("error", error);
+                    String reason = ServerText.from(this, body, error);
                     Toast.makeText(this, getString(R.string.st_remove_failed, reason), Toast.LENGTH_LONG).show();
                     return;
                 }
