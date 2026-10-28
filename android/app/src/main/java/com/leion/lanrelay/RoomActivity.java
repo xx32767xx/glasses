@@ -51,6 +51,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     private Runnable pendingAfterPermission;
     private Button micUploadButton;
     private long lastHeartbeat = 0L;
+    /** 轮询计数（4.46）：用来"每 5 轮"做一次房间状态兜底检查。 */
+    private int pollTicks = 0;
+
     /** 发言权推送通道（4.35）。它只让"谁在说话"更快到达；断了就靠轮询。 */
     private FloorSocket floorSocket;
     private boolean wsOnline = false;
@@ -293,6 +296,31 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     }
 
     /**
+     * 兜底：问一次"这场还在吗"（4.46）。
+     *
+     * <p>为什么要有：WS 的 `closed` 推送需要**新服务端**；老服务端不会推，而
+     * `/floor` 对已结束的会议照样返回状态 —— 于是屋里的人一脸茫然地留着。
+     * 房间详情从 4.46 起带 `closed`，这是老服务端也能用的唯一信号。
+     */
+    private void checkRoomStillOpen() {
+        new Thread(() -> {
+            JSONObject info = null;
+            try {
+                info = client.orgRoomInfo(roomKey);
+            } catch (Exception ignored) {
+                return;                       // 网络抖动不算"散会"
+            }
+            if (info == null) return;
+            JSONObject room = info.optJSONObject("room");
+            boolean closed = (room != null && room.optBoolean("closed", false))
+                    || info.optBoolean("closed", false);
+            if (closed) {
+                ui.post(() -> leaveBecauseClosed("发起者已结束这场会议"));
+            }
+        }, "room-still-open").start();
+    }
+
+    /**
      * 会议结束了（发起者退出）：提示原因并退出房间（4.44）。
      *
      * <p>以前发起者一退，服务端把房间标成 closed，但屋里的人什么都不知道 ——
@@ -500,6 +528,11 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 }
                 final JSONObject body = state;
                 ui.post(() -> {
+                    // 兜底：每 5 轮问一次"这场还在不在"（4.46）。
+                    // 为什么需要它：老服务端的 /floor 对已结束的会议照样返回状态，
+                    // 客户端没有任何信号可用 —— 而房间详情里有 closed 字段。
+                    pollTicks += 1;
+                    if (pollTicks % 5 == 0) checkRoomStillOpen();
                     // 单会话：被别处登录顶掉时，房间里的轮询是最早能发现的地方
                     // （点按钮才发现的话，用户已经对着"没反应"愣了几秒）
                     if (body != null && body.optInt("httpStatus", 0) == 401) {
@@ -622,8 +655,17 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
 
     @Override
     public void onHello(String device, int cols, int lineBudget) {
-        // 手机-only：不需要设备名；只显示连接状态
-        ui.post(() -> statusLine.setText("已连接 · " + cols + "×" + lineBudget));
+        // 手机-only：不需要设备名；只显示连接状态。
+        // 4.46：服务端版本老的时候要**说出来** —— 老服务端不会推"会议结束"，
+        // 用户会以为是"点了没反应"，而不是"服务器没更新"。
+        ui.post(() -> {
+            String base = "已连接 · " + cols + "×" + lineBudget;
+            if (!client.hasFeature("room-closed-push")) {
+                statusLine.setText(base + " · ⚠️ 服务端版本较旧：会议结束时不会主动通知");
+            } else {
+                statusLine.setText(base);
+            }
+        });
     }
 
     @Override

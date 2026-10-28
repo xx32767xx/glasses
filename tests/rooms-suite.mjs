@@ -2,7 +2,7 @@
 import { mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createRoom, isRoomClosed, joinRoom, leaveRoom, listMembers, roomByCode, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
+import { createRoom, isRoomClosed, joinRoom, leaveRoom, listMembers, roomByCode, roomLibraries, setRoomLibraries, roomById } from '../lib/rooms.mjs'
 
 export async function runRoomsSuite({ it, check }) {
   const dir = mkdtempSync(join(tmpdir(), 'leion-rooms-'))
@@ -62,5 +62,20 @@ export async function runRoomsSuite({ it, check }) {
     const rejoin = joinRoom(dir, { code: '777777', username: 'dev1' })
     check('结束后凭码进不来', rejoin.ok === false, JSON.stringify(rejoin))
   })
+  await it('房间详情带 closed：散会后 byId 也说得清（4.46）', () => {
+    const room = createRoom(dir, { name: '散会测试', host: 'boss', code: '888888' }).room
+    const before = roomById(dir, room.id)
+    check('新建时 closed=false', before !== null && before.closed === false, JSON.stringify(before))
+
+    leaveRoom(dir, { roomId: room.id, username: 'boss' })
+    const after = roomById(dir, room.id)
+    check('发起者退出后 byId 仍找得到这场（但不该再让人进）',
+      after !== null, JSON.stringify(after))
+    check('closed=true（客户端据此把屋里的人请出去）',
+      after.closed === true, JSON.stringify(after))
+    check('按邀请码就找不到了（roomByCode 只认未结束的）',
+      roomByCode(dir, '888888') === null, 'byCode 应返回 null')
+  })
+
   rmSync(dir, { recursive: true, force: true })
 }

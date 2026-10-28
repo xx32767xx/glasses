@@ -68,8 +68,10 @@ android {
     //       发起者退出 = 整场结束 → 服务端主动推 closed 并断开（轮询兜底判 410）。见 docs/21 §4.44。
     // 4.45：「被别处登录顶下线」改走推送 —— /ws?session=1 会话通道，服务端吊销旧 token 的那一刻
     //       就通知；SessionWatch 轮询保留，但推送在线时放宽到 60 秒。见 docs/21 §4.45。
-        versionCode = 74
-        versionName = "4.45"
+    // 4.46：散会通知的兜底 —— 房间详情带 closed，房间页每 5 轮查一次；服务端能力标记缺失时
+    //       在状态行直说「服务端版本较旧」。见 docs/21 §4.46。
+        versionCode = 75
+        versionName = "4.46"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

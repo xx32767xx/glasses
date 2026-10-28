@@ -84,6 +84,19 @@ public class LanClient {
      * 电脑据此决定"下一场同传读哪张表"。空 → 电脑侧回落 `default`。
      */
     private volatile String user = "";
+
+    /**
+     * `/hello` 报上来的能力标记（4.46）。
+     *
+     * <p>用来判断"服务端是不是新版本"：老服务端不会主动推"会议结束"，
+     * 界面据此可以直说一句"服务端版本较旧"，而不是让用户对着"没反应"发愣。
+     */
+    private volatile java.util.Set<String> features = new java.util.HashSet<>();
+
+    /** 服务端是否支持某项能力（见 relay 的 RELAY_FEATURES）。 */
+    public boolean hasFeature(String name) {
+        return features.contains(name);
+    }
     /**
      * 账户 token（登录/注册后拿到）。它的用途只有一个：说明"我是谁"。
      *
@@ -549,6 +562,17 @@ public class LanClient {
             int cols = hello.optInt("cols", 40);
             int lineBudget = hello.optInt("lineBudget", 3);
             seq = hello.optLong("seq", 0);
+            // 记住服务端能力（4.46）：老服务端不会推"会议结束"，界面得能说清这一点，
+            // 而不是让用户对着"点了没反应"发愣。
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            org.json.JSONArray featureList = hello.optJSONArray("features");
+            if (featureList != null) {
+                for (int i = 0; i < featureList.length(); i++) {
+                    String item = featureList.optString(i, "");
+                    if (!item.isEmpty()) seen.add(item);
+                }
+            }
+            features = seen;
             listener.onHello(hello.optString("device", "?"), cols, lineBudget);
             listener.onStatus("已连接：" + hello.optString("device", "?")
                     + " · " + cols + " 列 × " + lineBudget + " 行");

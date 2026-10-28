@@ -67,7 +67,7 @@ const UTTERANCE_SWEEP_MS = 60 * 60 * 1000
  * **电脑上跑的还是旧版进程**（没有 `/auth/*` 端点）。与其让人对着 404 猜，
  * 不如让这一端把自己的能力报出来，手机据此说人话。
  */
-export const RELAY_FEATURES = ['hello', 'say', 'audio', 'frame', 'status', 'diag', 'lint', 'terms', 'settings', 'auth', 'org', 'floor-ws']
+export const RELAY_FEATURES = ['hello', 'say', 'audio', 'frame', 'status', 'diag', 'lint', 'terms', 'settings', 'auth', 'org', 'floor-ws', 'frame-ws', 'room-closed-push', 'session-push']
 
 /**
  * 默认数据目录：和 scripts/harness-side.mjs 指向同一对文件，两边靠它对接。

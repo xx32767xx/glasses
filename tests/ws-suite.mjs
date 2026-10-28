@@ -297,6 +297,12 @@ export async function runWsSuite({ it, check }) {
       const floorBody = await floor.json()
       check('GET /floor 对已结束的会议返回 410', floor.status === 410, String(floor.status))
       check('并且明确说 closed', floorBody.closed === true, JSON.stringify(floorBody))
+
+      // 客户端兜底走的是房间详情（4.46）：那里必须能看出"这场已经散了"
+      const info = await get(`/org/rooms/${room.id}`, bobToken)
+      const infoBody = await info.json()
+      check('GET /org/rooms/<id> 带 closed=true',
+        infoBody.room !== undefined && infoBody.room.closed === true, JSON.stringify(infoBody))
     })
 
     await it('认证不过的一律连不上（密钥错 / token 错 / 房间不存在）', async () => {
