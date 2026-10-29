@@ -21,15 +21,16 @@
  * ⚠️ 跑之前**先停 relay**。带着活的 writer 修库，会把"坏"变成"更坏"。
  */
 
-import { copyFileSync, existsSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
+import { copyFileSync, existsSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { openDb } from '../lib/db.mjs'
 
 const DEFAULT_DATA_DIRS = ['/var/lib/leion/live', '/var/lib/leion/test']
 
 /** 解析参数：只要两个开关 + 一个值，手写比引依赖清楚。 */
 export function parseArgs(argv) {
-  const out = { fix: false, dataDirs: [] }
+  const out = { fix: false, dataDirs: [], scan: null }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--fix') out.fix = true
@@ -37,6 +38,11 @@ export function parseArgs(argv) {
       const value = argv[i + 1]
       if (value === undefined) throw new Error('--data-dir 需要一个路径')
       out.dataDirs.push(value)
+      i += 1
+    } else if (arg === '--scan') {
+      const value = argv[i + 1]
+      if (value === undefined) throw new Error('--scan 需要一个根目录')
+      out.scan = value
       i += 1
     } else if (arg === '--help' || arg === '-h') out.help = true
     else throw new Error(`看不懂的参数：${arg}`)
@@ -90,19 +96,131 @@ function rebuild(file) {
     db = new DatabaseSync(file)
     db.exec(`VACUUM INTO '${built.replace(/'/g, "''")}'`)
   } catch (error) {
-    return { ok: false, error: String(error?.message ?? error) }
+    rmSync(built, { force: true })
+    return { ok: false, error: String(error?.message ?? error), strategy: 'vacuum' }
   } finally {
     if (db !== null) {
       try { db.close() } catch { /* ignore */ }
     }
   }
-  if (!existsSync(built)) return { ok: false, error: 'VACUUM INTO 没有产出文件' }
+  if (!existsSync(built)) return { ok: false, error: 'VACUUM INTO 没有产出文件', strategy: 'vacuum' }
   const verify = inspectFile(built)
   if (!verify.ok) {
     rmSync(built, { force: true })
-    return { ok: false, error: '重建出来的库自检也没过（页面里已经是坏数据）' }
+    return { ok: false, error: '重建出来的库自检也没过（页面里已经是坏数据）', strategy: 'vacuum' }
   }
-  return { ok: true, built }
+  return { ok: true, built, strategy: 'vacuum' }
+}
+
+/**
+ * 看文件本身长什么样：SQLite 头、页尺寸、页数。
+ *
+ * <p>为什么要看：`database disk image is malformed` 有两种完全不同的病——
+ * <ul>
+ *   <li><b>头都不对</b>（前 16 字节不是 `SQLite format 3`）→ 这不是库，是别的东西，
+ *       或者搬迁时被改写过（tar 文本模式、某些同步盘）。</li>
+ *   <li><b>头对、页坏了</b> → 数据大部分还在，逐表抢救通常能捞回来七七八八。</li>
+ * </ul>
+ */
+export function diagnoseFile(file) {
+  if (!existsSync(file)) return { ok: false, reason: '文件不存在' }
+  const size = statSync(file).size
+  const head = readFileSync(file).subarray(0, 32)
+  const header = head.subarray(0, 16).toString('latin1')
+  const magic = header.startsWith('SQLite format 3')
+  // 第 16~17 字节是页尺寸（大端）；值 1 表示 65536
+  let pageSize = head.length >= 18 ? (head[16] << 8) | head[17] : 0
+  if (pageSize === 1) pageSize = 65536
+  return {
+    ok: magic,
+    magic,
+    size,
+    pageSize,
+    pages: magic && pageSize > 0 ? Math.round(size / pageSize) : 0,
+    reason: magic ? '' : `前 16 字节不是 SQLite 头（实际是 ${JSON.stringify(header)}）`,
+  }
+}
+
+/**
+ * 逐表抢救：`VACUUM INTO` 走不通时的最后一招。
+ *
+ * <p>为什么能救：`integrity_check` 失败往往只是某几页坏了，而其它页的行照样读得出来。
+ * 这里按表 `SELECT *`，读得出一条算一条，写进一个**结构全新**的库里；
+ * 哪张表读不动就跳过并报出来 —— 至少能知道"丢了哪张表"。
+ *
+ * <p>等价于 sqlite3 的 `.recover`，但不需要 CLI（服务器上不一定装了 sqlite3）。
+ */
+export function salvageToNewDb(file, target) {
+  const created = openFresh(target)
+  if (created.ok !== true) return { ok: false, error: created.error }
+  const rebuilt = target
+  let source = null
+  const report = { tables: [], failed: [], rows: 0 }
+  try {
+    source = new DatabaseSync(file)
+    const tables = source.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all()
+    for (const row of tables) {
+      const name = String(row.name)
+      let rows = []
+      try {
+        rows = source.prepare(`SELECT * FROM "${name.replace(/"/g, '""')}"`).all()
+      } catch (error) {
+        report.failed.push({ table: name, error: String(error?.message ?? error) })
+        continue
+      }
+      const inserted = insertRows(target, name, rows)
+      report.tables.push({ table: name, rows: inserted.ok ? rows.length : 0, error: inserted.error })
+      report.rows += inserted.ok ? rows.length : 0
+    }
+  } catch (error) {
+    // 连 sqlite_master 都读不动：头对但第一页就烂了
+    return { ok: false, error: String(error?.message ?? error), built: rebuilt, report }
+  } finally {
+    if (source !== null) {
+      try { source.close() } catch { /* ignore */ }
+    }
+  }
+  // 哪怕有表读不动，只要救回了行就算可用（人至少知道丢了哪张表）
+  return { ok: report.failed.length === 0, built: rebuilt, report }
+}
+
+/** 建一个空的新库（用项目自己的 openDb，顺带把表结构建全）。 */
+function openFresh(target) {
+  try {
+    openDb(target).close()
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: String(error?.message ?? error) }
+  }
+}
+
+/** 把一批行塞进新库；列名以目标表为准（源行多了/少了都不至于整表失败）。 */
+function insertRows(target, table, rows) {
+  if (rows.length === 0) return { ok: true }
+  const db = new DatabaseSync(target)
+  try {
+    const cols = db.prepare(`PRAGMA table_info("${table.replace(/"/g, '""')}")`).all().map((c) => c.name)
+    if (cols.length === 0) return { ok: false, error: `目标库里没有表 ${table}` }
+    const usable = cols.filter((name) => Object.prototype.hasOwnProperty.call(rows[0], name))
+    if (usable.length === 0) return { ok: false, error: `${table} 没有可对应的列` }
+    const sql = `INSERT OR REPLACE INTO "${table.replace(/"/g, '""')}" (${usable.map((n) => `"${n}"`).join(',')})`
+      + ` VALUES (${usable.map(() => '?').join(',')})`
+    const statement = db.prepare(sql)
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const row of rows) statement.run(...usable.map((name) => row[name] ?? null))
+      db.exec('COMMIT')
+    } catch (error) {
+      try { db.exec('ROLLBACK') } catch { /* ignore */ }
+      return { ok: false, error: String(error?.message ?? error) }
+    }
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: String(error?.message ?? error) }
+  } finally {
+    db.close()
+  }
 }
 
 function backup(file) {
@@ -156,6 +274,10 @@ export function checkOne(dataDir, options) {
     return { dir, verdict: 'OK' }
   }
 
+  const diag = diagnoseFile(file)
+  console.log(`  · 文件：${kb(diag.size)}${diag.magic
+    ? `，SQLite 头正常，页尺寸 ${diag.pageSize}×${diag.pages} 页`
+    : `，**不是 SQLite 文件**${diag.reason ? `：${diag.reason}` : ''}`}`)
   console.log(`  ✗ 自检没过：${result.error || result.quick.join('; ') || result.full.join('; ')}`)
   const withoutWal = stamp(`${file}-wal`) === null ? null : inspectFile(file, { ignoreWal: true })
   if (withoutWal !== null && withoutWal.ok) {
@@ -187,8 +309,27 @@ export function checkOne(dataDir, options) {
   const backups = backup(file)
   console.log(`     已备份 ${backups.length} 个文件`)
   const rebuilt = rebuild(file)
-  if (!rebuilt.ok) {
-    console.log(`     VACUUM INTO 失败：${rebuilt.error}`)
+  let built = rebuilt.ok ? rebuilt.built : null
+  if (built === null) {
+    console.log(`     VACUUM INTO 失败（${rebuilt.error}），改逐表抢救…`)
+    const salvaged = salvageToNewDb(file, `${file}.salvaged-${Date.now()}`)
+    if (salvaged.ok === true || (salvaged.report !== undefined && salvaged.report.rows > 0)) {
+      const report = salvaged.report ?? { tables: [], failed: [], rows: 0 }
+      console.log(`     抢救到 ${report.rows} 行：${report.tables.map((one) =>
+        `${one.table}=${one.rows}`).join(' ') || '(没有表)'}`)
+      if (report.failed.length > 0) {
+        console.log(`     读不动的表：${report.failed.map((one) => one.table).join(', ')}`)
+      }
+      built = salvaged.built ?? null
+    } else {
+      const failed = salvaged.report?.failed ?? []
+      console.log(`     逐表抢救也不行：${salvaged.error ?? '数据已不可读'}`)
+      if (failed.length > 0) {
+        console.log(`     读不动的表：${failed.map((one) => `${one.table}（${one.error}）`).join('；')}`)
+      }
+    }
+  }
+  if (built === null) {
     console.log('     最后手段（sqlite3 CLI 的 .recover，能捞出坏页里的行）：')
     console.log(`       sqlite3 ${file} ".recover" | sqlite3 ${file}.recovered`)
     console.log(`       mv ${file}.recovered ${file}`)
@@ -198,9 +339,43 @@ export function checkOne(dataDir, options) {
     const source = `${file}${suffix}`
     if (existsSync(source)) renameSync(source, `${source}.broken-${Date.now()}`)
   }
-  renameSync(rebuilt.built, file)
+  renameSync(built, file)
   console.log('     ✓ 已用 VACUUM INTO 重建并替换（坏文件留在 *.broken-* 里，别急着删）')
   return { dir, verdict: 'FIXED_REBUILT' }
+}
+
+/**
+ * 在一个根目录下找 `leion.db`。
+ *
+ * <p>用途：新机器上 `/var/lib/leion/live` 是空的时候，十有八九是 relay 带的
+ * `--data-dir` 跟你以为的不一样（或根本没起过）。先把它找出来再说。
+ */
+function scanFor(root) {
+  const hits = []
+  const walk = (dir, depth) => {
+    if (depth > 5) return
+    let entries = []
+    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'proc') continue
+        walk(full, depth + 1)
+      } else if (entry.name.endsWith('.db')) {
+        const diag = diagnoseFile(full)
+        hits.push({ file: full, size: diag.size, magic: diag.magic })
+      }
+    }
+  }
+  walk(resolve(root), 0)
+  console.log(`\n在 ${resolve(root)} 下找到 ${hits.length} 个 .db：`)
+  for (const hit of hits) {
+    console.log(`  ${hit.magic ? '✓' : '✗'} ${hit.file}  ${kb(hit.size)}${hit.magic ? '' : '（不是 SQLite）'}`)
+  }
+  if (hits.length === 0) {
+    console.log('  （一个都没有：说明这台机器上还没跑过 relay，或数据目录在别的盘）')
+  }
+  return 0
 }
 
 function main() {
@@ -209,6 +384,7 @@ function main() {
     console.log('node scripts/doctor-db.mjs [--fix] [--data-dir <dir>]...')
     return 0
   }
+  if (options.scan !== null) return scanFor(options.scan)
   console.log('SQLite 体检 /var/lib/leion 下的数据目录（先停 relay 再跑，尤其带 --fix）')
   const results = options.dataDirs.map((dir) => checkOne(dir, options))
   console.log('')
