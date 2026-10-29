@@ -24,6 +24,13 @@ export async function runRoomsSuite({ it, check }) {
       // 两场会都有人持麦，speaker 对不上 → 不猜
       takeFloor(dir, { roomId: other.room.id, username: 'bob', now })
       check('两场都在说、speaker 又对不上 → 不记', roomForFrame(dir, '').roomId === null)
+      // 将来协议：帧里带 roomId 就不用推断（并发场景下也精确）
+      check('帧带 roomId 时直接归它',
+        roomForFrame(dir, '', room.room.id).roomId === room.room.id
+        && roomForFrame(dir, '', room.room.id).reason === 'frame-room-id')
+      check('帧带假 roomId 时当没带', roomForFrame(dir, '', 'room-fake').roomId === null)
+      check('已结束的会不能被帧指定归属',
+        roomForFrame(dir, '', 'room-closed-xyz').roomId === null)
       check('speaker 是某场的持麦者 → 仍能定位', roomForFrame(dir, 'bob').roomId === other.room.id)
 
       // 落库 + 读回

@@ -671,7 +671,8 @@ export async function startRelay(rawOptions = {}) {
     const text = String(frame.text ?? '').trim()
     const source = String(frame.source ?? '').trim()
     if (text === '' && source === '') return
-    const attribution = roomForFrame(options.dataDir, frame.speaker ?? '')
+    // 帧里若带 roomId（未来协议）就不用推断；不带才走持麦者推断
+    const attribution = roomForFrame(options.dataDir, frame.speaker ?? '', frame.roomId ?? '')
     if (attribution.roomId === null) {
       debug(`🗂 定稿帧没记：无法确定属于哪场会议（${attribution.reason}）`)
       return
