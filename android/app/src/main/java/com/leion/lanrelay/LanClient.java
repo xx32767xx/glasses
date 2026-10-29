@@ -83,6 +83,8 @@ public class LanClient {
      * 热词表的用户名（docs/15 §8.3）。握手时随 `/hello?user=` 报给电脑，
      * 电脑据此决定"下一场同传读哪张表"。空 → 电脑侧回落 `default`。
      */
+    /** 当前房间（空 = 不限定，与旧版行为一致）（4.74） */
+    private volatile String roomId = "";
     private volatile String user = "";
 
     /**
@@ -134,6 +136,16 @@ public class LanClient {
         this.baseUrl = trimmed;
         this.secret = secret == null ? "" : secret.trim();
         this.listener = listener;
+    }
+
+    /**
+     * 告诉轮询"我在哪个房间"（4.74）。
+     *
+     * <p>带上之后，{@code /frame?room=} 只返回这个房间的字幕；
+     * 多场会并发时就不会互相覆盖（不带时行为与旧版一致）。
+     */
+    public void setRoom(String roomId) {
+        this.roomId = roomId == null ? "" : roomId.trim();
     }
 
     public void start() {
@@ -195,6 +207,10 @@ public class LanClient {
     public JSONObject sendAudio(byte[] pcm, int sampleRate, boolean fresh, String lang)
             throws IOException, org.json.JSONException {
         StringBuilder path = new StringBuilder("/audio?rate=").append(sampleRate);
+        // 4.74：带上房间号 —— 归属最强的线索（字幕就是这段音频转出来的）
+        if (!roomId.isEmpty()) {
+            path.append("&room=").append(java.net.URLEncoder.encode(roomId, "UTF-8"));
+        }
         if (fresh) {
             path.append("&fresh=1");
         }
@@ -628,7 +644,9 @@ public class LanClient {
         // 2) 长轮询：没有新帧时服务端会把请求挂住（约 25 秒），所以这不是忙等
         while (running) {
             try {
-                JSONObject response = request("/frame?since=" + seq, "GET", null, 35000);
+                String frameUrl = "/frame?since=" + seq
+                        + (roomId.isEmpty() ? "" : "&room=" + java.net.URLEncoder.encode(roomId, "UTF-8"));
+                JSONObject response = request(frameUrl, "GET", null, 35000);
                 long serverSeq = response.optLong("seq", seq);
                 // 序号重置（转发进程重启过）：把本地序号拉回服务端的值。
                 // 不做这一步的话，我们记的序号会永远大于服务端，之后每一轮都只能收到

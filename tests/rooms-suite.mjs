@@ -2,12 +2,50 @@
 import { mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createRoom, isRoomClosed, joinRoom, leaveRoom, listMembers, roomByCode, roomForFrame, roomLibraries, listRoomTranscript, setRoomLibraries, roomById, removeMember } from '../lib/rooms.mjs'
+import { AUDIO_ROOM_TTL_MS, createRoom, isRoomClosed, joinRoom, leaveRoom, listMembers, roomByCode, roomForFrame, roomLibraries, listRoomTranscript, resolveFrameRoom, setRoomLibraries, roomById, removeMember } from '../lib/rooms.mjs'
 import { appendUtterance } from '../lib/db.mjs'
 import { floorState, takeFloor } from '../lib/floor.mjs'
 
 export async function runRoomsSuite({ it, check }) {
   const dir = mkdtempSync(join(tmpdir(), 'leion-rooms-'))
+
+  await it('4.74：并发归属 —— 帧 roomId > 刚上传音频的房间 > 持麦者推断', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'conc-'))
+    try {
+      const now = Date.now()
+      const a = createRoom(dir, { name: '甲会', host: 'alice', now })
+      const b = createRoom(dir, { name: '乙会', host: 'bob', now })
+      // 两场会都有人持麦：没有线索时推不出来
+      takeFloor(dir, { roomId: a.room.id, username: 'alice', now })
+      takeFloor(dir, { roomId: b.room.id, username: 'bob', now })
+      check('没有线索 → 不归属', resolveFrameRoom(dir, { now }).roomId === null)
+
+      // ① 帧里带 roomId：最硬
+      check('帧 roomId 优先',
+        resolveFrameRoom(dir, { now, frameRoomId: b.room.id }).reason === 'frame-room-id')
+      // ② 刚往甲会上传过音频（30 秒内）→ 归甲会
+      const audio = resolveFrameRoom(dir, {
+        now, audioRoomId: a.room.id, audioAt: now - 2000,
+      })
+      check('刚上传音频的房间优先于推断',
+        audio.roomId === a.room.id && audio.reason === 'recent-audio-room', JSON.stringify(audio))
+      // ③ 音频线索过期 → 回到推断（两场都在说 → 不归属）
+      check('音频线索过期就不再用',
+        resolveFrameRoom(dir, { now, audioRoomId: a.room.id, audioAt: now - AUDIO_ROOM_TTL_MS - 1 }).roomId === null)
+      // ④ 音频房间已结束 → 也不能用
+      leaveRoom(dir, { roomId: a.room.id, username: 'alice', now })
+      // 甲会已结束：音频线索不能再指向它（退回推断，此时只剩乙会）
+      const afterClose = resolveFrameRoom(dir, { now, audioRoomId: a.room.id, audioAt: now })
+      check('已结束的房间不能被音频线索指认',
+        afterClose.reason !== 'recent-audio-room' && afterClose.roomId === b.room.id,
+        JSON.stringify(afterClose))
+      // ⑤ 唯一持麦者时，speaker 对不上的兜底仍然有效
+      check('只剩一场有人持麦 → 兜底归它',
+        resolveFrameRoom(dir, { now, speaker: '' }).roomId === b.room.id)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 
   await it('4.73：定稿帧落库 —— 归属靠持麦者推断，推不出来宁可不记', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'utt-'))

@@ -47,7 +47,7 @@ import { handleOrg } from './org-api.mjs'
 import { createWsHub } from '../lib/ws-hub.mjs'
 import { publishMeetingTerms, readCurrentMeeting } from '../lib/meeting-terms.mjs'
 import { loadSelection } from './org-api.mjs'
-import { roomForFrame } from '../lib/rooms.mjs'
+import { resolveFrameRoom } from '../lib/rooms.mjs'
 import {
   TERMS_LIMITS, getTable, loadTerms, mergePending, normalizeUser, putTable, saveActiveUser, saveTerms, validateTerms,
 } from '../lib/terms.mjs'
@@ -538,6 +538,13 @@ export async function startRelay(rawOptions = {}) {
     seq: 0,
     /** 最近一帧 */
     lastFrame: null,
+    /** 按房间存的帧（4.74）：多场会并发时互不覆盖。roomId -> {seq, frame} */
+    framesByRoom: new Map(),
+    /** 每个房间自己的序号（手机只关心自己那条流）。 */
+    seqByRoom: new Map(),
+    /** 最近一次往哪个房间上传了音频（归属的重要线索）。 */
+    audioRoomId: '',
+    audioRoomAt: 0,
     /** 最近的帧 JSON（供 /hello、/status 用） */
     hello: null,
     /** 长轮询里挂着的等待者 */
@@ -637,7 +644,21 @@ export async function startRelay(rawOptions = {}) {
     if (frame === null || typeof frame !== 'object' || !Array.isArray(frame.lines)) return
     state.seq += 1
     state.frameCount += 1
+    // 归属解析（4.74）：帧里带 roomId → 刚上传音频的房间 → 持麦者推断。
+    // 解析不出来时 roomId 为 null：帧照样广播（老客户端靠全局流），只是不进任何房间的桶。
+    const attribution = resolveFrameRoom(options.dataDir, {
+      frameRoomId: frame.roomId ?? '',
+      audioRoomId: state.audioRoomId,
+      audioAt: state.audioRoomAt,
+      speaker: frame.speaker ?? '',
+    })
+    if (attribution.roomId !== null) frame.roomId = attribution.roomId
     state.lastFrame = frame
+    if (attribution.roomId !== null) {
+      const roomSeq = (state.seqByRoom.get(attribution.roomId) ?? 0) + 1
+      state.seqByRoom.set(attribution.roomId, roomSeq)
+      state.framesByRoom.set(attribution.roomId, { seq: roomSeq, frame })
+    }
     // 调试：字幕总线一变就报一行 —— 手机应该马上能看到这一帧。
     //
     // **一定要标出"增量还是定稿"**：这两种帧的文字看起来都正常，
@@ -648,11 +669,15 @@ export async function startRelay(rawOptions = {}) {
     debug(`📺 字幕已更新（第 ${state.seq} 帧·${frame.partial === true ? '增量' : '定稿'}）`
       + `[${frame.speaker ?? '?'} / ${frame.lang ?? '?'}] ${frame.text ?? ''}`)
     lintFrame(frame)
-    recordUtteranceIfFinal(frame)
+    recordUtteranceIfFinal(frame, attribution)
     notifyWaiters()
     // 4.43：字幕也走 WS（长轮询留着兜底）。seq 一起带上，客户端能判断是不是新的一帧。
     if (wsHub !== null) {
-      wsHub.broadcastFrame({ type: 'frame', seq: state.seq, changed: true, frame })
+      wsHub.broadcastFrame({
+        type: 'frame', seq: state.seq, changed: true, frame,
+        roomId: attribution.roomId ?? null,
+        roomSeq: attribution.roomId === null ? null : (state.seqByRoom.get(attribution.roomId) ?? null),
+      })
     }
   }
 
@@ -666,13 +691,13 @@ export async function startRelay(rawOptions = {}) {
    * <p>归属靠 {@link roomForFrame} 的推断，推不出来就**不记**并打一行 debug ——
    * 把字幕写进错的会议，比少一条难查得多。
    */
-  function recordUtteranceIfFinal(frame) {
+  function recordUtteranceIfFinal(frame, attribution) {
     if (frame.partial === true) return
     const text = String(frame.text ?? '').trim()
     const source = String(frame.source ?? '').trim()
     if (text === '' && source === '') return
     // 帧里若带 roomId（未来协议）就不用推断；不带才走持麦者推断
-    const attribution = roomForFrame(options.dataDir, frame.speaker ?? '', frame.roomId ?? '')
+    // 归属由 pollBus 统一解析（帧 roomId → 刚上传音频的房间 → 持麦者推断），这里直接用
     if (attribution.roomId === null) {
       debug(`🗂 定稿帧没记：无法确定属于哪场会议（${attribution.reason}）`)
       return
@@ -1343,6 +1368,11 @@ export async function startRelay(rawOptions = {}) {
 
       // ── GET /frame（长轮询）───────────────────────────────────────────────
       if (request.method === 'GET' && url.pathname === '/frame') {
+        // 4.74：?room=<id> 只取那个房间的帧（多场会并发时互不覆盖）。
+        // 不带 room 参数时行为不变（旧 APK 照样能用）。
+        const roomParam = String(url.searchParams.get('room') ?? '').trim()
+        const roomFrame = roomParam === '' ? null : state.framesByRoom.get(roomParam)
+        const roomSeq = roomParam === '' ? 0 : (state.seqByRoom.get(roomParam) ?? 0)
         const since = Number(url.searchParams.get('since') ?? '0')
         if (!Number.isFinite(since) || since < 0) {
           send(response, 400, { ok: false, error: 'since 必须是非负数字' })
@@ -1357,21 +1387,24 @@ export async function startRelay(rawOptions = {}) {
         // （这个坑真踩到了：电脑侧字幕明明在写，手机上却永远是空的。）
         //
         // 所以这里主动告诉它"序号重置了"，并把当前帧一并给它，让它立刻恢复。
-        if (since > state.seq) {
-          debug(`↩ 手机的序号(${since}) 比服务端(${state.seq}) 大 —— 转发进程重启过，已让它复位`)
+        // 分房间时用该房间自己的序号与帧；没带 room 参数就还是全局那一套
+        const curSeq = roomParam === '' ? state.seq : roomSeq
+        const curFrame = roomParam === '' ? state.lastFrame : (roomFrame === undefined ? null : roomFrame.frame)
+        if (since > curSeq) {
+          debug(`↩ 手机的序号(${since}) 比服务端(${curSeq}) 大 —— 转发进程重启过，已让它复位`)
           send(response, 200, {
             ok: true,
             reset: true,
-            changed: state.lastFrame !== null,
-            seq: state.seq,
-            frame: state.lastFrame,
+            changed: curFrame !== null,
+            seq: curSeq,
+            frame: curFrame,
             ...info(),
           })
           return
         }
-        if (state.seq > since) {
-          debug(`➡ 手机取字幕（since=${since}），立即给第 ${state.seq} 帧`)
-          send(response, 200, { ok: true, changed: true, seq: state.seq, frame: state.lastFrame, ...info() })
+        if (curSeq > since) {
+          debug(`➡ 手机取字幕（since=${since}），立即给第 ${curSeq} 帧`)
+          send(response, 200, { ok: true, changed: true, seq: curSeq, frame: curFrame, ...info() })
           return
         }
         // 挂住，等新帧或超时。

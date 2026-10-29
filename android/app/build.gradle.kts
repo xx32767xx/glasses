@@ -119,9 +119,10 @@ android {
     //       新增 GET /org/history/<roomId>/transcript。见 docs/21 §4.73。
     // 4.75：定稿帧落库（relay 的 pollBus 碰到 partial!=true 就 appendUtterance，归属用持麦者推断，推不出就不记）。
     // 4.74：帧里若带 roomId 则不用推断（为多房间并发预留）；并发现状与三步路径见 docs/21 §4.74。
+    // 4.76：并发第一步——帧带 roomId，/frame?room= 按房间取；音频上传带 room 作为归属线索。见 docs/21 §4.75。
     // 4.57：三语的一处安全细节——房间页在**正在开麦上传时不自动 recreate**（换语言会把这一段发言打断）。
-        versionCode = 103
-        versionName = "4.74"
+        versionCode = 104
+        versionName = "4.75"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），
