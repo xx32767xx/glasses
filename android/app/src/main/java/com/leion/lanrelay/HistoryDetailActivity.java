@@ -39,9 +39,15 @@ public class HistoryDetailActivity extends android.app.Activity {
 
         TextView nameView = findViewById(R.id.detailName);
         TextView kindView = findViewById(R.id.detailKind);
-        TextView metaView = findViewById(R.id.detailMeta);
-        TextView langsView = findViewById(R.id.detailLangs);
+        TextView statDuration = findViewById(R.id.statDuration);
+        TextView statLangs = findViewById(R.id.statLangs);
+        TextView statSpeakers = findViewById(R.id.statSpeakers);
+        TextView transcriptBody = findViewById(R.id.transcriptBody);
         findViewById(R.id.detailBack).setOnClickListener(v -> finish());
+        // 筛选入口：转写格式下一轮定，现在点了明说还没做（不做假的筛选面板）
+        findViewById(R.id.transcriptFilter).setOnClickListener(v ->
+                android.widget.Toast.makeText(this, getString(R.string.transcript_filter_soon),
+                        android.widget.Toast.LENGTH_SHORT).show());
 
         JSONObject record = null;
         String raw = getIntent() == null ? null : getIntent().getStringExtra(EXTRA_JSON);
@@ -56,12 +62,17 @@ public class HistoryDetailActivity extends android.app.Activity {
         if (record == null) {
             nameView.setText(getString(R.string.hist_unknown_name));
             kindView.setText(getString(R.string.hist_type_meeting));
-            metaView.setText("");
-            langsView.setText(getString(R.string.hist_langs_unknown));
+            statDuration.setText("—");
+            statLangs.setText("—");
+            statSpeakers.setText("—");
+            transcriptBody.setText(getString(R.string.transcript_empty));
             return;
         }
 
         // 从本机删除：与列表长按同一个动作（详情页给一个看得见的按钮，长按毕竟不显眼）
+        final JSONObject recordForExport = record;
+        findViewById(R.id.detailExport).setOnClickListener(v -> exportWord(recordForExport));
+
         final String roomId = record.optString("id", "");
         final String recordName = record.optString("name", "");
         findViewById(R.id.detailDelete).setOnClickListener(v ->
@@ -69,14 +80,8 @@ public class HistoryDetailActivity extends android.app.Activity {
                         .setTitle(recordName.isEmpty() ? getString(R.string.hist_unknown_name) : recordName)
                         .setMessage(R.string.hist_delete_confirm)
                         .setNegativeButton(R.string.common_cancel, null)
-                        .setPositiveButton(R.string.hist_delete_local, (dialog, which) -> {
-                            String user = getSharedPreferences("leion", MODE_PRIVATE)
-                                    .getString("termsUser", "");
-                            HistoryStore.hide(this, user, roomId, System.currentTimeMillis());
-                            android.widget.Toast.makeText(this, getString(R.string.hist_deleted_local),
-                                    android.widget.Toast.LENGTH_SHORT).show();
-                            finish();      // 回列表；列表 onResume 重新拉一次并过滤
-                        })
+                        .setPositiveButton(R.string.hist_delete_local, (dialog, which) ->
+                                deleteOnServer(roomId))
                         .show());
 
         String name = record.optString("name", "");
@@ -84,14 +89,98 @@ public class HistoryDetailActivity extends android.app.Activity {
         kindView.setText("interpreter".equals(record.optString("kind", "meeting"))
                 ? getString(R.string.hist_type_interpreter) : getString(R.string.hist_type_meeting));
 
-        String when = formatDate(record.optString("createdAt", ""));
-        String duration = formatDuration(record.optInt("durationSeconds", 0));
-        String people = record.optInt("members", 0) <= 1
-                ? getString(R.string.hist_only_me)
-                : getString(R.string.hist_members, record.optInt("members", 0));
-        String extra = record.optBoolean("active", false) ? " · " + getString(R.string.hist_active) : "";
-        metaView.setText(when + " · " + duration + " · " + people + extra);
-        langsView.setText(langsLabel(record.optJSONArray("langs")));
+        // 三列统计：数值用主色（布局里定的），这里只填值。人数按"参加过的人"算。
+        statDuration.setText(formatDuration(record.optInt("durationSeconds", 0)));
+        statLangs.setText(langsCountLabel(record.optJSONArray("langs")));
+        int members = record.optInt("members", 0);
+        statSpeakers.setText(members <= 1 ? getString(R.string.hist_only_me)
+                : String.valueOf(members));
+
+        // 转写全文：服务端目前还没有往 utterances 里写内容，所以这里如实说"没有"。
+        // 格式（时间戳/说话人/是否双语）等用户下一轮定。
+        transcriptBody.setText(getString(R.string.transcript_empty));
+    }
+
+    /** 「使用语种」那一列只显示**数量**（详情页空间有限；具体语言在下面转写区再说）。 */
+    private String langsCountLabel(JSONArray langs) {
+        if (langs == null || langs.length() == 0) return "—";
+        return String.valueOf(langs.length());
+    }
+
+    /**
+     * 导出 Word（.docx）。
+     *
+     * <p>导出的内容**严格等于这条记录已有的历史内容**：概览 + 转写全文。
+     * 不生成摘要、不生成行动项（会议纪要整块按建议砍掉了）。
+     */
+    private void exportWord(final JSONObject record) {
+        try {
+            String name = record.optString("name", "");
+            String title = name.isEmpty() ? getString(R.string.hist_unknown_name) : name;
+            java.util.List<String> lines = new java.util.ArrayList<>();
+            lines.add(getString(R.string.doc_title));
+            lines.add(formatDate(record.optString("createdAt", "")) + " · "
+                    + formatDuration(record.optInt("durationSeconds", 0)) + " · "
+                    + (record.optInt("members", 0) <= 1 ? getString(R.string.hist_only_me)
+                       : getString(R.string.hist_members, record.optInt("members", 0))));
+            lines.add(langsLabel(record.optJSONArray("langs")));
+            lines.add("");
+            lines.add(getString(R.string.transcript_title));
+            lines.add(getString(R.string.transcript_empty));
+
+            java.io.File dir = new java.io.File(getCacheDir(), "exports");
+            //noinspection ResultOfMethodCallIgnored
+            dir.mkdirs();
+            String safe = title.replaceAll("[^\\w\\u4e00-\\u9fff-]", "_");
+            java.io.File file = HistoryDocx.write(
+                    new java.io.File(dir, safe + ".docx"), title, lines);
+
+            android.net.Uri uri = androidx.core.content.FileProvider.getUriForFile(
+                    this, getPackageName() + ".fileprovider", file);
+            android.content.Intent share = new android.content.Intent(android.content.Intent.ACTION_SEND);
+            share.setType("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+            share.putExtra(android.content.Intent.EXTRA_STREAM, uri);
+            share.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            android.widget.Toast.makeText(this, getString(R.string.export_done),
+                    android.widget.Toast.LENGTH_LONG).show();
+            startActivity(android.content.Intent.createChooser(share, getString(R.string.export_word)));
+        } catch (Exception error) {
+            android.widget.Toast.makeText(this,
+                    getString(R.string.export_failed, String.valueOf(error.getMessage())),
+                    android.widget.Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /** 按账号删除（服务端）：只影响自己的历史列表。 */
+    private void deleteOnServer(final String roomId) {
+        if (roomId == null || roomId.isEmpty()) return;
+        android.content.SharedPreferences prefs = getSharedPreferences("leion", MODE_PRIVATE);
+        final LanClient client = new LanClient(prefs.getString("host", ""), prefs.getString("secret", ""), null);
+        String token = prefs.getString("accountToken", "");
+        if (token != null && !token.isEmpty()) client.setToken(token);
+        new Thread(() -> {
+            String failure = "";
+            try {
+                org.json.JSONObject result = client.orgDeleteHistory(roomId);
+                if (result == null || !result.optBoolean("ok", false)) {
+                    failure = ServerText.from(this, result, "");
+                }
+            } catch (Exception error) {
+                failure = error.getMessage() == null ? error.toString() : error.getMessage();
+            }
+            final String failed = failure;
+            runOnUiThread(() -> {
+                if (failed.isEmpty()) {
+                    android.widget.Toast.makeText(this, getString(R.string.hist_deleted_local),
+                            android.widget.Toast.LENGTH_SHORT).show();
+                    finish();          // 回列表；列表 onResume 会重拉
+                } else {
+                    android.widget.Toast.makeText(this,
+                            getString(R.string.hist_delete_failed, ServerText.of(this, failed)),
+                            android.widget.Toast.LENGTH_LONG).show();
+                }
+            });
+        }, "history-detail-delete").start();
     }
 
     private String formatDate(String iso) {

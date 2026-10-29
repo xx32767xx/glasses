@@ -713,4 +713,17 @@
     <string name="hist_restore_local">恢复显示</string>
     <string name="hist_long_press_hint">长按一条记录可从本机删除</string>
     <string name="hist_delete_failed">删除失败：%1$s</string>
+    <string name="srv_hist_missing_room">缺少要删的记录</string>
+    <string name="srv_hist_not_member">你没有参加过这场会议</string>
+    <string name="stat_duration">会议时长</string>
+    <string name="stat_langs">使用语种</string>
+    <string name="stat_speakers">发言人数</string>
+    <string name="transcript_title">转写全文</string>
+    <string name="transcript_filter">筛选</string>
+    <string name="transcript_empty">这场会议还没有转写内容。</string>
+    <string name="export_word">导出 Word</string>
+    <string name="export_done">已生成 Word 文件，选一个应用打开或发送</string>
+    <string name="export_failed">导出失败：%1$s</string>
+    <string name="doc_title">会议记录</string>
+    <string name="transcript_filter_soon">筛选功能还没做（转写格式先定）</string>
 </resources>

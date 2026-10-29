@@ -1664,7 +1664,10 @@ export async function runAndroidOrderSuite({ it, check }) {
     // ④ 卡片可点进详情（详情内容下一轮）
     check('卡片可点击进详情', /HistoryDetailActivity\.class/.test(history)
       && /putExtra\(HistoryDetailActivity\.EXTRA_JSON/.test(history))
-    check('详情页先骨架、明说内容下一步', /hist_detail_next/.test(layout('page_history_detail.xml')))
+    check('详情页按原型拆成三段（统计/转写/导出）',
+      /statDuration/.test(layout('page_history_detail.xml'))
+      && /transcript_title/.test(layout('page_history_detail.xml'))
+      && /detailExport/.test(layout('page_history_detail.xml')))
     check('两页都注册进 manifest', /\.HistoryActivity/.test(readFileSync(
       join(ROOT, 'android', 'app', 'src', 'main', 'AndroidManifest.xml'), 'utf-8')))
 
@@ -1682,46 +1685,61 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('语言去重', /SELECT DISTINCT lang FROM room_members/.test(rooms))
   })
 
-  await it('4.71：历史记录「本机删除」（不碰服务端数据）', () => {
+  await it('4.71：历史记录「按账号删除」+ 详情页（统计→转写→导出）', () => {
     const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
     const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
     const java = (f) => readFileSync(join(javaDir, f), 'utf-8')
-    const store = java('HistoryStore.java')
+    const layout = (f) => readFileSync(join(resDir, 'layout', f), 'utf-8')
     const history = java('HistoryActivity.java')
     const detail = java('HistoryDetailActivity.java')
+    const lanClient = java('LanClient.java')
+    const rooms = readFileSync(join(ROOT, 'lib', 'rooms.mjs'), 'utf-8')
+    const orgApi = readFileSync(join(ROOT, 'relay', 'org-api.mjs'), 'utf-8')
 
-    // ① 存本机、按账号隔离
-    check('隐藏列表存在本机 prefs 里', /getSharedPreferences\(PREFS/.test(store)
-      && /historyHidden:/.test(store))
-    check('按账号隔离（换账号不会串）', /KEY_PREFIX \+ \(name\.isEmpty\(\)/.test(store))
-    check('有上限，不会无限长', /MAX_ENTRIES = \d+/.test(store) && /subList\(0, MAX_ENTRIES\)/.test(store))
-    check('重复隐藏是幂等的', /removeIf\(\(one\) -> one\.id\.equals\(roomId\)\)/.test(store))
-    check('存坏了不影响整页（退化成"没藏过"）', /catch \(Exception ignored\) \{[\s\S]{0,200}宁可多显示一条/.test(store))
+    // ① 语义：删的是"我这个账号的列表"，服务端存一条按账号的隐藏记录
+    check('服务端有按账号的隐藏表', /CREATE TABLE IF NOT EXISTS history_hidden/.test(
+      readFileSync(join(ROOT, 'lib', 'db.mjs'), 'utf-8')))
+    check('只删自己参加过的（防止往别人历史里塞过滤）',
+      /SELECT 1 AS yes FROM room_members WHERE room_id = \? AND username = \?/.test(rooms))
+    check('列表按"我自己"过滤掉已删的',
+      /LEFT JOIN history_hidden h ON h\.room_id = r\.id AND h\.username = \?/.test(rooms))
+    check('有删除路由', /segments\[3\] === 'delete'/.test(orgApi) && /hideHistoryForUser\(/.test(orgApi))
+    check('客户端走服务端接口', /orgDeleteHistory\(/.test(lanClient)
+      && /\/org\/history\/" \+ roomId \+ "\/delete"/.test(lanClient))
+    check('客户端不再有"设备本地隐藏"的第二套实现',
+      !/HistoryStore/.test(history) && !/HistoryStore/.test(detail))
 
-    // ② 列表：过滤 + 长按删除 + 全部藏完还有空态
-    check('列表按隐藏集合过滤', /hiddenIds\.contains\(item\.optString\("id"/.test(history))
-    check('长按删除', /setOnLongClickListener[\s\S]{0,200}confirmDeleteLocal/.test(history))
-    check('删完立刻重画', /HistoryStore\.hide\(this, userName, roomId[\s\S]{0,400}load\(\)/.test(history))
-    check('全部删完显示空态而不是错误提示',
-      /emptyView\.setVisibility\(shown == 0 \? View\.VISIBLE : View\.GONE\)/.test(history))
-    check('删前二次确认，并说明只影响本机', /hist_delete_confirm/.test(history))
+    // ② 入口：列表长按 + 详情页按钮，且都走服务端
+    check('长按删除', /setOnLongClickListener[\s\S]{0,200}confirmDelete/.test(history))
+    check('列表删除调到服务端', /orgDeleteHistory\(roomId\)/.test(history))
+    check('详情页也有删除按钮', /@\+id\/detailDelete/.test(layout('page_history_detail.xml'))
+      && /orgDeleteHistory\(roomId\)/.test(detail))
+    check('删前二次确认并说明只影响自己', /hist_delete_confirm/.test(history))
 
-    // ③ 详情页也给一个看得见的删除入口（长按不显眼）
-    check('详情页有删除按钮', /@\+id\/detailDelete/.test(
-      readFileSync(join(resDir, 'layout', 'page_history_detail.xml'), 'utf-8')))
-    check('详情页删除走同一个 HistoryStore', /HistoryStore\.hide\(this, user, roomId/.test(detail))
+    // ③ 详情页结构（原型顺序：统计概览 → 转写全文 → 导出）
+    const page = layout('page_history_detail.xml')
+    const order = ['statDuration', 'statLangs', 'statSpeakers', 'transcript_title', 'detailExport']
+      .map((key) => page.indexOf(key))
+    check('顺序是 统计 → 转写 → 导出', order.every((v, i) => v > 0 && (i === 0 || v > order[i - 1])),
+      JSON.stringify(order))
+    check('三列统计数值用主色', /@\+id\/statDuration[\s\S]{0,200}@color\/brand/.test(page))
+    const noComment = (text) => text.replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n').map((line) => line.split('//')[0]).join('\n')
+    check('会议纪要相关整块没做（无摘要 / 无行动项 / 无责任人）',
+      !/AI|摘要|行动项|责任人/.test(noComment(page))
+      && !/AI|摘要|行动项|责任人/.test(noComment(detail)))
 
-    // ④ 关键：本机删除**不许**碰服务端
-    check('没有调用任何"删历史"的服务端接口',
-      !/orgHistoryDelete|history\/.+delete|DELETE/.test(history + detail))
-    const relayHistory = readFileSync(join(ROOT, 'relay', 'org-api.mjs'), 'utf-8')
-    check('服务端也没有为它开删除路由',
-      !/segments\[1\] === 'history' && segments\.length === 4/.test(relayHistory))
-    // 二次确认文案本身就必须说清"服务端不受影响"，否则用户会以为把别人的记录也删了
-    const zh = readFileSync(join(resDir, 'values', 'strings.xml'), 'utf-8')
-    const confirmLine = (zh.match(/<string name="hist_delete_confirm">([^<]*)<\/string>/) ?? [])[1] ?? ''
-    check('确认文案里明说服务端不受影响',
-      confirmLine.includes('服务端') && /本机|这台设备/.test(confirmLine), confirmLine)
+    // ④ 导出：只导出已有记录内容，且是真 docx
+    const docx = java('HistoryDocx.java')
+    check('docx 是手写 zip（不引第三方库）',
+      /ZipOutputStream/.test(docx) && /\[Content_Types\]\.xml/.test(docx) && /word\/document\.xml/.test(docx))
+    // docx 生成器里只能出现"记录本身"（注释里说明"不生成摘要"是可以的，所以先剥注释）
+    const docxCode = docx.replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n').map((line) => line.split('//')[0]).join('\n')
+    check('导出内容不含摘要/行动项', !/摘要|行动项/.test(docxCode), docxCode.slice(0, 80))
+    check('通过 FileProvider 分享', /FileProvider\.getUriForFile/.test(detail)
+      && /\.fileprovider/.test(readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'AndroidManifest.xml'), 'utf-8')))
   })
 
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {

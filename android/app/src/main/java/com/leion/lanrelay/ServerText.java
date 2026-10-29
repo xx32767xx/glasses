@@ -131,6 +131,9 @@ public final class ServerText {
         prefix("写库失败：", R.string.srv_write_failed);
         // 4.68：服务端库结构跟不上代码（例：刚加的 hidden_at 列还没补）。
         // SQLite 报的是 no such column: xxx，直接翻过去对用户没意义，说清“重启 relay”才有用。
+        // 4.71：历史记录按账号删除的两句
+        put("缺少要删的记录（roomId）", R.string.srv_hist_missing_room);
+        put("你没有参加过这场会议", R.string.srv_hist_not_member);
         prefix("no such column", R.string.srv_db_outdated);
         prefix("has no column named", R.string.srv_db_outdated);
 

@@ -142,6 +142,17 @@
             android:exported="false"
             android:label="设置"
             android:configChanges="orientation|screenSize|keyboardHidden" />
+        <!-- 4.71：导出的 docx 在缓存目录，要通过 FileProvider 交给别的 App 打开 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <!-- 4.69：历史记录 + 单条详情（详情内容下一步） -->
         <activity
             android:name=".HistoryActivity"

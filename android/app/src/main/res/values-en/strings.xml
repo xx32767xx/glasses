@@ -435,4 +435,17 @@ Server %2$s</string>
     <string name="hist_restore_local">Show it again</string>
     <string name="hist_long_press_hint">Press and hold a record to delete it on this phone</string>
     <string name="hist_delete_failed">Could not delete: %1$s</string>
+    <string name="srv_hist_missing_room">No record specified to delete</string>
+    <string name="srv_hist_not_member">You were not in this meeting</string>
+    <string name="stat_duration">Duration</string>
+    <string name="stat_langs">Languages</string>
+    <string name="stat_speakers">Speakers</string>
+    <string name="transcript_title">Transcript</string>
+    <string name="transcript_filter">Filter</string>
+    <string name="transcript_empty">This meeting has no transcript yet.</string>
+    <string name="export_word">Export Word</string>
+    <string name="export_done">Word file ready: pick an app to open or send it</string>
+    <string name="export_failed">Export failed: %1$s</string>
+    <string name="doc_title">Meeting record</string>
+    <string name="transcript_filter_soon">Filtering is not built yet (the transcript format comes first)</string>
 </resources>

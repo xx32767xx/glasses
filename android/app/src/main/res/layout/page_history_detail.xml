@@ -51,6 +51,90 @@
                     android:textSize="@dimen/text_secondary" />
             </LinearLayout>
 
+            <!-- ── ① 统计概览：三列，数值用主色突出 ─────────────────── -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_card"
+                android:background="@drawable/bg_card"
+                android:orientation="horizontal"
+                android:padding="@dimen/space_card">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:id="@+id/statDuration"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:textColor="@color/brand"
+                        android:textSize="@dimen/text_page_title"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/space_gap_tiny"
+                        android:text="@string/stat_duration"
+                        android:textColor="@color/ink_soft"
+                        android:textSize="@dimen/text_caption" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:id="@+id/statLangs"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:textColor="@color/brand"
+                        android:textSize="@dimen/text_page_title"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/space_gap_tiny"
+                        android:text="@string/stat_langs"
+                        android:textColor="@color/ink_soft"
+                        android:textSize="@dimen/text_caption" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:id="@+id/statSpeakers"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:textColor="@color/brand"
+                        android:textSize="@dimen/text_page_title"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="@dimen/space_gap_tiny"
+                        android:text="@string/stat_speakers"
+                        android:textColor="@color/ink_soft"
+                        android:textSize="@dimen/text_caption" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- ── ② 转写全文（格式下一轮细化；现在如实说没有内容）─────
+                 ⚠️ AI 摘要与行动项**不做**（老师建议砍掉会议纪要）：这里只有原始记录。 -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -59,15 +143,38 @@
                 android:orientation="vertical"
                 android:padding="@dimen/space_card">
 
-                <TextView
-                    android:id="@+id/detailMeta"
+                <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:textColor="@color/ink_soft"
-                    android:textSize="@dimen/text_body" />
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/transcript_title"
+                        android:textColor="@color/ink"
+                        android:textSize="@dimen/text_title"
+                        android:textStyle="bold" />
+
+                    <!-- 筛选入口：格式定下来之后再接功能，现在只是位置 -->
+                    <TextView
+                        android:id="@+id/transcriptFilter"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:background="@drawable/bg_chip"
+                        android:paddingStart="@dimen/space_gap"
+                        android:paddingTop="@dimen/space_gap_tiny"
+                        android:paddingEnd="@dimen/space_gap"
+                        android:paddingBottom="@dimen/space_gap_tiny"
+                        android:text="@string/transcript_filter"
+                        android:textColor="@color/ink_soft"
+                        android:textSize="@dimen/text_caption" />
+                </LinearLayout>
 
                 <TextView
-                    android:id="@+id/detailLangs"
+                    android:id="@+id/transcriptBody"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="@dimen/space_gap_small"
@@ -75,16 +182,17 @@
                     android:textSize="@dimen/text_body" />
             </LinearLayout>
 
-            <!-- 下一轮的内容入口：现在明说还没有，不做假页面 -->
-            <TextView
+            <!-- ── ③ 导出（只导出这条记录已有的历史内容）─────────────── -->
+            <Button
+                android:id="@+id/detailExport"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_height="@dimen/height_button"
                 android:layout_marginTop="@dimen/space_card"
-                android:background="@drawable/bg_card"
-                android:padding="@dimen/space_card"
-                android:text="@string/hist_detail_next"
-                android:textColor="@color/ink_faint"
-                android:textSize="@dimen/text_secondary" />
+                android:background="@drawable/tap_btn_primary"
+                android:text="@string/export_word"
+                android:textAllCaps="false"
+                android:textColor="@color/on_brand"
+                android:textSize="@dimen/text_button" />
 
             <Button
                 android:id="@+id/detailDelete"
@@ -101,7 +209,7 @@
                 android:id="@+id/detailBack"
                 android:layout_width="match_parent"
                 android:layout_height="@dimen/height_field"
-                android:layout_marginTop="@dimen/space_section"
+                android:layout_marginTop="@dimen/space_gap"
                 android:background="@drawable/tap_btn_secondary"
                 android:text="@string/common_back"
                 android:textAllCaps="false"

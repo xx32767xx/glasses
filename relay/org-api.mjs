@@ -29,7 +29,7 @@ import { readJson, writeJsonAtomic } from '../lib/store.mjs'
 import { listLibraries, loadLibrary, loadCategories, saveLibrary, importLibraries } from '../lib/libraries.mjs'
 import { createRequest, decideRequest, hideRequest, loadRequests, pendingOf, visibleOfMine, withdrawRequest } from '../lib/requests.mjs'
 import { writeMeetingSnapshot } from '../lib/snapshot.mjs'
-import { createRoom, isRoomClosed, joinRoom, leaveRoom, listHistory, listMembers, listRooms, removeMember, roomByCode, roomById, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
+import { createRoom, hideHistoryForUser, isRoomClosed, joinRoom, leaveRoom, listHistory, listMembers, listRooms, removeMember, roomByCode, roomById, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
 import { FLOOR_LOCKED_LEASE_MS, FLOOR_LEASE_MS, floorState, forceReleaseFloor, heartbeatFloor, releaseFloor, setFloorLock, sweepExpiredFloor, takeFloor } from '../lib/floor.mjs'
 import { publishMeetingTerms } from '../lib/meeting-terms.mjs'
 
@@ -167,6 +167,14 @@ export async function handleOrg(input) {
   }
 
   // ── 申请 ─────────────────────────────────────────────────────────────────
+  // 按账号删除一条历史（4.71）：只影响自己的列表，会议与字幕不动
+  if (method === 'POST' && segments[1] === 'history' && segments[3] === 'delete' && segments.length === 4) {
+    if (allowed(role, 'meeting.configure') !== true) return deny(role, 'meeting.configure')
+    const hidden = hideHistoryForUser(root, { user, roomId: segments[2], now })
+    if (hidden.ok !== true) return bad(400, hidden.error)
+    return { status: 200, json: { ok: true, roomId: hidden.roomId } }
+  }
+
   // 历史记录（4.69）：我参加过的会议 + 字幕保存期（客户端顶部要写“记录保存 N 天”）。
   if (method === 'GET' && segments[0] === 'org' && segments[1] === 'history') {
     if (allowed(role, 'meeting.configure') !== true) return deny(role, 'meeting.configure')

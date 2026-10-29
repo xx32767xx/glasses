@@ -237,6 +237,21 @@ export async function runOrgApiSuite({ it, check, assert }) {
     check('时长是个数且≥ 0', typeof item.durationSeconds === 'number' && item.durationSeconds >= 0)
     check('字幕保存期由服务端给', mine.json.retentionDays === 7, String(mine.json.retentionDays))
 
+    // ⑤ 4.71：按账号删除 —— alice 删了自己的，旁人的历史不受影响
+    const deleted = await call({ method: 'POST', path: `/org/history/${item.id}/delete`,
+      user: 'alice@example.com', role: 'user' })
+    check('自己能删', deleted.status === 200, deleted.json.error)
+    const afterDelete = await call({ method: 'GET', path: '/org/history', user: 'alice@example.com', role: 'user' })
+    check('删后自己的列表空了', afterDelete.json.items.length === 0,
+      JSON.stringify(afterDelete.json.items?.length))
+    const bobAfter = await call({ method: 'GET', path: '/org/history', user: 'bob@example.com', role: 'user' })
+    check('别人的历史不受影响', bobAfter.json.items.length === 1,
+      JSON.stringify(bobAfter.json.items?.length))
+    const strangerDelete = await call({ method: 'POST', path: `/org/history/${item.id}/delete`,
+      user: 'boss@example.com', role: 'admin' })
+    check('没参加过的人不能往自己列表里去掉它',
+      strangerDelete.status === 400, String(strangerDelete.status))
+
     const bob = await call({ method: 'GET', path: '/org/history', user: 'bob@example.com', role: 'user' })
     check('参会者也看得到', bob.json.items.length === 1, JSON.stringify(bob.json.items?.length))
     const stranger = await call({ method: 'GET', path: '/org/history', user: 'boss@example.com', role: 'admin' })

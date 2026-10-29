@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 只开放缓存目录下的 exports/：导出的 docx 放这儿（4.71） -->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path
+        name="exports"
+        path="exports/" />
+</paths>

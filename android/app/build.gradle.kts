@@ -113,9 +113,11 @@ android {
     //       字幕保存期用服务端给的值，类型标签只有会议/翻译官两种。见 docs/21 §4.70。
     // 4.72：历史记录加「本机删除」（prefs 按账号隔离 + 长按/详情页入口，服务端一列不动）；
     //       会议纪要按老师建议砍掉（详情页不再承诺纪要）。见 docs/21 §4.72。
+    // 4.73：历史记录改为「按账号删除」（history_hidden 表 + POST /org/history/<id>/delete，只影响自己）；
+    //       详情页按原型拆三段（统计/转写/导出 Word），会议纪要整块不做。
     // 4.57：三语的一处安全细节——房间页在**正在开麦上传时不自动 recreate**（换语言会把这一段发言打断）。
-        versionCode = 99
-        versionName = "4.70"
+        versionCode = 100
+        versionName = "4.71"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

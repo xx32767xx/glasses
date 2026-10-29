@@ -40,9 +40,7 @@ public class HistoryActivity extends android.app.Activity {
     private TextView emptyView;
     private TextView hintView;
     private LinearLayout list;
-    /** 这台设备上被隐藏（从本机删除）的会议 id（4.71）。 */
-    private java.util.Set<String> hiddenIds = new java.util.HashSet<>();
-    /** 当前账号：隐藏列表按账号隔离。 */
+    /** 当前账号（只用来填确认对话框的副标题）。 */
     private String userName = "";
 
     @Override
@@ -75,7 +73,6 @@ public class HistoryActivity extends android.app.Activity {
 
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         userName = prefs.getString("termsUser", "");
-        hiddenIds = HistoryStore.hiddenIds(this, userName);
         client = new LanClient(prefs.getString("host", ""), prefs.getString("secret", ""), null);
         String token = prefs.getString("accountToken", "");
         if (token == null || token.isEmpty()) {
@@ -137,12 +134,9 @@ public class HistoryActivity extends android.app.Activity {
         for (int i = 0; i < items.length(); i++) {
             JSONObject item = items.optJSONObject(i);
             if (item == null) continue;
-            // 本机删掉的直接不显示（服务端仍然有这条记录，别的设备照样看得见）
-            if (hiddenIds.contains(item.optString("id", ""))) continue;
             list.addView(card(inflater, item));
             shown += 1;
         }
-        // 全都是"本机已删除"的时候也要给空态，否则看着像加载失败
         emptyView.setVisibility(shown == 0 ? View.VISIBLE : View.GONE);
         hintView.setVisibility(shown == 0 ? View.GONE : View.VISIBLE);
         if (shown > 0) hintView.setText(getString(R.string.hist_long_press_hint));
@@ -175,36 +169,52 @@ public class HistoryActivity extends android.app.Activity {
             intent.putExtra(HistoryDetailActivity.EXTRA_JSON, item.toString());
             startActivity(intent);
         });
-        // 长按 = 从本机删除。为什么用长按：卡片本身要能点进详情，
-        // 再挂一个删除按钮在每张卡上会把列表弄乱；长按是"少用但存在"的操作该待的地方。
+        // 长按 = 删除这条历史（**按账号**，不影响别人）。为什么用长按：
+        // 卡片本身要能点进详情，再挂一个删除按钮会把列表弄乱。
         row.setOnLongClickListener(v -> {
-            confirmDeleteLocal(item.optString("id", ""), item.optString("name", ""));
+            confirmDelete(item.optString("id", ""), item.optString("name", ""));
             return true;
         });
         return row;
     }
 
-    /** 从本机删除：先确认，并且把"只影响这台设备"说清楚。 */
-    private void confirmDeleteLocal(final String roomId, String name) {
+    /** 删除这条历史：先确认，并且把"只影响自己这个账号"说清楚。 */
+    private void confirmDelete(final String roomId, String name) {
         if (roomId == null || roomId.isEmpty()) return;
         String title = name == null || name.isEmpty() ? getString(R.string.hist_unknown_name) : name;
         new android.app.AlertDialog.Builder(this)
                 .setTitle(title)
                 .setMessage(R.string.hist_delete_confirm)
                 .setNegativeButton(R.string.common_cancel, null)
-                .setPositiveButton(R.string.hist_delete_local, (dialog, which) -> {
-                    try {
-                        HistoryStore.hide(this, userName, roomId, System.currentTimeMillis());
-                        hiddenIds = HistoryStore.hiddenIds(this, userName);
-                        Toast.makeText(this, getString(R.string.hist_deleted_local),
-                                Toast.LENGTH_SHORT).show();
-                        load();          // 重新拉一遍并重画（本地已隐藏，视觉上立刻消失）
-                    } catch (Exception error) {
-                        Toast.makeText(this, getString(R.string.hist_delete_failed,
-                                String.valueOf(error.getMessage())), Toast.LENGTH_LONG).show();
-                    }
-                })
+                .setPositiveButton(R.string.hist_delete_local, (dialog, which) -> deleteOnServer(roomId))
                 .show();
+    }
+
+    /** 真正删除：叫服务端把这条从**我这个账号的**历史里去掉。 */
+    private void deleteOnServer(final String roomId) {
+        if (roomId == null || roomId.isEmpty()) return;
+        new Thread(() -> {
+            String failure = "";
+            try {
+                JSONObject result = client.orgDeleteHistory(roomId);
+                if (result == null || !result.optBoolean("ok", false)) {
+                    failure = ServerText.from(this, result, "");
+                }
+            } catch (Exception error) {
+                failure = error.getMessage() == null ? error.toString() : error.getMessage();
+            }
+            final String failed = failure;
+            ui.post(() -> {
+                if (failed.isEmpty()) {
+                    Toast.makeText(this, getString(R.string.hist_deleted_local),
+                            Toast.LENGTH_SHORT).show();
+                    load();                     // 重拉：服务端已经不返回这条了
+                } else {
+                    Toast.makeText(this, getString(R.string.hist_delete_failed,
+                            ServerText.of(this, failed)), Toast.LENGTH_LONG).show();
+                }
+            });
+        }, "history-delete").start();
     }
 
     /** 类型标签：只有两种含义（同传会议 / 同传翻译官），别往里塞场景。 */

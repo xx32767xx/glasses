@@ -452,8 +452,25 @@ public class LanClient {
      *
      * <p>服务端按"我是成员"过滤，所以这里不需要传用户名 —— 用户由 token 解出来。
      */
+
+
+    /**
+     * 历史记录（4.69）：我参加过的会议 + 字幕保存期。
+     *
+     * <p>服务端按“我是成员”过滤，所以这里不用传用户名 —— 用户由 token 解出来。
+     */
     public JSONObject orgHistory(int limit) throws IOException, org.json.JSONException {
         return unwrap(requestWithCode("/org/history?limit=" + limit, "GET", null, 10000));
+    }
+
+    /**
+     * 按**账号**删除一条历史（4.71）。
+     *
+     * <p>只删自己列表里的那一条；会议、字幕与其它参伎者的历史一律不动。
+     */
+    public JSONObject orgDeleteHistory(String roomId) throws IOException, org.json.JSONException {
+        return unwrap(requestWithCode("/org/history/" + roomId + "/delete", "POST",
+                new JSONObject(), 10000));
     }
 
     /** 邮箱验证码登录：先取码（码打印在电脑端 relay 控制台），再登录拿 token。 */

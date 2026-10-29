@@ -435,4 +435,17 @@ Servidor %2$s</string>
     <string name="hist_restore_local">Mostrar de novo</string>
     <string name="hist_long_press_hint">Pressione e segure um registro para excluir neste celular</string>
     <string name="hist_delete_failed">Falha ao excluir: %1$s</string>
+    <string name="srv_hist_missing_room">Nenhum registro informado para excluir</string>
+    <string name="srv_hist_not_member">Você não estava nesta reunião</string>
+    <string name="stat_duration">Duração</string>
+    <string name="stat_langs">Idiomas</string>
+    <string name="stat_speakers">Falantes</string>
+    <string name="transcript_title">Transcrição</string>
+    <string name="transcript_filter">Filtrar</string>
+    <string name="transcript_empty">Esta reunião ainda não tem transcrição.</string>
+    <string name="export_word">Exportar Word</string>
+    <string name="export_done">Arquivo Word pronto: escolha um app para abrir ou enviar</string>
+    <string name="export_failed">Falha ao exportar: %1$s</string>
+    <string name="doc_title">Registro da reunião</string>
+    <string name="transcript_filter_soon">O filtro ainda não existe (o formato da transcrição vem primeiro)</string>
 </resources>
