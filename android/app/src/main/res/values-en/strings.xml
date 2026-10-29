@@ -448,4 +448,7 @@ Server %2$s</string>
     <string name="export_failed">Export failed: %1$s</string>
     <string name="doc_title">Meeting record</string>
     <string name="transcript_filter_soon">Filtering is not built yet (the transcript format comes first)</string>
+    <string name="room_listen_off">Listen</string>
+    <string name="room_listen_on">Listening</string>
+    <string name="room_listen_hint">Headphones recommended, otherwise the other side hears an echo</string>
 </resources>

@@ -116,6 +116,11 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     private boolean locked = false;
     private boolean pollScheduled = false;
     private MicUploader mic;
+    /** 4.76：实时传声——播放别人的声音。 */
+    private RoomAudioPlayer audioPlayer;
+    private TextView listenButton;
+    /** 我是不是正在听（与服务端的 listen 开关保持一致）。 */
+    private boolean listening = false;
     private Runnable pendingAfterPermission;
     private Button micUploadButton;
     private long lastHeartbeat = 0L;
@@ -225,6 +230,10 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         loadRoomHeader();
 
         micUploadButton = findViewById(R.id.roomUpload);
+        // 4.76：音频播放器与开关
+        listenButton = findViewById(R.id.roomListen);
+        audioPlayer = new RoomAudioPlayer();
+        listenButton.setOnClickListener(v -> toggleListen());
         // 隐藏的「开始同传」：原型里没有它，开麦即开始上传；这里只留一个落点备用
         micUploadButton.setOnClickListener(v -> toggleMic());
         updateUploadButton();
@@ -252,6 +261,11 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
 
     @Override
     protected void onDestroy() {
+        if (audioPlayer != null) {
+            audioPlayer.stop();
+            audioPlayer = null;
+        }
+        listening = false;
         timerRunning = false;
         stopDrawerRefresh();
         if (floorSocket != null) {
@@ -336,6 +350,12 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             @Override
             public void onOnlineChanged(boolean online) {
                 ui.post(() -> wsOnline = online);
+            }
+
+            @Override
+            public void onAudio(byte[] chunk) {
+                // 网络线程上：只往队列里放，不碰界面
+                if (audioPlayer != null) audioPlayer.offer(chunk);
             }
         });
         floorSocket.start();
@@ -589,6 +609,31 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         getSharedPreferences("leion", MODE_PRIVATE).edit()
                 .remove("accountToken").remove("termsUser").remove("roomHost").apply();
         ui.postDelayed(this::finish, 1500);
+    }
+
+    /**
+     * 开/关"听声音"（4.76）。
+     *
+     * <p>为什么自己开麦时不让听：你的手机就在你嘴边，放出来只会是回声。
+     */
+    private void toggleListen() {
+        if (holding && !listening) {
+            Toast.makeText(this, getString(R.string.room_listen_hint), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        listening = !listening;
+        if (floorSocket != null) floorSocket.sendListen(listening);
+        if (listening) {
+            if (audioPlayer != null) audioPlayer.start();
+            listenButton.setText(getString(R.string.room_listen_on));
+            listenButton.setBackgroundResource(R.drawable.bg_chip_brand);
+            listenButton.setTextColor(getColor(R.color.brand));
+        } else {
+            if (audioPlayer != null) audioPlayer.stop();
+            listenButton.setText(getString(R.string.room_listen_off));
+            listenButton.setBackgroundResource(R.drawable.bg_chip);
+            listenButton.setTextColor(getColor(R.color.ink_soft));
+        }
     }
 
     private String hostName() {

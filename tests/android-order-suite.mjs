@@ -1790,6 +1790,36 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('非参与者读不到', /你没有参加过这场会议/.test(rooms))
   })
 
+  await it('4.76：实时传声 —— 开麦的人说的话，别人能听到', () => {
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const java = (f) => readFileSync(join(javaDir, f), 'utf-8')
+    const relay = readFileSync(join(ROOT, 'relay', 'lan-relay.mjs'), 'utf-8')
+    const hub = readFileSync(join(ROOT, 'lib', 'ws-hub.mjs'), 'utf-8')
+    const player = java('RoomAudioPlayer.java')
+    const room = java('RoomActivity.java')
+
+    // ① 服务端：只发给"开了倾听"的同房间连接，且不走 JSON（音频是二进制）
+    check('hub 有选择性转发', /function broadcastRoomAudio\(/.test(hub))
+    check('只发给开了倾听的连接', /if \(conn\.listen !== true\) continue/.test(hub))
+    check('按房间隔离', /const conns = rooms\.get\(room\.id\)/.test(hub))
+    check('音频走二进制帧而不是 JSON', /function sendBinary\(/.test(hub) && /OP_BINARY/.test(hub))
+    check('客户端能开关倾听', /type === 'listen'/.test(hub))
+    check('relay 把上传的音频块也推给听众', /broadcastRoomAudio\(audioRoom, body\)/.test(relay))
+
+    // ② 客户端：AudioTrack 流式播放 + 抖动缓冲 + 丢旧块
+    check('用 AudioTrack 流模式播放', /AudioTrack\.MODE_STREAM/.test(player))
+    check('有抖动缓冲（队列）', /ArrayBlockingQueue/.test(player))
+    check('队列满了丢最旧的（延迟优先）', /droppedChunks \+= 1/.test(player))
+    check('二进制帧回调', /public void onMessage\(java\.nio\.ByteBuffer/.test(java('FloorSocket.java')))
+    check('开启倾听就把开关发给服务端', /sendListen\(on\)/.test(java('FloorSocket.java')))
+    check('房间页有「听声音」开关', /@\+id\/roomListen/.test(
+      readFileSync(join(resDir, 'layout', 'page_room.xml'), 'utf-8')))
+    check('自己开麦时不许听（防回声）', /if \(holding && !listening\)/.test(room))
+    check('离开房间释放播放器', /audioPlayer\.stop\(\)/.test(room))
+    check('提示戴耳机（回声的取舍写在界面里）', /room_listen_hint/.test(room))
+  })
+
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {
     const targets = [
       ...collectSources(join(ROOT, 'android', 'app', 'src', 'main', 'java'), ['.java']),

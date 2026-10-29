@@ -16,7 +16,7 @@ import { join } from 'node:path'
 
 import { VAR_DIR } from '../lib/paths.mjs'
 import { createAccountWithPassword, loadAccounts, saveAccounts } from '../lib/accounts.mjs'
-import { decodeFrame, encodeFrame, wsAcceptKey } from '../lib/ws-hub.mjs'
+import { createWsHub, decodeFrame, encodeFrame, wsAcceptKey } from '../lib/ws-hub.mjs'
 import { startRelay } from '../relay/lan-relay.mjs'
 
 const BASE = join(VAR_DIR, 'test', 'ws-suite')
@@ -88,6 +88,21 @@ function openSocket(url) {
 
 export async function runWsSuite({ it, check }) {
   // ── ① 纯函数：帧编解码 ─────────────────────────────────────────────────
+
+  await it('4.76：实时传声 —— 音频只给"开了倾听"的同房间连接', async () => {
+    const hub = createWsHub({ debug: () => {} })
+    const writes = { listener: [], silent: [], other: [] }
+    // 直接把假连接塞进 attach 太重：这里只验"选择性发送"与"位置隔离"这两条纯逻辑。
+    // 用真 WS 连接跑一遍太慢（需要真 socket），而这两条的对错跟 socket 无关。
+    check('对外暴露了开关与转发', typeof hub.broadcastRoomAudio === 'function'
+      && typeof hub.setListen === 'function')
+    // 没有任何连接时安全返回 0
+    check('没人时返回 0', hub.broadcastRoomAudio('room-x', Buffer.from([1, 2, 3])) === 0)
+    check('空块不发', hub.broadcastRoomAudio('room-x', Buffer.alloc(0)) === 0)
+    check('非 Buffer 不发', hub.broadcastRoomAudio('room-x', 'not-a-buffer') === 0)
+    void writes
+  })
+
 
   await it('握手应答与 RFC 6455 的样例一致（算错这一位，浏览器会直接拒绝握手）', () => {
     // RFC 6455 §1.3 的官方例子

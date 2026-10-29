@@ -545,6 +545,8 @@ export async function startRelay(rawOptions = {}) {
     /** 最近一次往哪个房间上传了音频（归属的重要线索）。 */
     audioRoomId: '',
     audioRoomAt: 0,
+    /** how many chunks were actually fanned out (debug) */
+    audioFanoutChunks: 0,
     /** 最近的帧 JSON（供 /hello、/status 用） */
     hello: null,
     /** 长轮询里挂着的等待者 */
@@ -1282,6 +1284,14 @@ export async function startRelay(rawOptions = {}) {
           return
         }
 
+        // 4.74/4.76：手机上传时告诉我们"我在哪个房间"。
+        // 它同时是字幕归属的线索，也是实时传声的收件人范围。
+        const audioRoom = String(url.searchParams.get('room') ?? '').trim()
+        if (audioRoom !== '') {
+          state.audioRoomId = audioRoom
+          state.audioRoomAt = Date.now()
+        }
+
         state.audioChain = state.audioChain.then(async () => {
           await mkdir(dirname(options.audio), { recursive: true })
           // ── 新一次录音 = 新一场同传：把"这一场用哪些库"发布成会议术语（docs/19）────
@@ -1327,6 +1337,15 @@ export async function startRelay(rawOptions = {}) {
             state.audioBytes += body.length
           }
           state.audioChunks += 1
+          // 4.76：同一块音频也推给本房间愿意听的人（实时传声）
+          if (audioRoom !== '' && wsHub !== null && body.length > 0) {
+            try {
+              const listeners = wsHub.broadcastRoomAudio(audioRoom, body)
+              if (listeners > 0) state.audioFanoutChunks += 1
+            } catch (error) {
+              debug('[audio] fanout failed: ' + String(error && error.message ? error.message : error))
+            }
+          }
           // 采样率变了才写旁文件（不是每块都写）
           if (state.audioRateValue !== rate) {
             await writeFile(options.audioRate, String(rate) + '\n', 'utf-8')

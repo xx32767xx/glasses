@@ -354,6 +354,22 @@
                     android:contentDescription="@string/room_source_desc" />
             </LinearLayout>
 
+            <!-- 4.76：实时传声开关（默认关；自己开麦时不听，避免回声） -->
+            <TextView
+                android:id="@+id/roomListen"
+                android:layout_width="wrap_content"
+                android:layout_height="@dimen/touch_min"
+                android:layout_marginStart="@dimen/space_gap_small"
+                android:background="@drawable/bg_chip"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:paddingStart="@dimen/space_gap"
+                android:paddingEnd="@dimen/space_gap"
+                android:text="@string/room_listen_off"
+                android:textColor="@color/ink_soft"
+                android:textSize="@dimen/text_secondary" />
+
             <Button
                 android:id="@+id/roomLeave"
                 android:layout_width="wrap_content"

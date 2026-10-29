@@ -63,6 +63,14 @@ public class FloorSocket {
 
         /** 连接可用性变了：true = 推送通道活着（轮询可以放慢）。 */
         void onOnlineChanged(boolean online);
+
+        /**
+         * 收到一块实时音频（4.76）—— PCM 16-bit 小端、单声道、16 kHz。
+         *
+         * <p>只有在本连接发了 {@code {"type":"listen","on":true}} 之后才会有。
+         * 回调在网络线程上，界面要自己 post 到主线程。
+         */
+        default void onAudio(byte[] chunk) { }
     }
 
     private final String baseUrl;
@@ -150,6 +158,21 @@ public class FloorSocket {
         return message == null ? error.getClass().getSimpleName() : message;
     }
 
+    /**
+     * 告诉服务器"我要不要听本房间的声音"（4.76）。
+     *
+     * <p>服务器只会把音频发给开了这个开关的连接；不开就一块音频都不会来。
+     */
+    public void sendListen(boolean on) {
+        Inner target = inner;
+        if (target == null) return;
+        try {
+            target.sendListen(on);        // 真正的 send() 只能在 WebSocketClient 子类里调
+        } catch (Exception ignored) {
+            // 发不出去就算了：重连后界面会重新开关一次
+        }
+    }
+
     private void setOnline(boolean value) {
         if (online == value) {
             return;
@@ -169,6 +192,11 @@ public class FloorSocket {
             }
         }
 
+        /** 开/关本房间的实时音频（4.76）。 */
+        void sendListen(boolean on) {
+            send("{\"type\":\"listen\",\"on\":" + on + "}");
+        }
+
         @Override
         public void onOpen(ServerHandshake handshake) {
             setOnline(true);
@@ -179,6 +207,15 @@ public class FloorSocket {
             } catch (Exception ignored) {
                 // 发不出去就算了，轮询会兜住
             }
+        }
+
+        /** 4.76：服务器推来的实时音频（二进制帧）。 */
+        @Override
+        public void onMessage(java.nio.ByteBuffer bytes) {
+            if (bytes == null) return;
+            byte[] chunk = new byte[bytes.remaining()];
+            bytes.get(chunk);
+            if (chunk.length > 0) listener.onAudio(chunk);
         }
 
         @Override
