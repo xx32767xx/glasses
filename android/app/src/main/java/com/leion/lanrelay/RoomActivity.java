@@ -475,6 +475,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         boolean anyHolder = holder != null && !holder.isEmpty();
         boolean iAmHost = myName.equals(hostName());
         if (holding && holdingSinceMs == 0L) holdingSinceMs = System.currentTimeMillis();
+        // 4.77：自己开麦了就不能再放音（手机就在嘴边，放出来就是回声）。
+        // 客户端不仅拦住新开的开关，还要把**已经开着**的关掉。
+        if (holding && listening) stopListening();
         if (!holding) holdingSinceMs = 0L;
         // 外观统一交给 updateMicButton（4.52：胶囊 + 发言中红色 + 呼吸）
         updateMicButton();
@@ -617,23 +620,35 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
      * <p>为什么自己开麦时不让听：你的手机就在你嘴边，放出来只会是回声。
      */
     private void toggleListen() {
-        if (holding && !listening) {
+        if (listening) {
+            stopListening();
+            return;
+        }
+        if (holding) {
+            // 自己在说话：不放音（回声的根就在这里）
             Toast.makeText(this, getString(R.string.room_listen_hint), Toast.LENGTH_SHORT).show();
             return;
         }
-        listening = !listening;
-        if (floorSocket != null) floorSocket.sendListen(listening);
-        if (listening) {
-            if (audioPlayer != null) audioPlayer.start();
-            listenButton.setText(getString(R.string.room_listen_on));
-            listenButton.setBackgroundResource(R.drawable.bg_chip_brand);
-            listenButton.setTextColor(getColor(R.color.brand));
-        } else {
-            if (audioPlayer != null) audioPlayer.stop();
-            listenButton.setText(getString(R.string.room_listen_off));
-            listenButton.setBackgroundResource(R.drawable.bg_chip);
-            listenButton.setTextColor(getColor(R.color.ink_soft));
-        }
+        listening = true;
+        if (floorSocket != null) floorSocket.sendListen(true);
+        if (audioPlayer != null) audioPlayer.start();
+        renderListenButton();
+    }
+
+    /** 停止收音频 + 停止播放（也告诉服务器不要再发）。 */
+    private void stopListening() {
+        if (!listening) return;
+        listening = false;
+        if (floorSocket != null) floorSocket.sendListen(false);
+        if (audioPlayer != null) audioPlayer.stop();
+        renderListenButton();
+    }
+
+    private void renderListenButton() {
+        if (listenButton == null) return;
+        listenButton.setText(getString(listening ? R.string.room_listen_on : R.string.room_listen_off));
+        listenButton.setBackgroundResource(listening ? R.drawable.bg_chip_brand : R.drawable.bg_chip);
+        listenButton.setTextColor(getColor(listening ? R.color.brand : R.color.ink_soft));
     }
 
     private String hostName() {

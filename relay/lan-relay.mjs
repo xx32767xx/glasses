@@ -48,6 +48,7 @@ import { createWsHub } from '../lib/ws-hub.mjs'
 import { publishMeetingTerms, readCurrentMeeting } from '../lib/meeting-terms.mjs'
 import { loadSelection } from './org-api.mjs'
 import { resolveFrameRoom } from '../lib/rooms.mjs'
+import { floorState } from '../lib/floor.mjs'
 import {
   TERMS_LIMITS, getTable, loadTerms, mergePending, normalizeUser, putTable, saveActiveUser, saveTerms, validateTerms,
 } from '../lib/terms.mjs'
@@ -1340,7 +1341,9 @@ export async function startRelay(rawOptions = {}) {
           // 4.76：同一块音频也推给本房间愿意听的人（实时传声）
           if (audioRoom !== '' && wsHub !== null && body.length > 0) {
             try {
-              const listeners = wsHub.broadcastRoomAudio(audioRoom, body)
+              // 正在持麦的人不收自己的声音（回声根源，服务端兜底）
+              const holderNow = floorState(options.dataDir, audioRoom).holder ?? ''
+              const listeners = wsHub.broadcastRoomAudio(audioRoom, body, holderNow)
               if (listeners > 0) state.audioFanoutChunks += 1
             } catch (error) {
               debug('[audio] fanout failed: ' + String(error && error.message ? error.message : error))

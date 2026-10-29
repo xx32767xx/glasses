@@ -1805,7 +1805,8 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('按房间隔离', /const conns = rooms\.get\(room\.id\)/.test(hub))
     check('音频走二进制帧而不是 JSON', /function sendBinary\(/.test(hub) && /OP_BINARY/.test(hub))
     check('客户端能开关倾听', /type === 'listen'/.test(hub))
-    check('relay 把上传的音频块也推给听众', /broadcastRoomAudio\(audioRoom, body\)/.test(relay))
+    check('relay 把上传的音频块也推给听众',
+      /broadcastRoomAudio\(audioRoom, body, holderNow\)/.test(relay))
 
     // ② 客户端：AudioTrack 流式播放 + 抖动缓冲 + 丢旧块
     check('用 AudioTrack 流模式播放', /AudioTrack\.MODE_STREAM/.test(player))
@@ -1815,7 +1816,12 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('开启倾听就把开关发给服务端', /sendListen\(on\)/.test(java('FloorSocket.java')))
     check('房间页有「听声音」开关', /@\+id\/roomListen/.test(
       readFileSync(join(resDir, 'layout', 'page_room.xml'), 'utf-8')))
-    check('自己开麦时不许听（防回声）', /if \(holding && !listening\)/.test(room))
+    check('自己开麦时不允许开听', /if \(holding\) \{[\s\S]{0,200}room_listen_hint/.test(room))
+    check('拿到发言权就把已开着的倾听关掉',
+      /if \(holding && listening\) stopListening\(\)/.test(room))
+    check('服务端兜底：持麦者的连接不收自己的声音',
+      /exceptUser !== '' && String\(conn\.user\) === String\(exceptUser\)/.test(hub)
+      && /broadcastRoomAudio\(audioRoom, body, holderNow\)/.test(relay))
     check('离开房间释放播放器', /audioPlayer\.stop\(\)/.test(room))
     check('提示戴耳机（回声的取舍写在界面里）', /room_listen_hint/.test(room))
   })
