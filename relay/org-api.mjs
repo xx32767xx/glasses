@@ -29,7 +29,7 @@ import { readJson, writeJsonAtomic } from '../lib/store.mjs'
 import { listLibraries, loadLibrary, loadCategories, saveLibrary, importLibraries } from '../lib/libraries.mjs'
 import { createRequest, decideRequest, hideRequest, loadRequests, pendingOf, visibleOfMine, withdrawRequest } from '../lib/requests.mjs'
 import { writeMeetingSnapshot } from '../lib/snapshot.mjs'
-import { createRoom, isRoomClosed, joinRoom, leaveRoom, listMembers, listRooms, removeMember, roomByCode, roomById, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
+import { createRoom, isRoomClosed, joinRoom, leaveRoom, listHistory, listMembers, listRooms, removeMember, roomByCode, roomById, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
 import { FLOOR_LOCKED_LEASE_MS, FLOOR_LEASE_MS, floorState, forceReleaseFloor, heartbeatFloor, releaseFloor, setFloorLock, sweepExpiredFloor, takeFloor } from '../lib/floor.mjs'
 import { publishMeetingTerms } from '../lib/meeting-terms.mjs'
 
@@ -86,7 +86,8 @@ export async function handleOrg(input) {
   const now = input.now ?? new Date().toISOString()
   const body = input.body ?? {}
   const path = String(input.path ?? '')
-  const segments = path.split('/').filter(Boolean).map((item) => decodeURIComponent(item))
+  // 路径上可能带 query（如 /org/history?limit=20）：切段之前先剔掉，否则它会变成一个路径段
+  const segments = path.split('?')[0].split('/').filter(Boolean).map((item) => decodeURIComponent(item))
 
   if (user === null || user === undefined) return bad(401, '需要登录（缺少有效 token）')
 
@@ -166,6 +167,27 @@ export async function handleOrg(input) {
   }
 
   // ── 申请 ─────────────────────────────────────────────────────────────────
+  // 历史记录（4.69）：我参加过的会议 + 字幕保存期（客户端顶部要写“记录保存 N 天”）。
+  if (method === 'GET' && segments[0] === 'org' && segments[1] === 'history') {
+    if (allowed(role, 'meeting.configure') !== true) return deny(role, 'meeting.configure')
+    // handleOrg 拿到的是**路径串**（不是 URL 对象）：query 自己切，不能写 url.searchParams
+    const queryAt = path.indexOf('?')
+    const query = queryAt >= 0 ? new URLSearchParams(path.slice(queryAt + 1)) : new URLSearchParams()
+    const limit = Number(query.get('limit') ?? 0) || 50
+    const history = listHistory(root, { user, limit, now })
+    return {
+      status: 200,
+      json: {
+        ok: true,
+        items: history.items,
+        total: history.total,
+        // 保留期由服务端定（start-all / relay 的 --utterance-retention-days），客户端不自己编一个
+        // 保留期由服务端定（relay 的 --utterance-retention-days）；客户端不自己编一个
+        retentionDays: Number(input.utteranceRetentionDays ?? 7),
+      },
+    }
+  }
+
   if (method === 'POST' && segments[1] === 'requests' && segments.length === 2) {
     if (allowed(role, 'request.create') !== true) return deny(role, 'request.create')
     const created = await createRequest(root, {

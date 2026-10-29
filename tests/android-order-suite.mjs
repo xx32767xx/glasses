@@ -1415,7 +1415,9 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('导航文案是首页/历史/我的',
       /@string\/nav_home/.test(navXml) && /@string\/nav_history/.test(navXml)
       && /@string\/nav_me/.test(navXml))
-    check('历史暂时没有动作（下一步才做）', !/homeNavHistory\)\.setOnClickListener/.test(java))
+    // 4.69：历史有页面了，这一项要能进去（之前是灰着的占位）
+    check('历史导航能进历史页',
+      /homeNavHistory\)\.setOnClickListener[\s\S]{0,160}HistoryActivity\.class/.test(java))
     check('我的进「我的」页', /homeNavMe\)\.setOnClickListener[\s\S]{0,200}MeActivity\.class/.test(java))
     // 4.62：导航抽成公共片段，所以这里只验"include 在 ScrollView 之后"
     check('底部导航固定（不在 ScrollView 里）',
@@ -1608,6 +1610,76 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('名称允许换行但不截断（maxLines=2）', titles.length === 2
       && titles.every((block) => /android:maxLines="2"/.test(block)))
     check('卡片还有最小高度兜底', /card_task_min_height/.test(home))
+  })
+
+  await it('4.69：历史记录页（卡片六样 + 类型标签只有两种）', () => {
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const layout = (f) => readFileSync(join(resDir, 'layout', f), 'utf-8')
+    const java = (f) => readFileSync(join(javaDir, f), 'utf-8')
+
+    const page = layout('page_history.xml')
+    const item = layout('item_history.xml')
+    const history = java('HistoryActivity.java')
+    const detail = java('HistoryDetailActivity.java')
+
+    // ① 顶部：页面标题 + 保存期限提示；列表 + 空态
+    check('有标题', /@string\/nav_history/.test(page))
+    check('有保存期限提示', /@\+id\/historyRetention/.test(page))
+    check('列表与空态都在', /@\+id\/historyList/.test(page) && /@\+id\/historyEmpty/.test(page))
+    check('底部保留三项导航', /@layout\/inc_bottom_nav/.test(page))
+    check('保存期用服务端给的值，不写死', /retentionDays/.test(history)
+      && /R\.string\.hist_retention/.test(history))
+
+    // ② 卡片六样：名称 / 类型 / 时间 / 时长 / 人数 / 语言
+    check('卡片有名称与类型标签',
+      /@\+id\/itemName/.test(item) && /@\+id\/itemKind/.test(item))
+    check('次要信息（时间·时长·人数）单独一行', /@\+id\/itemMeta/.test(item))
+    check('语言方向单独一行', /@\+id\/itemLangs/.test(item))
+    check('名称是加粗主色（首要信息）', /@\+id\/itemName[\s\S]{0,400}android:textStyle="bold"/.test(item))
+    check('类型标签用品牌色胶囊', /@\+id\/itemKind[\s\S]{0,300}bg_chip_brand/.test(item))
+    check('六样都真的填了',
+      /formatDate\(/.test(history) && /formatDuration\(/.test(history)
+      && /peopleLabel\(/.test(history) && /langsLabel\(/.test(history))
+    check('人数 1 显示「仅自己」', /hist_only_me/.test(history))
+
+    // ③ 类型标签只有两种含义，且不拿场景当类型
+    check('类型只有会议/翻译官两个键', /hist_type_meeting/.test(history) && /hist_type_interpreter/.test(history))
+    // 只看代码与文案，不看注释（注释里正解释"为什么不这么分"）
+    const stripComments = (text) => text
+      .replace(/<!--[\s\S]*?-->/g, '')            // XML 注释
+      .replace(/\/\*[\s\S]*?\*\//g, '')       // Java 块注释
+      .split('\n').map((line) => line.split('//')[0]).join('\n')
+    const zhStrings = readFileSync(join(resDir, 'values', 'strings.xml'), 'utf-8')
+    const typeLines = [...zhStrings.matchAll(/<string name="(hist_type_[a-z]+)">([^<]*)<\/string>/g)]
+      .map((m) => `${m[1]}=${m[2]}`)
+    check('类型标签文案里没有「面对面 / 远程」',
+      !/面对面|远程/.test(typeLines.join('\n')), typeLines.join(','))
+    check('代码里也没拿它当类型判断',
+      !/面对面|远程/.test(stripComments(history)) && !/面对面|远程/.test(stripComments(item))
+      && !/面对面|远程/.test(stripComments(page)))
+    check('kind 未知时落到「同传会议」而不是空白',
+      /"interpreter"\.equals\(kind\)\) return getString\(R\.string\.hist_type_interpreter\);\s*\n\s*return getString\(R\.string\.hist_type_meeting\);/.test(history))
+
+    // ④ 卡片可点进详情（详情内容下一轮）
+    check('卡片可点击进详情', /HistoryDetailActivity\.class/.test(history)
+      && /putExtra\(HistoryDetailActivity\.EXTRA_JSON/.test(history))
+    check('详情页先骨架、明说内容下一步', /hist_detail_next/.test(layout('page_history_detail.xml')))
+    check('两页都注册进 manifest', /\.HistoryActivity/.test(readFileSync(
+      join(ROOT, 'android', 'app', 'src', 'main', 'AndroidManifest.xml'), 'utf-8')))
+
+    // ⑤ 导航：历史这一项现在会点亮，且首页/我的都能进
+    check('历史页把「历史」点亮', /NavTabs\.apply\(this, NavTabs\.HISTORY\)/.test(history))
+    const home = java('HomeActivity.java')
+    const me = java('MeActivity.java')
+    check('首页的历史导航进得去', /homeNavHistory\)\.setOnClickListener[\s\S]{0,160}HistoryActivity\.class/.test(home))
+    check('「我的」里的历史导航也进得去', /homeNavHistory\)\.setOnClickListener[\s\S]{0,160}HistoryActivity\.class/.test(me))
+
+    // ⑥ 服务端：只返回我参加过的 + 保留期由服务端给
+    const rooms = readFileSync(join(ROOT, 'lib', 'rooms.mjs'), 'utf-8')
+    check('只查我参加过的会', /JOIN room_members me ON me\.room_id = r\.id AND me\.username = \?/.test(rooms))
+    check('人数按不同人算（不是"还在里面的人"）', /COUNT\(DISTINCT m\.username\)/.test(rooms))
+    check('语言去重', /SELECT DISTINCT lang FROM room_members/.test(rooms))
   })
 
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {

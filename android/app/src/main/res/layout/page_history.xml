@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  page_history.xml —— 历史记录（4.69）。
+
+  结构：页面标题 + 保存期限提示 → 纵向卡片列表 → 底部一级导航（与首页/我的共用）。
+
+  美化重点（用户明确要求）：
+    · 卡片里**名称与类型最显眼**，时间/时长/人数/语言都是次要信息；
+    · 类型标签只有两种含义：同传会议 / 同传翻译官 —— 不拿"面对面/远程"当类型。
+
+  ⚠️ 不写色值与裸 dp/sp：一律 @color / @dimen。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/page"
+    android:orientation="vertical">
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="@color/page"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="@dimen/space_page">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/nav_history"
+                android:textColor="@color/ink"
+                android:textSize="@dimen/text_page_title"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/historyRetention"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap_tiny"
+                android:textColor="@color/ink_soft"
+                android:textSize="@dimen/text_secondary" />
+
+            <!-- 列表（运行时填充） -->
+            <LinearLayout
+                android:id="@+id/historyList"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_card"
+                android:orientation="vertical" />
+
+            <TextView
+                android:id="@+id/historyEmpty"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_card"
+                android:background="@drawable/bg_card"
+                android:gravity="center"
+                android:padding="@dimen/space_card"
+                android:text="@string/hist_empty"
+                android:textColor="@color/ink_soft"
+                android:textSize="@dimen/text_secondary"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/historyHint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap"
+                android:textColor="@color/ink_faint"
+                android:textSize="@dimen/text_caption"
+                android:visibility="gone" />
+        </LinearLayout>
+    </ScrollView>
+
+    <include layout="@layout/inc_bottom_nav" />
+</LinearLayout>

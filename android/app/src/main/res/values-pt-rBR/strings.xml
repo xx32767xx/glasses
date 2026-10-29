@@ -411,4 +411,22 @@ Servidor %2$s</string>
     <string name="srv_pending_withdraw_first">Retire um pedido pendente antes de excluí-lo</string>
     <string name="srv_write_failed">O servidor não conseguiu gravar a alteração; veja o log do relay</string>
     <string name="srv_db_outdated">O banco do servidor está sem um campo novo; reinicie o relay uma vez e ele se atualiza</string>
+    <string name="hist_retention">Os registros ficam por %1$d dias (definido pelo servidor)</string>
+    <string name="hist_empty">Ainda sem histórico · faça uma reunião e ela aparece aqui ao terminar</string>
+    <string name="hist_type_meeting">Reunião</string>
+    <string name="hist_type_interpreter">Intérprete</string>
+    <string name="hist_active">Em andamento</string>
+    <string name="hist_only_me">Só eu</string>
+    <string name="hist_members">%1$d pessoas</string>
+    <string name="hist_duration_short">menos de 1 minuto</string>
+    <string name="hist_duration_minutes">%1$d min</string>
+    <string name="hist_duration_hours">%1$d h %2$d min</string>
+    <string name="hist_langs">%1$s ↔ %2$s</string>
+    <string name="hist_langs_unknown">Idioma não definido</string>
+    <string name="hist_load_failed">Não foi possível carregar o histórico: %1$s</string>
+    <string name="hist_need_login">Entre na conta para ver o histórico</string>
+    <string name="hist_unknown_name">Reunião sem nome</string>
+    <string name="hist_detail_next">As legendas frase a frase e estatísticas mais finas vêm na próxima etapa.</string>
+    <string name="lang_zh_short">Chinês</string>
+    <string name="lang_pt_short">Português (Brasil)</string>
 </resources>

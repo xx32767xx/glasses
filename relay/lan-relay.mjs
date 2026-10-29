@@ -1648,7 +1648,11 @@ export async function startRelay(rawOptions = {}) {
           body = await readBody(request)
         }
         const result = await handleOrg({
-          method: request.method, path: url.pathname, body, user, role, root: options.dataDir,
+          // path 要**带 query**：/org/history?limit=20 的 limit 就在这后面
+          method: request.method, path: url.pathname + (url.search ?? ''), body, user, role,
+          root: options.dataDir,
+          // 历史页顶部要写"记录保存 N 天"：这个值只能是服务端说，客户端不编
+          utteranceRetentionDays: options.utteranceRetentionDays,
           // 断线清扫（4.42）：GET /floor 发现"锁着麦但人不在"时，顺手推给全房间
           onFloorSwept: (roomId, swept) => {
             try {

@@ -142,6 +142,15 @@
             android:exported="false"
             android:label="设置"
             android:configChanges="orientation|screenSize|keyboardHidden" />
+        <!-- 4.69：历史记录 + 单条详情（详情内容下一步） -->
+        <activity
+            android:name=".HistoryActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".HistoryDetailActivity"
+            android:exported="false" />
+
         <!-- 4.62：底部导航「我的」与其下的术语库管理 -->
         <activity
             android:name=".MeActivity"

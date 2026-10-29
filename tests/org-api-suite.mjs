@@ -209,6 +209,41 @@ export async function runOrgApiSuite({ it, check, assert }) {
     check('撤回后可以删', deleteAfterWithdraw.status === 200, deleteAfterWithdraw.json.error)
   })
 
+  await it('4.69：历史记录只给自己参加过的，并带齐卡片要的六样', async () => {
+    const created = await call({
+      method: 'POST', path: '/org/rooms', user: 'alice@example.com', role: 'user',
+      body: { name: '圣保罗洽谈', lang: 'zh-CN' },
+    })
+    check('建房成功', created.status === 200, created.json.error)
+    const code = created.json.room.code
+    await call({ method: 'POST', path: '/org/rooms/join', user: 'bob@example.com', role: 'user',
+      body: { code, lang: 'pt-BR' } })
+
+    // 发起者退出 = 散会（closed_at 有值），这才是历史里要看的"已结束"会议
+    const left = await call({ method: 'POST', path: '/org/rooms/leave',
+      user: 'alice@example.com', role: 'user', body: { roomId: created.json.room.id } })
+    check('散会成功', left.status === 200, left.json.error)
+
+    const mine = await call({ method: 'GET', path: '/org/history', user: 'alice@example.com', role: 'user' })
+    check('自己看得到', mine.status === 200 && mine.json.items.length === 1,
+      JSON.stringify(mine.json.items?.length))
+    const item = mine.json.items[0]
+    check('名字对', item.name === '圣保罗洽谈', item.name)
+    check('类型只有 meeting', item.kind === 'meeting', item.kind)
+    check('人数是过去进过的人（2）', item.members === 2, String(item.members))
+    check('语言去重且排好序', JSON.stringify(item.langs) === JSON.stringify(['pt-BR', 'zh-CN']),
+      JSON.stringify(item.langs))
+    check('已结束（不是 active）', item.active === false)
+    check('时长是个数且≥ 0', typeof item.durationSeconds === 'number' && item.durationSeconds >= 0)
+    check('字幕保存期由服务端给', mine.json.retentionDays === 7, String(mine.json.retentionDays))
+
+    const bob = await call({ method: 'GET', path: '/org/history', user: 'bob@example.com', role: 'user' })
+    check('参会者也看得到', bob.json.items.length === 1, JSON.stringify(bob.json.items?.length))
+    const stranger = await call({ method: 'GET', path: '/org/history', user: 'boss@example.com', role: 'admin' })
+    check('没参加过的人看不到', stranger.json.items.length === 0,
+      JSON.stringify(stranger.json.items?.length))
+  })
+
   await it('管理员批量导入走同一套校验（一条坏数据不拖垮整批）', async () => {
     const imported = await call({
       method: 'POST', path: '/org/libraries/import', user: 'boss@example.com', role: 'admin',

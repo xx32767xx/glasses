@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  item_history.xml —— 历史记录里的一张卡片（4.69）。
+
+  层次（按重要度，也是用户要求的"突出名称和类型、弱化辅助信息"）：
+    名称（正文加粗主色）  ................  [类型标签]
+    日期时间 · 时长 · 人数（次要色）
+    语言方向（更浅）
+
+  ⚠️ 卡片是横向可点的整块，所以背景用水波纹版本（bg_card_tap），不用纯色卡片。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="@dimen/space_gap_small"
+    android:background="@drawable/bg_card_tap"
+    android:clickable="true"
+    android:focusable="true"
+    android:orientation="vertical"
+    android:padding="@dimen/space_card">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/itemName"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:maxLines="2"
+            android:textColor="@color/ink"
+            android:textSize="@dimen/text_title"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/itemKind"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/space_gap_small"
+            android:background="@drawable/bg_chip_brand"
+            android:paddingStart="@dimen/space_gap_small"
+            android:paddingTop="@dimen/space_gap_tiny"
+            android:paddingEnd="@dimen/space_gap_small"
+            android:paddingBottom="@dimen/space_gap_tiny"
+            android:textColor="@color/brand"
+            android:textSize="@dimen/text_caption" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/itemMeta"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="@dimen/space_gap_tiny"
+        android:textColor="@color/ink_soft"
+        android:textSize="@dimen/text_secondary" />
+
+    <TextView
+        android:id="@+id/itemLangs"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="@dimen/space_gap_tiny"
+        android:textColor="@color/ink_faint"
+        android:textSize="@dimen/text_caption" />
+</LinearLayout>

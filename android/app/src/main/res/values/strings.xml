@@ -691,4 +691,20 @@
     <string name="srv_pending_withdraw_first">待审批的申请请先撤回，再删除</string>
     <string name="srv_write_failed">服务端写入失败，看一下 relay 日志</string>
     <string name="srv_db_outdated">服务器的数据库结构过旧（缺少新字段），重启一次 relay 会自动升级</string>
+    <string name="hist_retention">记录保存 %1$d 天（由服务端设定）</string>
+    <string name="hist_empty">还没有历史记录 · 开一场会议，结束之后会出现在这里</string>
+    <string name="hist_type_meeting">同传会议</string>
+    <string name="hist_type_interpreter">同传翻译官</string>
+    <string name="hist_active">进行中</string>
+    <string name="hist_only_me">仅自己</string>
+    <string name="hist_members">%1$d 人</string>
+    <string name="hist_duration_short">不到 1 分钟</string>
+    <string name="hist_duration_minutes">%1$d 分钟</string>
+    <string name="hist_duration_hours">%1$d 小时 %2$d 分钟</string>
+    <string name="hist_langs">%1$s ↔ %2$s</string>
+    <string name="hist_langs_unknown">未指定语言</string>
+    <string name="hist_load_failed">读不到历史记录：%1$s</string>
+    <string name="hist_need_login">先登录才能看历史记录</string>
+    <string name="hist_unknown_name">未命名会议</string>
+    <string name="hist_detail_next">逐句字幕与更细的统计在下一步开发。</string>
 </resources>

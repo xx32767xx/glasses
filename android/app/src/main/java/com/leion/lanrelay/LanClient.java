@@ -447,6 +447,15 @@ public class LanClient {
                 new JSONObject(), 8000));
     }
 
+    /**
+     * 历史记录（4.69）：我参加过的会议 + 字幕保存期。
+     *
+     * <p>服务端按"我是成员"过滤，所以这里不需要传用户名 —— 用户由 token 解出来。
+     */
+    public JSONObject orgHistory(int limit) throws IOException, org.json.JSONException {
+        return unwrap(requestWithCode("/org/history?limit=" + limit, "GET", null, 10000));
+    }
+
     /** 邮箱验证码登录：先取码（码打印在电脑端 relay 控制台），再登录拿 token。 */
     public JSONObject authRequestCode(String email) throws IOException, org.json.JSONException {
         JSONObject body = new JSONObject();

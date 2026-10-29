@@ -171,7 +171,8 @@ public class HomeActivity extends android.app.Activity {
         langEntry.setOnClickListener(v -> showUiLangPicker());
         // 首页这颗已经在这儿了，点了什么都不做（导航项本身要可点，否则看着像坏了）
         findViewById(R.id.homeNavHome).setOnClickListener(v -> { });
-        // 历史：下一步才做（会议记录），现在不接任何动作
+        findViewById(R.id.homeNavHistory).setOnClickListener(v ->
+                startActivity(new Intent(this, HistoryActivity.class)));
         findViewById(R.id.homeNavMe).setOnClickListener(v ->
                 startActivity(new Intent(this, MeActivity.class)));
         findViewById(R.id.homeLegacy).setOnClickListener(v ->

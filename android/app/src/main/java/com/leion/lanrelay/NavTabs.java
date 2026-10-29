@@ -28,8 +28,7 @@ public final class NavTabs {
         View bar = activity.findViewById(R.id.homeBottomNav);
         if (bar != null) bar.setVisibility(View.VISIBLE);
         style(activity, R.id.homeNavHomeIcon, R.id.homeNavHomeLabel, active == HOME);
-        // 历史保持灰色：它还没有内容（下一步做会议记录）。这里刻意用常量表达"永不点亮"，
-        // 而不是写死 false —— 哪天历史页做好了，把 active 传 HISTORY 就行。
+        // 4.69 起历史有页面了，这一项跟其它两项一样可点亮（之前是永远灰的占位）。
         style(activity, R.id.homeNavHistoryIcon, R.id.homeNavHistoryLabel, active == HISTORY);
         style(activity, R.id.homeNavMeIcon, R.id.homeNavMeLabel, active == ME);
     }

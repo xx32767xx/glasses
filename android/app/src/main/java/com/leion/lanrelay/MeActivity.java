@@ -100,6 +100,8 @@ public class MeActivity extends android.app.Activity {
             finish();
         });
         findViewById(R.id.homeNavMe).setOnClickListener(v -> { });
+        findViewById(R.id.homeNavHistory).setOnClickListener(v ->
+                startActivity(new Intent(this, HistoryActivity.class)));
         NavTabs.apply(this, NavTabs.ME);
 
         refreshAll();

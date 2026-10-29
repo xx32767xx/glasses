@@ -411,4 +411,22 @@ Server %2$s</string>
     <string name="srv_pending_withdraw_first">Withdraw a pending request first, then delete it</string>
     <string name="srv_write_failed">The server could not write the change; check the relay log</string>
     <string name="srv_db_outdated">The server database is missing a newer field; restart the relay once and it upgrades itself</string>
+    <string name="hist_retention">Records are kept for %1$d days (set by the server)</string>
+    <string name="hist_empty">No history yet · hold a meeting and it shows up here once it ends</string>
+    <string name="hist_type_meeting">Meeting</string>
+    <string name="hist_type_interpreter">Interpreter</string>
+    <string name="hist_active">In progress</string>
+    <string name="hist_only_me">Just me</string>
+    <string name="hist_members">%1$d people</string>
+    <string name="hist_duration_short">under a minute</string>
+    <string name="hist_duration_minutes">%1$d min</string>
+    <string name="hist_duration_hours">%1$d h %2$d min</string>
+    <string name="hist_langs">%1$s ↔ %2$s</string>
+    <string name="hist_langs_unknown">No language set</string>
+    <string name="hist_load_failed">Could not load history: %1$s</string>
+    <string name="hist_need_login">Sign in to see your history</string>
+    <string name="hist_unknown_name">Untitled meeting</string>
+    <string name="hist_detail_next">Sentence-by-sentence subtitles and richer stats come next.</string>
+    <string name="lang_zh_short">Chinese</string>
+    <string name="lang_pt_short">Brazilian Portuguese</string>
 </resources>

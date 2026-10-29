@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  page_history_detail.xml —— 单条历史记录的详情（4.69 先搭骨架）。
+
+  ⚠️ 内容**下一轮才提供**：这一版只把卡片上已经有的信息摆好，并明说"字幕与逐句内容下一步"。
+     不做假的页面（不摆空图表、不摆占位按钮）。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/page"
+    android:orientation="vertical">
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="@color/page"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="@dimen/space_page">
+
+            <TextView
+                android:id="@+id/detailName"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="@color/ink"
+                android:textSize="@dimen/text_page_title"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap_small"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/detailKind"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:background="@drawable/bg_chip_brand"
+                    android:paddingStart="@dimen/space_gap"
+                    android:paddingTop="@dimen/space_gap_tiny"
+                    android:paddingEnd="@dimen/space_gap"
+                    android:paddingBottom="@dimen/space_gap_tiny"
+                    android:textColor="@color/brand"
+                    android:textSize="@dimen/text_secondary" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_card"
+                android:background="@drawable/bg_card"
+                android:orientation="vertical"
+                android:padding="@dimen/space_card">
+
+                <TextView
+                    android:id="@+id/detailMeta"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_body" />
+
+                <TextView
+                    android:id="@+id/detailLangs"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap_small"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_body" />
+            </LinearLayout>
+
+            <!-- 下一轮的内容入口：现在明说还没有，不做假页面 -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_card"
+                android:background="@drawable/bg_card"
+                android:padding="@dimen/space_card"
+                android:text="@string/hist_detail_next"
+                android:textColor="@color/ink_faint"
+                android:textSize="@dimen/text_secondary" />
+
+            <Button
+                android:id="@+id/detailBack"
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/height_field"
+                android:layout_marginTop="@dimen/space_section"
+                android:background="@drawable/tap_btn_secondary"
+                android:text="@string/common_back"
+                android:textAllCaps="false"
+                android:textColor="@color/ink"
+                android:textSize="@dimen/text_body" />
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>
