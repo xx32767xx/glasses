@@ -37,7 +37,7 @@ import { networkInterfaces } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createInboxWriter } from '../bridge/asr-bridge.mjs'
-import { purgeUtterancesIn } from '../lib/db.mjs'
+import { appendUtterance, purgeUtterancesIn } from '../lib/db.mjs'
 import {
   LIVE_DIR, defaultAudioIn, defaultAudioLang, defaultAudioRate, defaultBus, defaultInbox, defaultSecret,
   defaultSettings,
@@ -47,6 +47,7 @@ import { handleOrg } from './org-api.mjs'
 import { createWsHub } from '../lib/ws-hub.mjs'
 import { publishMeetingTerms, readCurrentMeeting } from '../lib/meeting-terms.mjs'
 import { loadSelection } from './org-api.mjs'
+import { roomForFrame } from '../lib/rooms.mjs'
 import {
   TERMS_LIMITS, getTable, loadTerms, mergePending, normalizeUser, putTable, saveActiveUser, saveTerms, validateTerms,
 } from '../lib/terms.mjs'
@@ -647,11 +648,48 @@ export async function startRelay(rawOptions = {}) {
     debug(`📺 字幕已更新（第 ${state.seq} 帧·${frame.partial === true ? '增量' : '定稿'}）`
       + `[${frame.speaker ?? '?'} / ${frame.lang ?? '?'}] ${frame.text ?? ''}`)
     lintFrame(frame)
+    recordUtteranceIfFinal(frame)
     notifyWaiters()
     // 4.43：字幕也走 WS（长轮询留着兜底）。seq 一起带上，客户端能判断是不是新的一帧。
     if (wsHub !== null) {
       wsHub.broadcastFrame({ type: 'frame', seq: state.seq, changed: true, frame })
     }
+  }
+
+  /**
+   * 定稿帧落库（4.73）：会议结束后的「转写全文」靠它。
+   *
+   * <p>为什么在这里做：字幕总线本来就要经过这个进程，**不用改任何接口**，也不用让
+   * 翻译组件知道"房间"这回事（它只负责把话说对）。定稿帧 = 这一句已经确定了，
+   * 正是该落库的时刻；增量帧落了只会把转写弄成一堆碎片。
+   *
+   * <p>归属靠 {@link roomForFrame} 的推断，推不出来就**不记**并打一行 debug ——
+   * 把字幕写进错的会议，比少一条难查得多。
+   */
+  function recordUtteranceIfFinal(frame) {
+    if (frame.partial === true) return
+    const text = String(frame.text ?? '').trim()
+    const source = String(frame.source ?? '').trim()
+    if (text === '' && source === '') return
+    const attribution = roomForFrame(options.dataDir, frame.speaker ?? '')
+    if (attribution.roomId === null) {
+      debug(`🗂 定稿帧没记：无法确定属于哪场会议（${attribution.reason}）`)
+      return
+    }
+    const saved = appendUtterance(options.dataDir, {
+      roomId: attribution.roomId,
+      username: String(frame.speaker ?? ''),
+      srcLang: String(frame.lang ?? ''),
+      srcText: source,
+      dstText: text,
+      startAt: Date.now(),
+      isFinal: true,
+    })
+    if (saved.ok !== true) {
+      debug(`🗂 定稿帧没记：${saved.error}`)
+      return
+    }
+    debug(`🗂 定稿帧已记录（${attribution.reason} → ${attribution.roomId}，#${saved.id}）`)
   }
 
   /**

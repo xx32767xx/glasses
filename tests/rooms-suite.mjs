@@ -2,11 +2,47 @@
 import { mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createRoom, isRoomClosed, joinRoom, leaveRoom, listMembers, roomByCode, roomLibraries, setRoomLibraries, roomById, removeMember } from '../lib/rooms.mjs'
+import { createRoom, isRoomClosed, joinRoom, leaveRoom, listMembers, roomByCode, roomForFrame, roomLibraries, listRoomTranscript, setRoomLibraries, roomById, removeMember } from '../lib/rooms.mjs'
+import { appendUtterance } from '../lib/db.mjs'
 import { floorState, takeFloor } from '../lib/floor.mjs'
 
 export async function runRoomsSuite({ it, check }) {
   const dir = mkdtempSync(join(tmpdir(), 'leion-rooms-'))
+
+  await it('4.73：定稿帧落库 —— 归属靠持麦者推断，推不出来宁可不记', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'utt-'))
+    try {
+      const now = Date.now()
+      const room = createRoom(dir, { name: '甲会', host: 'alice', now })
+      const other = createRoom(dir, { name: '乙会', host: 'bob', now })
+      // 没有任何人持麦 → 不记
+      check('没人发言时归属不了', roomForFrame(dir, '').reason === 'no-active-floor')
+      // alice 在甲会抢麦
+      takeFloor(dir, { roomId: room.room.id, username: 'alice', now })
+      check('speaker 是持麦者 → 就是那场会',
+        roomForFrame(dir, 'alice').roomId === room.room.id, JSON.stringify(roomForFrame(dir, 'alice')))
+      // 两场会都有人持麦，speaker 对不上 → 不猜
+      takeFloor(dir, { roomId: other.room.id, username: 'bob', now })
+      check('两场都在说、speaker 又对不上 → 不记', roomForFrame(dir, '').roomId === null)
+      check('speaker 是某场的持麦者 → 仍能定位', roomForFrame(dir, 'bob').roomId === other.room.id)
+
+      // 落库 + 读回
+      const saved = appendUtterance(dir, {
+        roomId: room.room.id, username: 'alice', srcLang: 'zh-CN',
+        srcText: '我们先看交期', dstText: 'Vamos ver o prazo', now,
+      })
+      check('写进去了', saved.ok === true, String(saved.error))
+      const transcript = listRoomTranscript(dir, { roomId: room.room.id, user: 'alice' })
+      check('读得回来', transcript.ok === true && transcript.lines.length === 1, JSON.stringify(transcript.lines))
+      check('原文与译文都存了',
+        transcript.lines[0].srcText === '我们先看交期' && transcript.lines[0].dstText === 'Vamos ver o prazo',
+        JSON.stringify(transcript.lines[0]))
+      check('非参与者读不到',
+        listRoomTranscript(dir, { roomId: room.room.id, user: 'carol' }).ok === false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 
   await it('建房给 6 位邀请码；别人凭码加入；错码进不来', () => {
     const created = createRoom(dir, { name: '圣保罗洽谈', host: 'boss', code: '123456' })

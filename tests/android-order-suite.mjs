@@ -1304,7 +1304,8 @@ export async function runAndroidOrderSuite({ it, check }) {
     for (const f of srvFiles) {
       for (const line of readFileSync(join(ROOT, f), 'utf-8').split('\n')) {
         if (!/error|hint|bad\(|reason/.test(line)) continue
-        if (line.includes('⚠️') || line.includes('[ws]')) continue   // 内部日志，永远不到客户端
+        // 内部日志（debug() / ⚠️ / [ws]）永远不会到客户端，不属于"要翻译的面向用户文案"
+        if (line.includes('⚠️') || line.includes('[ws]') || /\bdebug\(/.test(line)) continue
         for (const m of line.matchAll(/'([^']*)'|`([^`]*)`|"([^"]*)"/g)) {
           const v = m[1] ?? m[2] ?? m[3] ?? ''
           if (cjk.test(v)) candidates.add(v)
