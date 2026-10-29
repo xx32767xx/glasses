@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  item_subtitle_card.xml —— 一张字幕卡（4.72）。
+
+  ⚠️ **它的格式必须和会议中的字幕卡一致**：头像 + 姓名 + 语言标签 → 原文 → 译文 → 状态。
+     会议室里的那张是 RoomActivity 用代码搭的，这里把它落成布局文件；
+     两边统一的判据写在 android-order-suite 里（同一套 drawable / 字号 / 内边距），
+     改一处而不改另一处，门禁会红。
+
+  为什么不做成"两边共用一个 inflate"：会议室那张卡要支持"同一句三帧原地更新"
+  （增量→定稿→校对改的是同一张卡上的 TextView），改成 inflate 会把那条热路径搞复杂。
+  所以这里镜像它的**外观**，并用门禁守住"外观一致"。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="@dimen/subtitle_card_gap"
+    android:background="@drawable/bg_card"
+    android:orientation="vertical"
+    android:padding="@dimen/subtitle_card_padding">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/subAvatar"
+            android:layout_width="@dimen/subtitle_avatar_size"
+            android:layout_height="@dimen/subtitle_avatar_size"
+            android:background="@drawable/bg_avatar"
+            android:gravity="center"
+            android:textColor="@color/brand"
+            android:textSize="@dimen/text_caption" />
+
+        <TextView
+            android:id="@+id/subSpeaker"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/space_gap_small"
+            android:textColor="@color/ink_soft"
+            android:textSize="@dimen/text_caption" />
+
+        <TextView
+            android:id="@+id/subLangTag"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/space_gap_small"
+            android:background="@drawable/bg_chip"
+            android:paddingStart="@dimen/space_gap_tiny"
+            android:paddingTop="@dimen/subtitle_tag_padding_v"
+            android:paddingEnd="@dimen/space_gap_tiny"
+            android:paddingBottom="@dimen/subtitle_tag_padding_v"
+            android:textColor="@color/ink_faint"
+            android:textSize="@dimen/subtitle_tag_text" />
+
+        <TextView
+            android:id="@+id/subState"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="end"
+            android:textColor="@color/ok"
+            android:textSize="@dimen/subtitle_tag_text" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/subOriginal"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="@dimen/space_gap_small"
+        android:textColor="@color/ink_faint"
+        android:textSize="@dimen/text_secondary" />
+
+    <TextView
+        android:id="@+id/subTarget"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="@dimen/space_gap_tiny"
+        android:textColor="@color/ink"
+        android:textSize="@dimen/text_body" />
+</LinearLayout>

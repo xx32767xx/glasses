@@ -468,6 +468,11 @@ public class LanClient {
      *
      * <p>只删自己列表里的那一条；会议、字幕与其它参伎者的历史一律不动。
      */
+    /** 一场会议的转写全文（4.72）：只给参伎者。 */
+    public JSONObject orgHistoryTranscript(String roomId) throws IOException, org.json.JSONException {
+        return unwrap(requestWithCode("/org/history/" + roomId + "/transcript", "GET", null, 12000));
+    }
+
     public JSONObject orgDeleteHistory(String roomId) throws IOException, org.json.JSONException {
         return unwrap(requestWithCode("/org/history/" + roomId + "/delete", "POST",
                 new JSONObject(), 10000));

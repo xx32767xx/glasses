@@ -173,13 +173,33 @@
                         android:textSize="@dimen/text_caption" />
                 </LinearLayout>
 
+                <!-- 外框高度**固定**：转写内容在里面自己上下滑（用户明确要求）。
+                     卡片格式与会议中的字幕一致：同一份 item_subtitle_card 布局。 -->
+                <ScrollView
+                    android:id="@+id/transcriptScroll"
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/transcript_box_height"
+                    android:layout_marginTop="@dimen/space_gap_small"
+                    android:background="@drawable/bg_input"
+                    android:fillViewport="true"
+                    android:padding="@dimen/space_gap_small">
+
+                    <LinearLayout
+                        android:id="@+id/transcriptList"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical" />
+                </ScrollView>
+
                 <TextView
-                    android:id="@+id/transcriptBody"
+                    android:id="@+id/transcriptEmpty"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="@dimen/space_gap_small"
-                    android:textColor="@color/ink_soft"
-                    android:textSize="@dimen/text_body" />
+                    android:text="@string/transcript_empty"
+                    android:textColor="@color/ink_faint"
+                    android:textSize="@dimen/text_secondary"
+                    android:visibility="gone" />
             </LinearLayout>
 
             <!-- ── ③ 导出（只导出这条记录已有的历史内容）─────────────── -->

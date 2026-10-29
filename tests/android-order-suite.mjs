@@ -1742,6 +1742,53 @@ export async function runAndroidOrderSuite({ it, check }) {
       && /\.fileprovider/.test(readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'AndroidManifest.xml'), 'utf-8')))
   })
 
+  await it('4.72：转写全文 = 多张字幕卡 + 固定高度框内滚动', () => {
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const page = readFileSync(join(resDir, 'layout', 'page_history_detail.xml'), 'utf-8')
+    const card = readFileSync(join(resDir, 'layout', 'item_subtitle_card.xml'), 'utf-8')
+    const detail = readFileSync(join(javaDir, 'HistoryDetailActivity.java'), 'utf-8')
+    const helper = readFileSync(join(javaDir, 'SubtitleCard.java'), 'utf-8')
+    const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+
+    // ① 固定高度 + 内部滚动
+    check('转写外框高度固定（不是 wrap_content）',
+      /@\+id\/transcriptScroll[\s\S]{0,220}android:layout_height="@dimen\/transcript_box_height"/.test(page))
+    check('外框是 ScrollView（内容自己上下滑）',
+      /<ScrollView[\s\S]{0,200}@\+id\/transcriptScroll/.test(page))
+    check('里面是竖排容器', /@\+id\/transcriptList[\s\S]{0,200}android:orientation="vertical"/.test(page))
+    check('固定高度是个真尺寸（360dp 这档）',
+      /name="transcript_box_height">\d+dp</.test(
+        readFileSync(join(resDir, 'values', 'dimens.xml'), 'utf-8')))
+
+    // ② 每条渲染成一张卡（不是一整段文字）
+    check('逐条渲染成卡片', /SubtitleCard\.render\(list, one, mineName\)/.test(detail))
+    check('没有转写时收起空框、只留一句说明',
+      /private void showTranscriptEmpty\(\)[\s\S]{0,400}transcriptScroll[\s\S]{0,200}View\.GONE/.test(detail))
+
+    // ③ 卡片格式与会议中的字幕一致：同一套 drawable / 字号 / 内边距
+    // 布局里是默认底；“自己说的”换底色在 SubtitleCard 里做（与会议室一样）
+    for (const token of ['bg_card', 'bg_avatar', 'bg_chip']) {
+      check(`卡片用了会议同款 ${token}`, new RegExp(token).test(card), token)
+    }
+    check('卡片头/原文/译文的层级一致',
+      /@\+id\/subAvatar/.test(card) && /@\+id\/subSpeaker/.test(card)
+      && /@\+id\/subOriginal/.test(card) && /@\+id\/subTarget/.test(card))
+    check('会议室那张卡也是同一套素材（视觉一致）',
+      /bg_subtitle_self/.test(room) && /bg_avatar/.test(room) && /R\.string\.st_done/.test(room))
+    check('卡片度量走同一批 token', /subtitle_card_padding/.test(card)
+      && /subtitle_avatar_size/.test(card) && /subtitle_tag_text/.test(card))
+    check('自己的发言换底色（与会议一致）',
+      /card\.setBackgroundResource\(R\.drawable\.bg_subtitle_self\)/.test(helper))
+
+    // ④ 服务端：按会议读转写，且只给参与者
+    const rooms = readFileSync(join(ROOT, 'lib', 'rooms.mjs'), 'utf-8')
+    const orgApi = readFileSync(join(ROOT, 'relay', 'org-api.mjs'), 'utf-8')
+    check('有读转写的接口', /segments\[3\] === 'transcript'/.test(orgApi) && /listRoomTranscript\(/.test(orgApi))
+    check('只查 is_final 的字幕、按时间正序', /is_final = 1 ORDER BY start_at/.test(rooms))
+    check('非参与者读不到', /你没有参加过这场会议/.test(rooms))
+  })
+
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {
     const targets = [
       ...collectSources(join(ROOT, 'android', 'app', 'src', 'main', 'java'), ['.java']),

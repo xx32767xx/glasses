@@ -63,4 +63,13 @@
 
     <!-- 「我的」页个人卡片（4.62） -->
     <dimen name="avatar_size">48dp</dimen>
+
+    <!-- 历史详情的转写框（4.72）：外框**高度固定**，里面的字幕卡自己上下滑 -->
+    <dimen name="transcript_box_height">360dp</dimen>
+    <!-- 字幕卡度量：必须与会议室里那张卡一致（门禁有断言） -->
+    <dimen name="subtitle_card_padding">12dp</dimen>
+    <dimen name="subtitle_card_gap">8dp</dimen>
+    <dimen name="subtitle_avatar_size">24dp</dimen>
+    <dimen name="subtitle_tag_text">10sp</dimen>
+    <dimen name="subtitle_tag_padding_v">2dp</dimen>
 </resources>
