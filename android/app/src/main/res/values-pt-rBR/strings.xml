@@ -410,4 +410,5 @@ Servidor %2$s</string>
     <string name="srv_only_own_request">Só é possível agir em pedidos seus</string>
     <string name="srv_pending_withdraw_first">Retire um pedido pendente antes de excluí-lo</string>
     <string name="srv_write_failed">O servidor não conseguiu gravar a alteração; veja o log do relay</string>
+    <string name="srv_db_outdated">O banco do servidor está sem um campo novo; reinicie o relay uma vez e ele se atualiza</string>
 </resources>

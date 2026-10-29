@@ -11,12 +11,54 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { dbPath, importFromDataDir, openDb, purgeOldUtterances, purgeUtterancesIn, SCHEMA_VERSION } from '../lib/db.mjs'
+import { COLUMN_PATCHES, dbPath, importFromDataDir, openDb, purgeOldUtterances, purgeUtterancesIn, reconcileColumns, SCHEMA_VERSION } from '../lib/db.mjs'
 import { readAccountsDoc, writeAccountsDoc } from '../lib/accounts-store.mjs'
 import { hashPassword, verifyPassword } from '../lib/accounts.mjs'
 
 export async function runDbSuite({ it, check }) {
   const dir = mkdtempSync(join(tmpdir(), 'leion-db-'))
+
+  // ── 4.68：老库旧结构自动补列（no such column: hidden_at 那个 bug）──────────────
+  await it('已是最新版本但缺列的老库，打开时会自动补上', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'db-cols-'))
+    try {
+      const file = dbPath(dir)
+      // 先建一个正常库，再把 hidden_at 列删掉 + 保持 user_version 不变
+      // —— 这就是"已经是最新版本、但表结构少一列"的真实形态（生产库就是这样）
+      const db = openDb(file)
+      db.exec('ALTER TABLE requests DROP COLUMN hidden_at')
+      db.close()
+
+      const reopened = openDb(file)
+      const columns = reopened.prepare('PRAGMA table_info(requests)').all().map((c) => c.name)
+      check('重开后 hidden_at 被补回来了', columns.includes('hidden_at'),
+        columns.join(','))
+      // 真正的用法也要能跑（不光是列在）
+      reopened.prepare("INSERT INTO requests (id, type, library_id, zh, reason, by, created_at, state) VALUES ('r1','add','lib','x','y','u',1,'pending')").run()
+      reopened.prepare("UPDATE requests SET hidden_at = 1 WHERE id = 'r1'").run()
+      const row = reopened.prepare("SELECT hidden_at AS h FROM requests WHERE id = 'r1'").get()
+      reopened.close()
+      check('写得进去也读得出来', row?.h === 1, JSON.stringify(row))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  await it('补列表不能只靠版本号（防偷懒回归）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'db-cols2-'))
+    try {
+      const file = dbPath(dir)
+      const db = openDb(file)
+      check('列补齐表非空', COLUMN_PATCHES.length > 0)
+      check('每条补列配置都完整',
+        COLUMN_PATCHES.every((one) => one.table && one.column && one.ddl))
+      check('健康库里重复调用不会重复加列',
+        reconcileColumns(db).length === 0)
+      db.close()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 
   await it('建表幂等、版本可查、WAL 已开', () => {
     const file = join(dir, 'a.db')

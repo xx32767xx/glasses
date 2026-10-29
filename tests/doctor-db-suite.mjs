@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { dbPath, openDb } from '../lib/db.mjs'
-import { checkOne, diagnoseFile, inspectFile, salvageToNewDb, scanFor } from '../scripts/doctor-db.mjs'
+import { checkOne, diagnoseFile, inspectFile, missingColumnsOf, salvageToNewDb, scanFor } from '../scripts/doctor-db.mjs'
 import { main as createAccountMain } from '../scripts/create-account.mjs'
 import { loadAccounts } from '../lib/accounts.mjs'
 
@@ -159,6 +159,23 @@ export async function runDoctorDbSuite({ it, check }) {
 
       const all = captured(() => scanFor(dir, { scanAll: true }))
       check('--scan-all 才把它们列出来', all.text.includes('other.db'), all.text)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  await it('结构过旧也会被报出来（no such column 的根）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'doctor-schema-'))
+    try {
+      const db = openDb(dbPath(dir))
+      db.exec('ALTER TABLE requests DROP COLUMN hidden_at')   // 模拟老库：版本号最新、但少列
+      db.close()
+      const { text, result } = captured(() => checkOne(dir, { fix: false }))
+      check('自检仍然是健康的（不是坏库）', /结论：健康/.test(text), text)
+      check('但结构过旧要单独报', result.verdict === 'SCHEMA_STALE', result.verdict)
+      check('告诉人重启 relay 就行', text.includes('重启一次 relay'), text)
+      check('缺哪个列写得明白', missingColumnsOf(dbPath(dir)).includes('requests.hidden_at'),
+        JSON.stringify(missingColumnsOf(dbPath(dir))))
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

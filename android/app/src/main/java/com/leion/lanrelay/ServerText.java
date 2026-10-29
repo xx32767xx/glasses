@@ -129,6 +129,10 @@ public final class ServerText {
         prefix("要修改的条目已不在库里", R.string.srv_req_stale_update);
         prefix("要删除的条目已不在库里", R.string.srv_req_stale_delete);
         prefix("写库失败：", R.string.srv_write_failed);
+        // 4.68：服务端库结构跟不上代码（例：刚加的 hidden_at 列还没补）。
+        // SQLite 报的是 no such column: xxx，直接翻过去对用户没意义，说清“重启 relay”才有用。
+        prefix("no such column", R.string.srv_db_outdated);
+        prefix("has no column named", R.string.srv_db_outdated);
 
         // ── 术语库 ────────────────────────────────────────────────────
         put("还没有任何一场会议术语（手机开始同传后会自动生成）", R.string.srv_no_terms);

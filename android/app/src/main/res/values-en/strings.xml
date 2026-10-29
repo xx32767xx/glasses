@@ -410,4 +410,5 @@ Server %2$s</string>
     <string name="srv_only_own_request">You can only act on your own requests</string>
     <string name="srv_pending_withdraw_first">Withdraw a pending request first, then delete it</string>
     <string name="srv_write_failed">The server could not write the change; check the relay log</string>
+    <string name="srv_db_outdated">The server database is missing a newer field; restart the relay once and it upgrades itself</string>
 </resources>

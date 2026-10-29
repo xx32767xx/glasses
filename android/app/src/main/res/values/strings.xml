@@ -690,4 +690,5 @@
     <string name="srv_only_own_request">只能操作自己提交的申请</string>
     <string name="srv_pending_withdraw_first">待审批的申请请先撤回，再删除</string>
     <string name="srv_write_failed">服务端写入失败，看一下 relay 日志</string>
+    <string name="srv_db_outdated">服务器的数据库结构过旧（缺少新字段），重启一次 relay 会自动升级</string>
 </resources>

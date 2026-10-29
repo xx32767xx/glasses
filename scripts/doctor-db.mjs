@@ -24,7 +24,7 @@
 import { copyFileSync, existsSync, readFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { openDb } from '../lib/db.mjs'
+import { COLUMN_PATCHES, openDb } from '../lib/db.mjs'
 
 const DEFAULT_DATA_DIRS = ['/var/lib/leion/live', '/var/lib/leion/test']
 
@@ -293,6 +293,32 @@ function resetFresh(dir, file, why) {
   return { dir, verdict: after.ok ? 'RESET' : 'RESET_FAILED' }
 }
 
+/** 对比库里的列与代码期望的列（用的就是 lib/db.mjs 里那张表，不会两处漂）。 */
+export function missingColumnsOf(file) {
+  const missing = []
+  let db = null
+  try {
+    db = new DatabaseSync(file)
+    for (const patch of COLUMN_PATCHES) {
+      const table = db.prepare("SELECT 1 AS yes FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .get(patch.table)
+      if (table === undefined) {
+        missing.push(`${patch.table}（表都没有）`)
+        continue
+      }
+      const columns = db.prepare(`PRAGMA table_info(${patch.table})`).all().map((column) => column.name)
+      if (columns.includes(patch.column) !== true) missing.push(`${patch.table}.${patch.column}`)
+    }
+  } catch {
+    return []
+  } finally {
+    if (db !== null) {
+      try { db.close() } catch { /* ignore */ }
+    }
+  }
+  return missing
+}
+
 export function checkOne(dataDir, options) {
   const dir = resolve(dataDir)
   const file = join(dir, 'leion.db')
@@ -324,8 +350,14 @@ export function checkOne(dataDir, options) {
   }
 
   const result = inspectFile(file)
+  const missingColumns = missingColumnsOf(file)
   if (result.ok) {
     console.log(`  → 结论：健康（${result.tables} 张表，quick_check 与 integrity_check 都过）`)
+    if (missingColumns.length > 0) {
+      console.log(`  ⚠️ 结构过旧：缺少 ${missingColumns.join('、')} —— 重启一次 relay 就会自动补上`)
+      console.log('     （不补的话，用到那个列的功能会报 no such column）')
+      return { dir, verdict: 'SCHEMA_STALE' }
+    }
     const wal = stamp(`${file}-wal`)
     if (wal !== null && wal.size > 0) {
       console.log('  ⚠️ -wal 非空：说明最后一次是"没干净关闭"（进程被杀或还在跑）。')
@@ -477,7 +509,7 @@ function main() {
   console.log('')
   console.log('━━ 汇总')
   for (const one of results) console.log(`  ${one.verdict.padEnd(18)} ${one.dir}`)
-  const bad = results.filter((one) => ['CORRUPT', 'UNRECOVERABLE', 'STALE_WAL', 'RESET_FAILED', 'NO_DB'].includes(one.verdict))
+  const bad = results.filter((one) => ['CORRUPT', 'UNRECOVERABLE', 'STALE_WAL', 'RESET_FAILED', 'NO_DB', 'SCHEMA_STALE'].includes(one.verdict))
   if (bad.length > 0) {
     console.log('')
     console.log('有库需要处理。按上面每一条给出的修法做；**修之前先备份**（脚本自己也会备份）。')
