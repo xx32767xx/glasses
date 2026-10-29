@@ -47,6 +47,7 @@ from whisper_stream import (   # noqa: E402
     LANGUAGE_PROMPTS, SPEECH_RMS_FLOOR, ContextCarry, IdleTracker, PcmFollower, Stats,
     UtteranceSegmenter, context_depth_for, decide_no_speech, looks_like_context_echo,
     emit, looks_like_hallucination, looks_like_prompt_echo, normalize_peak, parse_args,
+    missing_model_advice, model_is_local,
     pick_language, prompt_for, rms_of, transcribe, whisper_language_of,
 )
 import whisper_stream                                                    # noqa: E402
@@ -2125,6 +2126,25 @@ def main():
           parse_args(["--follow", "x.pcm"]).format == "text")
     check("--format json 可用", parse_args(["--follow", "x.pcm", "--format", "json"]).format == "json")
 
+
+    # ── 模型来源预检（4.65）────────────────────────────────────────────────
+    # 事故背景：整个镜像搬到新服务器后，模型没跟着搬，faster-whisper 转而去 HuggingFace 拉，
+    # 新机器出网被掐 -> httpcore.RemoteProtocolError，一屏 traceback，看不出是"模型没搬"。
+    # 现在要在**加载之前**就判出来，并告诉人 rsync 哪个目录。
+    heading("模型来源预检 · model_is_local / missing_model_advice")
+    check("本地目录直接可用", model_is_local(os.path.dirname(os.path.abspath(__file__)) + "/../bridge") is True)
+    check("仓库名指向不存在的缓存 -> 判离线不可用",
+          model_is_local("__no_such_model_xyz__") is False)
+    advice = missing_model_advice("large-v3")
+    check("提示里有 HF_HOME / 缓存目录", "HF_HOME" in advice or "缓存" in advice, advice[:80])
+    check("提示里给了 rsync 的搬法", "rsync" in advice)
+    check("提示里给了镜像站兜底", "HF_ENDPOINT" in advice or "hf-mirror" in advice)
+    check("提示里给了 --model 指本地目录的用法", "--model" in advice)
+    source = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "..", "bridge", "whisper_stream.py"), encoding="utf-8").read()
+    check("加载模型被 try/except 包着（不再甩 traceback）",
+          "try:\n        model = WhisperModel(" in source)
+    check("失败时返回非零退出码", "return 2" in source)
 
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
     if failures:

@@ -1449,6 +1449,67 @@ def resolve_compute_type(requested, device):
     return requested, f"⚠️ 本机支持的精度里没有可替换项：{'/'.join(supported)}"
 
 
+def _hub_cache_roots():
+    """faster-whisper(HuggingFace Hub) 可能把模型放在哪几处。"""
+    roots = []
+    for key in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
+        value = os.environ.get(key)
+        if value:
+            roots.append(value)
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        roots.append(os.path.join(hf_home, "hub"))
+    roots.append(os.path.expanduser("~/.cache/huggingface/hub"))
+    return roots
+
+
+def model_is_local(model):
+    """
+    模型到底能不能**离线**加载。
+
+    · 传的是目录 -> 直接用它（`--model /opt/leion/models/faster-whisper-large-v3`）；
+    · 传的是仓库名（`large-v3` / `Systran/faster-whisper-large-v3`）-> 看本地缓存里有没有
+      对应 `models--<org>--<name>` 目录，且里面有 snapshot。
+
+    ⚠️ 为什么不"让它自己试试"：试的结果是在中国机房里连 huggingface.co，
+    表现是卡几分钟然后一屏 traceback（httpcore.RemoteProtocolError）。
+    宁可在这里早退，并且把"该 rsync 哪个目录"写清楚。
+    """
+    if os.path.isdir(model):
+        return True
+    repo = model if "/" in model else f"Systran/faster-whisper-{model}"
+    folder = "models--" + repo.replace("/", "--")
+    for root in _hub_cache_roots():
+        candidate = os.path.join(root, folder)
+        if os.path.isdir(os.path.join(candidate, "snapshots")):
+            return True
+    return False
+
+
+def missing_model_advice(model):
+    roots = "\n".join(f"    - {root}" for root in _hub_cache_roots())
+    return (
+        f"[whisper_stream] ✗ 本地没有模型 {model}，而连 HuggingFace 下载在这台机器上通常不通。\n"
+        f"  找过这些缓存目录：\n{roots}\n"
+        "  三种解法（任选其一）：\n"
+        "    1) 从旧机器把模型目录整个搬过来（**推荐**，搬迁服务器时最容易漏这一步）：\n"
+        "         rsync -av 旧机器:/opt/leion/models/ /opt/leion/models/\n"
+        "       并确保启动时 export HF_HOME=/opt/leion/models\n"
+        "    2) 用镜像站下载：export HF_ENDPOINT=https://hf-mirror.com\n"
+        "    3) 直接指向本地目录：--model /opt/leion/models/faster-whisper-large-v3\n"
+        "  自检：python bridge/whisper_stream.py --self-check"
+    )
+
+
+def model_load_failure(model, error):
+    raw = f"{type(error).__name__}: {error}"
+    return (
+        f"[whisper_stream] ✗ 加载模型 {model} 失败：{raw}\n"
+        + missing_model_advice(model)
+        + "\n  想看到完整 traceback：LEION_DEBUG=1 再跑一次"
+    )
+
+
 def main():
     global EMIT_FORMAT
     args = parse_args()
@@ -1476,7 +1537,20 @@ def main():
     print("[whisper_stream] 若这里显示的是默认缓存，而模型仓库里已经有了，"
           "说明 HF_HOME 没设 —— 它会重新下一个几百 MB 的模型，慢得像是卡住了",
           file=sys.stderr)
-    model = WhisperModel(args.model, device=args.device, compute_type=compute_type)
+    if not model_is_local(args.model):
+        missing = missing_model_advice(args.model)
+        print(missing, file=sys.stderr)
+        return 2
+    try:
+        model = WhisperModel(args.model, device=args.device, compute_type=compute_type)
+    except Exception as error:  # noqa: BLE001
+        # 真事故（搬迁服务器后）：模型不在本地缓存，于是 faster-whisper 去 HuggingFace 拉，
+        # 而新机器出网被掐 -> httpcore.RemoteProtocolError: Server disconnected without sending
+        # a response，一屏 traceback，看不出"其实是模型没搬过来"。
+        print(model_load_failure(args.model, error), file=sys.stderr)
+        if os.environ.get("LEION_DEBUG") == "1":
+            raise
+        return 2
     print("[whisper_stream] 模型就绪", file=sys.stderr)
 
     if args.self_check:

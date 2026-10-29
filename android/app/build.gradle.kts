@@ -103,9 +103,11 @@ android {
     //       “哪个角色不能做什么”，没权限时连按钮都不画。见 docs/21 §4.63。
     // 4.64：已判定的申请可自行删除（hidden_at 标记，不销毁审计）；两张任务卡说明锁 2 行
     //       —— 修掉“中文不对齐、英文对齐”那类因文案长度差异带来的错位。见 docs/21 §4.64。
+    // 4.65：搬迁服务器两块硬伤——新增 scripts/doctor-db.mjs（库体检 + 抢救）；
+    //       识别进程先查模型是不在本地缓存，不在就早退并给 rsync/hf-mirror 的修法。见 docs/20 §13。
     // 4.57：三语的一处安全细节——房间页在**正在开麦上传时不自动 recreate**（换语言会把这一段发言打断）。
-        versionCode = 93
-        versionName = "4.64"
+        versionCode = 94
+        versionName = "4.65"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

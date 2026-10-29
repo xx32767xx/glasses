@@ -31,6 +31,7 @@ import { runFloorSuite } from './floor-suite.mjs'
 import { runWsSuite } from './ws-suite.mjs'
 import { runProofreadTermsSuite } from './proofread-terms-suite.mjs'
 import { runNetDoctorSuite } from './net-doctor-suite.mjs'
+import { runDoctorDbSuite } from './doctor-db-suite.mjs'
 import { runBenchSuite } from './bench-suite.mjs'
 import { runLintSuite } from './lint-suite.mjs'
 import { runTermsSuite } from './terms-suite.mjs'
@@ -212,6 +213,7 @@ await runProofreadTermsSuite(helpers)
 
 heading('网络体检（net-doctor：换个网络就连不上时，判断卡在哪一环）')
 await runNetDoctorSuite(helpers)
+  await runDoctorDbSuite(helpers)
 
 // ── 7c. 翻译模型横评的判据（"哪个模型翻译得好"全靠它下结论）─────────────────
 // 横评表好看不等于结论可信：判据写错一点，就会变成"所有模型都满分"。
