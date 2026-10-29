@@ -10,11 +10,26 @@
  * （EPERM），所以脚本把检查逻辑都 export 出来（与 scripts/net-doctor.mjs 一个套路）。
  */
 
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { dbPath, openDb } from '../lib/db.mjs'
-import { checkOne, diagnoseFile, salvageToNewDb } from '../scripts/doctor-db.mjs'
+import { checkOne, diagnoseFile, inspectFile, salvageToNewDb, scanFor } from '../scripts/doctor-db.mjs'
+import { main as createAccountMain } from '../scripts/create-account.mjs'
+import { loadAccounts } from '../lib/accounts.mjs'
+
+/** 同上，给 async 的 main() 用。 */
+async function capturedAsync(fn) {
+  const lines = []
+  const original = console.log
+  console.log = (...args) => lines.push(args.map(String).join(' '))
+  try {
+    const result = await fn()
+    return { text: lines.join('\n'), result }
+  } finally {
+    console.log = original
+  }
+}
 
 /** 把 console.log 抓成字符串：脚本的"结论"就是它打印出来的那些行。 */
 function captured(fn) {
@@ -122,6 +137,56 @@ export async function runDoctorDbSuite({ it, check }) {
       const row = checkDb.prepare("SELECT value FROM settings WHERE key = 'probe'").get()
       checkDb.close()
       check('数据真的过去了', row?.value === 'kept', JSON.stringify(row))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  await it('--scan 只报 leion 的库，别被系统自带的 .db 刷屏', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'doctor-scan-'))
+    try {
+      openDb(dbPath(dir)).close()                       // <dir>/leion.db
+      const other = join(dir, 'other.db')
+      writeFileSync(other, readFileSync(dbPath(dir)))   // 不是 leion 的库
+      const nested = join(dir, 'cache')
+      mkdirSync(nested, { recursive: true })
+      writeFileSync(join(nested, 'index.db'), readFileSync(dbPath(dir)))
+
+      const plain = captured(() => scanFor(dir))
+      check('报出了 leion.db', plain.text.includes('leion.db'), plain.text)
+      check('敏感文件不混进来', !plain.text.includes('other.db'), plain.text)
+      check('系统目录被跳过', !plain.text.includes('index.db'), plain.text)
+
+      const all = captured(() => scanFor(dir, { scanAll: true }))
+      check('--scan-all 才把它们列出来', all.text.includes('other.db'), all.text)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  await it('--reset：坏库挪去留档、建新空库，然后一条命令建管理员', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'doctor-reset-'))
+    try {
+      openDb(dbPath(dir)).close()
+      const file = dbPath(dir)
+      const buffer = readFileSync(file)
+      for (let i = 4096; i < Math.min(8192, buffer.length); i += 1) buffer[i] = 0xFF
+      writeFileSync(file, buffer)
+
+      const { text, result } = captured(() => checkOne(dir, { reset: true }))
+      check('结论是重建', result.verdict === 'RESET', `${result.verdict}\n${text}`)
+      check('新库自检健康', inspectFile(file).ok === true)
+      check('旧库留了一份（不直接删）',
+        readdirSync(dir).some((name) => name.includes('.old-')), readdirSync(dir).join(','))
+
+      // 重建完必须能立刻建出能登录的账号，否则"重建"等于把系统弄瘫
+      const created = await capturedAsync(() => createAccountMain([
+        '--data-dir', dir, '--user', 'boss', '--password', 'Test1234', '--role', 'admin',
+      ]))
+      check('建账号成功', created.text.includes('已建账号'), created.text)
+      const doc = await loadAccounts(dir)
+      check('角色是管理员', doc.users?.boss?.role === 'admin', JSON.stringify(doc.users))
+      check('密码不是明文落盘', JSON.stringify(doc).includes('Test1234') !== true)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

@@ -30,7 +30,7 @@ const DEFAULT_DATA_DIRS = ['/var/lib/leion/live', '/var/lib/leion/test']
 
 /** 解析参数：只要两个开关 + 一个值，手写比引依赖清楚。 */
 export function parseArgs(argv) {
-  const out = { fix: false, dataDirs: [], scan: null }
+  const out = { fix: false, dataDirs: [], scan: null, scanAll: false, reset: false }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--fix') out.fix = true
@@ -44,6 +44,10 @@ export function parseArgs(argv) {
       if (value === undefined) throw new Error('--scan 需要一个根目录')
       out.scan = value
       i += 1
+    } else if (arg === '--scan-all') {
+      out.scanAll = true
+    } else if (arg === '--reset') {
+      out.reset = true
     } else if (arg === '--help' || arg === '-h') out.help = true
     else throw new Error(`看不懂的参数：${arg}`)
   }
@@ -236,6 +240,59 @@ function backup(file) {
   return moved
 }
 
+export /**
+ * 告诉用户“本机其实有哪些 leion 库”。
+ *
+ * <p>真实情形：live 目录是空的、test 目录有库 —— 这时候最常见的原因不是“坏了”，
+ * 而是 relay 带的 `--data-dir` 跟以为的不一样。把它找出来，比叫人去猜强。
+ */
+function hintOtherDataDirs() {
+  const found = []
+  const walk = (dir, depth) => {
+    if (depth > 3) return
+    let entries = []
+    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) walk(full, depth + 1)
+      else if (entry.name === 'leion.db') found.push(full)
+    }
+  }
+  walk('/var/lib/leion', 0)
+  if (found.length === 0) return
+  console.log(`  · 本机其实有这些 leion 库：${found.join('、')}`)
+  console.log('    （如果 relay 带的 --data-dir 跟上面不一样，那就是路径问题，不是库坏了）')
+}
+
+export /**
+ * 把旧库挪成 `leion.db.old-时间戳`（**不删**，万一还想捞数据），然后建一个全新的空库。
+ *
+ * <p>⚠️ 只适合**测试环境**：新库是空的 —— 账号、术语库、申请、会议记录全都从零开始。
+ * 这也是为什么它必须显式 `--reset`，而不是混在 `--fix` 里。
+ */
+function resetFresh(dir, file, why) {
+  if (existsSync(file)) {
+    const tag = new Date().toISOString().replace(/[:.]/g, '-')
+    for (const suffix of ['', '-wal', '-shm']) {
+      const source = `${file}${suffix}`
+      if (!existsSync(source)) continue
+      renameSync(source, `${source}.old-${tag}`)
+    }
+    console.log(`  · 旧库已括到：${file}.old-${tag}`)
+  }
+  const created = openFresh(file)
+  if (created.ok !== true) {
+    console.log(`  ✗ 新库建不出来：${created.error}`)
+    return { dir, verdict: 'RESET_FAILED' }
+  }
+  const after = inspectFile(file)
+  console.log(`  ✓ 已重建空库（${why}）：表结构 ${after.ok ? '就绪' : '建了但自检没过'}`)
+  console.log('    下一步：')
+  console.log(`      node scripts/create-account.mjs --data-dir ${dir} --user boss --password '你的密码' --role admin`)
+  console.log('      术语库重新导入：node scripts/terms-migrate.mjs（或 terms-admin.mjs 的 import）')
+  return { dir, verdict: after.ok ? 'RESET' : 'RESET_FAILED' }
+}
+
 export function checkOne(dataDir, options) {
   const dir = resolve(dataDir)
   const file = join(dir, 'leion.db')
@@ -243,6 +300,7 @@ export function checkOne(dataDir, options) {
   console.log(`━━ ${dir}`)
   if (!existsSync(dir)) {
     console.log('  · 目录不存在（这台机器上没有这个数据目录）')
+    hintOtherDataDirs()
     return { dir, verdict: 'MISSING' }
   }
   // 顺手把目录里其它 sqlite 文件也列出来，免得漏看
@@ -259,7 +317,9 @@ export function checkOne(dataDir, options) {
   for (const name of others) console.log(`  · 另外还有 ${name}（不归本脚本管）`)
 
   if (!existsSync(file)) {
+    if (options.reset === true) return resetFresh(dir, file, '本来就没有库')
     console.log('  → 结论：没有主库文件。要么还没跑过 relay，要么路径不对')
+    hintOtherDataDirs()
     return { dir, verdict: 'NO_DB' }
   }
 
@@ -273,6 +333,10 @@ export function checkOne(dataDir, options) {
     }
     return { dir, verdict: 'OK' }
   }
+
+  // --reset：不试图挽救，直接把旧库改名留档、建一个新的空库。
+  // 适用场景：**测试环境**里数据本来就可重建（账号重注册、术语库重新导入）。
+  if (options.reset === true) return resetFresh(dir, file, '按要求重建')
 
   const diag = diagnoseFile(file)
   console.log(`  · 文件：${kb(diag.size)}${diag.magic
@@ -344,36 +408,57 @@ export function checkOne(dataDir, options) {
   return { dir, verdict: 'FIXED_REBUILT' }
 }
 
+/** 这些目录里全是系统自带的 .db（man 缓存、包管理、avahi…），扫了只会刷屏。 */
+const SYSTEM_DIRS = new Set(['proc', 'sys', 'dev', 'run', 'boot', 'snap', 'tmp', 'usr',
+  'lib', 'lib32', 'lib64', 'bin', 'sbin', 'var/cache', 'cache', 'node_modules'])
+
 /**
  * 在一个根目录下找 `leion.db`。
  *
  * <p>用途：新机器上 `/var/lib/leion/live` 是空的时候，十有八九是 relay 带的
- * `--data-dir` 跟你以为的不一样（或根本没起过）。先把它找出来再说。
+ * `--data-dir` 跟你想的不一样（或根本没起过）。先把它找出来再说。
+ *
+ * <p>默认**只报 leion 的库**并跳过系统目录 —— 全盘扫出来的 man/包管理缓存会把真正
+ * 要看的那一行淹掉。想看全部加 `--scan-all`。
  */
-function scanFor(root) {
+export function scanFor(root, options = {}) {
+  const all = options.scanAll === true
   const hits = []
+  let ignored = 0
   const walk = (dir, depth) => {
-    if (depth > 5) return
+    if (depth > 6) return
     let entries = []
     try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
     for (const entry of entries) {
       const full = join(dir, entry.name)
       if (entry.isDirectory()) {
-        if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'proc') continue
+        if (entry.name.startsWith('.') || SYSTEM_DIRS.has(entry.name)) continue
         walk(full, depth + 1)
       } else if (entry.name.endsWith('.db')) {
+        const relevant = /leion/i.test(entry.name) || full.includes('/leion/')
+        if (!relevant && !all) {
+          ignored += 1
+          continue
+        }
         const diag = diagnoseFile(full)
         hits.push({ file: full, size: diag.size, magic: diag.magic })
       }
     }
   }
   walk(resolve(root), 0)
-  console.log(`\n在 ${resolve(root)} 下找到 ${hits.length} 个 .db：`)
-  for (const hit of hits) {
+  const leion = hits.filter((hit) => /leion/i.test(hit.file))
+  console.log(`\n在 ${resolve(root)} 下找到 ${leion.length} 个 leion 库`
+    + (ignored > 0 ? `（另有 ${ignored} 个系统自带 .db 已忽略，想看加 --scan-all）` : '') + '：')
+  for (const hit of leion) {
     console.log(`  ${hit.magic ? '✓' : '✗'} ${hit.file}  ${kb(hit.size)}${hit.magic ? '' : '（不是 SQLite）'}`)
   }
-  if (hits.length === 0) {
-    console.log('  （一个都没有：说明这台机器上还没跑过 relay，或数据目录在别的盘）')
+  if (leion.length === 0) {
+    console.log('  （一个都没有：说明这台机器上还没跑过 relay，或数据目录在别的盘/别的名字）')
+  }
+  if (all) {
+    for (const hit of hits.filter((one) => /leion/i.test(one.file) === false)) {
+      console.log(`     (其它) ${hit.file}  ${kb(hit.size)}`)
+    }
   }
   return 0
 }
@@ -382,15 +467,17 @@ function main() {
   const options = parseArgs(process.argv.slice(2))
   if (options.help === true) {
     console.log('node scripts/doctor-db.mjs [--fix] [--data-dir <dir>]...')
+    console.log('node scripts/doctor-db.mjs --scan /var/lib/leion [--scan-all]')
+    console.log('node scripts/doctor-db.mjs --reset [--data-dir <dir>]   # 测试环境：直接重建空库（旧库留档）')
     return 0
   }
-  if (options.scan !== null) return scanFor(options.scan)
-  console.log('SQLite 体检 /var/lib/leion 下的数据目录（先停 relay 再跑，尤其带 --fix）')
+  if (options.scan !== null) return scanFor(options.scan, options)
+  console.log('SQLite 体检 /var/lib/leion 下的数据目录（先停 relay 再跑，尤其带 --fix / --reset）')
   const results = options.dataDirs.map((dir) => checkOne(dir, options))
   console.log('')
   console.log('━━ 汇总')
   for (const one of results) console.log(`  ${one.verdict.padEnd(18)} ${one.dir}`)
-  const bad = results.filter((one) => ['CORRUPT', 'UNRECOVERABLE', 'STALE_WAL'].includes(one.verdict))
+  const bad = results.filter((one) => ['CORRUPT', 'UNRECOVERABLE', 'STALE_WAL', 'RESET_FAILED', 'NO_DB'].includes(one.verdict))
   if (bad.length > 0) {
     console.log('')
     console.log('有库需要处理。按上面每一条给出的修法做；**修之前先备份**（脚本自己也会备份）。')

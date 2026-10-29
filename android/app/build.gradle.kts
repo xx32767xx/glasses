@@ -106,9 +106,10 @@ android {
     // 4.65：搬迁服务器两块硬伤——新增 scripts/doctor-db.mjs（库体检 + 抢救）；
     //       识别进程先查模型是不在本地缓存，不在就早退并给 rsync/hf-mirror 的修法。见 docs/20 §13。
     // 4.66：doctor-db 再升级：文件头/页尺寸诊断、逐表抢救（.recover 的 Node 版）、--scan 找库。
+    // 4.67：测试环境可以直接重建 —— doctor-db --reset（旧库留档 + 建空库）+ create-account.mjs（一条命令建管理员）。
     // 4.57：三语的一处安全细节——房间页在**正在开麦上传时不自动 recreate**（换语言会把这一段发言打断）。
-        versionCode = 95
-        versionName = "4.66"
+        versionCode = 96
+        versionName = "4.67"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），
