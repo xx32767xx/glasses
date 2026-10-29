@@ -426,7 +426,13 @@ Servidor %2$s</string>
     <string name="hist_load_failed">Não foi possível carregar o histórico: %1$s</string>
     <string name="hist_need_login">Entre na conta para ver o histórico</string>
     <string name="hist_unknown_name">Reunião sem nome</string>
-    <string name="hist_detail_next">As legendas frase a frase e estatísticas mais finas vêm na próxima etapa.</string>
+    <string name="hist_detail_next">Mais conteúdo deste registro ainda não foi decidido (a ata foi descartada).</string>
     <string name="lang_zh_short">Chinês</string>
     <string name="lang_pt_short">Português (Brasil)</string>
+    <string name="hist_delete_local">Excluir neste celular</string>
+    <string name="hist_delete_confirm">Some apenas da lista deste celular; a reunião e as legendas no servidor não mudam (outros continuam vendo).</string>
+    <string name="hist_deleted_local">Excluído neste celular</string>
+    <string name="hist_restore_local">Mostrar de novo</string>
+    <string name="hist_long_press_hint">Pressione e segure um registro para excluir neste celular</string>
+    <string name="hist_delete_failed">Falha ao excluir: %1$s</string>
 </resources>

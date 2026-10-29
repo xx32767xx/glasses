@@ -426,7 +426,13 @@ Server %2$s</string>
     <string name="hist_load_failed">Could not load history: %1$s</string>
     <string name="hist_need_login">Sign in to see your history</string>
     <string name="hist_unknown_name">Untitled meeting</string>
-    <string name="hist_detail_next">Sentence-by-sentence subtitles and richer stats come next.</string>
+    <string name="hist_detail_next">More content for this record is not decided yet (the minutes feature was dropped).</string>
     <string name="lang_zh_short">Chinese</string>
     <string name="lang_pt_short">Brazilian Portuguese</string>
+    <string name="hist_delete_local">Delete on this phone</string>
+    <string name="hist_delete_confirm">It only disappears from the list on this phone; the meeting and subtitles on the server are untouched (others still see it).</string>
+    <string name="hist_deleted_local">Deleted on this phone</string>
+    <string name="hist_restore_local">Show it again</string>
+    <string name="hist_long_press_hint">Press and hold a record to delete it on this phone</string>
+    <string name="hist_delete_failed">Could not delete: %1$s</string>
 </resources>

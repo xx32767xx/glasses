@@ -61,6 +61,24 @@ public class HistoryDetailActivity extends android.app.Activity {
             return;
         }
 
+        // 从本机删除：与列表长按同一个动作（详情页给一个看得见的按钮，长按毕竟不显眼）
+        final String roomId = record.optString("id", "");
+        final String recordName = record.optString("name", "");
+        findViewById(R.id.detailDelete).setOnClickListener(v ->
+                new android.app.AlertDialog.Builder(this)
+                        .setTitle(recordName.isEmpty() ? getString(R.string.hist_unknown_name) : recordName)
+                        .setMessage(R.string.hist_delete_confirm)
+                        .setNegativeButton(R.string.common_cancel, null)
+                        .setPositiveButton(R.string.hist_delete_local, (dialog, which) -> {
+                            String user = getSharedPreferences("leion", MODE_PRIVATE)
+                                    .getString("termsUser", "");
+                            HistoryStore.hide(this, user, roomId, System.currentTimeMillis());
+                            android.widget.Toast.makeText(this, getString(R.string.hist_deleted_local),
+                                    android.widget.Toast.LENGTH_SHORT).show();
+                            finish();      // 回列表；列表 onResume 重新拉一次并过滤
+                        })
+                        .show());
+
         String name = record.optString("name", "");
         nameView.setText(name.isEmpty() ? getString(R.string.hist_unknown_name) : name);
         kindView.setText("interpreter".equals(record.optString("kind", "meeting"))

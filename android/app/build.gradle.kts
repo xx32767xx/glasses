@@ -111,9 +111,11 @@ android {
     //       doctor-db 会报“结构过旧”，客户端也把这句翻成人话。见 docs/20 §14。
     // 4.70：历史记录页（GET /org/history：只给我参加过的会，六样卡片信息）+ 详情骨架；
     //       字幕保存期用服务端给的值，类型标签只有会议/翻译官两种。见 docs/21 §4.70。
+    // 4.72：历史记录加「本机删除」（prefs 按账号隔离 + 长按/详情页入口，服务端一列不动）；
+    //       会议纪要按老师建议砍掉（详情页不再承诺纪要）。见 docs/21 §4.72。
     // 4.57：三语的一处安全细节——房间页在**正在开麦上传时不自动 recreate**（换语言会把这一段发言打断）。
-        versionCode = 98
-        versionName = "4.69"
+        versionCode = 99
+        versionName = "4.70"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），

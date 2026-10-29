@@ -1682,6 +1682,48 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('语言去重', /SELECT DISTINCT lang FROM room_members/.test(rooms))
   })
 
+  await it('4.71：历史记录「本机删除」（不碰服务端数据）', () => {
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const java = (f) => readFileSync(join(javaDir, f), 'utf-8')
+    const store = java('HistoryStore.java')
+    const history = java('HistoryActivity.java')
+    const detail = java('HistoryDetailActivity.java')
+
+    // ① 存本机、按账号隔离
+    check('隐藏列表存在本机 prefs 里', /getSharedPreferences\(PREFS/.test(store)
+      && /historyHidden:/.test(store))
+    check('按账号隔离（换账号不会串）', /KEY_PREFIX \+ \(name\.isEmpty\(\)/.test(store))
+    check('有上限，不会无限长', /MAX_ENTRIES = \d+/.test(store) && /subList\(0, MAX_ENTRIES\)/.test(store))
+    check('重复隐藏是幂等的', /removeIf\(\(one\) -> one\.id\.equals\(roomId\)\)/.test(store))
+    check('存坏了不影响整页（退化成"没藏过"）', /catch \(Exception ignored\) \{[\s\S]{0,200}宁可多显示一条/.test(store))
+
+    // ② 列表：过滤 + 长按删除 + 全部藏完还有空态
+    check('列表按隐藏集合过滤', /hiddenIds\.contains\(item\.optString\("id"/.test(history))
+    check('长按删除', /setOnLongClickListener[\s\S]{0,200}confirmDeleteLocal/.test(history))
+    check('删完立刻重画', /HistoryStore\.hide\(this, userName, roomId[\s\S]{0,400}load\(\)/.test(history))
+    check('全部删完显示空态而不是错误提示',
+      /emptyView\.setVisibility\(shown == 0 \? View\.VISIBLE : View\.GONE\)/.test(history))
+    check('删前二次确认，并说明只影响本机', /hist_delete_confirm/.test(history))
+
+    // ③ 详情页也给一个看得见的删除入口（长按不显眼）
+    check('详情页有删除按钮', /@\+id\/detailDelete/.test(
+      readFileSync(join(resDir, 'layout', 'page_history_detail.xml'), 'utf-8')))
+    check('详情页删除走同一个 HistoryStore', /HistoryStore\.hide\(this, user, roomId/.test(detail))
+
+    // ④ 关键：本机删除**不许**碰服务端
+    check('没有调用任何"删历史"的服务端接口',
+      !/orgHistoryDelete|history\/.+delete|DELETE/.test(history + detail))
+    const relayHistory = readFileSync(join(ROOT, 'relay', 'org-api.mjs'), 'utf-8')
+    check('服务端也没有为它开删除路由',
+      !/segments\[1\] === 'history' && segments\.length === 4/.test(relayHistory))
+    // 二次确认文案本身就必须说清"服务端不受影响"，否则用户会以为把别人的记录也删了
+    const zh = readFileSync(join(resDir, 'values', 'strings.xml'), 'utf-8')
+    const confirmLine = (zh.match(/<string name="hist_delete_confirm">([^<]*)<\/string>/) ?? [])[1] ?? ''
+    check('确认文案里明说服务端不受影响',
+      confirmLine.includes('服务端') && /本机|这台设备/.test(confirmLine), confirmLine)
+  })
+
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {
     const targets = [
       ...collectSources(join(ROOT, 'android', 'app', 'src', 'main', 'java'), ['.java']),

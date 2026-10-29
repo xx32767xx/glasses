@@ -9,6 +9,7 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -39,6 +40,10 @@ public class HistoryActivity extends android.app.Activity {
     private TextView emptyView;
     private TextView hintView;
     private LinearLayout list;
+    /** 这台设备上被隐藏（从本机删除）的会议 id（4.71）。 */
+    private java.util.Set<String> hiddenIds = new java.util.HashSet<>();
+    /** 当前账号：隐藏列表按账号隔离。 */
+    private String userName = "";
 
     @Override
     protected void attachBaseContext(android.content.Context base) {
@@ -69,6 +74,8 @@ public class HistoryActivity extends android.app.Activity {
         findViewById(R.id.homeNavHistory).setOnClickListener(v -> { });
 
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        userName = prefs.getString("termsUser", "");
+        hiddenIds = HistoryStore.hiddenIds(this, userName);
         client = new LanClient(prefs.getString("host", ""), prefs.getString("secret", ""), null);
         String token = prefs.getString("accountToken", "");
         if (token == null || token.isEmpty()) {
@@ -125,13 +132,20 @@ public class HistoryActivity extends android.app.Activity {
             emptyView.setVisibility(View.VISIBLE);
             return;
         }
-        emptyView.setVisibility(View.GONE);
         LayoutInflater inflater = LayoutInflater.from(this);
+        int shown = 0;
         for (int i = 0; i < items.length(); i++) {
             JSONObject item = items.optJSONObject(i);
             if (item == null) continue;
+            // 本机删掉的直接不显示（服务端仍然有这条记录，别的设备照样看得见）
+            if (hiddenIds.contains(item.optString("id", ""))) continue;
             list.addView(card(inflater, item));
+            shown += 1;
         }
+        // 全都是"本机已删除"的时候也要给空态，否则看着像加载失败
+        emptyView.setVisibility(shown == 0 ? View.VISIBLE : View.GONE);
+        hintView.setVisibility(shown == 0 ? View.GONE : View.VISIBLE);
+        if (shown > 0) hintView.setText(getString(R.string.hist_long_press_hint));
     }
 
     private View card(LayoutInflater inflater, final JSONObject item) {
@@ -161,7 +175,36 @@ public class HistoryActivity extends android.app.Activity {
             intent.putExtra(HistoryDetailActivity.EXTRA_JSON, item.toString());
             startActivity(intent);
         });
+        // 长按 = 从本机删除。为什么用长按：卡片本身要能点进详情，
+        // 再挂一个删除按钮在每张卡上会把列表弄乱；长按是"少用但存在"的操作该待的地方。
+        row.setOnLongClickListener(v -> {
+            confirmDeleteLocal(item.optString("id", ""), item.optString("name", ""));
+            return true;
+        });
         return row;
+    }
+
+    /** 从本机删除：先确认，并且把"只影响这台设备"说清楚。 */
+    private void confirmDeleteLocal(final String roomId, String name) {
+        if (roomId == null || roomId.isEmpty()) return;
+        String title = name == null || name.isEmpty() ? getString(R.string.hist_unknown_name) : name;
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage(R.string.hist_delete_confirm)
+                .setNegativeButton(R.string.common_cancel, null)
+                .setPositiveButton(R.string.hist_delete_local, (dialog, which) -> {
+                    try {
+                        HistoryStore.hide(this, userName, roomId, System.currentTimeMillis());
+                        hiddenIds = HistoryStore.hiddenIds(this, userName);
+                        Toast.makeText(this, getString(R.string.hist_deleted_local),
+                                Toast.LENGTH_SHORT).show();
+                        load();          // 重新拉一遍并重画（本地已隐藏，视觉上立刻消失）
+                    } catch (Exception error) {
+                        Toast.makeText(this, getString(R.string.hist_delete_failed,
+                                String.valueOf(error.getMessage())), Toast.LENGTH_LONG).show();
+                    }
+                })
+                .show();
     }
 
     /** 类型标签：只有两种含义（同传会议 / 同传翻译官），别往里塞场景。 */

@@ -87,6 +87,17 @@
                 android:textSize="@dimen/text_secondary" />
 
             <Button
+                android:id="@+id/detailDelete"
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/height_field"
+                android:layout_marginTop="@dimen/space_section"
+                android:background="@drawable/tap_btn_secondary"
+                android:text="@string/hist_delete_local"
+                android:textAllCaps="false"
+                android:textColor="@color/err"
+                android:textSize="@dimen/text_body" />
+
+            <Button
                 android:id="@+id/detailBack"
                 android:layout_width="match_parent"
                 android:layout_height="@dimen/height_field"

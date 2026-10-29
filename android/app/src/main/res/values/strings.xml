@@ -706,5 +706,11 @@
     <string name="hist_load_failed">读不到历史记录：%1$s</string>
     <string name="hist_need_login">先登录才能看历史记录</string>
     <string name="hist_unknown_name">未命名会议</string>
-    <string name="hist_detail_next">逐句字幕与更细的统计在下一步开发。</string>
+    <string name="hist_detail_next">这条记录的更多内容还没定（会议纪要那一块已按建议取消）。</string>
+    <string name="hist_delete_local">从本机删除</string>
+    <string name="hist_delete_confirm">只从这台设备的历史列表里去掉；服务端的会议与字幕不受影响（别人仍看得到）。</string>
+    <string name="hist_deleted_local">已从本机删除</string>
+    <string name="hist_restore_local">恢复显示</string>
+    <string name="hist_long_press_hint">长按一条记录可从本机删除</string>
+    <string name="hist_delete_failed">删除失败：%1$s</string>
 </resources>
