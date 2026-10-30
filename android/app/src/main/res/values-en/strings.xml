@@ -451,4 +451,11 @@ Server %2$s</string>
     <string name="room_listen_off">Listen</string>
     <string name="room_listen_on">Listening</string>
     <string name="room_listen_hint">Headphones recommended, otherwise the other side hears an echo</string>
+    <string name="filter_speaker">By speaker</string>
+    <string name="filter_lang">By language</string>
+    <string name="filter_all">All</string>
+    <string name="filter_clear">Clear filter</string>
+    <string name="filter_active">Filtered: %1$s · %2$s</string>
+    <string name="transcript_filtered_empty">No transcript lines match the filter</string>
+    <string name="filter_unknown_speaker">Unknown speaker</string>
 </resources>

@@ -1865,6 +1865,43 @@ export async function runAndroidOrderSuite({ it, check }) {
       /if \(response\.optBoolean\("reset", false\)\) \{\s*\n\s*\/\/[\s\S]{0,300}?seq = serverSeq;/.test(client))
   })
 
+  await it('4.82：转写可筛选 —— 按发言人 / 按语言', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const detail = readFileSync(join(javaDir, 'HistoryDetailActivity.java'), 'utf-8')
+    const zh = readFileSync(join(resDir, 'values', 'strings.xml'), 'utf-8')
+
+    // ① 两个维度都在，且选项从真实数据里现算（不是写死的）
+    check('按发言人筛选', /R\.string\.filter_speaker/.test(detail))
+    check('按语言筛选', /R\.string\.filter_lang/.test(detail))
+    check('选项来自实际出现过的值', /private java\.util\.List<String> distinct\(String key\)/.test(detail)
+      && /distinct\("username"\)/.test(detail) && /distinct\("srcLang"\)/.test(detail))
+
+    // ② 两个维度同时生效
+    check('筛选条件同时生效', /private boolean matchesFilter\(org\.json\.JSONObject line\)/.test(detail)
+      && /filterSpeaker\.equals\(line\.optString\("username"/.test(detail)
+      && /filterLang\.equals\(line\.optString\("srcLang"/.test(detail))
+
+    // ③ 不重新请求服务端（只是重画）
+    check('筛选不重新拉数据', /renderTranscript\(allLines, currentMineName\(\)\)/.test(detail))
+
+    // ④ 筛空了要说清是"没命中"，不是"没有转写"
+    check('筛空有专门文案', /R\.string\.transcript_filtered_empty/.test(detail))
+    const zhFiltered = (zh.match(/<string name="transcript_filtered_empty">([^<]*)</) ?? [])[1] ?? ''
+    check('文案区分了两种空', zhFiltered.includes('筛选') && !zhFiltered.includes('还没有'), zhFiltered)
+
+    // ⑤ 按钮上要能看出当前筛选了什么 + 能清除
+    check('按钮显示当前筛选', /R\.string\.filter_active/.test(detail)
+      && /renderFilterButton\(\)/.test(detail))
+    check('有清除筛选', /R\.string\.filter_clear/.test(detail))
+    check('筛选按钮不再是"没做"的提示',
+      !/transcript_filter_soon/.test(detail))
+
+    // ⑥ 语言码要显示成人话（zh-CN → 中文）
+    check('语言码翻成人话', /private String langLabel\(String code\)/.test(detail)
+      && /R\.string\.lang_zh_short/.test(detail))
+  })
+
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {
     const targets = [
       ...collectSources(join(ROOT, 'android', 'app', 'src', 'main', 'java'), ['.java']),

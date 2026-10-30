@@ -21,6 +21,12 @@ public class HistoryDetailActivity extends android.app.Activity {
     /** 卡片把自己的 JSON 整个带过来：详情页要什么自己取，不必再请求一次。 */
     public static final String EXTRA_JSON = "record";
 
+    /** 拉回来的全部转写（筛选不重新请求，只重画）。 */
+    private org.json.JSONArray allLines = null;
+    /** 筛选状态：空串 = 不按该维度筛选（4.82）。 */
+    private String filterSpeaker = "";
+    private String filterLang = "";
+
     @Override
     protected void attachBaseContext(android.content.Context base) {
         super.attachBaseContext(UiLang.wrap(base));
@@ -45,9 +51,7 @@ public class HistoryDetailActivity extends android.app.Activity {
         /* 转写区：外框高度固定，里面是多张字幕卡（与会议中格式一致） */
         findViewById(R.id.detailBack).setOnClickListener(v -> finish());
         // 筛选入口：转写格式下一轮定，现在点了明说还没做（不做假的筛选面板）
-        findViewById(R.id.transcriptFilter).setOnClickListener(v ->
-                android.widget.Toast.makeText(this, getString(R.string.transcript_filter_soon),
-                        android.widget.Toast.LENGTH_SHORT).show());
+        findViewById(R.id.transcriptFilter).setOnClickListener(v -> showFilterDialog());
 
         JSONObject record = null;
         String raw = getIntent() == null ? null : getIntent().getStringExtra(EXTRA_JSON);
@@ -139,18 +143,147 @@ public class HistoryDetailActivity extends android.app.Activity {
 
     private void renderTranscript(org.json.JSONArray lines, String mineName) {
         android.widget.LinearLayout list = findViewById(R.id.transcriptList);
+        allLines = lines;
+        renderFilterButton();
         if (lines == null || lines.length() == 0) {
             showTranscriptEmpty();
             return;
         }
         list.removeAllViews();
+        int shown = 0;
         for (int i = 0; i < lines.length(); i++) {
             org.json.JSONObject one = lines.optJSONObject(i);
-            if (one == null) continue;
+            if (one == null || !matchesFilter(one)) continue;
             list.addView(SubtitleCard.render(list, one, mineName));
+            shown += 1;
         }
-        findViewById(R.id.transcriptScroll).setVisibility(android.view.View.VISIBLE);
-        findViewById(R.id.transcriptEmpty).setVisibility(android.view.View.GONE);
+        findViewById(R.id.transcriptScroll).setVisibility(shown == 0 ? android.view.View.GONE : android.view.View.VISIBLE);
+        android.widget.TextView empty = findViewById(R.id.transcriptEmpty);
+        if (shown == 0) {
+            // 有转写、但都被筛掉了：说清是"筛选没命中"，不是"没有转写"
+            empty.setText(getString(R.string.transcript_filtered_empty));
+            empty.setVisibility(android.view.View.VISIBLE);
+        } else {
+            empty.setText(getString(R.string.transcript_empty));
+            empty.setVisibility(android.view.View.GONE);
+        }
+    }
+
+    /** 一条转写是否命中当前筛选（两个维度同时生效）。 */
+    private boolean matchesFilter(org.json.JSONObject line) {
+        if (!filterSpeaker.isEmpty()
+                && filterSpeaker.equals(line.optString("username", "")) == false) return false;
+        if (!filterLang.isEmpty()
+                && filterLang.equals(line.optString("srcLang", "")) == false) return false;
+        return true;
+    }
+
+    /** 筛选按钮的文案：没筛时就是"筛选"，筛了就写明"谁 · 哪种语言"。 */
+    private void renderFilterButton() {
+        android.widget.TextView button = findViewById(R.id.transcriptFilter);
+        if (button == null) return;
+        boolean active = !filterSpeaker.isEmpty() || !filterLang.isEmpty();
+        if (active) {
+            String who = filterSpeaker.isEmpty() ? getString(R.string.filter_all) : filterSpeaker;
+            String lang = filterLang.isEmpty() ? getString(R.string.filter_all) : langLabel(filterLang);
+            button.setText(getString(R.string.filter_active, who, lang));
+            button.setBackgroundResource(R.drawable.bg_chip_brand);
+            button.setTextColor(getColor(R.color.brand));
+        } else {
+            button.setText(getString(R.string.transcript_filter));
+            button.setBackgroundResource(R.drawable.bg_chip);
+            button.setTextColor(getColor(R.color.ink_soft));
+        }
+    }
+
+    /**
+     * 两个维度依次选：先发言人、再语言（都是"全部 + 实际出现过的值"）。
+     *
+     * <p>为什么不做成一屏多选：选项是从**实际数据**里现算的，一屏塞两组长列表在小屏上很难点；
+     * 两次单选既短又不会误触。选项也只列"这场真实出现过的"，不给空选项。
+     */
+    private void showFilterDialog() {
+        if (allLines == null || allLines.length() == 0) {
+            android.widget.Toast.makeText(this, getString(R.string.transcript_empty),
+                    android.widget.Toast.LENGTH_SHORT).show();
+            return;
+        }
+        final java.util.List<String> speakers = distinct("username");
+        speakers.add(0, "");
+        String[] labels = new String[speakers.size()];
+        int checked = 0;
+        for (int i = 0; i < speakers.size(); i++) {
+            String value = speakers.get(i);
+            if (value.isEmpty()) labels[i] = getString(R.string.filter_all);
+            else labels[i] = value;
+            if (value.equals(filterSpeaker)) checked = i;
+        }
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(R.string.filter_speaker)
+                .setSingleChoiceItems(labels, checked, (dialog, which) -> {
+                    filterSpeaker = speakers.get(which);
+                    dialog.dismiss();
+                    showLangPicker();
+                })
+                .setNeutralButton(R.string.filter_clear, (dialog, which) -> {
+                    filterSpeaker = "";
+                    filterLang = "";
+                    renderTranscript(allLines, currentMineName());
+                })
+                .setNegativeButton(R.string.common_cancel, null)
+                .show();
+    }
+
+    private void showLangPicker() {
+        final java.util.List<String> langs = distinct("srcLang");
+        langs.add(0, "");
+        String[] labels = new String[langs.size()];
+        int checked = 0;
+        for (int i = 0; i < langs.size(); i++) {
+            String value = langs.get(i);
+            labels[i] = value.isEmpty() ? getString(R.string.filter_all) : langLabel(value);
+            if (value.equals(filterLang)) checked = i;
+        }
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(R.string.filter_lang)
+                .setSingleChoiceItems(labels, checked, (dialog, which) -> {
+                    filterLang = langs.get(which);
+                    dialog.dismiss();
+                    renderTranscript(allLines, currentMineName());
+                })
+                .setNeutralButton(R.string.filter_clear, (dialog, which) -> {
+                    filterSpeaker = "";
+                    filterLang = "";
+                    renderTranscript(allLines, currentMineName());
+                })
+                .setNegativeButton(R.string.common_cancel, null)
+                .show();
+    }
+
+    /** 从已经拉回来的转写里算出某个维度的实际取值（去重、保持出现顺序）。 */
+    private java.util.List<String> distinct(String key) {
+        java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
+        if (allLines != null) {
+            for (int i = 0; i < allLines.length(); i++) {
+                org.json.JSONObject one = allLines.optJSONObject(i);
+                if (one == null) continue;
+                String value = one.optString(key, "");
+                if (!value.isEmpty()) seen.add(value);
+            }
+        }
+        return new java.util.ArrayList<>(seen);
+    }
+
+    /** 语种码 → 当前界面语言的短名（zh-CN → 中文 / pt-BR → 巴西葡语）。 */
+    private String langLabel(String code) {
+        if (code.startsWith("zh")) return getString(R.string.lang_zh_short);
+        if (code.startsWith("pt")) return getString(R.string.lang_pt_short);
+        return code;
+    }
+
+    /** 当前账号名（SubtitleCard 用它判断"是不是自己说的"）。 */
+    private String currentMineName() {
+        return getSharedPreferences("leion", MODE_PRIVATE).getString("termsUser", "");
     }
 
     /** 「使用语种」那一列只显示**数量**（详情页空间有限；具体语言在下面转写区再说）。 */

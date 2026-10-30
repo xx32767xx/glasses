@@ -729,4 +729,11 @@
     <string name="room_listen_off">听声音</string>
     <string name="room_listen_on">正在听</string>
     <string name="room_listen_hint">建议戴耳机，否则对方会听到回声</string>
+    <string name="filter_speaker">按发言人</string>
+    <string name="filter_lang">按语言</string>
+    <string name="filter_all">全部</string>
+    <string name="filter_clear">清除筛选</string>
+    <string name="filter_active">已筛选：%1$s · %2$s</string>
+    <string name="transcript_filtered_empty">没有符合筛选条件的转写</string>
+    <string name="filter_unknown_speaker">未知发言人</string>
 </resources>

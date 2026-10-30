@@ -451,4 +451,11 @@ Servidor %2$s</string>
     <string name="room_listen_off">Ouvir</string>
     <string name="room_listen_on">Ouvindo</string>
     <string name="room_listen_hint">Recomendado usar fone, senão a outra pessoa ouve eco</string>
+    <string name="filter_speaker">Por falante</string>
+    <string name="filter_lang">Por idioma</string>
+    <string name="filter_all">Todos</string>
+    <string name="filter_clear">Limpar filtro</string>
+    <string name="filter_active">Filtrado: %1$s · %2$s</string>
+    <string name="transcript_filtered_empty">Nenhuma linha corresponde ao filtro</string>
+    <string name="filter_unknown_speaker">Falante desconhecido</string>
 </resources>
