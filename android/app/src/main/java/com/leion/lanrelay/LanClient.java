@@ -655,6 +655,10 @@ public class LanClient {
                     seq = serverSeq;
                 }
                 if (response.optBoolean("reset", false)) {
+                    // 4.81：服务端说"序号重置"就**无条件跟随**。
+                    // 以前只在 serverSeq < seq 时才更新，于是当服务端因为房间/全局序号口径不一致
+                    // 而回一个"更大"的 seq 时，双方会互相顶着死循环。
+                    seq = serverSeq;
                     listener.onStatus("电脑侧序号已重置（转发进程重启过），已自动跟随");
                 }
                 if (response.optBoolean("changed", false)) {

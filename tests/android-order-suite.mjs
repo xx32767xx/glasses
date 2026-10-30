@@ -1844,6 +1844,27 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('提示戴耳机（回声的取舍写在界面里）', /room_listen_hint/.test(room))
   })
 
+  await it('4.81：/frame 的 seq 不许被 info() 覆盖（否则死循环刷日志）', () => {
+    const relay = readFileSync(join(ROOT, 'relay', 'lan-relay.mjs'), 'utf-8')
+    const client = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay', 'LanClient.java'), 'utf-8')
+
+    // ① 服务端：info() 必须在前，我们算的 seq/frame/changed 在后（覆盖它）
+    check('有专门的组装函数', /function framePayload\(/.test(relay))
+    check('复位分支用 framePayload 且 info() 在前',
+      /framePayload\(info\(\), \{\s*\n\s*ok: true,\s*\n\s*reset: true,/.test(relay))
+    check('立即给帧分支同样如此', /framePayload\(info\(\), \{\s*\n\s*ok: true, changed: true, seq: curSeq/.test(relay))
+    check('再也没有"先给 seq、再 ...info()"的写法',
+      !/seq: curSeq,\s*\n\s*frame: curFrame,\s*\n\s*\.\.\.info\(\)/.test(relay))
+
+    // ② 复位日志要限流（否则一秒几十行）
+    check('复位日志限流', /resetLogAt/.test(relay) && /now - \(state\.resetLogAt \?\? 0\) > 3000/.test(relay))
+    check('有死循环断路器', /resetBurst > 20/.test(relay))
+
+    // ③ 客户端：拿到 reset 就无条件跟随
+    check('客户端 reset 时无条件把 seq 拉回',
+      /if \(response\.optBoolean\("reset", false\)\) \{\s*\n\s*\/\/[\s\S]{0,300}?seq = serverSeq;/.test(client))
+  })
+
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {
     const targets = [
       ...collectSources(join(ROOT, 'android', 'app', 'src', 'main', 'java'), ['.java']),

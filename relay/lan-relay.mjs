@@ -548,6 +548,10 @@ export async function startRelay(rawOptions = {}) {
     audioRoomAt: 0,
     /** how many chunks were actually fanned out (debug) */
     audioFanoutChunks: 0,
+    /** 复位日志限流用（4.81） */
+    resetLogAt: 0,
+    resetBurst: 0,
+    resetBurstAt: 0,
     /** 最近的帧 JSON（供 /hello、/status 用） */
     hello: null,
     /** 长轮询里挂着的等待者 */
@@ -1095,6 +1099,23 @@ export async function startRelay(rawOptions = {}) {
     }
   }
 
+  /**
+   * 组装 /frame 的响应体（4.81 修）。
+   *
+   * <p><b>为什么单独抽出来</b>：以前是 `send(response, 200, { seq: curSeq, ..., ...info() })`，
+   * 而 `info()` 里也带 `seq`（**全局**序号）—— 对象展开是从左到右覆盖，
+   * 于是房间维度的 `seq` 刚设好就被全局值盖掉。
+   *
+   * <p>后果极难查：某房间自己还没出过帧（roomSeq=0），但别的房间已经出到第 5 帧，
+   * 手机拿到"你是 5"→ 下次带 since=5 来 → 服务端又判定"序号比房间的大"→ 立刻返回 →
+   * **手机与服务端互相顶着死循环**，日志一秒刷几十行"已让它复位"。
+   *
+   * <p>所以这里把 `info()` 放**前面**，让我们算出来的字段覆盖它。
+   */
+  function framePayload(base, fields) {
+    return { ...base, ...fields }
+  }
+
   function info() {
     return {
       device: state.lastFrame?.device ?? 'Leion Pro',
@@ -1413,20 +1434,35 @@ export async function startRelay(rawOptions = {}) {
         const curSeq = roomParam === '' ? state.seq : roomSeq
         const curFrame = roomParam === '' ? state.lastFrame : (roomFrame === undefined ? null : roomFrame.frame)
         if (since > curSeq) {
-          debug(`↩ 手机的序号(${since}) 比服务端(${curSeq}) 大 —— 转发进程重启过，已让它复位`)
-          send(response, 200, {
+          // 4.81：这条日志以前会一秒刷几十行。限流到 3 秒一条，并顺手做自保 ——
+          // 如果同一个 since 在一秒内被问了几十次，说明客户端在死循环（旧版客户端就是），
+          // 这时**主动慢一点回**，避免把 relay 与日志一起打满。
+          const now = Date.now()
+          state.resetBurst = (now - state.resetBurstAt <= 1000) ? state.resetBurst + 1 : 1
+          state.resetBurstAt = now
+          if (now - (state.resetLogAt ?? 0) > 3000) {
+            state.resetLogAt = now
+            debug(`↩ 手机的序号(${since}) 比服务端(${curSeq}) 大 —— 转发进程重启过，已让它复位`
+              + (state.resetBurst > 1 ? `（1 秒内第 ${state.resetBurst} 次）` : ''))
+          }
+          if (state.resetBurst > 20) {
+            // 断路器：客户端在空转，回得慢一点就不至于把服务端拖垮
+            await new Promise((resolve) => setTimeout(resolve, 500))
+          }
+          send(response, 200, framePayload(info(), {
             ok: true,
             reset: true,
             changed: curFrame !== null,
             seq: curSeq,
             frame: curFrame,
-            ...info(),
-          })
+          }))
           return
         }
         if (curSeq > since) {
           debug(`➡ 手机取字幕（since=${since}），立即给第 ${curSeq} 帧`)
-          send(response, 200, { ok: true, changed: true, seq: curSeq, frame: curFrame, ...info() })
+          send(response, 200, framePayload(info(), {
+            ok: true, changed: true, seq: curSeq, frame: curFrame,
+          }))
           return
         }
         // 挂住，等新帧或超时。
@@ -1440,13 +1476,18 @@ export async function startRelay(rawOptions = {}) {
           clearTimeout(timer)
           state.waiters.delete(onNotify)
           if (response.writableEnded || state.closed) return
-          send(response, 200, {
+          // 4.81：这里不能用请求开始时捕获的 curSeq/curFrame ——
+          // 那是**挂住之前**的快照，被唤醒时新帧已经到了，用快照会把旧帧发回去。
+          // 同样也不能让 info() 的全局 seq 覆盖房间维度的 seq。
+          const liveRoom = roomParam === '' ? null : state.framesByRoom.get(roomParam)
+          const liveSeq = roomParam === '' ? state.seq : (state.seqByRoom.get(roomParam) ?? 0)
+          const liveFrame = roomParam === '' ? state.lastFrame : (liveRoom === undefined ? null : liveRoom.frame)
+          send(response, 200, framePayload(info(), {
             ok: true,
-            changed,
-            seq: state.seq,
-            frame: changed ? state.lastFrame : null,
-            ...info(),
-          })
+            changed: changed && liveFrame !== null,
+            seq: liveSeq,
+            frame: changed ? liveFrame : null,
+          }))
         }
         const timer = setTimeout(() => { settle(false) }, options.pollHoldMs)
         timer.unref?.()

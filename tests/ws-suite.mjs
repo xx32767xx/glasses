@@ -87,6 +87,44 @@ function openSocket(url) {
 }
 
 export async function runWsSuite({ it, check }) {
+  await it('4.81：房间维度的 seq 不被全局 seq 覆盖（否则手机与服务器互相顶成死循环）', async () => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const dir = mkdtempSync(join(tmpdir(), 'seq-room-'))
+    const relay = await startRelay({
+      dataDir: dir, port: 0, host: '127.0.0.1', secret: 's3cret-0123456789abcdef',
+      quiet: true, pollHoldMs: 300,
+    })
+    try {
+      const base = `http://127.0.0.1:${relay.port}`
+      const headers = { 'X-Leion-Secret': 's3cret-0123456789abcdef' }
+      const bus = join(dir, 'subtitle-bus.json')
+      // “别的房间”先出两帧：全局 seq 到 2，但 room-other 自己没出过帧
+      for (const text of ['一', '二']) {
+        writeFileSync(bus, JSON.stringify({
+          speaker: 'them', lang: 'pt-BR', lines: [text], text, source: 'x', partial: false,
+        }))
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      }
+      const hello = await (await fetch(`${base}/hello`, { headers })).json()
+      check('全局确实出过帧（seq > 0）', hello.seq > 0, String(hello.seq))
+
+      // 房间维度：这个房间没有帧 → 必须回 seq=0，否则手机拿着全局 seq 反复来撞
+      const first = await (await fetch(`${base}/frame?since=${hello.seq}&room=room-none`, { headers })).json()
+      check('复位分支回的是房间维度 seq（0）', first.seq === 0, JSON.stringify({ seq: first.seq, reset: first.reset }))
+      check('复位分支标了 reset', first.reset === true)
+
+      // 跟着服务端复位之后再问一次：不能又判复位（这就是死循环的判定）
+      const second = await (await fetch(`${base}/frame?since=0&room=room-none`, { headers })).json()
+      check('跟随复位后不再判复位', second.reset !== true, JSON.stringify(second))
+      check('超时回包的 seq 也是房间维度', second.seq === 0, String(second.seq))
+    } finally {
+      relay.close?.()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+
   // ── ① 纯函数：帧编解码 ─────────────────────────────────────────────────
 
   await it('4.76：实时传声 —— 音频只给"开了倾听"的同房间连接', async () => {
