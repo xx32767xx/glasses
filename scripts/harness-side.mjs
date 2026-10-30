@@ -30,6 +30,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { CHECKOUT } from '../lib/real-tools.mjs'
 import { ensureLoaderLinks } from '../lib/loader-links.mjs'
 import { buildComposition, LIVE_DATA_DIR, repoFile } from '../lib/composition.mjs'
@@ -241,4 +242,17 @@ async function main() {
   process.exit(code)
 }
 
-await main()
+// ⚠️ 必须只在**命令行直接运行**时才起这个常驻进程。
+//
+// 原来这里是裸的 `await main()` —— 平时不显形，但只要有人 `import` 这个文件
+// （测试里想把拼好的参数喂给 `parseArgs()` 校验、或者别的脚本想复用它的解析），
+// 就会**当场启动一个常驻大脑**：它不会返回，于是 import 它的那个进程永远挂住。
+// 实际就撞过一次：一条"命令行拼接对不对"的测试让整个全量验证卡死十几分钟，
+// 终端上一个字都不输出（因为进程一直活着，报告根本没机会打印）。
+//
+// `process.argv[1]` 是"被 node 执行的那个文件"：测试/别的脚本 import 时它是别人，
+// 只有 `node scripts/harness-side.mjs` 时才是自己。
+const isCli = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href
+if (isCli) {
+  await main()
+}

@@ -25,6 +25,7 @@ import { runBridgeSuite } from './bridge-suite.mjs'
 import { runRelaySuite } from './relay-suite.mjs'
 import { runDebugSuite } from './debug-suite.mjs'
 import { runStartAllSuite } from './start-all-suite.mjs'
+import { runStartMultiSuite } from './start-multi-suite.mjs'
 import { runDbSuite } from './db-suite.mjs'
 import { runRoomsSuite } from './rooms-suite.mjs'
 import { runFloorSuite } from './floor-suite.mjs'
@@ -186,6 +187,11 @@ await runDebugSuite(helpers)
 
 heading('一键启动（start-all：命令行拼接与前置检查）')
 await runStartAllSuite(helpers)
+
+// 多场会并行：转发读**目录**、每场会一套识别/大脑各写**一个文件**。
+// 这一对反向语义搞混了不会报错，只会让两场会互相覆盖字幕 —— 所以单独钉一遍。
+heading('多场会并行（start-multi：房间调度 / 宽限期 / 两场会不共享可写文件）')
+await runStartMultiSuite(helpers)
 
 // ── P1：SQLite 访问层与 JSON 迁移 ────────────────────────────────────────────
 // 房间与发言权需要原子互斥（JSON 文件没有事务），字幕需要按时间清理。
