@@ -792,24 +792,41 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('标注说清了它是参考实现', /参考实现/.test(main))
   })
 
-  await it('集成契约文档：三条命令能跑、能力表与错误码都在（4.48）', () => {
+  await it('集成契约文档：分工边界、要调的端点、错误码与演进规则都在（2026-10-29 重写）', () => {
     const doc = readFileSync(join(ROOT, 'docs', '23-集成契约.md'), 'utf-8')
-    for (const needed of [
-      'relay/lan-relay.mjs', 'scripts/fake-frames.mjs',   // 三条命令里至少这两条
-      'X-Leion-Secret', 'X-Leion-Token',                   // 鉴权
-      'cols', 'lineBudget', 'features',                    // 能力协商
-      'frame-ws', 'room-closed-push', 'session-push',      // 能力标记
-      '410', '507', '401',                                 // 错误码
-      'partial', 'source',                                 // 帧的关键字段
-      'label',                                             // 单会话 per-label 待拍板
-    ]) {
+    const orgApi = readFileSync(join(ROOT, 'relay', 'org-api.mjs'), 'utf-8')
+
+    // ① 分工边界：翻译官走阿里云，不许再碰我们的字幕管道
+    check('写明了\u300c不碰\u300d的端点', /\u4e0d\u8981\u8c03\u7528/.test(doc)
+      && doc.includes('POST /audio') && doc.includes('GET /frame'))
+    check('写明了翻译走阿里云、独立通路', /\u963f\u91cc\u4e91/.test(doc))
+    check('写明了历史记录由谁存、由谁展示', /\u5386\u53f2\u8bb0\u5f55\u4e0e\u8f6c\u5199\u5168\u6587/.test(doc))
+
+    // ② 鉴权与端点清单
+    for (const needed of ['X-Leion-Secret', 'X-Leion-Token', 'GET /org/libraries',
+      '/org/history', 'POST /org/history/<id>/utterance', 'POST /org/history/interpreter']) {
       check(`契约里写了 ${needed}`, doc.includes(needed), needed)
     }
-    // 假字幕脚本必须真的存在（文档里承诺的命令不能指向不存在的文件）
-    const fake = readFileSync(join(ROOT, 'scripts', 'fake-frames.mjs'), 'utf-8')
-    check('fake-frames 内置换行/长句样例', /超长句|长句/.test(fake) && fake.length > 2000)
-    check('fake-frames 写的是真实帧形状',
-      /speaker/.test(fake) && /sourceLang/.test(fake) && /partial/.test(fake))
+
+    // ③ 每条端点都标了\u300c已有 / 需新增\u300d，不许含混
+    check('每条端点都标了状态', doc.includes('**\u5df2\u6709**') && doc.includes('**\u9700\u65b0\u589e**'))
+
+    // ④ doc \u8bf4\u300c\u5df2\u6709\u300d\u7684\uff0c\u4ee3\u7801\u91cc\u5fc5\u987b\u771f\u7684\u6709\uff08\u6587\u6863\u4e0d\u8bb8\u8bf4\u8c0e\uff09
+    const existing = [...doc.matchAll(/`(?:GET|POST) ([^`]+)`[^|]*\|\s*\*\*\u5df2\u6709\*\*/g)]
+      .map((m) => m[1])
+    check('文档里至少列了 3 条\u300c已有\u300d端点', existing.length >= 3, String(existing.length))
+    for (const path of existing) {
+      // 去掉 query 与占位符，取第二段（/org/<这里>）
+      const clean = path.split('?')[0].replace(/<[^>]+>/g, '')
+      const segment = clean.split('/').filter(Boolean)[1] ?? ''
+      check(`\u300c已有\u300d的 ${path} 在 org-api 里真的有`,
+        segment === '' || orgApi.includes(`'${segment}'`), segment)
+    }
+
+    // ⑤ 错误码 / 演进规则 / 待拍板 三节必须在
+    for (const needed of ['401', '403', '409', '\u53ea\u505a\u52a0\u6cd5', 'per-label', '\u5f85\u62cd\u677f']) {
+      check(`契约里写了 ${needed}`, doc.includes(needed), needed)
+    }
   })
 
   await it('注册/登录页按原型：居中单列 + 品牌图标 + 语言胶囊 + 协议勾选（4.49）', () => {
