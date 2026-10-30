@@ -792,39 +792,40 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('标注说清了它是参考实现', /参考实现/.test(main))
   })
 
-  await it('集成契约文档：分工边界、要调的端点、错误码与演进规则都在（2026-10-29 重写）', () => {
+  await it('集成契约文档：翻译官只需接入入口与登录态（2026-10-29 重写 v2）', () => {
     const doc = readFileSync(join(ROOT, 'docs', '23-集成契约.md'), 'utf-8')
-    const orgApi = readFileSync(join(ROOT, 'relay', 'org-api.mjs'), 'utf-8')
 
-    // ① 分工边界：翻译官走阿里云，不许再碰我们的字幕管道
-    check('写明了\u300c不碰\u300d的端点', /\u4e0d\u8981\u8c03\u7528/.test(doc)
+    // ① 前提必须写清：对面已有完整流程，接入不改他们的管线
+    check('写明了对面已有完整流程', /已经是一个完整流程/.test(doc))
+    check('写明了不改他们的阿里云管线', /阿里云/.test(doc) && /不改/.test(doc))
+
+    // ② 接入形态与入口约定（三种形态 + extras 字段表）
+    check('给了三种接入形态', /形态 A: /.test(doc.replace('**形态 A:', '**形态 A: '))
+      || (/三种接入形态/.test(doc) && /A\. 同一 App 内模块/.test(doc)
+        && /B\. 独立 App/.test(doc) && /C\. 独立 App/.test(doc)))
+    for (const key of ['host', 'secret', 'token', 'user', 'role', 'uiLang', 'speakLang']) {
+      check(`交接的 extras 里有 ${key}`, doc.includes(key), key)
+    }
+    check('说清了为什么不让他们读我们的 prefs',
+      doc.includes('SharedPreferences'), 'SharedPreferences')
+
+    // ③ 历史记录默认不写（选项增强）—— 这是这一版最重要的变化
+    check('历史记录降级为可选', /可选增强/.test(doc))
+    check('写明了“不做这条也算接入完成”', /接入照样算完成/.test(doc))
+    check('可选方案是一次提交整场（不逐句上报）',
+      doc.includes('POST /org/history/interpreter') && /一次提交整场/.test(doc))
+
+    // ④ 不许碰的端点清单
+    check('写了不要碰的端点', /不要碰/.test(doc)
       && doc.includes('POST /audio') && doc.includes('GET /frame'))
-    check('写明了翻译走阿里云、独立通路', /\u963f\u91cc\u4e91/.test(doc))
-    check('写明了历史记录由谁存、由谁展示', /\u5386\u53f2\u8bb0\u5f55\u4e0e\u8f6c\u5199\u5168\u6587/.test(doc))
+    check('写了不参与发言权', /floor/.test(doc))
 
-    // ② 鉴权与端点清单
-    for (const needed of ['X-Leion-Secret', 'X-Leion-Token', 'GET /org/libraries',
-      '/org/history', 'POST /org/history/<id>/utterance', 'POST /org/history/interpreter']) {
-      check(`契约里写了 ${needed}`, doc.includes(needed), needed)
-    }
+    // ⑤ 联调清单里必须有“没装/没接上不崩”与“返回后登录态还在”
+    check('强调了拉不起来要兜住', /不是崩溃/.test(doc))
+    check('强调了返回后登录态不变', /登录态还在/.test(doc))
 
-    // ③ 每条端点都标了\u300c已有 / 需新增\u300d，不许含混
-    check('每条端点都标了状态', doc.includes('**\u5df2\u6709**') && doc.includes('**\u9700\u65b0\u589e**'))
-
-    // ④ doc \u8bf4\u300c\u5df2\u6709\u300d\u7684\uff0c\u4ee3\u7801\u91cc\u5fc5\u987b\u771f\u7684\u6709\uff08\u6587\u6863\u4e0d\u8bb8\u8bf4\u8c0e\uff09
-    const existing = [...doc.matchAll(/`(?:GET|POST) ([^`]+)`[^|]*\|\s*\*\*\u5df2\u6709\*\*/g)]
-      .map((m) => m[1])
-    check('文档里至少列了 3 条\u300c已有\u300d端点', existing.length >= 3, String(existing.length))
-    for (const path of existing) {
-      // 去掉 query 与占位符，取第二段（/org/<这里>）
-      const clean = path.split('?')[0].replace(/<[^>]+>/g, '')
-      const segment = clean.split('/').filter(Boolean)[1] ?? ''
-      check(`\u300c已有\u300d的 ${path} 在 org-api 里真的有`,
-        segment === '' || orgApi.includes(`'${segment}'`), segment)
-    }
-
-    // ⑤ 错误码 / 演进规则 / 待拍板 三节必须在
-    for (const needed of ['401', '403', '409', '\u53ea\u505a\u52a0\u6cd5', 'per-label', '\u5f85\u62cd\u677f']) {
+    // ⑥ 待拍板与演进规则
+    for (const needed of ['per-label', '待拍板', '只做加法']) {
       check(`契约里写了 ${needed}`, doc.includes(needed), needed)
     }
   })
