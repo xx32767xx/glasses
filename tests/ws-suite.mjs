@@ -12,6 +12,7 @@
  */
 
 import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { VAR_DIR } from '../lib/paths.mjs'
@@ -87,6 +88,14 @@ function openSocket(url) {
 }
 
 export async function runWsSuite({ it, check }) {
+  await it('4.86：WS 字幕帧按房间发（不再广播给所有房间）', async () => {
+    const hubSource = readFileSync(join(process.cwd(), 'lib', 'ws-hub.mjs'), 'utf-8')
+    check('broadcastFrame 支持 roomId 参数', /function broadcastFrame\(payload, roomId = null\)/.test(hubSource))
+    check('给了 roomId 就只发给该房间',
+      /if \(roomId !== null && roomId !== undefined && roomId !== ''\) \{\s*\n\s*const conns = rooms\.get/.test(hubSource))
+    check('没给才广播（兼容老客户端）', /for \(const conns of rooms\.values\(\)\)/.test(hubSource))
+  })
+
   await it('4.81：房间维度的 seq 不被全局 seq 覆盖（否则手机与服务器互相顶成死循环）', async () => {
     const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
     const { tmpdir } = await import('node:os')

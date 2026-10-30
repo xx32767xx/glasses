@@ -171,6 +171,46 @@ export async function runRelaySuite({ it, check, assert }) {
   })
 
 
+  await it('4.86：字幕总线按房间分桶 —— 两场会的字幕不再互相覆盖', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'busdir-'))
+    const secret = 's3cret-0123456789abcdef'
+    const buses = join(dir, 'buses')
+    await mkdir(buses, { recursive: true })
+    const relay = await startRelay({
+      dataDir: dir, port: 0, host: '127.0.0.1', secret, quiet: true, bus: buses, pollHoldMs: 300,
+    })
+    try {
+      const base = `http://127.0.0.1:${relay.port}`
+      const headers = { 'X-Leion-Secret': secret }
+      const frame = (text) => JSON.stringify({
+        speaker: 'them', lang: 'pt-BR', lines: [text], text, source: 'x', partial: false,
+      })
+      await writeFile(join(buses, 'room-A.json'), frame('甲房间说的话'), 'utf-8')
+      await new Promise((resolve) => setTimeout(resolve, 400))
+      await writeFile(join(buses, 'room-B.json'), frame('乙房间说的话'), 'utf-8')
+      await new Promise((resolve) => setTimeout(resolve, 400))
+
+      const a = await (await fetch(`${base}/frame?since=0&room=room-A`, { headers })).json()
+      const b = await (await fetch(`${base}/frame?since=0&room=room-B`, { headers })).json()
+      check('房间 A 拿到自己的字幕', a.frame?.text === '甲房间说的话', JSON.stringify(a.frame?.text))
+      check('房间 B 拿到自己的字幕', b.frame?.text === '乙房间说的话', JSON.stringify(b.frame?.text))
+      check('两个房间序号各自独立', a.seq === 1 && b.seq === 1, `${a.seq}/${b.seq}`)
+
+      // 只写 A：B 不能被覆盖（这正是旧版全局总线干的事）
+      await writeFile(join(buses, 'room-A.json'), frame('甲房间第二句'), 'utf-8')
+      await new Promise((resolve) => setTimeout(resolve, 400))
+      const a2 = await (await fetch(`${base}/frame?since=1&room=room-A`, { headers })).json()
+      const b2 = await (await fetch(`${base}/frame?since=1&room=room-B`, { headers })).json()
+      check('A 收到第二句', a2.frame?.text === '甲房间第二句', JSON.stringify(a2.frame?.text))
+      check('B 没被 A 覆盖', b2.frame === null || b2.frame.text === '乙房间说的话',
+        JSON.stringify(b2.frame?.text))
+      check('B 的序号没被 A 推进', b2.seq === 1, String(b2.seq))
+    } finally {
+      relay.close?.()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   await it('4.84：音频按房间分流 —— 两场会同时开麦，声音不再串成一条', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'roomaudio-'))
     const secret = 's3cret-0123456789abcdef'

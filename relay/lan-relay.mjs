@@ -33,6 +33,8 @@
 import { createServer } from 'node:http'
 import { createHash, randomBytes } from 'node:crypto'
 import { mkdir, appendFile, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { existsSync, mkdirSync, statSync } from 'node:fs'
+import { readdir } from 'node:fs/promises'
 import { networkInterfaces } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -256,6 +258,12 @@ export function parseArgs(argv) {  const options = { port: 8788, host: '0.0.0.0'
   options.dataDir = options.dataDir ?? DEFAULT_DATA_DIR
   options.inbox = options.inbox ?? defaultInbox(options.dataDir)
   options.bus = options.bus ?? defaultBus(options.dataDir)
+  // 4.86：`--bus` 传目录 = 每个房间一份总线（并发用）；传文件 = 老用法
+  const busIsDir = String(options.bus).endsWith('/') || String(options.bus).endsWith('\\')
+    || existsSync(options.bus) && statSync(options.bus).isDirectory()
+  if (busIsDir === true) {
+    try { mkdirSync(options.bus, { recursive: true }) } catch { /* 建不出来就等下轮 */ }
+  }
   options.audio = options.audio ?? defaultAudioIn(options.dataDir)
   options.audioRate = options.audioRate ?? defaultAudioRate(options.dataDir)
   options.audioLang = options.audioLang ?? defaultAudioLang(options.dataDir)
@@ -550,6 +558,11 @@ export async function startRelay(rawOptions = {}) {
   const state = {
     /** 已读到的字幕总线原始内容（内容变了才算新帧） */
     busRaw: '',
+    /** 总线是目录（每房间一份）还是单文件（4.86） */
+    busIsDir: String(options.bus).endsWith('/') || String(options.bus).endsWith('\\')
+      || (existsSync(options.bus) && statSync(options.bus).isDirectory()),
+    /** 目录模式下每个文件的上次内容 */
+    busRawByFile: new Map(),
     /** 单调递增的帧序号：手机用它做 since，避免重复渲染 */
     seq: 0,
     /** 最近一帧 */
@@ -650,9 +663,69 @@ export async function startRelay(rawOptions = {}) {
     state.waiters.clear()
   }
 
-  /** 轮询字幕总线：内容变了就分配新序号并唤醒长轮询。 */
+  /**
+   * 收到一帧：分配序号、归属、落库、通知、推送（4.86 抽出，单总线与分房间总线共用）。
+   *
+   * @param {object} frame     字幕帧
+   * @param {string} roomHint  来源房间（来自 `buses/<roomId>.json` 的文件名）；空 = 需要推断
+   */
+  function publishFrame(frame, roomHint = '') {
+    state.seq += 1
+    state.frameCount += 1
+    // 归属：文件来源（最准）→ 帧里的 roomId → 刚上传音频的房间 → 持麦者推断
+    const attribution = roomHint !== ''
+      ? { roomId: roomHint, reason: 'bus-file' }
+      : resolveFrameRoom(options.dataDir, {
+        frameRoomId: frame.roomId ?? '',
+        audioRoomId: state.audioRoomId,
+        audioAt: state.audioRoomAt,
+        speaker: frame.speaker ?? '',
+      })
+    if (attribution.roomId !== null) frame.roomId = attribution.roomId
+    state.lastFrame = frame
+    if (attribution.roomId !== null) {
+      const roomSeq = (state.seqByRoom.get(attribution.roomId) ?? 0) + 1
+      state.seqByRoom.set(attribution.roomId, roomSeq)
+      state.framesByRoom.set(attribution.roomId, { seq: roomSeq, frame })
+    }
+    // 调试：字幕总线一变就报一行 —— 手机应该马上能看到这一帧。
+    // **一定要标出"增量还是定稿"**，否则"眼镜上显示 Ol…"这类问题无从追查。
+    debug(`📺 字幕已更新（第 ${state.seq} 帧·${frame.partial === true ? '增量' : '定稿'}`
+      + `${attribution.roomId === null ? '' : `·${attribution.roomId}`}）`
+      + `[${frame.speaker ?? '?'} / ${frame.lang ?? '?'}] ${frame.text ?? ''}`)
+    lintFrame(frame)
+    recordUtteranceIfFinal(frame, attribution)
+    notifyWaiters()
+    // 4.43：字幕也走 WS（长轮询留着兜底）。4.86 起：有归属就**只发给这个房间**，
+    // 不再广播给所有房间（那正是"两场会字幕互相污染"的来源）。
+    if (wsHub !== null) {
+      wsHub.broadcastFrame({
+        type: 'frame',
+        seq: state.seq,
+        changed: true,
+        frame,
+        roomId: attribution.roomId ?? null,
+        roomSeq: attribution.roomId === null ? null : (state.seqByRoom.get(attribution.roomId) ?? null),
+      }, attribution.roomId ?? null)
+    }
+  }
+
+  /**
+   * 轮询字幕总线（4.86）。
+   *
+   * <p>两种来源：
+   * <ol>
+   *   <li><b>单文件</b>（`--bus <file>`，默认）：老用法，一次只有一场会被翻译；</li>
+   *   <li><b>目录</b>（`--bus <dir>` 或目录路径）：每个房间一个 `&lt;roomId&gt;.json`，
+   *       两场会可以各写各的，**互不覆盖** —— 这才是"并发"真正需要的那半。</li>
+   * </ol>
+   */
   async function pollBus() {
     if (state.closed) return
+    if (state.busIsDir === true) {
+      await pollBusDir()
+      return
+    }
     let raw
     try {
       raw = await readFile(options.bus, 'utf-8')
@@ -668,42 +741,37 @@ export async function startRelay(rawOptions = {}) {
       return                       // 正好读到写了一半的，下一轮再来
     }
     if (frame === null || typeof frame !== 'object' || !Array.isArray(frame.lines)) return
-    state.seq += 1
-    state.frameCount += 1
-    // 归属解析（4.74）：帧里带 roomId → 刚上传音频的房间 → 持麦者推断。
-    // 解析不出来时 roomId 为 null：帧照样广播（老客户端靠全局流），只是不进任何房间的桶。
-    const attribution = resolveFrameRoom(options.dataDir, {
-      frameRoomId: frame.roomId ?? '',
-      audioRoomId: state.audioRoomId,
-      audioAt: state.audioRoomAt,
-      speaker: frame.speaker ?? '',
-    })
-    if (attribution.roomId !== null) frame.roomId = attribution.roomId
-    state.lastFrame = frame
-    if (attribution.roomId !== null) {
-      const roomSeq = (state.seqByRoom.get(attribution.roomId) ?? 0) + 1
-      state.seqByRoom.set(attribution.roomId, roomSeq)
-      state.framesByRoom.set(attribution.roomId, { seq: roomSeq, frame })
+    publishFrame(frame)
+  }
+
+  /** 目录模式：每个 `<roomId>.json` 各算一路，按文件记录"上次读到哪"。 */
+  async function pollBusDir() {
+    let names = []
+    try {
+      names = (await readdir(options.bus)).filter((name) => name.endsWith('.json'))
+    } catch {
+      return                       // 目录还没建
     }
-    // 调试：字幕总线一变就报一行 —— 手机应该马上能看到这一帧。
-    //
-    // **一定要标出"增量还是定稿"**：这两种帧的文字看起来都正常，
-    // 但增量帧（partial=true）在手机/眼镜上会**补一个省略号**表示"还没说完"。
-    // 不标出来的话，"眼镜上显示 Ol…"这件事就无从追查 ——
-    // 到底是电脑只发了增量（这边的锅），还是手机把定稿帧丢了（那边的锅），
-    // 光看文字分不出来。标一个词就能立刻分辨。
-    debug(`📺 字幕已更新（第 ${state.seq} 帧·${frame.partial === true ? '增量' : '定稿'}）`
-      + `[${frame.speaker ?? '?'} / ${frame.lang ?? '?'}] ${frame.text ?? ''}`)
-    lintFrame(frame)
-    recordUtteranceIfFinal(frame, attribution)
-    notifyWaiters()
-    // 4.43：字幕也走 WS（长轮询留着兜底）。seq 一起带上，客户端能判断是不是新的一帧。
-    if (wsHub !== null) {
-      wsHub.broadcastFrame({
-        type: 'frame', seq: state.seq, changed: true, frame,
-        roomId: attribution.roomId ?? null,
-        roomSeq: attribution.roomId === null ? null : (state.seqByRoom.get(attribution.roomId) ?? null),
-      })
+    for (const name of names) {
+      const file = join(options.bus, name)
+      let raw
+      try {
+        raw = await readFile(file, 'utf-8')
+      } catch {
+        continue
+      }
+      if (state.busRawByFile.get(file) === raw) continue
+      state.busRawByFile.set(file, raw)
+      let frame
+      try {
+        frame = JSON.parse(raw)
+      } catch {
+        continue                   // 写了一半
+      }
+      if (frame === null || typeof frame !== 'object' || !Array.isArray(frame.lines)) continue
+      // 房间从文件名来（`room-A.json` → `room-A`），帧里若显式带了 roomId 以帧为准
+      const roomId = String(frame.roomId ?? name.replace(/\.json$/, ''))
+      publishFrame(frame, roomId)
     }
   }
 
