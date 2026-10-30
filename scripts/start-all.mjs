@@ -231,6 +231,10 @@ export function buildSteps(options) {
     relayArgs.push('--public')
     relayArgs.push('--host', options.host ?? '0.0.0.0')
   }
+  // 4.86：`--bus` 一定要真的传下去（以前只解析不传，参数白给）。
+  // 注意：start-all 是"单套管线"，它的 --bus 应当是**文件**；
+  // 多房间并行要按 docs/21 §4.85 分开起。
+  relayArgs.push('--bus', options.bus)
   steps.push({
     key: 'relay',
     ...STEPS.relay,
@@ -264,7 +268,8 @@ export function buildSteps(options) {
       args: asrArgs,
     })
   }
-  const brainArgs = ['--data-dir', options.dataDir, '--cols', String(options.cols), '--lines', String(options.lines)]
+  const brainArgs = ['--data-dir', options.dataDir, '--cols', String(options.cols), '--lines', String(options.lines),
+    '--inbox', options.inbox, '--bus', options.bus]
   if (options.offline) brainArgs.push('--offline')
   if (options.proofread) brainArgs.push('--proofread')
   // 热词临时修正（实验）：必须真的传到大脑，否则"以为开了"而实际没开
