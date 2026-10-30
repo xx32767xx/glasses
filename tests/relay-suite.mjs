@@ -9,10 +9,13 @@
  */
 
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { sep } from 'node:path'
 import { join } from 'node:path'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { startRelay, formatBanner, pcmLevel, describeLevel,
+import { startRelay, formatBanner, pcmLevel, describeLevel, roomAudioPath,
   createRateLimiter, clientIp, resolveSecret, formatPublicChecklist,
   PUBLIC_LIMITS } from '../relay/lan-relay.mjs'
 import { VAR_DIR } from '../lib/paths.mjs'
@@ -167,6 +170,44 @@ export async function runRelaySuite({ it, check, assert }) {
       JSON.stringify({ cols: result.json.cols, lineBudget: result.json.lineBudget }))
   })
 
+
+  await it('4.84：音频按房间分流 —— 两场会同时开麦，声音不再串成一条', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'roomaudio-'))
+    const secret = 's3cret-0123456789abcdef'
+    const relay = await startRelay({ dataDir: dir, port: 0, host: '127.0.0.1', secret, quiet: true })
+    try {
+      const base = `http://127.0.0.1:${relay.port}`
+      const post = (room, bytes) => fetch(
+        `${base}/audio?rate=16000&lang=zh-CN${room === '' ? '' : `&room=${encodeURIComponent(room)}`}`,
+        { method: 'POST', headers: { 'X-Leion-Secret': secret }, body: Buffer.alloc(bytes, 7) })
+
+      await post('room-A', 2048)
+      await post('room-B', 4096)
+      await post('room-A', 1024)
+      await new Promise((resolve) => setTimeout(resolve, 300))
+
+      const a = roomAudioPath(dir, 'room-A')
+      const b = roomAudioPath(dir, 'room-B')
+      check('A 房间的文件按自己的块长大', existsSync(a) && readFileSync(a).length === 3072,
+        existsSync(a) ? String(readFileSync(a).length) : 'missing')
+      check('B 房间只收自己的 4096', existsSync(b) && readFileSync(b).length === 4096,
+        existsSync(b) ? String(readFileSync(b).length) : 'missing')
+      check('两个房间互不混合（长度不同即可证明）', readFileSync(a).length !== readFileSync(b).length)
+      check('全局文件仍在（单房间/老链路兼容）', existsSync(join(dir, 'audio-in.pcm')))
+
+      const listed = await (await fetch(`${base}/audio/rooms`, { headers: { 'X-Leion-Secret': secret } })).json()
+      check('/audio/rooms 列出两个房间', listed.ok === true && listed.rooms.length === 2,
+        JSON.stringify(listed.rooms?.map((one) => one.room)))
+
+      // 文件名必须消毒：房间 id 里塞 .. 不能穿越出 audio/ 目录
+      check('房间 id 被消毒（防目录穿越）',
+        roomAudioPath(dir, '../../etc/passwd').startsWith(join(dir, 'audio') + sep),
+        roomAudioPath(dir, '../../etc/passwd'))
+    } finally {
+      relay.close?.()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 
   await it('长轮询：没有新帧就挂住，来新帧后立刻返回（不是等超时）', async () => {
     const started = Date.now()

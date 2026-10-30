@@ -459,6 +459,21 @@ export function clientIp(request) {
 }
 
 /**
+ * 房间音频文件路径（4.84）。
+ *
+ * <p>文件名用房间 id **消毒后**的形式：`room-mvt9t5q9-vdkk` → `room-mvt9t5q9-vdkk.pcm`。
+ * 为什么要消毒：房间 id 来自请求参数，直接拼路径就是目录穿越（`../`）。
+ * 只允许字母数字下划线与连字符，其余一律换成 `_`。
+ *
+ * <p>放在 `<data-dir>/audio/` 下，与全局的 `audio-in.pcm` 相邻：
+ * 单房间场景照旧读全局文件，多房间场景各读各的。
+ */
+export function roomAudioPath(dataDir, roomId) {
+  const safe = String(roomId ?? '').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64)
+  return join(String(dataDir), 'audio', (safe === '' ? 'unknown' : safe) + '.pcm')
+}
+
+/**
  * 启动转发进程。
  * @returns { server, close, state, secret, port } —— 测试直接用这个，不必起 CLI
  */
@@ -545,9 +560,13 @@ export async function startRelay(rawOptions = {}) {
     seqByRoom: new Map(),
     /** 最近一次往哪个房间上传了音频（归属的重要线索）。 */
     audioRoomId: '',
+    /** 已经为哪些房间建过分流文件（用来"每个房间只打一行日志"） */
+    audioRoomFiles: new Set(),
     audioRoomAt: 0,
     /** how many chunks were actually fanned out (debug) */
     audioFanoutChunks: 0,
+    /** 每个房间收了多少字节音频（4.84 分流用；也给 /audio/rooms 报） */
+    roomAudioBytes: new Map(),
     /** 复位日志限流用（4.81） */
     resetLogAt: 0,
     resetBurst: 0,
@@ -1357,6 +1376,25 @@ export async function startRelay(rawOptions = {}) {
             }
             await appendFile(options.audio, body)
             state.audioBytes += body.length
+            // 4.84：音频**按房间分流**——两场会同时开麦时，声音不再串成一条。
+            // 全局文件仍然写（老链路/单房间场景照旧能用），分流文件是新加的旁路。
+            if (audioRoom !== '') {
+              const target = roomAudioPath(options.dataDir, audioRoom)
+              await mkdir(dirname(target), { recursive: true })
+              await appendFile(target, body)
+              state.roomAudioBytes.set(audioRoom, (state.roomAudioBytes.get(audioRoom) ?? 0) + body.length)
+              if (state.audioRoomFiles.has(audioRoom) !== true) {
+                state.audioRoomFiles.add(audioRoom)
+                debug(`🎙 音频分流：房间 ${audioRoom} → ${target}`)
+              }
+              // 采样率/语种也按房间各写一份（识别进程每路跟读时要看自己那份）
+              try {
+                await writeFile(`${target}.rate`, String(rate) + '\n', 'utf-8')
+                await writeFile(`${target}.lang`, String(lang) + '\n', 'utf-8')
+              } catch (error) {
+                debug(`🎙 写房间旁文件失败（不影响音频）：${error && error.message ? error.message : error}`)
+              }
+            }
           }
           state.audioChunks += 1
           // 4.76：同一块音频也推给本房间愿意听的人（实时传声）
@@ -1410,6 +1448,24 @@ export async function startRelay(rawOptions = {}) {
       }
 
       // ── GET /frame（长轮询）───────────────────────────────────────────────
+      // 4.84：各房间的音频分流情况（给识别/排障用：哪几场在说话、各收了多少）
+      if (request.method === 'GET' && url.pathname === '/audio/rooms') {
+        const rooms = []
+        for (const [roomId, bytes] of state.roomAudioBytes.entries()) {
+          const file = roomAudioPath(options.dataDir, roomId)
+          let size = 0
+          let updatedAt = null
+          try {
+            const info2 = await stat(file)
+            size = Number(info2.size)
+            updatedAt = info2.mtime.toISOString()
+          } catch { /* 还没落盘（或刚被清掉） */ }
+          rooms.push({ room: roomId, file, bytes, size, updatedAt })
+        }
+        send(response, 200, { ok: true, rooms, audioDir: join(String(options.dataDir), 'audio') })
+        return
+      }
+
       if (request.method === 'GET' && url.pathname === '/frame') {
         // 4.74：?room=<id> 只取那个房间的帧（多场会并发时互不覆盖）。
         // 不带 room 参数时行为不变（旧 APK 照样能用）。
