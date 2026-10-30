@@ -22,6 +22,20 @@ import {
 } from '../lib/translation-lint.mjs'
 
 export async function runLintSuite({ it, check, assert }) {
+  await it('文档体积门禁：docs/ 下每份 md 都不能被写空或截断', async () => {
+    const { readdirSync, statSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const dir = join(process.cwd(), 'docs')
+    const tiny = []
+    for (const name of readdirSync(dir)) {
+      if (!name.endsWith('.md')) continue
+      const size = statSync(join(dir, name)).size
+      if (size < 1000) tiny.push(`${name}=${size}B`)
+    }
+    check('没有空/截断的文档', tiny.length === 0, tiny.join(', '))
+  })
+
+
   const policy = JSON.parse(readFileSync('policy/br-pt.json', 'utf8'))
   const lint = (source, translation) => lintTranslation(source, translation, policy)
 
