@@ -528,6 +528,25 @@ export async function runAndroidOrderSuite({ it, check }) {
       /targetLine\.setVisibility\(target\.isEmpty\(\) \? View\.GONE : View\.VISIBLE\)/.test(room))
   })
 
+  await it('5.15：服务器满了要让手机说清楚（不是"说了半天没反应"）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+
+    check('房间页会读房间详情里的 pipeline 状态',
+      /private void applyPipelineState\(org\.json\.JSONObject pipeline\)/.test(room))
+    check('被上限挡住时提示行说清楚（还带上限数字）',
+      /"denied"\.equals\(state\)[\s\S]{0,200}st_pipeline_denied/.test(room))
+    check('状态回到 running 时把那句提示清掉（不能一直挂着）',
+      /pipelineDenied = false;\s*hintLine\.setText\(""\);/.test(room))
+    check('没有管线（单房间/还没开始）时什么也不说',
+      /if \(pipeline == null\) \{[\s\S]{0,200}return;/.test(room))
+    for (const dir of ['values', 'values-en', 'values-pt-rBR']) {
+      check(`提示文案在 ${dir} 里有`, /name="st_pipeline_denied"/.test(
+        readFileSync(join(resDir, dir, 'strings.xml'), 'utf-8')))
+    }
+  })
+
   await it('authWhoAmI 返回拆过包的正文（外壳会让"打开就判成没登录"，单会话下还顺带踢掉另一台）', () => {
     const source = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay',
       'LanClient.java'), 'utf-8')

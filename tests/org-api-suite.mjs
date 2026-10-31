@@ -273,6 +273,77 @@ export async function runOrgApiSuite({ it, check, assert }) {
     check('库里现在 3 个（新加 lib-c）', libraries.length === 3, libraries.map((library) => library.id).join(','))
   })
 
+  await it('5.16：管理台的房间级操作 —— 结束会议 / 移出成员（权限是关键）', async () => {
+    const { createRoom, joinRoom, listMembers, isRoomClosed } = await import('../lib/rooms.mjs')
+    const created = createRoom(root, { name: '管理台测试会', host: 'alice@example.com' })
+    const roomId = created.room.id
+    joinRoom(root, { roomId, username: 'alice@example.com', lang: 'zh-CN' })
+    joinRoom(root, { roomId, username: 'bob@example.com', lang: 'pt-BR' })
+
+    // ① 普通成员不能结束别人的会议（403，而不是"按钮没显示"）
+    const userClose = await call({ method: 'POST', path: `/org/rooms/${roomId}/close`,
+      user: 'bob@example.com', role: 'user' })
+    check('普通成员结束会议 → 403', userClose.status === 403, String(userClose.status))
+    check('而且会议没有被结束', isRoomClosed(root, roomId) === false)
+
+    // ② 管理员可以：结束 + 成员全部离开 + 麦清空
+    const adminClose = await call({ method: 'POST', path: `/org/rooms/${roomId}/close`,
+      user: 'boss@example.com', role: 'admin' })
+    check('管理员结束会议 → 200', adminClose.status === 200, JSON.stringify(adminClose.json))
+    check('房间标记为已结束', isRoomClosed(root, roomId) === true)
+    check('成员都被记为已离开（人数立刻变 0）', listMembers(root, roomId).length === 0,
+      JSON.stringify(listMembers(root, roomId).map((m) => m.username)))
+    const again = await call({ method: 'POST', path: `/org/rooms/${roomId}/close`,
+      user: 'boss@example.com', role: 'admin' })
+    check('重复结束是幂等的（不报错）', again.status === 200 && again.json.alreadyClosed === true,
+      JSON.stringify(again.json))
+
+    // ③ 管理员也能**移出成员**（提示语里的"仅发起者"不再对管理台成立）
+    const second = createRoom(root, { name: '移人测试会', host: 'carol@example.com' })
+    const room2 = second.room.id
+    joinRoom(root, { roomId: room2, username: 'carol@example.com' })
+    joinRoom(root, { roomId: room2, username: 'dave@example.com' })
+    const userKick = await call({ method: 'POST', path: `/org/rooms/${room2}/members/remove`,
+      user: 'dave@example.com', role: 'user', body: { user: 'carol@example.com' } })
+    check('普通成员踢别人 → 403', userKick.status === 403, String(userKick.status))
+    const adminKick = await call({ method: 'POST', path: `/org/rooms/${room2}/members/remove`,
+      user: 'boss@example.com', role: 'admin', body: { user: 'dave@example.com' } })
+    check('管理员踢人 → 200', adminKick.status === 200, JSON.stringify(adminKick.json))
+    check('被踢的人不在成员表里了',
+      listMembers(root, room2).every((m) => m.username !== 'dave@example.com'),
+      JSON.stringify(listMembers(root, room2).map((m) => m.username)))
+    // 发起者仍然可以踢（老规则不能因为管理员通道而丢掉）
+    joinRoom(root, { roomId: room2, username: 'erin@example.com' })
+    const hostKick = await call({ method: 'POST', path: `/org/rooms/${room2}/members/remove`,
+      user: 'carol@example.com', role: 'user', body: { user: 'erin@example.com' } })
+    check('发起者踢人仍然可以', hostKick.status === 200, JSON.stringify(hostKick.json))
+  })
+
+  await it('5.15：房间详情/列表带上"翻译管线"状态（服务器满了要让手机看见）', async () => {
+    const { createRoom, joinRoom } = await import('../lib/rooms.mjs')
+    const created = createRoom(root, { name: '排队会', host: 'alice@example.com' })
+    joinRoom(root, { roomId: created.room.id, username: 'alice@example.com', lang: 'zh-CN' })
+    const pipeline = { roomId: created.room.id, state: 'denied', reason: 'max-rooms', maxRooms: 1 }
+    const withPipeline = (options) => handleOrg({
+      root, ...options,
+      pipelineOf: (roomId) => (roomId === created.room.id ? pipeline : null),
+    })
+    const detail = await withPipeline({ method: 'GET', path: `/org/rooms/${created.room.id}`,
+      user: 'alice@example.com', role: 'user' })
+    check('详情里带 pipeline', detail.json.pipeline?.state === 'denied', JSON.stringify(detail.json.pipeline))
+    check('并且带着上限（手机要显示"N 场"）', detail.json.pipeline?.maxRooms === 1,
+      JSON.stringify(detail.json.pipeline))
+    const listed = await withPipeline({ method: 'GET', path: '/org/rooms', user: 'boss@example.com', role: 'admin' })
+    const row = (listed.json.rooms ?? []).find((room) => room.id === created.room.id)
+    check('列表里也带（管理台要看"运行中的会议"）', row?.pipeline?.state === 'denied',
+      JSON.stringify(row?.pipeline))
+    // 没有侧车时不能编一个状态出来
+    const plain = await call({ method: 'GET', path: `/org/rooms/${created.room.id}`,
+      user: 'alice@example.com', role: 'user' })
+    check('没有侧车 → pipeline 为 null（不编状态）', plain.json.pipeline === null,
+      JSON.stringify(plain.json.pipeline))
+  })
+
   await it('未知接口返回 404（不静默成功）', async () => {
     const nope = await call({ method: 'GET', path: '/org/nope', user: 'boss@example.com', role: 'admin' })
     check('404', nope.status === 404, String(nope.status))

@@ -411,8 +411,17 @@ export function pipelineSteps(options, room) {
   // 5.00：把**听众语言侧车**的路径给它 —— relay 会在这个文件里写"这个房间的成员各自读哪种语言"，
   // 大脑据此决定每句译成几种（同语言只译一份、不同语言译两份）。文件由 relay 创建，这里只给路径。
   brainArgs.push('--hear-langs', join(options.dataDir, 'room-langs', `${roomId}.json`))
+  // 5.14：给这场大脑**它自己房间**的术语快照路径。
+  //
+  // 以前所有大脑读同一份 `meeting-terms/terms.json` —— 两场会同时开时，后发布的
+  // 覆盖前一场的（A 场选法务库、B 场选医疗库，结果两边都在用最后发布的那个）。
+  // 现在 relay 按房间写 `meeting-terms/rooms/<房间>/`，每场的大脑读自己那份。
+  // 显式给了 `--terms-path`（管理员/调试）时仍然以它为准：那是"不按房间走"的显式覆盖。
   if (options.termsPath && options.termsActivePath) {
     brainArgs.push('--terms-path', options.termsPath, '--terms-active-path', options.termsActivePath)
+  } else {
+    const roomTerms = currentTermsPaths(options.dataDir, roomId)
+    brainArgs.push('--terms-path', roomTerms.termsPath, '--terms-active-path', roomTerms.activePath)
   }
   steps.push({
     key: `${roomId}-brain`, role: 'brain', tag: '大脑', label: `大脑·${label}`, color,
@@ -688,13 +697,22 @@ export function prepareRoomFiles(files) {
  * @returns {{buses: number, segments: number}}
  */
 export function clearStaleRunState(options, readDir = readdirSync, remove = unlinkSync) {
-  const cleared = { buses: 0, segments: 0 }
+  const cleared = { buses: 0, segments: 0, pipeline: 0 }
   try {
     for (const name of readDir(options.busesDir)) {
       if (name.endsWith('.json') !== true) continue
       try { remove(join(options.busesDir, name)); cleared.buses += 1 } catch { /* 被占着就算了 */ }
     }
   } catch { /* 目录还不存在：本来就没有旧文件 */ }
+  // 5.15：上一次运行留下的"翻译中 / 服务器已满"状态也要清 ——
+  // 不清的话，重启后手机上会挂着一条**上一轮**的状态（说"服务器已满"却其实是正常在跑）。
+  try {
+    const dir = join(options.dataDir, 'room-pipeline')
+    for (const name of readDir(dir)) {
+      if (name.endsWith('.json') !== true) continue
+      try { remove(join(dir, name)); cleared.pipeline += 1 } catch { /* 同上 */ }
+    }
+  } catch { /* 同上 */ }
   try {
     for (const name of readDir(options.queueDir)) {
       if (name.endsWith('.pcm') !== true && name.endsWith('.json') !== true) continue
@@ -702,6 +720,49 @@ export function clearStaleRunState(options, readDir = readdirSync, remove = unli
     }
   } catch { /* 同上 */ }
   return cleared
+}
+
+/**
+ * 挑出"该跑的"和"被上限挡住的"（5.15）。
+ *
+ * <p>以前 `--max-rooms` 只是**不跑**超出的那几场 —— 手机上毫无提示，用户只会觉得
+ * "我这场会点什么都没反应"。现在把"被挡住"这件事也返回出来，由调用方写进
+ * `<data-dir>/room-pipeline/<房间>.json`，relay 再把它放进房间详情，手机据此说一句
+ * 「服务器已满（上限 N 场），本场还没开始翻译」。
+ *
+ * <p>纯函数，排序/过滤规则与 {@link pickRooms} 完全一致（先来后到 + 安全 id + 有人在），
+ * 只是额外把被切掉的名单交出来。
+ */
+export function pickRoomsWithDenied(rooms, options = {}) {
+  const all = pickRooms(rooms, { ...options, maxRooms: 0 })
+  const maxRooms = Number.isInteger(options.maxRooms) ? options.maxRooms : 0
+  if (maxRooms <= 0 || all.length <= maxRooms) return { run: all, denied: [] }
+  return { run: all.slice(0, maxRooms), denied: all.slice(maxRooms) }
+}
+
+/**
+ * 一条管线状态侧车：`<data-dir>/room-pipeline/<房间>.json`。
+ *
+ * <p>为什么让**脚本**写、而不是让 relay 猜：只有看门人知道"这一场为什么没在跑"
+ * （上限挡的、还是没人、还是刚起）。relay 只负责把这份状态放进房间详情。
+ * 文件不存在 = 没有管线（没在跑，也没被拒）—— 手机什么都不用显示。
+ */
+export function pipelineStatePath(options, roomId) {
+  const safe = String(roomId ?? '').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64)
+  return join(options.dataDir, 'room-pipeline', `${safe === '' ? 'unknown' : safe}.json`)
+}
+
+export function writePipelineState(options, roomId, state) {
+  const file = pipelineStatePath(options, roomId)
+  try {
+    mkdirSync(dirname(file), { recursive: true })
+    writeFileSync(file, JSON.stringify({ roomId: String(roomId), at: new Date().toISOString(), ...state }), 'utf-8')
+    return true
+  } catch { return false }
+}
+
+export function clearPipelineState(options, roomId) {
+  try { unlinkSync(pipelineStatePath(options, roomId)); return true } catch { return false }
 }
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -758,19 +819,19 @@ export async function main(argv = process.argv.slice(2)) {
     staleState = clearStaleRunState(options)
   }
 
-  // ── 会议级术语快照：有就传下去（每场会读的都是"当前这一份"）────────────────
+  // ── 会议级术语快照：**每场会读自己那一份**（5.14 起按房间隔离）──────────────
   //
-  // ⚠️ 这里要说实话：`meeting-terms/` 目前是**全局一份**（docs/21 §4.86）。
-  //    两场会都点"开始同传"时，后发布的那份会覆盖前一份 —— 两场会共用最后一份术语表。
-  //    这不是这条命令引入的问题，但多场会并行会让它更容易被撞上，所以横幅里要写明。
+  // 以前这里是"全局一份"，横幅上还得写一句"两场会会互相覆盖"——那是个真缺陷，
+  // 现在 relay 按房间写 `meeting-terms/rooms/<房间>/`，`pipelineSteps` 也按房间取路径。
+  // 这里只在横幅上把"目前已经发布过几场"告诉人，不再设置全局路径。
   let termSummary = null
   {
     const published = await readCurrentMeeting(options.dataDir)
     if (published !== null) {
-      const paths = currentTermsPaths(options.dataDir)
-      options.termsPath = paths.termsPath
-      options.termsActivePath = paths.activePath
-      termSummary = `会议术语 ${published.entries} 条（全局一份；两场会各自点"开始同传"时后发布的覆盖前者）`
+      termSummary = `会议术语：按房间各一份（meeting-terms/rooms/<房间>/）；`
+        + `老位置那份是 ${published.entries} 条（单房间 start-all 用）`
+    } else {
+      termSummary = '会议术语：按房间各一份（meeting-terms/rooms/<房间>/；手机点"开始同传"时写入）'
     }
   }
 
@@ -875,6 +936,13 @@ export async function main(argv = process.argv.slice(2)) {
   let worker = null                  // 队列模式下全局唯一的识别消费者
   let tickCount = 0
   let maxRoomsWarned = false
+  /**
+   * 每个房间**上一次写进状态侧车**的是什么（5.15）。
+   *
+   * <p>为什么需要：看门人每 3 秒算一次"该跑谁"，而写盘没必要每 3 秒写一遍 ——
+   * 只在"状态真的变了"时写。键是房间 id，值是 `"<房间>:running|denied|serial-waiting"`。
+   */
+  const pipelineStates = new Map()
   let readErrorWarned = false
   let ramWarned = false
 
@@ -946,6 +1014,13 @@ export async function main(argv = process.argv.slice(2)) {
     const entry = { room, steps: new Map(), startedAt: Date.now() }
     running.set(room.id, entry)
     absentSince.delete(room.id)
+    // 5.15：告诉手机"这一场**已经在翻译**"（relay 会把它放进房间详情）。
+    // 与 denied 状态互斥：同一时刻只有一种是真话。
+    pipelineStates.set(room.id, `${room.id}:running`)
+    writePipelineState(options, room.id, {
+      state: 'running', mode: options.translateMode, model: options.whisperModel,
+      members: room.members,
+    })
     const color = roomColor(room.id)
     console.log(`  ${color}▶ 房间 ${room.id}「${room.name || '未命名'}」${RESET} 邀请码 ${room.code}，`
       + `${room.members} 人在场${room.holder ? `，现在 ${room.holder} 在说` : ''}`)
@@ -964,6 +1039,10 @@ export async function main(argv = process.argv.slice(2)) {
     if (entry === undefined) return
     running.delete(roomId)
     absentSince.delete(roomId)
+    // 5.15：管线收掉了就把状态侧车删掉 —— 文件不存在 = "没有管线"，
+    // 手机上什么都不显示。留一个过期的 running 会让人以为还在翻译。
+    pipelineStates.delete(roomId)
+    clearPipelineState(options, roomId)
     for (const child of entry.steps.values()) killTree(child)
     if (!stopping) {
       console.log(`  ${DIM}■ 房间 ${roomId} 的管线已收（${reason}）${RESET}`)
@@ -1056,14 +1135,32 @@ export async function main(argv = process.argv.slice(2)) {
     }
     if (readErrorWarned) { readErrorWarned = false }
 
-    const desired = pickRooms(snapshot.rooms, options)
-    // 上限被吃掉时**说一次**，别让人以为脚本漏了房间
+    // 5.15：`--max-rooms` 挡住的那几场要**被手机看见**，不能只是"这台电脑没跑"
+    const { run: desired, denied } = pickRoomsWithDenied(snapshot.rooms, options)
+    // 被挡住的说一次（日志），并且每场写一份状态侧车让手机能显示原因
     if (options.maxRooms > 0 && !maxRoomsWarned) {
-      const uncapped = pickRooms(snapshot.rooms, { ...options, maxRooms: 0 })
-      if (uncapped.length > desired.length) {
+      if (denied.length > 0) {
         maxRoomsWarned = true
-        console.log(`  ${DIM}（有 ${uncapped.length} 场会开着，但 --max-rooms ${options.maxRooms} 只跑前 ${desired.length} 场）${RESET}`)
+        console.log(`  ${DIM}（有 ${desired.length + denied.length} 场会开着，但 --max-rooms ${options.maxRooms}`
+          + ` 只跑前 ${desired.length} 场；其余 ${denied.length} 场会在手机上显示"服务器已满"）${RESET}`)
       }
+    }
+    for (const room of denied) {
+      const key = `${room.id}:denied`
+      if (pipelineStates.get(room.id) === key) continue
+      pipelineStates.set(room.id, key)
+      writePipelineState(options, room.id, {
+        state: 'denied', reason: 'max-rooms', maxRooms: options.maxRooms,
+        members: room.members,
+      })
+    }
+    // 不再被挡、也没在跑的房间：把"被拒"的标记清掉（否则一条过期状态会一直挂在手机上）
+    for (const [roomId, key] of [...pipelineStates.entries()]) {
+      if (key !== `${roomId}:denied`) continue
+      if (denied.some(room => room.id === roomId)) continue
+      if (running.has(roomId)) continue
+      pipelineStates.delete(roomId)
+      clearPipelineState(options, roomId)
     }
 
     const plan = planStop({

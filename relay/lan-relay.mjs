@@ -1698,9 +1698,11 @@ export async function startRelay(rawOptions = {}) {
             try {
               const selection = await loadSelection(options.dataDir, options.meetingId ?? 'current')
               const published = await publishMeetingTerms(options.dataDir, {
+                // 5.14：**按房间发布** —— 每场会一份，多场并行时谁也覆盖不了谁
+                roomId: audioRoom,
                 libraryIds: selection.libraryIds, owner: selection.selectedBy ?? null,
               })
-              debug(`[术语] 新一场与会：会议 ${published.meetingId}，${published.entries} 条`
+              debug(`[术语] 新一场与会：${audioRoom === '' ? '' : `房间 ${audioRoom}，`}会议 ${published.meetingId}，${published.entries} 条`
                 + (published.conflicts.length > 0
                   ? `，${published.conflicts.length} 条跨库冲突已排除（${published.conflicts.map((item) => item.zh).join('、')}）`
                   : ''))
@@ -2271,6 +2273,23 @@ export async function startRelay(rawOptions = {}) {
           // ── 4.99 管理员清理历史：清单要"每个房间占多少音频"，清理要"把文件也删掉" ──
           // 路径规则只有这个文件知道（roomAudioPath / 总线目录 / 收件箱按房间分文件），
           // 所以由这里交给 org-api 回调，而不是让那边重新拼一遍路径（拼错就是删错文件）。
+          /**
+           * 5.15：这一场**翻译管线**现在什么状态（由 `start-multi` 写侧车）。
+           *
+           * <p>为什么让看门人写、relay 只读：只有它知道"这一场为什么没在跑"——
+           * 是被 `--max-rooms` 挡住了（服务器满了），还是在跑、还是刚被收掉。
+           * 手机拿到 `state==='denied'` 就能说一句「服务器已满」，而不是干等。
+           *
+           * <p>读不到文件 = 没有管线（单房间 start-all、或还没开始），返回 null 而不是编一个状态。
+           */
+          pipelineOf: (roomId) => {
+            try {
+              const safe = String(roomId ?? '').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64)
+              const file = join(options.dataDir, 'room-pipeline', `${safe === '' ? 'unknown' : safe}.json`)
+              const parsed = JSON.parse(readFileSync(file, 'utf-8'))
+              return parsed !== null && typeof parsed === 'object' ? parsed : null
+            } catch { return null }
+          },
           audioBytesOf: (roomId) => {
             // 5.08：一场会的音频是**一个目录、每人一个文件**（另兼容旧的单文件）
             let total = 0
@@ -2366,6 +2385,21 @@ export async function startRelay(rawOptions = {}) {
             // 现在成员变化的那一刻就重算并写盘（只在内容真的变了才写）。
             const joinedRoomId = String(result.json?.room?.id ?? '')
             if (joinedRoomId !== '') publishRoomLangs(joinedRoomId)
+          } else if (/^\/org\/rooms\/[^/]+\/close$/.test(url.pathname)) {
+            // 5.16：管理员在管理台**结束会议** → 立刻把还连着的人赶出去（与"发起者退出"同一条路），
+            // 否则他们会留在已结束的会议里继续点按钮。
+            const closeMatch = /^\/org\/rooms\/([^/]+)\/close$/.exec(url.pathname)
+            if (closeMatch !== null) {
+              const roomId = String(result.json?.roomId ?? decodeURIComponent(closeMatch[1]))
+              wsHub.broadcastFloor(roomId)
+              const kicked = wsHub.closeRoom(roomId, 'closed-by-admin')
+              if (kicked > 0) debug(`🚪 管理员结束了会议 ${roomId}，已断开 ${kicked} 个在线连接`)
+              // 管线状态侧车也清掉（会议结束了，别再让手机显示"正在翻译/服务器已满"）
+              try {
+                const safe = roomId.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64)
+                unlinkSync(join(options.dataDir, 'room-pipeline', `${safe}.json`))
+              } catch { /* 没有就算了 */ }
+            }
           }
         }
         return

@@ -140,6 +140,12 @@
   <button class="btn ghost" onclick="loadRooms()">刷新</button>
   <span class="tag">未结束的房间；发起者退出即结束整场</span>
 </div>
+<div class="mono">
+  「状态」来自翻译管线（<code>start-multi</code> 写的侧车）：<b>翻译中</b> = 这场正在出字幕；
+  <b>排队中（服务器已满）</b> = 超过本机 <code>--max-rooms</code> 上限，手机上也显示同一句；
+  <b>无管线</b> = 还没开始说话（或用的是单房间 <code>start-all</code>）。
+  点「管理」可以<b>结束会议</b>、<b>移出成员</b>（管理员权限）。
+</div>
 <div id="rooms"><div class="empty">加载中…</div></div>
 
 <div id="accounts"><div class="empty">加载中…</div></div>
@@ -524,15 +530,92 @@ async function loadRooms() {
     const rows = data.rooms || [];
     document.getElementById('roomCount').textContent = rows.length + ' 个进行中';
     box.innerHTML = rows.length === 0 ? '<div class="empty">当前没有进行中的会议</div>'
-      : '<table><thead><tr><th>房间</th><th>邀请码</th><th>发起者</th><th>成员</th><th>当前发言人</th><th>创建时间</th></tr></thead><tbody>'
+      : '<table><thead><tr><th>房间</th><th>邀请码</th><th>发起者</th><th>成员</th><th>当前发言人</th>'
+        + '<th>翻译管线</th><th>创建时间</th><th>操作</th></tr></thead><tbody>'
         + rows.map((r) => '<tr><td><b>' + r.name + '</b></td>'
             + '<td class="mono">' + r.code + '</td>'
             + '<td>' + r.host + '</td>'
             + '<td>' + r.members + ' 人</td>'
             + '<td>' + (r.holder ? r.holder : '空闲') + '</td>'
-            + '<td class="mono">' + String(r.createdAt || '').slice(0, 16).replace('T', ' ') + '</td></tr>').join('')
+            + '<td>' + pipelineLabel(r.pipeline) + '</td>'
+            + '<td class="mono">' + String(r.createdAt || '').slice(0, 16).replace('T', ' ') + '</td>'
+            + '<td><button class="btn ghost" onclick="openRoomAdmin(\'' + r.id + '\')">管理</button></td></tr>'
+            + '<tr id="roomAdmin-' + r.id + '" style="display:none"><td colspan="8"></td></tr>').join('')
         + '</tbody></table>';
   } catch (error) { box.innerHTML = '<div class="empty">' + String(error.message || error) + '</div>'; }
+}
+
+/** 管线状态说人话（5.15）：这个侧车是 `start-multi` 写的，relay 只转述。 */
+function pipelineLabel(pipeline) {
+  if (!pipeline) return '<span class="tag">无管线</span>';
+  if (pipeline.state === 'running') {
+    return '<span class="pill" style="background:#0E7490;color:#fff">翻译中</span>';
+  }
+  if (pipeline.state === 'denied') {
+    const limit = pipeline.maxRooms ? '（上限 ' + pipeline.maxRooms + ' 场）' : '';
+    return '<span class="pill" style="background:#B45309;color:#fff">排队中 · 服务器已满' + limit + '</span>';
+  }
+  return '<span class="tag">' + (pipeline.state || '未知') + '</span>';
+}
+
+/**
+ * 展开某个房间的管理区：成员列表（可移出）+ 结束会议。
+ *
+ * <p>为什么用「点一下才拉」而不是列表里一次拉全部：成员是**每个房间一次**请求，
+ * 房间多了会把管理台变成 N 次往返；而管理员通常只对一个房间动手。
+ */
+async function openRoomAdmin(roomId) {
+  const row = document.getElementById('roomAdmin-' + roomId);
+  if (row === null) return;
+  const cell = row.firstElementChild;
+  if (row.style.display !== 'none') { row.style.display = 'none'; return; }
+  row.style.display = '';
+  cell.innerHTML = '<div class="empty">加载中…</div>';
+  try {
+    const data = await api('/org/rooms/' + encodeURIComponent(roomId));
+    const members = data.members || [];
+    const pipeline = data.pipeline;
+    cell.innerHTML = '<div class="row">'
+      + '<span class="tag">' + (data.room ? data.room.name : roomId) + ' · ' + members.length + ' 人</span>'
+      + '<span class="mono">管线：' + pipelineLabel(pipeline) + '</span>'
+      + '<button class="btn bad" onclick="closeRoom(\'' + roomId + '\')">结束这场会议</button>'
+      + '</div>'
+      + (members.length === 0 ? '<div class="empty">（房间里没有人）</div>'
+        : '<table><thead><tr><th>成员</th><th>语言</th><th>参会方式</th><th>操作</th></tr></thead><tbody>'
+          + members.map((m) => '<tr><td>' + m.username
+              + (data.room && m.username === data.room.host ? ' <span class="tag">发起者</span>' : '') + '</td>'
+              + '<td class="mono">' + (m.lang || '—') + '</td>'
+              + '<td>' + (m.mode === 'onsite' ? '面对面' : (m.mode === 'remote' ? '远程' : '—')) + '</td>'
+              + '<td>' + (data.room && m.username === data.room.host
+                ? '<span class="tag">（结束会议请用左边）</span>'
+                : '<button class="btn bad" onclick="kickMember(\'' + roomId + '\',\'' + m.username + '\')">移出</button>')
+              + '</td></tr>').join('')
+          + '</tbody></table>');
+  } catch (error) {
+    cell.innerHTML = '<div class="empty">' + String(error.message || error) + '</div>';
+  }
+}
+
+async function kickMember(roomId, username) {
+  if (window.confirm('把「' + username + '」移出这一场会议？（他会被立刻断开，可以凭码再进来）') !== true) return;
+  try {
+    await api('/org/rooms/' + encodeURIComponent(roomId) + '/members/remove', {
+      method: 'POST', body: { user: username },
+    });
+    toast('已移出 ' + username + '（已展开的那一行会刷新）');
+    await openRoomAdmin(roomId);
+    await openRoomAdmin(roomId);
+    await loadRooms();
+  } catch (error) { toast(String(error.message || error)); }
+}
+
+async function closeRoom(roomId) {
+  if (window.confirm('结束这场会议？所有人会被立刻断开，且无法再进来（历史仍保留）。') !== true) return;
+  try {
+    await api('/org/rooms/' + encodeURIComponent(roomId) + '/close', { method: 'POST', body: {} });
+    toast('这场会议已结束');
+    await loadRooms();
+  } catch (error) { toast(String(error.message || error)); }
 }
 
 async function loadAccounts() {

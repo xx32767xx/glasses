@@ -29,7 +29,7 @@ import { readJson, writeJsonAtomic } from '../lib/store.mjs'
 import { listLibraries, loadLibrary, loadCategories, saveLibrary, importLibraries } from '../lib/libraries.mjs'
 import { createRequest, decideRequest, hideRequest, loadRequests, pendingOf, visibleOfMine, withdrawRequest } from '../lib/requests.mjs'
 import { writeMeetingSnapshot } from '../lib/snapshot.mjs'
-import { createRoom, hideHistoryForUser, isRoomClosed, joinRoom, leaveRoom, listHistory, listHistoryForAdmin, listMembers, listRoomTranscript, listRooms, purgeHistory, removeMember, roomByCode, roomById, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
+import { closeRoomByAdmin, createRoom, hideHistoryForUser, isRoomClosed, joinRoom, leaveRoom, listHistory, listHistoryForAdmin, listMembers, listRoomTranscript, listRooms, purgeHistory, removeMember, roomByCode, roomById, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
 import { FLOOR_LOCKED_LEASE_MS, FLOOR_LEASE_MS, floorState, forceReleaseFloor, heartbeatFloor, releaseFloor, setFloorLock, sweepExpiredFloor, takeFloor } from '../lib/floor.mjs'
 import { publishMeetingTerms } from '../lib/meeting-terms.mjs'
 
@@ -409,7 +409,14 @@ export async function handleOrg(input) {
 
   // ── 房间（P2a）：建房 / 6 位邀请码加入 / 房间术语库（冻结快照）─────────────
   if (segments[1] === 'rooms' && segments.length === 2) {
-    if (method === 'GET') return { status: 200, json: { ok: true, rooms: listRooms(root) } }
+    if (method === 'GET') {
+      // 5.15：列表里也带"这一场有没有在翻译"（管理台要看"运行中的会议"）
+      const pipelineOf = typeof input.pipelineOf === 'function' ? input.pipelineOf : () => null
+      return {
+        status: 200,
+        json: { ok: true, rooms: listRooms(root).map((room) => ({ ...room, pipeline: pipelineOf(room.id) })) },
+      }
+    }
     if (method === 'POST') {
       const name = String(body.name ?? '').trim()
       if (name === '') return bad(400, '房间名不能为空')
@@ -441,17 +448,36 @@ export async function handleOrg(input) {
   }
 
 
-  // ── 成员管理：移出成员（仅发起者，docs/21 §4.54）──────────────────────
+  // ── 成员管理：移出成员（发起者，或管理员 —— 5.16）────────────────────
   if (method === 'POST' && segments[1] === 'rooms' && segments[3] === 'members'
       && segments[4] === 'remove' && segments.length === 5) {
     const rawMember = decodeURIComponent(segments[2])
     const roomMember = roomById(root, rawMember) ?? roomByCode(root, rawMember)
     if (roomMember === null) return bad(404, `room not found: ${rawMember}`)
-    const removed = removeMember(root, { roomId: roomMember.id, username: String(body.user ?? ''), by: user, now })
+    // 发起者本人当然可以移出；管理员也可以（管理台的「踢人」）。两者都不满足就 403。
+    const byAdmin = allowed(role, 'room.manage') === true
+    if (byAdmin !== true && String(roomMember.host) !== user) {
+      return deny(role, 'room.manage')
+    }
+    const removed = removeMember(root, { roomId: roomMember.id, username: String(body.user ?? ''), by: user, now, byAdmin })
     if (removed.ok !== true) return bad(409, removed.error)
     return {
       status: 200,
       json: { ok: true, members: removed.members, releasedFloor: removed.releasedFloor === true, removed: removed.username },
+    }
+  }
+
+  // ── 5.16：管理员**结束一场会议**（管理台的房间级操作）────────────────────
+  if (method === 'POST' && segments[1] === 'rooms' && segments[3] === 'close' && segments.length === 4) {
+    if (allowed(role, 'room.manage') !== true) return deny(role, 'room.manage')
+    const raw = decodeURIComponent(segments[2])
+    const room = roomById(root, raw) ?? roomByCode(root, raw)
+    if (room === null) return bad(404, `room not found: ${raw}`)
+    const closed = closeRoomByAdmin(root, { roomId: room.id, by: user, now })
+    if (closed.ok !== true) return bad(409, closed.error)
+    return {
+      status: 200,
+      json: { ok: true, roomId: room.id, closed: true, alreadyClosed: closed.alreadyClosed === true },
     }
   }
 
@@ -519,7 +545,17 @@ export async function handleOrg(input) {
     const raw = decodeURIComponent(segments[2])
     const room = roomById(root, raw) ?? roomByCode(root, raw)
     if (room === null) return bad(404, `room not found: ${raw} (use room.id or 6-digit code)`)
-    if (method === 'GET') return { status: 200, json: { ok: true, room, members: listMembers(root, room.id), libraryIds: roomLibraries(root, room.id) } }
+    if (method === 'GET') {
+      // 5.15：把"这一场有没有在翻译 / 为什么没跑"一并给客户端（`start-multi` 写的侧车）
+      const pipeline = typeof input.pipelineOf === 'function' ? input.pipelineOf(room.id) : null
+      return {
+        status: 200,
+        json: {
+          ok: true, room, members: listMembers(root, room.id),
+          libraryIds: roomLibraries(root, room.id), pipeline,
+        },
+      }
+    }
   }
   if (method === 'POST' && segments[1] === 'rooms' && segments[3] === 'libraries' && segments.length === 4) {
     const rawId = decodeURIComponent(segments[2])
@@ -529,7 +565,11 @@ export async function handleOrg(input) {
     const libraryIds = Array.isArray(body.libraryIds) ? body.libraryIds.map(String) : []
     const saved = setRoomLibraries(root, roomId, libraryIds)
     if (saved.ok !== true) return bad(400, saved.error)
-    const published = await publishMeetingTerms(root, { libraryIds, owner: user, meetingId: roomId, now })
+    // 5.14：**按房间**发布会话术语（`meeting-terms/rooms/<房间>/`）——
+    // 多场会并行时各用各的库，后发布的不会再覆盖前一场的。
+    const published = await publishMeetingTerms(root, {
+      roomId, libraryIds, owner: user, meetingId: roomId, now,
+    })
     // publishMeetingTerms 不返回 ok 字段（返回 meetingId/entries/conflicts）——不要再按 ok 判断
     return { status: 200, json: { ok: true, roomId, libraryIds, entries: published.entries, meetingId: published.meetingId, conflicts: published.conflicts ?? [] } }
   }

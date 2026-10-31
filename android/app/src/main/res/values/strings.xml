@@ -524,6 +524,8 @@
     <string name="st_lang_now">已切换：%1$s · 这一场从现在起生效</string>
     <!-- 5.12：本场大家读的都是同一种语言 → 不翻译，只把原文上屏并说明原因 -->
     <string name="st_same_language">本场语言相同 · 无需翻译（已显示原文）</string>
+    <!-- 5.15：服务器的并发上限到了，这一场**没有在翻译**（不是坏了） -->
+    <string name="st_pipeline_denied">服务器已满（同时最多 %1$d 场）：这一场还没开始翻译，等别的会结束后自动开始</string>
     <string name="suffix_next_meeting">（下一场同传生效）</string>
     <string name="proof_on">校对：开（点一下关掉）</string>
     <string name="proof_off">校对：关（点一下打开）</string>

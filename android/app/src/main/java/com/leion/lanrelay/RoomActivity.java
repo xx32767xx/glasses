@@ -156,6 +156,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     private String syncedSpeakLang = "";
     /** 邀请码（重新登记语言时要用它；来自房间详情） */
     private String roomCode = "";
+    /** 提示行里当前是不是那句"服务器已满"（5.15：状态回到 running 时要把它清掉）。 */
+    private boolean pipelineDenied = false;
     private Runnable pendingAfterPermission;
     private Button micUploadButton;
     private long lastHeartbeat = 0L;
@@ -957,6 +959,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             if (info == null) return;
             final JSONObject room = info.optJSONObject("room");
             final org.json.JSONArray members = info.optJSONArray("members");
+            final org.json.JSONObject pipeline =
+                    info.isNull("pipeline") ? null : info.optJSONObject("pipeline");
             ui.post(() -> {
                 if (room != null) {
                     String code = room.optString("code", "");
@@ -975,8 +979,42 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                     membersView.setText(getString(R.string.room_members_count, members.length()));
                     renderMembers(members);
                 }
+                // 5.15：这一场到底有没有在翻译？被 `--max-rooms` 挡住时要**明说**，
+                // 否则手机上就是"说了半天什么都没出来"，看起来像坏了。
+                applyPipelineState(pipeline);
             });
         }, "room-header").start();
+    }
+
+    /**
+     * 按"管线状态"更新提示行（5.15）。
+     *
+     * <p>状态由 `start-multi`（看门人）写在 `<data-dir>/room-pipeline/<房间>.json`，
+     * relay 把它放进房间详情。三种可能：
+     * <ul>
+     *   <li>`denied`：服务器并发满了（`--max-rooms`），这一场**没有在翻译** —— 必须说出来；</li>
+     *   <li>`running`：正常在跑（顺手把之前那句"服务器已满"清掉）；</li>
+     *   <li>null：单房间 `start-all`，或还没起管线 —— 什么都别说（不制造噪音）。</li>
+     * </ul>
+     */
+    private void applyPipelineState(org.json.JSONObject pipeline) {
+        if (pipeline == null) {
+            if (pipelineDenied) {
+                pipelineDenied = false;
+                hintLine.setText("");
+            }
+            return;
+        }
+        String state = pipeline.isNull("state") ? "" : pipeline.optString("state", "");
+        if ("denied".equals(state)) {
+            pipelineDenied = true;
+            hintLine.setText(getString(R.string.st_pipeline_denied, pipeline.optInt("maxRooms", 0)));
+            return;
+        }
+        if (pipelineDenied) {
+            pipelineDenied = false;
+            hintLine.setText("");
+        }
     }
 
     /**

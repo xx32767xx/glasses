@@ -96,6 +96,9 @@ public final class ServerText {
         put("邀请码无效，或这场会已经结束", R.string.srv_code_invalid);
         put("缺少用户名", R.string.srv_missing_username);
         put("缺少 roomId 或 username", R.string.srv_missing_ids);
+        // 5.16：管理台结束会议那条接口的校验（管理员页是网页，但这条错误也可能被手机看到 ——
+        // 比如管理员用手机调同一个接口；映射缺了就会把中文原样甩给用户）
+        put("缺少 roomId", R.string.srv_missing_ids);
         put("房间不存在", R.string.srv_room_missing);
         put("只有发起者可以移出成员", R.string.srv_host_only_remove);
         put("发起者不能移出自己（要结束会议请用退出）", R.string.srv_cannot_remove_self);

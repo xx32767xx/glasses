@@ -508,6 +508,41 @@ export async function runLibrarySuite({ it, check, assert }) {
     check('meta 读回的是最后一次发布的会议', current.meetingId === empty.meetingId, current.meetingId)
   })
 
+  await it('5.14：会议术语**按房间隔离** —— 两场会各用各的库，谁也不覆盖谁', async () => {
+    // 用户点名的缺陷：「术语快照仍是全局一份」。两场会同时开时，后发布的覆盖前一场的：
+    // A 场选「法务库」、B 场选「医疗库」，结果两边都在用最后发布的那个库。
+    const { publishMeetingTerms, readCurrentMeeting, currentTermsPaths } = await import('../lib/meeting-terms.mjs')
+    const entryA = (await readJson(currentTermsPaths(prod, 'room-AAAA').termsPath, null))
+    check('起始状态：A 房间还没有快照', entryA === null)
+
+    const a = await publishMeetingTerms(prod, { roomId: 'room-AAAA', libraryIds: ['lib-mt-a'], libraries: await listLibraries(prod) })
+    const b = await publishMeetingTerms(prod, { roomId: 'room-BBBB', libraryIds: ['lib-mt-b'], libraries: await listLibraries(prod) })
+
+    check('A 房间的路径在 meeting-terms/rooms/room-AAAA/ 下',
+      a.termsPath.replace(/\\/g, '/').endsWith('meeting-terms/rooms/room-AAAA/terms.json'), a.termsPath)
+    check('B 房间是另一个路径', a.termsPath !== b.termsPath)
+    // ★ 关键：发布 B **不能**影响 A（这就是"全局一份"那个 bug 的反面）
+    const docA = await readJson(a.termsPath, null)
+    const entriesA = Object.values(docA?.tables ?? {})[0]?.entries ?? []
+    check('发布 B 之后，A 房间还是 A 的写法（没被覆盖）',
+      entriesA.some((entry) => entry.zh === '亮亮眼镜' && entry.pt === 'Leion'),
+      JSON.stringify(entriesA.map((entry) => [entry.zh, entry.pt])))
+    const docB = await readJson(b.termsPath, null)
+    const entriesB = Object.values(docB?.tables ?? {})[0]?.entries ?? []
+    check('B 房间是 B 的写法',
+      entriesB.some((entry) => entry.zh === '亮亮眼镜' && entry.pt === 'Liangliang Ótica'),
+      JSON.stringify(entriesB.map((entry) => [entry.zh, entry.pt])))
+    check('meta 里记了房间号（排障时能对上是哪一场）',
+      a.meta.roomId === 'room-AAAA' && b.meta.roomId === 'room-BBBB', JSON.stringify([a.meta.roomId, b.meta.roomId]))
+    check('读回来的是**这一场**的 meta',
+      (await readCurrentMeeting(prod, 'room-AAAA')).roomId === 'room-AAAA')
+    // 老位置（单房间 start-all 那条路）必须还能用
+    const legacy = await publishMeetingTerms(prod, { libraryIds: ['lib-mt-a'], libraries: await listLibraries(prod) })
+    check('不带房间号时仍落到老位置 meeting-terms/terms.json',
+      legacy.termsPath.replace(/\\/g, '/').endsWith('meeting-terms/terms.json'), legacy.termsPath)
+    check('老位置与房间快照互不干扰', legacy.termsPath !== a.termsPath)
+  })
+
   await it('平级冲突：同优先级不同写法 → 该条目不进入本场（宁可少一条）', async () => {
     const { aggregateLibraries } = await import('../lib/snapshot.mjs')
     const left = { id: 'lib-x', name: 'X', priority: 7, entries: [{ zh: '圣保罗', pt: 'São Paulo' }] }

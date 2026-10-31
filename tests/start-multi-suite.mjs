@@ -19,6 +19,7 @@ import {
   isSafeRoomId, memoryHint, parseArgs, pickRooms, pipelineSteps, planStop, prepareRoomFiles,
   readOpenRooms, relayStep, roomColor, roomFiles, shortRoomId, main, workerStep, describeMode, clearStaleRunState,
   chooseActiveRoom, describeSwitchReason, readRoomActivity,
+  pickRoomsWithDenied, pipelineStatePath, writePipelineState, clearPipelineState,
 } from '../scripts/start-multi.mjs'
 import { createRoom, joinRoom } from '../lib/rooms.mjs'
 import { roomAudioPath, roomTrackDir } from '../relay/lan-relay.mjs'
@@ -531,6 +532,20 @@ export async function runStartMultiSuite({ it, check, assert }) {
     rmSync(base, { recursive: true, force: true })
   })
 
+  await it('5.15：启动时也要清掉上一轮的"管线状态"（否则手机上挂着过期状态）', async () => {
+    const base = join(VAR_DIR, 'test', 'multi-suite-stale-pipeline')
+    rmSync(base, { recursive: true, force: true })
+    mkdirSync(join(base, 'buses'), { recursive: true })
+    mkdirSync(join(base, 'room-pipeline'), { recursive: true })
+    const options = parseArgs(['--data-dir', base])
+    writeFileSync(join(base, 'room-pipeline', 'room-old.json'),
+      JSON.stringify({ roomId: 'room-old', state: 'denied', maxRooms: 1 }), 'utf-8')
+    const cleared = clearStaleRunState(options)
+    check('上一轮的状态文件被清掉', cleared.pipeline === 1 && existsSync(
+      join(base, 'room-pipeline', 'room-old.json')) === false, JSON.stringify(cleared))
+    rmSync(base, { recursive: true, force: true })
+  })
+
   // ── 6. 读房间表：读不到就当"还没房间"，不能让看门人整个退出 ─────────────────
 
   await it('库还不存在 → 当"没有房间"，不抛异常', async () => {
@@ -554,6 +569,44 @@ export async function runStartMultiSuite({ it, check, assert }) {
   })
 
   // ── 7. 显存提醒与参数校验 ──────────────────────────────────────────────────
+
+  await it('5.15：并发上限要"拒绝得看得见"（不只是这台电脑不跑）', async () => {
+    // 以前 `--max-rooms` 只是不跑超出的那几场 —— 手机上毫无提示，用户只觉得"坏了"。
+    // 现在把被挡住的也返回出来，由调用方写进状态侧车，relay 再放进房间详情。
+    const roomsAt = [
+      { id: 'room-c1', code: '111111', name: '先来的', members: 2, createdAt: '2026-01-01T00:00:00.000Z' },
+      { id: 'room-c2', code: '222222', name: '第二场', members: 2, createdAt: '2026-01-02T00:00:00.000Z' },
+      { id: 'room-c3', code: '333333', name: '第三场', members: 2, createdAt: '2026-01-03T00:00:00.000Z' },
+    ]
+    const noLimit = pickRoomsWithDenied(roomsAt, { maxRooms: 0 })
+    check('不限时全都跑、没有拒绝', noLimit.run.length === 3 && noLimit.denied.length === 0,
+      JSON.stringify({ run: noLimit.run.length, denied: noLimit.denied.length }))
+    const limited = pickRoomsWithDenied(roomsAt, { maxRooms: 2 })
+    check('上限 2 → 跑 2 场', limited.run.length === 2, String(limited.run.length))
+    check('被挡住的是**最后开的那一场**（先来后到）',
+      limited.denied.length === 1 && limited.denied[0].id === 'room-c3',
+      JSON.stringify(limited.denied.map(room => room.id)))
+    check('跑的名单与 pickRooms 完全一致（同一套排序规则）',
+      JSON.stringify(limited.run.map(room => room.id))
+      === JSON.stringify(pickRooms(roomsAt, { maxRooms: 2 }).map(room => room.id)))
+
+    // 状态侧车：写 → 读 → 删
+    const options = parseArgs(['--data-dir', join(VAR_DIR, 'test', 'pipeline-state')])
+    check('状态文件落在 <data-dir>/room-pipeline/<房间>.json',
+      pipelineStatePath(options, 'room-c3').replace(/\\/g, '/').endsWith('room-pipeline/room-c3.json'),
+      pipelineStatePath(options, 'room-c3'))
+    check('房间 id 会消毒（防目录穿越）',
+      pipelineStatePath(options, '../../etc/passwd').replace(/\\/g, '/').includes('room-pipeline/'))
+    check('写成功', writePipelineState(options, 'room-c3',
+      { state: 'denied', reason: 'max-rooms', maxRooms: 2 }) === true)
+    const readBack = JSON.parse(readFileSync(pipelineStatePath(options, 'room-c3'), 'utf-8'))
+    check('写进去的内容是手机要看的那几项',
+      readBack.state === 'denied' && readBack.reason === 'max-rooms' && readBack.maxRooms === 2,
+      JSON.stringify(readBack))
+    check('清掉之后文件不在了', clearPipelineState(options, 'room-c3') === true
+      && existsSync(pipelineStatePath(options, 'room-c3')) === false)
+    rmSync(join(VAR_DIR, 'test', 'pipeline-state'), { recursive: true, force: true })
+  })
 
   await it('显存提醒必须看**模式**：缺省队列模式只有一份模型，不许吓唬人', async () => {
     // 现场：用户开了两场会，横幅写着「2 场会并行 = 2 份 large-v3（合计约 10.0GB）」，
