@@ -1951,11 +1951,15 @@ export async function runAndroidOrderSuite({ it, check }) {
     const roomCode = room.replace(/\/\*[\s\S]*?\*\//g, '').split('\n')
       .filter(line => line.trim().startsWith('//') === false).join('\n')
 
-    // ① 服务端：发布这一帧时读一次持麦者，随帧带给手机
+    // ① 服务端：发布这一帧时算出**这句话是谁说的**，随帧带给手机
     check('发布帧时附上真实发言人',
-      /frame\.speakerName = speakerNow === '' \? null : speakerNow/.test(relay), '缺 speakerName')
-    check('发言人来自 floorState（发布那一刻的持麦者）',
-      /const speakerNow = floorState\(options\.dataDir, attribution\.roomId\)\.holder/.test(relay))
+      /const speakerNow = speakerForRoom\(attribution\.roomId\)/.test(relay), '缺 speakerName')
+    check('发言人优先取"最近上传这段音频的人"，其次持麦者（4.96）',
+      /const recent = state\.roomSpeaker\.get\(roomId\)[\s\S]{0,200}floorState\(options\.dataDir, roomId\)\.holder/.test(relay),
+      '缺 4.96 的优先级')
+    check('认不出时**删掉字段**而不是写 null（安卓会把 null 读成字符串 "null"）',
+      /delete frame\.speakerName/.test(relay) && /frame\.speakerName = speakerNow === '' \? null/.test(relay) === false,
+      '还在写 null')
     check('落库的 username 用真实用户名，不再存 me/them',
       /username: String\(frame\.speakerName \?\? ''\)/.test(relay)
         && /username: String\(frame\.speaker \?\? ''\)/.test(relay) === false,
@@ -1963,9 +1967,20 @@ export async function runAndroidOrderSuite({ it, check }) {
 
     // ② 客户端：帧里的 speakerName 一路传到卡片
     check('长轮询回调带上 speakerName', /String speakerName\);/.test(client), '接口没扩')
-    check('客户端把帧里的 speakerName 传出来', /optString\("speakerName", ""\)/.test(client))
-    check('WS 那条路也读 speakerName', /optString\("speakerName", ""\)/.test(room))
+    check('客户端读帧里的 speakerName', /speakerNameOf\(frame\)/.test(client))
+    check('**JSON null 当成"没有"**（不然界面会出现一个叫 null 的发言人）',
+      /frame\.isNull\("speakerName"\)/.test(client) && /"null"\.equals\(value\)/.test(client),
+      'optString 直接把 null 读成了字符串')
+    check('WS 那条路也走同一个取值函数', /LanClient\.speakerNameOf\(frame\)/.test(room))
     check('旧页面（同传 App）跟着改了签名', /final String speakerName\) \{/.test(main), 'MainActivity 没跟上')
+
+    // ③ 4.96：上传音频时自报发言人（用户提的那条路）
+    check('上传 URL 带上 speaker', /append\("&speaker="\)/.test(client), '没把发言人带上去')
+    check('客户端有 setSpeaker', /public void setSpeaker\(String speaker\)/.test(client))
+    check('房间页把它设成我的用户名', /client\.setSpeaker\(myName\)/.test(room))
+    check('服务端存"这个房间最近的说话人"', /state\.roomSpeaker\.set\(audioRoom/.test(relay))
+    check('自报名字要清洗（它会显示给别人、还会落库）', /function sanitizeSpeaker\(/.test(relay))
+    check('说话人有过期时间（避免张冠李戴）', /SPEAKER_TTL_MS/.test(relay))
 
     // ③ 卡片：按帧判"是不是我说的"，既不看 holding 也不解析状态文字
     check('mine 用 who（帧里给的发言人）判',
@@ -1975,6 +1990,13 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('名字回退顺序：帧 → 当前持麦 → 「对方」',
       /if \(who\.isEmpty\(\)\) who = holderName;/.test(roomCode)
         && /whoLabel = who\.isEmpty\(\) \? getString\(R\.string\.room_other\) : who/.test(roomCode))
+    // 4.96：无人说话时显示「无」，而且那个「声音」按钮的文案要说明它是个开关
+    const zhStrings = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml'), 'utf-8')
+    check('顶部"发言人"在没人说话时显示「无」',
+      /<string name="room_no_speaker">无<\/string>/.test(zhStrings), '还是"麦克风空闲"')
+    check('右下角那颗改成说明它是开关（声音：开/关）',
+      /<string name="room_listen_on">声音：开<\/string>/.test(zhStrings)
+        && /<string name="room_listen_off">声音：关<\/string>/.test(zhStrings), '还写着"正在听"')
     check('**状态文字不许当人名**：speakerBarName 不再解析 speakerBar 文本',
       /private String speakerBarName\(\) \{[^}]*holderName/.test(roomCode)
         && /speakerBar\.getText\(\)[\s\S]{0,80}room_speaker_prefix/.test(roomCode) === false,

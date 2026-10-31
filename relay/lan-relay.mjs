@@ -88,7 +88,15 @@ const MAX_BODY_BYTES = 8 * 1024
  * 同时用"块 12–17（6 块）"的写法保证块号可核，不会造成"像丢了数据"的假象。
  */
 const AUDIO_LOG_MS = 5000
-
+/**
+ * "这个房间最近的说话人"多久算过期（4.96）。
+ *
+ * <p>字幕在**说完之后**几秒才产生（切句要等静音 + 识别 + 翻译），所以不能用
+ * "此刻谁持麦"，而要用"刚才谁上传了音频"。但也不能太久 —— 一个人说完、另一个人才开口，
+ * 中间隔几十秒很正常；超时后就不能把新的一句记到旧的人名下（宁可显示「无」）。
+ * 90 秒的时间窗覆盖"说完这句 → 字幕出来"的整段链路（实测通常 3~10 秒）。
+ */
+const SPEAKER_TTL_MS = 90 * 1000
 /**
  * 音频请求体的上限，单独一档。
  * 1 秒 16 kHz 单声道 PCM 就是 32000 字节，用上面那个 8 KB 的限额会把正常录音直接拒掉。
@@ -585,6 +593,14 @@ export async function startRelay(rawOptions = {}) {
      * 而采样率在一次录音里几乎不变（最多开始时协商一次）。
      */
     roomRateAnswered: new Map(),
+    /**
+     * 每个房间**最近的说话人**（4.96）：`roomId → { name, at }`。
+     *
+     * <p>由 `/audio?speaker=`（或 token）写入，发布字幕时读出来当这一帧的发言人。
+     * 为什么要 TTL：一个人说完、另一个人开口之间可能隔很久；超时之后就不能把新的一句
+     * 记到旧的人名下 —— 宁可显示「无」，也不要张冠李戴。
+     */
+    roomSpeaker: new Map(),
     /** 每个房间收了多少字节音频（4.84 分流用；也给 /audio/rooms 报） */
     roomAudioBytes: new Map(),
     /** 复位日志限流用（4.81） */
@@ -676,6 +692,53 @@ export async function startRelay(rawOptions = {}) {
    * @param {object} frame     字幕帧
    * @param {string} roomHint  来源房间（来自 `buses/<roomId>.json` 的文件名）；空 = 需要推断
    */
+  /**
+   * 上传音频的是谁（4.96）。
+   *
+   * <p>优先 **token**（认证过的身份，改不了），其次 `?speaker=`（老客户端/无账号时的兜底）。
+   * 认不出来返回 `null` —— 调用方据此决定退回到持麦者，或者干脆不带发言人。
+   */
+  async function resolveUploadUser(request, url) {
+    const token = request.headers['x-leion-token'] ?? url.searchParams.get('token')
+    if (typeof token !== 'string' || token === '') return null
+    try {
+      const doc = await loadAccounts(options.dataDir)
+      const user = userForToken(doc, token)
+      return typeof user === 'string' && user !== '' ? user : null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * 清洗客户端自报的发言人名字（只用 `?speaker=` 那条兜底路径）。
+   *
+   * <p>为什么要清洗：这个名字会**显示在别人的界面上**、也会落进转写全文。
+   * 所以只留"像个用户名"的字符，长度封顶；认不出就返回空串（宁可不显示）。
+   */
+  function sanitizeSpeaker(raw) {
+    const text = String(raw ?? '').trim()
+    if (text === '') return ''
+    const cleaned = text.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 40).trim()
+    return /^[\w\u4e00-\u9fa5.@-]{1,40}$/.test(cleaned) ? cleaned : ''
+  }
+
+  /**
+   * 这一帧的发言人：**最近上传这段音频的人** → 当前持麦者 → 无（4.96）。
+   *
+   * <p>为什么要 TTL：字幕在"说完之后"才产生（切句 + 识别 + 翻译要几秒），
+   * 所以不能用"此刻谁持麦"（他可能已经松开麦了），而要用"刚才谁在说"。
+   */
+  function speakerForRoom(roomId, now = Date.now()) {
+    if (roomId === null || roomId === undefined || roomId === '') return ''
+    const recent = state.roomSpeaker.get(roomId)
+    if (recent !== undefined && now - Number(recent.at ?? 0) <= SPEAKER_TTL_MS) {
+      return String(recent.name ?? '')
+    }
+    const holder = floorState(options.dataDir, roomId).holder ?? ''
+    return String(holder)
+  }
+
   function publishFrame(frame, roomHint = '') {
     state.seq += 1
     state.frameCount += 1
@@ -689,17 +752,22 @@ export async function startRelay(rawOptions = {}) {
         speaker: frame.speaker ?? '',
       })
     if (attribution.roomId !== null) frame.roomId = attribution.roomId
-    // 4.95：把**这句话到底是谁说的**一并带给手机。
+    // 4.95/4.96：把**这句话到底是谁说的**一并带给手机。
     //
     // 为什么要服务端加：总线帧里的 `speaker` 只有 `me`/`them` 两种值（那是"相对于电脑"的说法，
-    // 对手机毫无意义）。于是手机端只能拿"当前谁持麦"去猜 —— 而字幕是**逐帧**产生的，
-    // 猜就必然错位（用户实测：没人在麦上时每张卡的发言人都显示「麦克风空闲」）。
-    // 服务端在**发布这一帧的时刻**读一次持麦者，就是最接近真相的那个名字。
+    // 对手机毫无意义）。身份优先级：**最近上传这段音频的人**（4.96，手机自报/token）
+    // → 当前持麦者 → 不带。认不出来就**不带这个字段**，绝不写 null ——
+    // 安卓 `JSONObject.optString("k","")` 遇到 JSON null 会返回字符串 "null"，
+    // 界面上就出现一个叫 null 的发言人（4.95 就这么翻车过一次）。
     if (attribution.roomId !== null) {
-      const speakerNow = floorState(options.dataDir, attribution.roomId).holder ?? ''
-      frame.speakerName = speakerNow === '' ? null : speakerNow
+      const speakerNow = speakerForRoom(attribution.roomId)
+      if (speakerNow !== '') {
+        frame.speakerName = speakerNow
+      } else {
+        delete frame.speakerName
+      }
     } else {
-      frame.speakerName = null
+      delete frame.speakerName
     }
     state.lastFrame = frame
     if (attribution.roomId !== null) {
@@ -1421,6 +1489,21 @@ export async function startRelay(rawOptions = {}) {
         if (audioRoom !== '') {
           state.audioRoomId = audioRoom
           state.audioRoomAt = Date.now()
+        }
+        // 4.96：**上传者就是这句话的发言人**（用户提的办法，比"猜当前谁持麦"准得多）。
+        //
+        // 为什么这条路更对：字幕是"这段音频"转出来的，而这段音频是谁传的、只有他知道。
+        // 手机在 `/audio?speaker=<我的用户名>` 里带上自己；有 token 时**以 token 为准**
+        // （token 是认证过的身份，query 参数只是老客户端的兜底）。
+        // 记成"这个房间最近的说话人"，发布字幕时按它落名字 —— 中间要经过
+        // 切句 → 队列 → 识别 → 大脑 四个进程，身份只能靠**边车信息**传下去。
+        if (audioRoom !== '') {
+          const asUser = await resolveUploadUser(request, url)
+          const claimed = String(url.searchParams.get('speaker') ?? '').trim()
+          const speaker = asUser !== null && asUser !== '' ? asUser : sanitizeSpeaker(claimed)
+          if (speaker !== '') {
+            state.roomSpeaker.set(audioRoom, { name: speaker, at: Date.now() })
+          }
         }
 
         state.audioChain = state.audioChain.then(async () => {

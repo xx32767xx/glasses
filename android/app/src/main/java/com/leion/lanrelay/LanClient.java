@@ -91,6 +91,8 @@ public class LanClient {
      */
     /** 当前房间（空 = 不限定，与旧版行为一致）（4.74） */
     private volatile String roomId = "";
+    /** 上传音频时随请求自报的发言人（4.96，见 setSpeaker）。 */
+    private volatile String speakerName = "";
     private volatile String user = "";
 
     /**
@@ -152,6 +154,31 @@ public class LanClient {
      */
     public void setRoom(String roomId) {
         this.roomId = roomId == null ? "" : roomId.trim();
+    }
+
+    /**
+     * 告诉上传端点"这段音频是谁说的"（4.96）。
+     *
+     * <p>为什么要手机自报：字幕是**这段音频**转出来的，而这段音频是谁录的只有手机知道。
+     * 服务端如果靠"当前谁持麦"去猜，说完松手之后那个状态就没了 ——
+     * 表现就是"每条字幕的发言人都不对"。
+     */
+    public void setSpeaker(String speaker) {
+        this.speakerName = speaker == null ? "" : speaker.trim();
+    }
+
+    /**
+     * 从一帧里取发言人（4.96），**把 JSON null 当成"没有"**。
+     *
+     * <p>为什么不能直接用 {@code optString("speakerName", "")}：安卓的 org.json 在
+     * 值是 JSON null 时返回的是字符串 {@code "null"}（不是兜底值），
+     * 于是界面上会出现一个叫 {@code null} 的发言人 —— 4.95 就这么翻车过一次。
+     */
+    public static String speakerNameOf(org.json.JSONObject frame) {
+        if (frame == null || frame.isNull("speakerName")) return "";
+        String value = frame.optString("speakerName", "");
+        if (value == null || "null".equals(value)) return "";
+        return value.trim();
     }
 
     public void start() {
@@ -217,11 +244,17 @@ public class LanClient {
         if (!roomId.isEmpty()) {
             path.append("&room=").append(java.net.URLEncoder.encode(roomId, "UTF-8"));
         }
+        // 4.96：**把发言人一起带上**。字幕是"这段音频"转出来的，而这段音频是谁传的、
+        // 只有手机自己知道；服务端不用猜"现在谁持麦"（说完松手之后那个状态就没了）。
+        // 服务端还会用 token 校正一次（token 是认证过的身份，这个 query 只是兜底）。
+        if (speakerName != null && !speakerName.isEmpty()) {
+            path.append("&speaker=").append(java.net.URLEncoder.encode(speakerName, "UTF-8"));
+        }
         if (fresh) {
             path.append("&fresh=1");
         }
         if (lang != null && !lang.isEmpty()) {
-            path.append("&lang=").append(lang);
+            path.append("&lang=").append(java.net.URLEncoder.encode(lang, "UTF-8"));
         }
         return requestRaw(path.toString(), pcm, 10000);
     }
@@ -694,7 +727,10 @@ public class LanClient {
                                 frame.optString("sourceLang", "unknown"),
                                 frame.optBoolean("partial", false),
                                 missing,
-                                frame.optString("speakerName", ""));
+                                // 4.96：`speakerName` 可能是"没有这个字段"（服务端认不出谁在说）。
+                                // ⚠️ 不能直接用 optString：安卓的 org.json 在值是 JSON null 时
+                                // 会返回字符串 "null"，界面上就会出现一个叫 null 的发言人。
+                                speakerNameOf(frame));
                     }
                 }
             } catch (Exception error) {

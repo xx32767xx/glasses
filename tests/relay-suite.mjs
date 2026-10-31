@@ -235,12 +235,16 @@ export async function runRelaySuite({ it, check, assert }) {
         speaker: 'them', lang: 'pt-BR', lines: [text], text, source: text, partial: false, at,
       })
 
-      // ① 没人在麦上 → speakerName 必须是 null（界面据此显示「对方」，而不是"麦克风空闲"）
+      // ① 没人在麦上、也没人上传过音频 → **没有** speakerName 这个字段
+      //    （绝不能是 JSON null：安卓的 optString 会把它变成字符串 "null"）
       await writeFile(busFile, frame('没人在说的时候这句', '1'), 'utf-8')
       await new Promise((resolve) => setTimeout(resolve, 400))
       const idle = await (await fetch(`${base}/frame?since=0&room=${room.room.id}`, { headers })).json()
-      check('没人持麦时 speakerName 是 null',
-        idle.frame !== null && idle.frame.speakerName === null, JSON.stringify(idle.frame?.speakerName))
+      check('无人说话时**不带** speakerName 字段',
+        idle.frame !== null && idle.frame.speakerName === undefined,
+        JSON.stringify(idle.frame?.speakerName))
+      check('绝不写 null（安卓会把 null 读成字符串 "null"）',
+        idle.frame !== null && idle.frame.speakerName !== null, String(idle.frame?.speakerName))
 
       // ② alice 拿麦 → 下一帧的发言人就该是 alice
       takeFloor(dir, { roomId: room.room.id, username: 'alice' })
@@ -256,12 +260,40 @@ export async function runRelaySuite({ it, check, assert }) {
       const bob = await (await fetch(`${base}/frame?since=2&room=${room.room.id}`, { headers })).json()
       check('换人之后发言人跟着换', bob.frame?.speakerName === 'bob', JSON.stringify(bob.frame?.speakerName))
 
-      // ④ 转写全文里存的也必须是真实用户名（以前存的是 them）
+      // ④ 4.96：**手机上传时自报的发言人**要盖过"当前持麦者"。
+      //    这才是用户提的那条路 —— 字幕是这段音频转出来的，谁是说话人只有上传方知道。
+      await fetch(`${base}/audio?rate=16000&lang=zh-CN`
+        + `&room=${encodeURIComponent(room.room.id)}&speaker=carol`, {
+        method: 'POST',
+        headers: { 'X-Leion-Secret': secret, 'content-type': 'application/octet-stream' },
+        body: Buffer.alloc(1600),
+      })
+      await writeFile(busFile, frame('carol 说的这句', '4'), 'utf-8')
+      await new Promise((resolve) => setTimeout(resolve, 400))
+      const carol = await (await fetch(`${base}/frame?since=3&room=${room.room.id}`, { headers })).json()
+      check('上传方自报的发言人被采用（不用再猜持麦者）',
+        carol.frame?.speakerName === 'carol', JSON.stringify(carol.frame?.speakerName))
+
+      // ⑤ 离谱的自报名字要被清洗掉（它会显示在别人的界面上、也会落库）
+      await fetch(`${base}/audio?rate=16000&lang=zh-CN`
+        + `&room=${encodeURIComponent(room.room.id)}&speaker=${encodeURIComponent('<script>')}`, {
+        method: 'POST',
+        headers: { 'X-Leion-Secret': secret, 'content-type': 'application/octet-stream' },
+        body: Buffer.alloc(1600),
+      })
+      await writeFile(busFile, frame('乱七八糟的名字那句', '5'), 'utf-8')
+      await new Promise((resolve) => setTimeout(resolve, 400))
+      const dirty = await (await fetch(`${base}/frame?since=4&room=${room.room.id}`, { headers })).json()
+      check('认不出的自报名字不采用（沿用上一个可信的说话人）',
+        dirty.frame?.speakerName === 'carol', JSON.stringify(dirty.frame?.speakerName))
+
+      // ⑥ 转写全文里存的也必须是真实用户名（以前存的是 them）
       const stored = (await import('../lib/rooms.mjs')).listRoomTranscript(dir, {
         roomId: room.room.id, user: 'alice',
       })
       const names = stored.ok === true ? stored.lines.map(line => line.username) : []
-      check('落库的发言人不是 me/them', names.every(name => name === '' || name === 'alice' || name === 'bob'),
+      check('落库的发言人不是 me/them',
+        names.every(name => name === '' || name === 'alice' || name === 'bob' || name === 'carol'),
         JSON.stringify(names))
       check('至少记下了 bob 那一句', names.includes('bob'), JSON.stringify(names))
     } finally {

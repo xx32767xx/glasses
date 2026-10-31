@@ -234,6 +234,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // 4.74：告诉轮询「我在哪个房间」。多场会并发时，
         // 字幕才不会把别的房间的句子画到这里来。
         client.setRoom(roomKey);
+        // 4.96：上传音频时自报发言人（服务端用它给字幕落名字，不再猜"现在谁持麦"）
+        client.setSpeaker(myName);
         getSharedPreferences("leion", MODE_PRIVATE).edit().putString("roomId", roomKey).apply();
         if (token != null && !token.isEmpty()) client.setToken(token);
         if (myName != null && !myName.isEmpty()) client.setUser(myName);
@@ -342,8 +344,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                     }
                     applyFrame(frame.optString("text", ""), lines, frame.optString("source", ""),
                             frame.optBoolean("partial", false), missing,
-                            // 4.95：这一句是谁说的 —— 用**帧里带的名字**，不用"当前谁持麦"去猜
-                            frame.optString("speakerName", ""));
+                            // 4.96：用 LanClient.speakerNameOf —— 它把 JSON null 当成"没有"，
+                            // 不然 optString 会返回字符串 "null"，界面上就出现一个叫 null 的发言人
+                            LanClient.speakerNameOf(frame));
                 });
             }
 

@@ -106,7 +106,7 @@
     <string name="room_empty">Ainda sem legendas · toque em Microfone abaixo para falar</string>
     <string name="room_speaker_heading">Falante</string>
     <string name="room_speaker_prefix">Falante: </string>
-    <string name="room_no_speaker">Microfone livre</string>
+    <string name="room_no_speaker">Nenhum</string>
     <string name="room_locked_suffix"> (bloqueado)</string>
     <string name="room_cast">Tela</string>
     <string name="room_cast_value">Tela do celular</string>
@@ -449,9 +449,9 @@ Servidor %2$s</string>
     <string name="export_failed">Falha ao exportar: %1$s</string>
     <string name="doc_title">Registro da reunião</string>
     <string name="transcript_filter_soon">O filtro ainda não existe (o formato da transcrição vem primeiro)</string>
-    <string name="room_listen_off">Ouvir</string>
-    <string name="room_listen_on">Ouvindo</string>
-    <string name="room_listen_hint">Recomendado usar fone, senão a outra pessoa ouve eco</string>
+    <string name="room_listen_off">Som: desligado</string>
+    <string name="room_listen_on">Som: ligado</string>
+    <string name="room_listen_hint">Desligue para silenciar a outra pessoa; pausa sozinho enquanto você fala (para evitar eco)</string>
     <string name="filter_speaker">Por falante</string>
     <string name="filter_lang">Por idioma</string>
     <string name="filter_all">Todos</string>
