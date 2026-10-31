@@ -352,18 +352,13 @@
     <string name="ui_lang_hint">只改按钮和标题的文字；和我说话用哪种语言无关。</string>
     <string name="rooms_title">会议房间</string>
     <string name="rooms_my_lang_title">我在会里说哪种语言</string>
-    <string name="rooms_my_lang_hint">它决定识别方向：对方的话会自动译成另一种语言。</string>
+    <string name="rooms_my_lang_hint">它既是你说的语言，也是你读的语言：你说的话会译成对方各自的语言，对方说的会自动译成你这种语言。</string>
     <string name="rooms_speak_zh">我说中文</string>
     <string name="rooms_speak_pt">我说葡语</string>
     <string name="rooms_speak_en">我说英语</string>
     <string name="rooms_speak_en_on">我说英语 ✓</string>
-    <string name="rooms_target_hint">这一场译成哪种语言？（三种语言里选一种，对方读到的是它）</string>
-    <string name="rooms_target_zh">译成中文</string>
-    <string name="rooms_target_pt">译成葡语</string>
-    <string name="rooms_target_en">译成英语</string>
-    <string name="rooms_target_zh_on">译成中文 ✓</string>
-    <string name="rooms_target_pt_on">译成葡语 ✓</string>
-    <string name="rooms_target_en_on">译成英语 ✓</string>
+    <!-- 5.03：译成哪种语言**不用选** —— 按每位成员入会时选的语言自动分发 -->
+    <string name="rooms_auto_hint">译成哪种语言不用选：每个人入会时已经选过「我说中文 / 葡语 / 英语」，对方读到的是他自己那种语言（有几种语言就译几份）。</string>
     <string name="rooms_speak_zh_on">我说中文 ✓</string>
     <string name="rooms_speak_pt_on">我说葡语 ✓</string>
     <string name="rooms_create_title">创建会议</string>

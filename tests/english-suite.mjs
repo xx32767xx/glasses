@@ -119,20 +119,28 @@ export async function runEnglishSuite({ it, check, assert }) {
     check('房间投影里带 targetLang', /targetLang: String\(row\.target_lang/.test(rooms))
   })
 
-  await it('客户端：三种说话语言 + 一组"译成哪种语言"', async () => {
+  await it('客户端：三种说话语言；译成哪种语言**由听众语言自动决定**（5.03）', async () => {
     const resDir = join(process.cwd(), 'android', 'app', 'src', 'main', 'res')
     const roomsXml = readFileSync(join(resDir, 'layout', 'page_rooms.xml'), 'utf-8')
     check('说话语言有英语那颗', /@\+id\/roomsLangEn/.test(roomsXml))
-    check('目标语言三颗', /@\+id\/roomsTargetZh/.test(roomsXml) && /@\+id\/roomsTargetPt/.test(roomsXml)
-      && /@\+id\/roomsTargetEn/.test(roomsXml))
+    // 用户质疑过："我不是说了根据用户的选择自动翻译成对应结果吗" —— 建房页不该再要一次选择
+    check('建房页没有「译成哪种语言」胶囊',
+      !/roomsTarget/.test(roomsXml) && /rooms_auto_hint/.test(roomsXml))
     const zh = readFileSync(join(resDir, 'values', 'strings.xml'), 'utf-8')
-    check('三语文案都在', /rooms_target_en/.test(zh) && /rooms_speak_en/.test(zh)
+    check('三语文案都在', /rooms_auto_hint/.test(zh) && /rooms_speak_en/.test(zh)
       && /lang_en_short/.test(zh))
     const settingsXml = readFileSync(join(resDir, 'layout', 'page_settings_app.xml'), 'utf-8')
     check('设置页也能选英语当说话语言', /@\+id\/setAppLangEn/.test(settingsXml))
+    // 服务端仍然**支持**显式目标语言（管理员/CLI/以后的高级设置），但手机不传：
+    // 不传就是"按房间里每种语言的听众各译一份"，这与 §5.01 的多语言分发是同一条路。
     const lanClient = readFileSync(join(process.cwd(), 'android', 'app', 'src', 'main', 'java',
       'com', 'leion', 'lanrelay', 'LanClient.java'), 'utf-8')
-    check('建房时把目标语言发给服务端', /body\.put\("targetLang"/.test(lanClient))
+    check('LanClient 仍支持可选的目标语言参数（给管理端留的）',
+      /orgCreateRoom\(String name, String lang, String targetLang\)/.test(lanClient))
+    const roomsJava = readFileSync(join(process.cwd(), 'android', 'app', 'src', 'main', 'java',
+      'com', 'leion', 'lanrelay', 'RoomsActivity.java'), 'utf-8')
+    check('手机建房时不传目标语言（自动）',
+      /orgCreateRoom\(name, speakLang\)/.test(roomsJava) && !/targetLang/.test(roomsJava))
   })
 
   await it('一句话译成**几种**：按听众语言去重（用户的架构）', async () => {

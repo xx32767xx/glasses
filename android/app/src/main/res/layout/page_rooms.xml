@@ -110,63 +110,22 @@
                     android:textSize="@dimen/text_body" />
             </LinearLayout>
 
-            <!-- 5.00：**这一场译成哪种语言**。三种语言并存时"译成对面那种"不唯一，
-                 所以必须显式选 —— 选错方向的译文看起来完全正常，比报错危险得多。 -->
+            <!--
+              译成哪种语言：**不用选**（5.03）。
+
+              原来这里有三颗胶囊（译成中文/葡语/英语），用户当场质疑：
+              "我不是说了根据用户的选择自动翻译成对应结果吗" —— 对的。
+              每个人入会时已经选过「我说中文/葡语/英语」，也就是**他读得懂哪种语言**，
+              服务端就是按这个集合决定每句话译成几份、发给谁（docs/21 §5.01）。
+              所以这里只留一行说明：把"自动"这件事讲清楚，而不是再要一个选择。
+            -->
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="@dimen/space_gap"
-                android:text="@string/rooms_target_hint"
+                android:text="@string/rooms_auto_hint"
                 android:textColor="@color/ink_soft"
                 android:textSize="@dimen/text_secondary" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="@dimen/space_gap_small"
-                android:orientation="horizontal">
-
-                <TextView
-                    android:id="@+id/roomsTargetZh"
-                    android:layout_width="0dp"
-                    android:layout_height="@dimen/touch_min"
-                    android:layout_weight="1"
-                    android:background="@drawable/bg_pill"
-                    android:clickable="true"
-                    android:focusable="true"
-                    android:gravity="center"
-                    android:text="@string/rooms_target_zh"
-                    android:textColor="@color/ink"
-                    android:textSize="@dimen/text_body" />
-
-                <TextView
-                    android:id="@+id/roomsTargetPt"
-                    android:layout_width="0dp"
-                    android:layout_height="@dimen/touch_min"
-                    android:layout_marginStart="@dimen/space_gap_small"
-                    android:layout_weight="1"
-                    android:background="@drawable/bg_pill"
-                    android:clickable="true"
-                    android:focusable="true"
-                    android:gravity="center"
-                    android:text="@string/rooms_target_pt"
-                    android:textColor="@color/ink"
-                    android:textSize="@dimen/text_body" />
-
-                <TextView
-                    android:id="@+id/roomsTargetEn"
-                    android:layout_width="0dp"
-                    android:layout_height="@dimen/touch_min"
-                    android:layout_marginStart="@dimen/space_gap_small"
-                    android:layout_weight="1"
-                    android:background="@drawable/bg_pill"
-                    android:clickable="true"
-                    android:focusable="true"
-                    android:gravity="center"
-                    android:text="@string/rooms_target_en"
-                    android:textColor="@color/ink"
-                    android:textSize="@dimen/text_body" />
-            </LinearLayout>
         </LinearLayout>
 
         <!-- ── 建房 ──────────────────────────────────────────────────── -->

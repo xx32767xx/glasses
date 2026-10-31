@@ -856,15 +856,16 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('界面语言里 English 可选', !/android:enabled="false"/.test(enBlock)
       && /android:clickable="true"/.test(enBlock))
     const roomsXml = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout', 'page_rooms.xml'), 'utf-8')
-    // 5.00：中/英/葡三种都能当说话语言（服务端 LANGS 也加了 en-US）；
-    // 另外目标语言必须是**单独一组**选择 —— 三种语言时"译成对面那种"不唯一。
+    // 5.00：中/英/葡三种都能当说话语言（服务端 LANGS 也加了 en-US）。
+    // 5.03：**不再要求选"译成哪种语言"** —— 用户质疑过"我不是说了根据用户的选择自动翻译"，
+    // 所以那一组胶囊整个删掉了，只留一行说明；译成什么由每位成员入会时选的语言决定。
     check('说话语言三颗：中文 / 葡语 / 英语',
       /roomsLangZh/.test(roomsXml) && /roomsLangPt/.test(roomsXml) && /roomsLangEn/.test(roomsXml))
-    check('另有「译成哪种语言」一组（建房时必须选）',
-      /roomsTargetZh/.test(roomsXml) && /roomsTargetPt/.test(roomsXml) && /roomsTargetEn/.test(roomsXml))
+    check('建房页不再有「译成哪种语言」一组（自动按听众语言分发）',
+      !/roomsTarget/.test(roomsXml) && /rooms_auto_hint/.test(roomsXml))
     const roomsJava = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay', 'RoomsActivity.java'), 'utf-8')
-    check('目标语言随建房请求发给服务端',
-      /orgCreateRoom\(name, speakLang, targetLang\)/.test(roomsJava))
+    check('建房请求不传目标语言（交给服务端按听众语言决定）',
+      /orgCreateRoom\(name, speakLang\)/.test(roomsJava) && !/targetLang/.test(roomsJava))
     check('说话语言写进 speakLang（建会议时）', /putString\("speakLang"/.test(
       readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay', 'RoomsActivity.java'), 'utf-8')))
 
