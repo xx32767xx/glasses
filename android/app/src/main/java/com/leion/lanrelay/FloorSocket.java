@@ -65,12 +65,21 @@ public class FloorSocket {
         void onOnlineChanged(boolean online);
 
         /**
-         * 收到一块实时音频（4.76）—— PCM 16-bit 小端、单声道、16 kHz。
+         * 收到一块实时音频（4.76）—— PCM 16-bit 小端、单声道；采样率见 {@link #onAudioRate(int)}。
          *
          * <p>只有在本连接发了 {@code {"type":"listen","on":true}} 之后才会有。
          * 回调在网络线程上，界面要自己 post 到主线程。
          */
         default void onAudio(byte[] chunk) { }
+
+        /**
+         * 服务端告知这一路实时音频的采样率（4.91）。
+         *
+         * <p>为什么要这个：手机录音可能从 16 kHz 降级到 44.1 kHz（设备限制时会如实上报），
+         * 而播放端如果固定按 16 kHz 放，声音会变成快放/慢放 —— 听起来像"卡"或者"叽叽声"，
+         * 很容易被当成网络问题。服务端在开关切换或采样率变化时先发一帧 {@code audio-meta}。
+         */
+        default void onAudioRate(int rate) { }
     }
 
     private final String baseUrl;
@@ -234,6 +243,9 @@ public class FloorSocket {
                 listener.onFloor(parsed);
             } else if ("frame".equals(type)) {
                 listener.onFrame(parsed);
+            } else if ("audio-meta".equals(type)) {
+                // 4.91：这一路实时音频的采样率（播放端据此决定 AudioTrack 的采样率）
+                listener.onAudioRate(parsed.optInt("rate", 16000));
             } else if ("closed".equals(type)) {
                 listener.onRoomClosed(parsed.optString("reason", ""));
             } else if ("removed".equals(type)) {

@@ -578,6 +578,13 @@ export async function startRelay(rawOptions = {}) {
     audioRoomAt: 0,
     /** how many chunks were actually fanned out (debug) */
     audioFanoutChunks: 0,
+    /**
+     * 每个房间**已经告诉过**听的人的采样率（4.91）。
+     *
+     * <p>只在变化时发一帧 `audio-meta`：每块都发会把 WS 消息量翻倍，
+     * 而采样率在一次录音里几乎不变（最多开始时协商一次）。
+     */
+    roomRateAnswered: new Map(),
     /** 每个房间收了多少字节音频（4.84 分流用；也给 /audio/rooms 报） */
     roomAudioBytes: new Map(),
     /** 复位日志限流用（4.81） */
@@ -1466,6 +1473,19 @@ export async function startRelay(rawOptions = {}) {
           }
           state.audioChunks += 1
           // 4.76：同一块音频也推给本房间愿意听的人（实时传声）
+          // 4.91：**先**把采样率告诉听的人（只在变化时发一帧）——
+          //       手机录音可能降级到 44.1 kHz，播放端固定按 16 kHz 放会快放/慢放，
+          //       听起来像"卡"或"叽叽声"，很容易被误判成网络问题。
+          if (audioRoom !== '' && wsHub !== null) {
+            if (state.roomRateAnswered.get(audioRoom) !== rate) {
+              state.roomRateAnswered.set(audioRoom, rate)
+              try {
+                wsHub.broadcastFrame({ type: 'audio-meta', roomId: audioRoom, rate }, audioRoom)
+              } catch (error) {
+                debug('[audio] meta 发送失败：' + String(error && error.message ? error.message : error))
+              }
+            }
+          }
           if (audioRoom !== '' && wsHub !== null && body.length > 0) {
             try {
               // 正在持麦的人不收自己的声音（回声根源，服务端兜底）

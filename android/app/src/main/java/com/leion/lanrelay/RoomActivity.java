@@ -121,6 +121,14 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     private TextView listenButton;
     /** 我是不是正在听（与服务端的 listen 开关保持一致）。 */
     private boolean listening = false;
+    /**
+     * 我**想不想**听（4.91）。
+     *
+     * <p>为什么要和 {@link #listening} 分开：自己说话时必须暂停播放（否则听到自己的回声），
+     * 但"我想听"这个意图不该被抹掉 —— 说完要自动恢复。缺省**开**：
+     * 会议里"听得到别人"是预期行为，不该让每个人每次都手动点一下。
+     */
+    private boolean listenWanted = true;
     private Runnable pendingAfterPermission;
     private Button micUploadButton;
     private long lastHeartbeat = 0L;
@@ -349,13 +357,31 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
 
             @Override
             public void onOnlineChanged(boolean online) {
-                ui.post(() -> wsOnline = online);
+                ui.post(() -> {
+                    wsOnline = online;
+                    // 4.91：**重连之后必须重新订阅**。服务端的 listen 开关是挂在**连接**上的
+                    // （`conn.listen`），reconnect 就是一条新连接 —— 不重发的话，
+                    // 界面还显示"在听"，服务端却已经不发一块音频了（症状：声音突然没了）。
+                    if (online && listenWanted) {
+                        if (floorSocket != null) floorSocket.sendListen(true);
+                        if (audioPlayer != null && listening) audioPlayer.start();
+                    }
+                });
+            }
+
+            @Override
+            public void onAudioRate(int rate) {
+                // 服务端告诉我们这一路音频的采样率（4.91）：手机录音可能降到 44.1k，
+                // 播放器按 16k 硬放会变成快放/慢放，所以这里跟着改。
+                ui.post(() -> {
+                    if (audioPlayer != null) audioPlayer.setSampleRate(rate);
+                });
             }
 
             @Override
             public void onAudio(byte[] chunk) {
                 // 网络线程上：只往队列里放，不碰界面
-                if (audioPlayer != null) audioPlayer.offer(chunk);
+                if (audioPlayer != null && listening) audioPlayer.offer(chunk);
             }
         });
         floorSocket.start();
@@ -475,9 +501,14 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         boolean anyHolder = holder != null && !holder.isEmpty();
         boolean iAmHost = myName.equals(hostName());
         if (holding && holdingSinceMs == 0L) holdingSinceMs = System.currentTimeMillis();
-        // 4.77：自己开麦了就不能再放音（手机就在嘴边，放出来就是回声）。
-        // 客户端不仅拦住新开的开关，还要把**已经开着**的关掉。
-        if (holding && listening) stopListening();
+        // 4.77 / 4.91：自己开麦时不能放音（手机就在嘴边，放出来就是回声）。
+        //
+        // ⚠️ 4.91 修掉的那个 bug 就在这里：原来写的是 `if (holding && listening) stopListening()`，
+        // 于是**说完话之后倾听再也没打开** —— 而两个人开会本来就是"你说完我说"，
+        // 结果每个人一开口就把自己的耳朵关掉了，看起来就像"音频传不到对方"。
+        // 现在把"我想听"（listenWanted）与"此刻在放"（listening）分开：
+        // 说话时暂停播放但**记得意图**，说完自动恢复。
+        applyListenState();
         if (!holding) holdingSinceMs = 0L;
         // 外观统一交给 updateMicButton（4.52：胶囊 + 发言中红色 + 呼吸）
         updateMicButton();
@@ -615,29 +646,50 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     }
 
     /**
-     * 开/关"听声音"（4.76）。
+     * 开/关"听声音"（4.76）。4.91 起这里只管**意图**，"此刻放不放"由 {@link #applyListenState()} 决定。
      *
-     * <p>为什么自己开麦时不让听：你的手机就在你嘴边，放出来只会是回声。
+     * <p>为什么自己开麦时不让听：你的手机就在你嘴边，放出来只会是回声 ——
+     * 但**说完要能自动恢复**，否则"你说完我说"的会议里，每人一开口就把自己的耳朵关掉了。
      */
     private void toggleListen() {
-        if (listening) {
-            stopListening();
-            return;
-        }
-        if (holding) {
-            // 自己在说话：不放音（回声的根就在这里）
+        listenWanted = !listenWanted;
+        if (listenWanted && holding) {
+            // 现在正在说话：先记住意图，说完自动开始放
             Toast.makeText(this, getString(R.string.room_listen_hint), Toast.LENGTH_SHORT).show();
+        }
+        applyListenState();
+    }
+
+    /**
+     * 按"我想听 + 我此刻没在说话"决定要不要真的收音频（4.91）。
+     *
+     * <p>幂等：状态没变就什么都不做（避免每次发言权刷新都重启播放器和重发一条 WS 消息）。
+     */
+    private void applyListenState() {
+        boolean shouldPlay = listenWanted && !holding;
+        if (shouldPlay == listening) {
+            renderListenButton();
             return;
         }
-        listening = true;
-        if (floorSocket != null) floorSocket.sendListen(true);
-        if (audioPlayer != null) audioPlayer.start();
+        listening = shouldPlay;
+        if (floorSocket != null) floorSocket.sendListen(shouldPlay);
+        if (audioPlayer != null) {
+            if (shouldPlay) {
+                audioPlayer.start();
+            } else {
+                audioPlayer.stop();
+            }
+        }
         renderListenButton();
     }
 
-    /** 停止收音频 + 停止播放（也告诉服务器不要再发）。 */
+    /** 停止收音频 + 停止播放（也告诉服务器不要再发）。保留"我想听"的意图。 */
     private void stopListening() {
-        if (!listening) return;
+        listenWanted = false;
+        if (!listening) {
+            renderListenButton();
+            return;
+        }
         listening = false;
         if (floorSocket != null) floorSocket.sendListen(false);
         if (audioPlayer != null) audioPlayer.stop();

@@ -1834,14 +1834,57 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('开启倾听就把开关发给服务端', /sendListen\(on\)/.test(java('FloorSocket.java')))
     check('房间页有「听声音」开关', /@\+id\/roomListen/.test(
       readFileSync(join(resDir, 'layout', 'page_room.xml'), 'utf-8')))
-    check('自己开麦时不允许开听', /if \(holding\) \{[\s\S]{0,200}room_listen_hint/.test(room))
-    check('拿到发言权就把已开着的倾听关掉',
-      /if \(holding && listening\) stopListening\(\)/.test(room))
+    check('拿麦时**暂停**播放（不是把开关永久关掉）', /applyListenState\(\);/.test(room))
     check('服务端兜底：持麦者的连接不收自己的声音',
       /exceptUser !== '' && String\(conn\.user\) === String\(exceptUser\)/.test(hub)
       && /broadcastRoomAudio\(audioRoom, body, holderNow\)/.test(relay))
     check('离开房间释放播放器', /audioPlayer\.stop\(\)/.test(room))
     check('提示戴耳机（回声的取舍写在界面里）', /room_listen_hint/.test(room))
+  })
+
+  // 4.91 修的是 4.76 里那个"说不清但一定遇到"的 bug：
+  // 说完话之后倾听再也没打开（"你说完我说"的会议里，每人一开口就把自己的耳朵关掉），
+  // 表现就是用户报的「会议中音频传不到另外一个人那里」。
+  // 这几条钉住修复本身，以及"播放器坏了要留痕"（静默失败是最难查的一类）。
+  await it('4.91：说完话要能自动听回来（listenWanted 与实际播放分开）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+    const socket = readFileSync(join(javaDir, 'FloorSocket.java'), 'utf-8')
+    const player = readFileSync(join(javaDir, 'RoomAudioPlayer.java'), 'utf-8')
+    const relay = readFileSync(join(ROOT, 'relay', 'lan-relay.mjs'), 'utf-8')
+
+    // ① 意图与状态分开，且拿麦/放麦都走同一个决定函数
+    check('有"我想听"这个意图字段', /private boolean listenWanted/.test(room))
+    check('缺省就想听（会议里听得到别人是预期行为，不该每次手点）',
+      /private boolean listenWanted = true;/.test(room))
+    check('有一个统一的决定函数', /private void applyListenState\(\)/.test(room))
+    check('它按"想听而且此刻没在说话"决定', /boolean shouldPlay = listenWanted && !holding;/.test(room))
+    check('幂等（状态没变就不重启播放器、不重发消息）', /if \(shouldPlay == listening\)/.test(room))
+    check('旧写法（一开口就永久关掉倾听）必须消失',
+      // ⚠️ 必须**先剥注释**再查：那条旧写法在修完的代码里还出现在一段"为什么改"的注释里，
+      //    不剥注释就会把注释当成代码（这条断言自己先踩过一次）。
+      /if \(holding && listening\) stopListening\(\)/
+        .test(room.replace(/\/\*[\s\S]*?\*\//g, '').split('\n')
+          .filter(line => line.trim().startsWith('//') === false).join('\n')) === false,
+      '又回到"说完就听不到"的老 bug')
+    check('发言权变化时调用它', /applyListenState\(\);[\s\S]{0,80}if \(!holding\) holdingSinceMs = 0L;/.test(room))
+
+    // ② 重连后要重新订阅（服务端的 listen 挂在连接上，reconnect = 新连接）
+    check('重连后重新发送订阅', /if \(online && listenWanted\)[\s\S]{0,200}sendListen\(true\)/.test(room))
+
+    // ③ 采样率要跟着服务端走（16k 硬放 44.1k 会变调，听着像"卡"）
+    check('服务端会告知采样率', /type: 'audio-meta'/.test(relay) && /broadcastFrame\(\{ type: 'audio-meta'/.test(relay))
+    check('只在变化时发一帧', /roomRateAnswered\.get\(audioRoom\) !== rate/.test(relay))
+    check('客户端能收这个通知', /audio-meta/.test(socket) && /onAudioRate/.test(socket))
+    check('播放器据此重建 AudioTrack', /public void setSampleRate\(int rate\)/.test(player)
+      && /AudioTrack\(AudioManager\.STREAM_MUSIC, sampleRate/.test(player))
+
+    // ④ 播放器失败必须留痕（"没声音"最怕静默）
+    check('播放器有 logcat 留痕', /Log\.w\(TAG/.test(player)
+      && /import android\.util\.Log;/.test(player), 'logcat 标签没接上')
+    check('失败原因能取出来', /public String lastError\(\)/.test(player))
+    check('丢弃块数能取出来', /public long droppedChunks\(\)/.test(player))
+    check('AudioTrack 创建失败不再静默 return', /AudioTrack 创建失败/.test(player))
   })
 
   await it('4.81：/frame 的 seq 不许被 info() 覆盖（否则死循环刷日志）', () => {
