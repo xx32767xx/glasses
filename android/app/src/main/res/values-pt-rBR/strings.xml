@@ -228,6 +228,7 @@ Microfone: microfone do celular (em uso)</string>
     <string name="st_saved">Salvo</string>
     <string name="st_set_to">Definido como: %1$s</string>
     <string name="st_lang_now">Trocado para: %1$s · vale para esta reunião a partir de agora</string>
+    <string name="st_same_language">Todos aqui leem o mesmo idioma · sem tradução (original exibido)</string>
     <string name="suffix_next_meeting"> (vale para a próxima sessão)</string>
     <string name="proof_on">Revisão: ligada (toque para desligar)</string>
     <string name="proof_off">Revisão: desligada (toque para ligar)</string>

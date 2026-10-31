@@ -377,7 +377,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                             // 不然 optString 会返回字符串 "null"，界面上就出现一个叫 null 的发言人
                             LanClient.speakerNameOf(frame),
                             // 5.00：这一帧是译成哪种语言的那一份
-                            frame.isNull("lang") ? "" : frame.optString("lang", ""));
+                            frame.isNull("lang") ? "" : frame.optString("lang", ""),
+                            // 5.12：附带提示（"本场语言相同 · 无需翻译"）
+                            LanClient.noticeOf(frame));
                 });
             }
 
@@ -1278,9 +1280,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     @Override
     public void onFrame(String speaker, String lang, String[] lines, String text,
                         String source, String sourceLang, boolean partial, String[] termsMissing,
-                        String speakerName) {
+                        String speakerName, String notice) {
         // 5.00：这里的 `lang` 就是"这一帧译成哪种语言"（relay 的帧字段），直接传给 applyFrame
-        ui.post(() -> applyFrame(text, lines, source, partial, termsMissing, speakerName, lang));
+        ui.post(() -> applyFrame(text, lines, source, partial, termsMissing, speakerName, lang, notice));
     }
 
     /**
@@ -1292,7 +1294,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
      *                    只显示自己登记的那一份；空串 = 老服务端，照旧显示）
      */
     private void applyFrame(String text, String[] lines, String source, boolean partial,
-                            String[] termsMissing, String speakerName, String lang) {
+                            String[] termsMissing, String speakerName, String lang, String notice) {
         String target = (text == null || text.isEmpty())
                 ? (lines == null ? "" : String.join("\n", lines)) : text;
         String frameLang = lang == null ? "" : lang.trim();
@@ -1301,6 +1303,12 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         if (!frameLang.isEmpty() && !hearLang.isEmpty() && !frameLang.equals(hearLang)) {
             return;
         }
+        // 5.12：这一帧带了提示（例如"本场语言相同 · 无需翻译"）—— 写在提示行，
+        // 让人知道"没译文"是设计如此，不是坏了。
+        if (notice != null && !notice.isEmpty()) {
+            hintLine.setText("same-language".equals(notice)
+                    ? getString(R.string.st_same_language) : notice);
+        }
         renderSegment(target == null ? "" : target, source == null ? "" : source, partial,
                 speakerName == null ? "" : speakerName.trim(), frameLang);
         if (partial) {
@@ -1308,7 +1316,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         } else if (termsMissing != null && termsMissing.length > 0) {
             hintLine.setText(getString(R.string.st_terms_missing,
                     String.join(getString(R.string.list_separator), termsMissing)));
-        } else {
+        } else if (notice == null || notice.isEmpty()) {
             hintLine.setText("");
         }
     }
@@ -1436,12 +1444,16 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         card.addView(sourceLine, sourceParams);
 
         // 译文（大字、加粗）
+        //
+        // 5.12：**原文帧的译文是空的**（那种帧只给"读源语言的人"看自己那句话）。
+        // 这时候不能留一行空白大字 —— 直接把这一行收起来，卡片就只剩原文。
         final TextView targetLine = new TextView(this);
         targetLine.setText(target);
         targetLine.setTextColor(getColor(R.color.ink));
         targetLine.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 15);
         targetLine.setTypeface(targetLine.getTypeface(), android.graphics.Typeface.BOLD);
         targetLine.setLineSpacing(dp(4), 1f);
+        targetLine.setVisibility(target.isEmpty() ? View.GONE : View.VISIBLE);
         LinearLayout.LayoutParams targetParams = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         targetParams.topMargin = dp(6);

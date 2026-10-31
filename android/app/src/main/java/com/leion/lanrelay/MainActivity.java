@@ -902,7 +902,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     public void onFrame(final String speaker, final String lang, final String[] lines,
                         final String text, final String source, final String sourceLang,
                         final boolean partial, final String[] termsMissing,
-                        final String speakerName) {
+                        final String speakerName, final String notice) {
         main.post(() -> {
             framesSeen += 1;
             busSeen = true;

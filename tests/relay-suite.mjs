@@ -297,6 +297,26 @@ export async function runRelaySuite({ it, check, assert }) {
         names.every(name => name === '' || name === 'alice' || name === 'bob' || name === 'carol'),
         JSON.stringify(names))
       check('至少记下了 bob 那一句', names.includes('bob'), JSON.stringify(names))
+
+      // ⑦ 5.12：**原文帧（echo）不入库**。
+      //    它是"给读源语言的人看的自己那句话"，不是一次翻译；记进去会在转写全文里
+      //    凭空多出"中文→中文"，而且与真正的译文合并时会污染 dst_by_lang。
+      //    ⚠️ 这个测试块自己有局部 `frame()`（第二参是 at），所以这里必须显式写字段。
+      const before = stored.ok === true ? stored.lines.length : 0
+      await writeFile(busFile, JSON.stringify({
+        speaker: 'them', lang: 'zh-CN', sourceLang: 'zh-CN',
+        text: '', source: '原文帧不该入库', lines: [], partial: false, echo: true,
+        at: new Date().toISOString(),
+      }), 'utf-8')
+      await new Promise((resolve) => setTimeout(resolve, 400))
+      const after = await (await import('../lib/rooms.mjs')).listRoomTranscript(dir, {
+        roomId: room.room.id, user: 'alice',
+      })
+      const afterLines = after.ok === true ? after.lines.length : 0
+      check('原文帧没有被写进转写全文', afterLines === before, `${before} → ${afterLines}`)
+      // 但它本身仍然**要发给客户端**（否则说话人又看不到自己那句了）
+      const echoSeen = await (await fetch(`${base}/frame?since=5&room=${room.room.id}`, { headers })).json()
+      check('原文帧仍然被推送出去', echoSeen.frame?.echo === true, JSON.stringify(echoSeen.frame?.echo))
     } finally {
       relay.close?.()
       rmSync(dir, { recursive: true, force: true })

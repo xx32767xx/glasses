@@ -1017,6 +1017,10 @@ export async function startRelay(rawOptions = {}) {
    */
   function recordUtteranceIfFinal(frame, attribution) {
     if (frame.partial === true) return
+    // 5.12：**原文帧（echo）不入库**。它是给"读源语言的人"看的自己那句话，
+    // 不是一次翻译；记进去会在转写全文里多出"中文→中文"这种无意义记录，
+    // 而且和真正的译文合并（dst_by_lang）时会把原文当成某一门语言的译文。
+    if (frame.echo === true) return
     const text = String(frame.text ?? '').trim()
     const source = String(frame.source ?? '').trim()
     if (text === '' && source === '') return

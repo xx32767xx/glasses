@@ -1935,6 +1935,14 @@ function createInterpreter(ctx, rawConfig, deps) {
       // 都能从数据本身知道"眼镜有多大"，不必各自硬编码或各自配一份。
       cols: config.cols,
       lineBudget: config.lines,
+      // 5.12：**原文帧**（echo）与"这一句不需要翻译"的提示。
+      //
+      // 为什么需要它：译文帧是按语言分发出去的，所以"说中文、对方读葡语"的房间里，
+      // 说中文的那个人**一帧都收不到** —— 他屏幕上除了自己说话没有任何东西，
+      // 看起来像"我说话了但系统没反应"。所以每句都额外发一帧**源语言**的原文帧：
+      // 按语言扇出之后，它天然只到"读源语言的人"手里（首先就是说话人自己）。
+      ...(input.echo === true ? { echo: true } : {}),
+      ...(typeof input.notice === 'string' && input.notice !== '' ? { notice: input.notice } : {}),
       at: new Date().toISOString(),
     }
   }
@@ -2934,9 +2942,32 @@ function createInterpreter(ctx, rawConfig, deps) {
           console.log('[leion-pro] 译文目标：' + (targets.length === 0 ? '（不需要译文）' : targets.join(' + '))
             + '（依据：' + why + '）')
         }
+        // ── 5.12：先给"读源语言的人"发一帧**原文**（echo）─────────────────────
+        //
+        // 为什么：译文帧是按语言分发的，所以"说中文、对方读葡语"的房间里，
+        // 说中文的那个人**一帧都收不到**（他读了也看不懂葡语那份），屏幕上除了自己
+        // 说话什么都没有 —— 看起来像"我说了但系统没反应"，而这正是用户报过的现象。
+        // 原文帧的 lang = 源语言，按语言扇出后天然只到"读源语言的人"手里：
+        // 说话人自己，以及同样读这门语言的听众。
+        //
+        // 只在**房间管线**（配了收件箱）里发：单机/眼镜那条路（leion_translate）
+        // 有自己的显示逻辑，凭空多一帧空译文会把它覆盖掉。
+        const sourceLang = item.from !== undefined && item.from !== '' ? item.from : detectLang(item.text)
+        if (config.inboxPath !== '' && config.translator !== 'none' && sourceLang !== 'unknown') {
+          const echo = buildFrame({
+            text: '', source: item.text, sourceLang,
+            lang: sourceLang,
+            echo: true,
+            // 所有人读的都是源语言 → 再给一句"为什么没有译文"，别让人以为坏了
+            ...(targets.length === 0 ? { notice: 'same-language' } : {}),
+          })
+          // sendRaw：**不进历史**。历史记的是"这句话的译文"，原文帧重复记一遍没有意义。
+          await sendRaw(echo)
+        }
         if (targets.length === 0) {
-          // 所有人读的都是源语言（或判不出方向）：**不译**。不产出任何帧，
+          // 所有人读的都是源语言（或判不出方向）：**不译**。不产出译文帧，
           // 也不计错误 —— 这不是失败，是"这句话不需要翻译"。
+          // （5.12 起会有一帧原文 + 一句提示，见上面；用户选的正是"只提示、不产译文"。）
           inbox.processed += 1
           console.log('[leion-pro] 跳过翻译（不需要任何译文）：' + item.text)
           continue

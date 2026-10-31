@@ -504,6 +504,30 @@ export async function runAndroidOrderSuite({ it, check }) {
       && /joinRoom\(root, \{ code: body\.code, username: user, lang: body\.lang, mode: body\.mode, now \}\)/.test(api))
   })
 
+  await it('5.12：说话人也看得到自己那句（原文帧）+ 同语言时说明原因', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const client = readFileSync(join(javaDir, 'LanClient.java'), 'utf-8')
+    const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+
+    // 协议：帧上多了 `notice`，客户端要能取到（且不能被 JSON null 骗成字符串 "null"）
+    check('客户端有 noticeOf()，且防 JSON null',
+      /public static String noticeOf\(org\.json\.JSONObject frame\)/.test(client)
+      && /frame\.isNull\("notice"\)/.test(client) && /"null"\.equals\(value\)/.test(client))
+    check('长轮询与 WS 两条路都把 notice 传下去',
+      /noticeOf\(frame\)/.test(client) && (room.match(/noticeOf\(frame\)/g) ?? []).length >= 1)
+    // 提示："本场语言相同 · 无需翻译"
+    check('同语言提示走到了提示行（不是弹窗、不是字幕卡）',
+      /"same-language"\.equals\(notice\)[\s\S]{0,160}st_same_language/.test(room))
+    for (const dir of ['values', 'values-en', 'values-pt-rBR']) {
+      check(`提示文案在 ${dir} 里有`, /name="st_same_language"/.test(
+        readFileSync(join(resDir, dir, 'strings.xml'), 'utf-8')))
+    }
+    // 原文帧的译文是空的：那张卡不能留一行空白大字
+    check('译文为空时把译文那一行收起来（卡片只剩原文）',
+      /targetLine\.setVisibility\(target\.isEmpty\(\) \? View\.GONE : View\.VISIBLE\)/.test(room))
+  })
+
   await it('authWhoAmI 返回拆过包的正文（外壳会让"打开就判成没登录"，单会话下还顺带踢掉另一台）', () => {
     const source = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay',
       'LanClient.java'), 'utf-8')
@@ -2099,13 +2123,16 @@ export async function runAndroidOrderSuite({ it, check }) {
       'utterances 里还在存 me/them')
 
     // ② 客户端：帧里的 speakerName 一路传到卡片
-    check('长轮询回调带上 speakerName', /String speakerName\);/.test(client), '接口没扩')
+    check('长轮询回调带上 speakerName', /String speakerName, String notice\);/.test(client), '接口没扩')
+    // 5.12：帧上多了一个 `notice`（"本场语言相同 · 无需翻译"这类提示），一并扩进来
+    check('回调也带上了 notice（5.12 的原文帧提示）', /String notice\)/.test(client))
     check('客户端读帧里的 speakerName', /speakerNameOf\(frame\)/.test(client))
     check('**JSON null 当成"没有"**（不然界面会出现一个叫 null 的发言人）',
       /frame\.isNull\("speakerName"\)/.test(client) && /"null"\.equals\(value\)/.test(client),
       'optString 直接把 null 读成了字符串')
     check('WS 那条路也走同一个取值函数', /LanClient\.speakerNameOf\(frame\)/.test(room))
-    check('旧页面（同传 App）跟着改了签名', /final String speakerName\) \{/.test(main), 'MainActivity 没跟上')
+    check('旧页面（同传 App）跟着改了签名', /final String speakerName, final String notice\) \{/.test(main),
+      'MainActivity 没跟上')
 
     // ③ 4.96：上传音频时自报发言人（用户提的那条路）
     check('上传 URL 带上 speaker', /append\("&speaker="\)/.test(client), '没把发言人带上去')

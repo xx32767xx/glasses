@@ -656,6 +656,67 @@ export async function runContractSuite(adapter, { it, check, assert }) {
     await auto.tools.get('leion_inbox').execute({ action: 'stop' })
   })
 
+  await it('5.12：说话人自己也收到一帧原文（否则他屏幕上什么都没有）', async () => {
+    // 译文帧是按语言分发出去的：说中文、对方读葡语时，说中文的人**一帧都收不到** ——
+    // 屏幕上除了自己说话一片空白，看起来像"我说话了但系统没反应"。
+    // 现在每句还额外发一帧**源语言**的原文帧（echo），按语言扇出后天然只到
+    // "读源语言的人"手里（首先就是说话人自己）。它**不进历史**（历史记的是译文）。
+    const sidecar = inboxPathOf('room-langs/echo-mixed.json')
+    const inboxFile = inboxPathOf('inbox-echo-mixed.jsonl')
+    const store = new Map()
+    store.set(sidecar, JSON.stringify({ langs: ['pt-BR'], byUser: { b: 'pt-BR' } }))
+    const llm = makeFakeLlm()
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: { inboxPath: inboxFile, inboxPollMs: 120, hearLangsPath: sidecar },
+    })
+    store.set(inboxFile, JSON.stringify({ text: '今天会议改到下午三点。', from: 'zh-CN' }) + '\n')
+    const done = await waitFor(async () =>
+      (await box.tools.get('leion_inbox').execute({ action: 'status' })).processed >= 1)
+    check('这一句被处理了', done)
+    const history = await box.tools.get('leion_history').execute({ limit: 5 })
+    check('译文帧照常产出（葡语）',
+      history.entries.length === 1 && history.entries[0].lang === 'pt-BR',
+      JSON.stringify(history.entries.map(e => e.lang)))
+    check('原文帧**不进历史**（历史记的是译文，原文帧重复记没意义）',
+      history.entries.some(e => e.echo === true) === false,
+      JSON.stringify(history.entries.map(e => ({ lang: e.lang, echo: e.echo }))))
+    const status = await box.tools.get('leion_status').execute({})
+    check('这一次发了 2 帧：原文帧 + 译文帧', status.pushes >= 2, String(status.pushes))
+    await box.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
+  await it('5.12：全场同语言 → 不调模型、只发一帧原文并说明"无需翻译"', async () => {
+    // 用户拍板：同语言时**不要**产译文；但屏幕不能一片空白，要明说原因。
+    const sidecar = inboxPathOf('room-langs/echo-same.json')
+    const inboxFile = inboxPathOf('inbox-echo-same.jsonl')
+    const store = new Map()
+    store.set(sidecar, JSON.stringify({ langs: ['zh-CN'], byUser: { a: 'zh-CN' } }))
+    const llm = makeFakeLlm()
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: { inboxPath: inboxFile, inboxPollMs: 120, hearLangsPath: sidecar },
+    })
+    store.set(inboxFile, JSON.stringify({ text: '今天会议改到下午三点。', from: 'zh-CN' }) + '\n')
+    const done = await waitFor(async () =>
+      (await box.tools.get('leion_inbox').execute({ action: 'status' })).processed >= 1)
+    check('这一句被处理了（不是卡住）', done)
+    check('**一次翻译调用都没有**（同语言不翻译）', llm.calls.length === 0, String(llm.calls.length))
+    const history = await box.tools.get('leion_history').execute({ limit: 5 })
+    check('没有译文进历史', history.entries.length === 0, JSON.stringify(history.entries.map(e => e.lang)))
+    const status = await box.tools.get('leion_status').execute({})
+    check('发了且只发了一帧（原文帧）', status.pushes === 1, String(status.pushes))
+    check('那一帧标着 echo', status.lastFrame?.echo === true, JSON.stringify(status.lastFrame?.echo))
+    check('那一帧带着"本场语言相同"的提示',
+      status.lastFrame?.notice === 'same-language', JSON.stringify(status.lastFrame?.notice))
+    check('那一帧的译文是空的（只有原文）',
+      String(status.lastFrame?.text ?? '') === '' && String(status.lastFrame?.source ?? '') !== '',
+      JSON.stringify({ text: status.lastFrame?.text, source: status.lastFrame?.source }))
+    check('那一帧的 lang 是源语言（所以只有读源语言的人会收到）',
+      status.lastFrame?.lang === 'zh-CN', JSON.stringify(status.lastFrame?.lang))
+    await box.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
   await it('5.11：听众语言侧车**真的被读进去**（读法错了 = 多语言分发静默不生效）', async () => {
     // 现场：房间成员登记的是 en-US + pt-BR，葡语说话却译成**中文**（中文说话又译成葡语）。
     // 根因：`readListenerLangs()` 把**字符串**传给 `fs.readText()`，而 fs 服务要的是

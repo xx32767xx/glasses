@@ -72,7 +72,7 @@ public class LanClient {
          */
         void onFrame(String speaker, String lang, String[] lines, String text,
                      String source, String sourceLang, boolean partial, String[] termsMissing,
-                     String speakerName);
+                     String speakerName, String notice);
 
         /** 出错了（网络不通、密钥错、被拒绝等）。 */
         void onError(String message);
@@ -177,6 +177,19 @@ public class LanClient {
     public static String speakerNameOf(org.json.JSONObject frame) {
         if (frame == null || frame.isNull("speakerName")) return "";
         String value = frame.optString("speakerName", "");
+        if (value == null || "null".equals(value)) return "";
+        return value.trim();
+    }
+
+    /**
+     * 帧里附带的提示（5.12）：例如"本场语言相同 · 无需翻译"。
+     *
+     * <p>为什么不复用 `termsMiss` 那种数组：这是**一句**提示，不是一串名字。
+     * 与 `speakerNameOf` 一样必须防 JSON null —— 安卓的 org.json 对 null 会返回字符串 `"null"`。
+     */
+    public static String noticeOf(org.json.JSONObject frame) {
+        if (frame == null || frame.isNull("notice")) return "";
+        String value = frame.optString("notice", "");
         if (value == null || "null".equals(value)) return "";
         return value.trim();
     }
@@ -730,7 +743,10 @@ public class LanClient {
                                 // 4.96：`speakerName` 可能是"没有这个字段"（服务端认不出谁在说）。
                                 // ⚠️ 不能直接用 optString：安卓的 org.json 在值是 JSON null 时
                                 // 会返回字符串 "null"，界面上就会出现一个叫 null 的发言人。
-                                speakerNameOf(frame));
+                                speakerNameOf(frame),
+                                // 5.12：`notice` = 这一帧附带的一句提示（例如"本场语言相同"）。
+                                // 同样要防 JSON null（optString 会给出 "null"）。
+                                noticeOf(frame));
                     }
                 }
             } catch (Exception error) {
