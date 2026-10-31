@@ -157,39 +157,115 @@
                         android:textColor="@color/ink"
                         android:textSize="@dimen/text_title"
                         android:textStyle="bold" />
-
-                    <!-- 筛选入口：格式定下来之后再接功能，现在只是位置 -->
-                    <TextView
-                        android:id="@+id/transcriptFilter"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:background="@drawable/bg_chip"
-                        android:paddingStart="@dimen/space_gap"
-                        android:paddingTop="@dimen/space_gap_tiny"
-                        android:paddingEnd="@dimen/space_gap"
-                        android:paddingBottom="@dimen/space_gap_tiny"
-                        android:text="@string/transcript_filter"
-                        android:textColor="@color/ink_soft"
-                        android:textSize="@dimen/text_caption" />
                 </LinearLayout>
 
-                <!-- 外框高度**固定**：转写内容在里面自己上下滑（用户明确要求）。
-                     卡片格式与会议中的字幕一致：同一份 item_subtitle_card 布局。 -->
-                <ScrollView
-                    android:id="@+id/transcriptScroll"
+                <!-- 4.98 筛选：**两栏**（说话人 / 语言），点标题就地展开选项，
+                     再点一次收起。以前是一个"筛选"按钮 → 弹窗选发言人 → 再弹一次选语言
+                     （用户反馈：要连点两次，而且每次弹窗里都有「清除筛选」，很别扭）。 -->
+                <LinearLayout
                     android:layout_width="match_parent"
-                    android:layout_height="@dimen/transcript_box_height"
+                    android:layout_height="wrap_content"
                     android:layout_marginTop="@dimen/space_gap_small"
-                    android:background="@drawable/bg_input"
-                    android:fillViewport="true"
-                    android:padding="@dimen/space_gap_small">
+                    android:baselineAligned="false"
+                    android:orientation="horizontal">
 
-                    <LinearLayout
-                        android:id="@+id/transcriptList"
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
+
+                            <TextView
+                                android:id="@+id/transcriptSpeakerHeader"
+                                android:layout_width="match_parent"
+                                android:layout_height="@dimen/touch_min"
+                                android:background="@drawable/bg_chip"
+                                android:clickable="true"
+                                android:focusable="true"
+                                android:gravity="center_vertical"
+                                android:paddingStart="@dimen/space_gap"
+                                android:paddingEnd="@dimen/space_gap"
+                                android:text="@string/filter_speaker_any"
+                                android:textColor="@color/ink_soft"
+                                android:textSize="@dimen/text_caption" />
+
+                            <LinearLayout
+                                android:id="@+id/transcriptSpeakerOptions"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:orientation="vertical"
+                                android:visibility="gone" />
+                        </LinearLayout>
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="@dimen/space_gap_small"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
+
+                            <TextView
+                                android:id="@+id/transcriptLangHeader"
+                                android:layout_width="match_parent"
+                                android:layout_height="@dimen/touch_min"
+                                android:background="@drawable/bg_chip"
+                                android:clickable="true"
+                                android:focusable="true"
+                                android:gravity="center_vertical"
+                                android:paddingStart="@dimen/space_gap"
+                                android:paddingEnd="@dimen/space_gap"
+                                android:text="@string/filter_lang_any"
+                                android:textColor="@color/ink_soft"
+                                android:textSize="@dimen/text_caption" />
+
+                            <LinearLayout
+                                android:id="@+id/transcriptLangOptions"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:orientation="vertical"
+                                android:visibility="gone" />
+                        </LinearLayout>
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/transcriptClear"
+                        android:layout_width="wrap_content"
+                        android:layout_height="@dimen/touch_min"
+                        android:gravity="center_vertical"
+                        android:text="@string/filter_clear"
+                        android:textColor="@color/brand"
+                        android:textSize="@dimen/text_caption"
+                        android:visibility="gone" />
+
+                    <!-- 外框高度**固定**：转写内容在里面自己上下滑（用户明确要求）。
+                         卡片格式与会议中的字幕一致：同一份 item_subtitle_card 布局。
+
+                         ⚠️ 4.98：这里是个"ScrollView 套 ScrollView"。有的机型（尤其国内 ROM）
+                         内层会**拿不到滑动**（手指拖动的很可能是外层页面），用户实测一台能滑、
+                         一台滑不动。三件事一起做：
+                           ① nestedScrollingEnabled（API 21+ 的嵌套滚动协商）；
+                           ② 代码里按下时 requestDisallowInterceptTouchEvent(true)，
+                              让外层别抢这次手势（这是对付厂商 ROM 最可靠的一招）；
+                           ③ 显示滚动条 —— 划不动时至少能看出"这里是可以滑的"。 -->
+                    <ScrollView
+                        android:id="@+id/transcriptScroll"
                         android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:orientation="vertical" />
-                </ScrollView>
+                        android:layout_height="@dimen/transcript_box_height"
+                        android:layout_marginTop="@dimen/space_gap_small"
+                        android:background="@drawable/bg_input"
+                        android:clipToPadding="false"
+                        android:fillViewport="true"
+                        android:nestedScrollingEnabled="true"
+                        android:overScrollMode="ifContentScrolls"
+                        android:padding="@dimen/space_gap_small"
+                        android:scrollbars="vertical">
+
+                        <LinearLayout
+                            android:id="@+id/transcriptList"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical" />
+                    </ScrollView>
 
                 <TextView
                     android:id="@+id/transcriptEmpty"

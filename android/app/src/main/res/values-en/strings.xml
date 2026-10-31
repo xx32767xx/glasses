@@ -451,6 +451,12 @@ Server %2$s</string>
     <string name="transcript_filter_soon">Filtering is not built yet (the transcript format comes first)</string>
     <string name="filter_speaker">By speaker</string>
     <string name="filter_lang">By language</string>
+    <string name="filter_speaker_any">Speaker: all ▾</string>
+    <string name="filter_lang_any">Language: all ▾</string>
+    <string name="filter_speaker_value">Speaker: %1$s %2$s</string>
+    <string name="filter_lang_value">Language: %1$s %2$s</string>
+    <string name="filter_option">%1$s</string>
+    <string name="filter_option_selected">✓ %1$s</string>
     <string name="filter_all">All</string>
     <string name="filter_clear">Clear filter</string>
     <string name="filter_active">Filtered: %1$s · %2$s</string>

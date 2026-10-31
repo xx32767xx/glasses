@@ -2038,41 +2038,74 @@ export async function runAndroidOrderSuite({ it, check }) {
       /if \(response\.optBoolean\("reset", false\)\) \{\s*\n\s*\/\/[\s\S]{0,300}?seq = serverSeq;/.test(client))
   })
 
-  await it('4.82：转写可筛选 —— 按发言人 / 按语言', () => {
+  await it('4.82 / 4.98：转写筛选做成两栏（点一次展开、选中即生效）', () => {
     const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
     const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
     const detail = readFileSync(join(javaDir, 'HistoryDetailActivity.java'), 'utf-8')
+    const layout = readFileSync(join(resDir, 'layout', 'page_history_detail.xml'), 'utf-8')
     const zh = readFileSync(join(resDir, 'values', 'strings.xml'), 'utf-8')
 
     // ① 两个维度都在，且选项从真实数据里现算（不是写死的）
-    check('按发言人筛选', /R\.string\.filter_speaker/.test(detail))
-    check('按语言筛选', /R\.string\.filter_lang/.test(detail))
+    check('说话人那一栏', /@\+id\/transcriptSpeakerHeader/.test(layout)
+      && /R\.id\.transcriptSpeakerHeader/.test(detail))
+    check('语言那一栏', /@\+id\/transcriptLangHeader/.test(layout)
+      && /R\.id\.transcriptLangHeader/.test(detail))
     check('选项来自实际出现过的值', /private java\.util\.List<String> distinct\(String key\)/.test(detail)
-      && /distinct\("username"\)/.test(detail) && /distinct\("srcLang"\)/.test(detail))
+      && /java\.util\.List<String> values = distinct\(key\);/.test(detail)
+      && /fillOptions\(R\.id\.transcriptSpeakerOptions, "username"/.test(detail)
+      && /fillOptions\(R\.id\.transcriptLangOptions, "srcLang"/.test(detail))
 
-    // ② 两个维度同时生效
+    // ② 4.98：点标题就地展开（不再"弹窗 → 再弹一次"）
+    check('有展开状态字段', /private int expandedColumn = COLUMN_NONE;/.test(detail))
+    check('点标题切换展开/收起', /private void toggleColumn\(int column\)/.test(detail)
+      && /expandedColumn = expandedColumn == column \? COLUMN_NONE : column;/.test(detail))
+    check('同一刻只展开一栏（两栏都展开会顶很长）',
+      /expandedColumn == COLUMN_SPEAKER \? android\.view\.View\.VISIBLE : android\.view\.View\.GONE/.test(detail))
+    check('选项是就地的一列（不是 AlertDialog）',
+      /fillOptions\(R\.id\.transcriptSpeakerOptions/.test(detail)
+        && /fillOptions\(R\.id\.transcriptLangOptions/.test(detail))
+    check('旧的两步弹窗已删除', /showFilterDialog|showLangPicker/.test(detail) === false, '还留着弹窗')
+    check('旧的单个"筛选"按钮也没了', /transcriptFilter/.test(layout) === false)
+
+    // ③ 选中即生效并收起；清除只有一个、只在筛选生效时出现
+    check('选中之后立刻收起', /expandedColumn = COLUMN_NONE;/.test(detail))
+    check('选中之后立刻重画（不重新请求）',
+      /rebuildFilterOptions\(\);\s*\n\s*renderTranscript\(allLines, currentMineName\(\)\);/.test(detail))
+    check('只有一个「清除筛选」，且默认不占位置',
+      /@\+id\/transcriptClear/.test(layout) && /android:visibility="gone"/.test(layout)
+        && /clear\.setVisibility\(speakerActive \|\| langActive/.test(detail))
+
+    // ④ 两个维度同时生效
     check('筛选条件同时生效', /private boolean matchesFilter\(org\.json\.JSONObject line\)/.test(detail)
       && /filterSpeaker\.equals\(line\.optString\("username"/.test(detail)
       && /filterLang\.equals\(line\.optString\("srcLang"/.test(detail))
 
-    // ③ 不重新请求服务端（只是重画）
-    check('筛选不重新拉数据', /renderTranscript\(allLines, currentMineName\(\)\)/.test(detail))
-
-    // ④ 筛空了要说清是"没命中"，不是"没有转写"
+    // ⑤ 筛空了要说清是"没命中"，不是"没有转写"
     check('筛空有专门文案', /R\.string\.transcript_filtered_empty/.test(detail))
     const zhFiltered = (zh.match(/<string name="transcript_filtered_empty">([^<]*)</) ?? [])[1] ?? ''
     check('文案区分了两种空', zhFiltered.includes('筛选') && !zhFiltered.includes('还没有'), zhFiltered)
 
-    // ⑤ 按钮上要能看出当前筛选了什么 + 能清除
-    check('按钮显示当前筛选', /R\.string\.filter_active/.test(detail)
-      && /renderFilterButton\(\)/.test(detail))
-    check('有清除筛选', /R\.string\.filter_clear/.test(detail))
-    check('筛选按钮不再是"没做"的提示',
-      !/transcript_filter_soon/.test(detail))
-
     // ⑥ 语言码要显示成人话（zh-CN → 中文）
     check('语言码翻成人话', /private String langLabel\(String code\)/.test(detail)
       && /R\.string\.lang_zh_short/.test(detail))
+  })
+
+  // 4.98：转写框"一台手机能滑、另一台滑不动"。
+  // 结构是 ScrollView 套在页面 ScrollView 里，有的 ROM 会把拖动交给外层页面。
+  await it('4.98：转写框内的滑动在所有机型上都要能拿到手势', () => {
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const layout = readFileSync(join(resDir, 'layout', 'page_history_detail.xml'), 'utf-8')
+    const detail = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay',
+      'HistoryDetailActivity.java'), 'utf-8')
+
+    check('框内 ScrollView 支持嵌套滚动', /android:nestedScrollingEnabled="true"/.test(layout))
+    check('显示滚动条（划不动时至少看得出这里能滑）', /android:scrollbars="vertical"/.test(layout))
+    check('内容不够高时不显示过度滚动阴影', /android:overScrollMode="ifContentScrolls"/.test(layout))
+    check('按下时**不让外层页面抢手势**', /requestDisallowInterceptTouchEvent\(true\)/.test(detail))
+    check('抬手/取消时放开（否则整页都滑不动了）',
+      /ACTION_UP[\s\S]{0,160}requestDisallowInterceptTouchEvent\(false\)/.test(detail)
+        && /ACTION_CANCEL[\s\S]{0,160}requestDisallowInterceptTouchEvent\(false\)/.test(detail))
+    check('仍然返回 false，交给 ScrollView 自己滚', /return false;\s*\/\/ 仍然交给 ScrollView/.test(detail))
   })
 
   await it('仓库里的安卓源码与文档都是干净的 UTF-8（乱码会让 javac 报一串「未结束的字符串文字」）', () => {

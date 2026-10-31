@@ -451,6 +451,12 @@ Servidor %2$s</string>
     <string name="transcript_filter_soon">O filtro ainda não existe (o formato da transcrição vem primeiro)</string>
     <string name="filter_speaker">Por falante</string>
     <string name="filter_lang">Por idioma</string>
+    <string name="filter_speaker_any">Falante: todos ▾</string>
+    <string name="filter_lang_any">Idioma: todos ▾</string>
+    <string name="filter_speaker_value">Falante: %1$s %2$s</string>
+    <string name="filter_lang_value">Idioma: %1$s %2$s</string>
+    <string name="filter_option">%1$s</string>
+    <string name="filter_option_selected">✓ %1$s</string>
     <string name="filter_all">Todos</string>
     <string name="filter_clear">Limpar filtro</string>
     <string name="filter_active">Filtrado: %1$s · %2$s</string>

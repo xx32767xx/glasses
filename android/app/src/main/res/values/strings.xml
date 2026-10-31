@@ -729,6 +729,12 @@
     <string name="transcript_filter_soon">筛选功能还没做（转写格式先定）</string>
     <string name="filter_speaker">按发言人</string>
     <string name="filter_lang">按语言</string>
+    <string name="filter_speaker_any">说话人：全部 ▾</string>
+    <string name="filter_lang_any">语言：全部 ▾</string>
+    <string name="filter_speaker_value">说话人：%1$s %2$s</string>
+    <string name="filter_lang_value">语言：%1$s %2$s</string>
+    <string name="filter_option">%1$s</string>
+    <string name="filter_option_selected">✓ %1$s</string>
     <string name="filter_all">全部</string>
     <string name="filter_clear">清除筛选</string>
     <string name="filter_active">已筛选：%1$s · %2$s</string>
