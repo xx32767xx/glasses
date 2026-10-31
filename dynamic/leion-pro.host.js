@@ -2755,6 +2755,16 @@ function createInterpreter(ctx, rawConfig, deps) {
     startedAt: null,
     lastLine: null,
     lastError: null,
+    /**
+     * 最近一句"为什么译成了这种语言"（5.11）。
+     *
+     * <p>为什么要放进状态里、而不是只打一行日志：这个功能**静默失效**过一次
+     * （侧车读法写错 → 永远走 opposite 兜底 → 中文→英语根本出不来），
+     * 而那种时候日志上看不出任何异常。放到 `leion_inbox status` 里，
+     * 就能被测试断言、也能被人一眼查到"这句的目标语言依据是什么"。
+     */
+    hearLangs: { path: '', langs: [], readable: false },
+    lastTargets: null,
   }
   const queue = []
   let pumping = false
@@ -2845,22 +2855,49 @@ function createInterpreter(ctx, rawConfig, deps) {
    *
    * <p>为什么每次都读：成员进出、改语言都可能在两句之间发生，而这份文件的写入是
    * relay 在"变化时"才做的，读取代价只有一次 stat + 小 JSON 解析。
+   *
+   * <p>⚠️ 5.11 修的大坑：这里原来直接 `fs.readText(config.hearLangsPath)` —— 传的是**字符串**，
+   * 而 fs 服务的 `readText` 要的是 `resolve()` 返回的 `{ path }` 对象（收件箱那边一直那么用）。
+   * 于是每次读都抛异常、被 `catch` 吞掉、返回空数组 → **永远走 opposite 兜底**：
+   *   · 中文→英语永远出不来（目标被算成葡语）；
+   *   · 葡语→英语也被算成中文。
+   * 单测只验了 `resolveTargets`（纯函数）和 `--hear-langs` 有没有传，没人验"读得到吗"，
+   * 所以多语言分发**一直没真正生效**，日志上只像"语言判断有点怪"。
    */
+  /** 侧车文件"解析过一次的句柄"与"是否已经抱怨过读不到"（5.11：避免每句重复 resolve/重复刷日志）。 */
+  let hearLangsTarget = null
+  let hearLangsWarned = false
+  /** 上一次用过的"目标集合 + 依据"，用来只在变化时打一行解释（5.11）。 */
+  let lastTargetKey = ''
+
   async function readListenerLangs() {
     if (config.hearLangsPath === '') return []
+    const fs = ctx.get('fs')
+    if (fs === undefined) return []
     try {
-      const text = await fs.readText(config.hearLangsPath)
+      if (hearLangsTarget === null) hearLangsTarget = await fs.resolve(config.hearLangsPath)
+      const text = await fs.readText(hearLangsTarget)
       const parsed = JSON.parse(text)
-      return Array.isArray(parsed?.langs) ? parsed.langs.map(item => String(item)) : []
-    } catch {
-      // 文件还不存在（第一句）或写了一半：都当"没有登记"，走老行为
+      const langs = Array.isArray(parsed?.langs) ? parsed.langs.map(item => String(item)) : []
+      if (langs.length > 0) hearLangsWarned = false
+      inbox.hearLangs = { path: config.hearLangsPath, langs, readable: true }
+      return langs
+    } catch (error) {
+      // 文件还不存在（第一句）或写了一半：都当"没有登记"，走老行为。
+      // 但**第一次**要把它说出来 —— 静默降级正是这个 bug 藏了这么久的原因。
+      inbox.hearLangs = { path: config.hearLangsPath, langs: [], readable: false }
+      if (hearLangsWarned === false) {
+        hearLangsWarned = true
+        console.log('[leion-pro] 读不到听者语言侧车（' + config.hearLangsPath + '）：'
+          + String(error && error.message ? error.message : error)
+          + ' → 这一场按 opposite(源语言) 兜底（中↔葡）；多语言分发不生效')
+      }
       return []
     }
   }
 
   /** 串行处理队列：同传不能并发，否则字幕会互相穿插。 */
-  async function pump() {
-    if (pumping) return
+  async function pump() {    if (pumping) return
     pumping = true
     try {
       while (queue.length > 0) {
@@ -2873,10 +2910,30 @@ function createInterpreter(ctx, rawConfig, deps) {
         // 依据是"这个房间的听众各自读哪种语言"（relay 写的侧车，等于成员 lang 去重）。
         // 两个听众同语言 → 只译一份；不同语言 → 译两份（最多两份：三种语言、源语言占一种）。
         // 显式给了 to（工具调用 / 会议覆盖值）就只译那一种，行为与 4.100 一致。
-        const targets = args.to !== undefined && args.to !== ''
-          ? [args.to]
+        const listeners = args.to !== undefined && args.to !== '' ? [] : await readListenerLangs()
+        const resolvedTargets = args.to !== undefined && args.to !== ''
+          ? { targets: [args.to], source: 'explicit' }
           : resolveTargets(item.from === undefined ? detectLang(item.text) : item.from,
-            config.targetLang, await readListenerLangs()).targets
+            config.targetLang, listeners)
+        const targets = resolvedTargets.targets
+        // 目标集合**变化时**说一行：这是"为什么这句话译成了这种语言"的唯一解释来源。
+        // 少了它，只能从"译文语言不对"倒推，而那种推断经常指向错误的地方（5.11 花了很久）。
+        const targetKey = targets.join('|') + '@' + resolvedTargets.source
+        inbox.lastTargets = { targets: [...targets], source: resolvedTargets.source, listeners }
+        if (targetKey !== lastTargetKey) {
+          lastTargetKey = targetKey
+          const why = resolvedTargets.source === 'explicit' ? '显式指定'
+            : resolvedTargets.source === 'override' ? '这一场显式指定的目标语言'
+              : resolvedTargets.source === 'listeners'
+                ? (targets.length === 0
+                  ? `听众 ${listeners.join('/')} 全都读源语言（不需要译文）`
+                  : `听众登记的语言 ${listeners.join('/')}`)
+                : resolvedTargets.source === 'paired'
+                  ? `听众没登记，按 opposite(${item.from ?? '?'}) 兜底`
+                  : '判不出方向'
+          console.log('[leion-pro] 译文目标：' + (targets.length === 0 ? '（不需要译文）' : targets.join(' + '))
+            + '（依据：' + why + '）')
+        }
         if (targets.length === 0) {
           // 所有人读的都是源语言（或判不出方向）：**不译**。不产出任何帧，
           // 也不计错误 —— 这不是失败，是"这句话不需要翻译"。
@@ -2982,6 +3039,11 @@ function createInterpreter(ctx, rawConfig, deps) {
         startedAt: inbox.startedAt,
         lastLine: inbox.lastLine,
         lastError: inbox.lastError,
+        // 5.11：最近一句的"译文目标 + 依据"，以及听众语言侧车的读取情况。
+        // 这个功能静默失效过一次（永远走 opposite 兜底，中文→英语根本出不来），
+        // 所以把它做成**可查的状态**，而不是只打一行日志。
+        lastTargets: inbox.lastTargets,
+        hearLangs: inbox.hearLangs,
         // 校对的运行状态（关着时是 null）：调用方一眼能看出"第二遍"有没有在跑、
         // 改了几次、丢了几次（丢 = 屏幕上已经换页，主动放弃覆盖）。
         proofread: proofreadWanted() === false

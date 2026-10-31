@@ -656,6 +656,85 @@ export async function runContractSuite(adapter, { it, check, assert }) {
     await auto.tools.get('leion_inbox').execute({ action: 'stop' })
   })
 
+  await it('5.11：听众语言侧车**真的被读进去**（读法错了 = 多语言分发静默不生效）', async () => {
+    // 现场：房间成员登记的是 en-US + pt-BR，葡语说话却译成**中文**（中文说话又译成葡语）。
+    // 根因：`readListenerLangs()` 把**字符串**传给 `fs.readText()`，而 fs 服务要的是
+    // `resolve()` 的 `{ path }` 对象 —— 每次读都抛异常被吞掉 → 永远走 opposite 兜底。
+    // 单测当时只验了 `resolveTargets`（纯函数）和 `--hear-langs` 有没有传，
+    // 没人验"这个文件读得到吗"，所以 5.01 做的多语言分发**一直没真正生效**。
+    //
+    // 这一组走**真实收件箱**：写侧车 → 喂一行 → 看产出的帧是什么语言。
+    const sidecar = inboxPathOf('room-langs/test.json')
+    const inboxFile = inboxPathOf('inbox-hear.jsonl')
+
+    // ① 侧车写 en-US（源是葡语）→ 应该译成**英语**，不是中文
+    const store = new Map()
+    store.set(sidecar, JSON.stringify({ langs: ['en-US', 'pt-BR'], byUser: { a: 'en-US', b: 'pt-BR' } }))
+    const withSidecar = await adapter.create({
+      llm: makeFakeLlm(), fs: makeFakeFs(store),
+      config: { inboxPath: inboxFile, inboxPollMs: 120, hearLangsPath: sidecar },
+    })
+    store.set(inboxFile, JSON.stringify({ text: 'A reunião passou para as três da tarde.', from: 'pt-BR' }) + '\n')
+    const done = await waitFor(async () =>
+      (await withSidecar.tools.get('leion_inbox').execute({ action: 'status' })).processed >= 1)
+    check('这一行被处理了', done)
+    const history = await withSidecar.tools.get('leion_history').execute({ limit: 5 })
+    const langs = history.entries.map((entry) => entry.lang)
+    check('译文语言取自侧车（en-US），不是 opposite(葡语)=中文',
+      langs.includes('en-US') && langs.includes('zh-CN') === false, JSON.stringify(langs))
+    check('葡语源语言是源语言占一种，所以只译一份', history.entries.length === 1,
+      JSON.stringify(history.entries.map((entry) => entry.lang)))
+    // 状态里能查到"目标 + 依据"，不必读日志（沙箱里的 console 不是宿主那个）
+    const statusA = await withSidecar.tools.get('leion_inbox').execute({ action: 'status' })
+    check('状态里报得出侧车内容', statusA.hearLangs?.readable === true
+      && Array.isArray(statusA.hearLangs.langs) && statusA.hearLangs.langs.includes('en-US'),
+      JSON.stringify(statusA.hearLangs))
+    check('状态里报得出"依据是听众语言"', statusA.lastTargets?.source === 'listeners',
+      JSON.stringify(statusA.lastTargets))
+    await withSidecar.tools.get('leion_inbox').execute({ action: 'stop' })
+
+    // ② 反向：源是中文、听众只登记英语 → 必须译成英语（这就是用户报的"中文→英文不出"）
+    const store2 = new Map()
+    store2.set(sidecar, JSON.stringify({ langs: ['en-US'], byUser: { a: 'en-US' } }))
+    const inbox2 = inboxPathOf('inbox-hear-cn.jsonl')
+    const zhToEn = await adapter.create({
+      llm: makeFakeLlm(), fs: makeFakeFs(store2),
+      config: { inboxPath: inbox2, inboxPollMs: 120, hearLangsPath: sidecar },
+    })
+    store2.set(inbox2, JSON.stringify({ text: '今天会议改到下午三点。', from: 'zh-CN' }) + '\n')
+    const doneZh = await waitFor(async () =>
+      (await zhToEn.tools.get('leion_inbox').execute({ action: 'status' })).processed >= 1)
+    check('中文这一行也被处理了', doneZh)
+    const zhHistory = await zhToEn.tools.get('leion_history').execute({ limit: 5 })
+    check('中文→英语真的产出英文帧（不再是葡语）',
+      zhHistory.entries.some((entry) => entry.lang === 'en-US'),
+      JSON.stringify(zhHistory.entries.map((entry) => entry.lang)))
+    await zhToEn.tools.get('leion_inbox').execute({ action: 'stop' })
+
+    // ③ 侧车读不到时：状态里必须能看出"没读到、按 opposite 兜底"
+    //    （沙箱里 console 不是宿主那个，所以断言状态而不是日志 —— 这也更适合人排查）
+    const store3 = new Map()
+    const inbox3 = inboxPathOf('inbox-hear-missing.jsonl')
+    const missing = await adapter.create({
+      llm: makeFakeLlm(), fs: makeFakeFs(store3),
+      config: { inboxPath: inbox3, inboxPollMs: 120,
+        hearLangsPath: inboxPathOf('room-langs/nope.json') },
+    })
+    store3.set(inbox3, JSON.stringify({ text: 'A reunião passou para as três.', from: 'pt-BR' }) + '\n')
+    const doneMissing = await waitFor(async () =>
+      (await missing.tools.get('leion_inbox').execute({ action: 'status' })).processed >= 1)
+    check('这一行仍然被处理（读不到侧车不许卡住字幕）', doneMissing)
+    const statusMissing = await missing.tools.get('leion_inbox').execute({ action: 'status' })
+    check('状态里标明侧车读不到', statusMissing.hearLangs?.readable === false,
+      JSON.stringify(statusMissing.hearLangs))
+    check('状态里标明这次走的是 opposite 兜底',
+      statusMissing.lastTargets?.source === 'paired', JSON.stringify(statusMissing.lastTargets))
+    check('兜底目标就是 opposite(葡语)=中文',
+      JSON.stringify(statusMissing.lastTargets?.targets) === '["zh-CN"]',
+      JSON.stringify(statusMissing.lastTargets))
+    await missing.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
   await it('5.10：收件箱行里的真名必须叫 speakerName（叫 speaker 会让整条链路哑掉）', async () => {
     // 现场：切句按说话人分轨之后，收件箱行写成 {"text":…,"from":…,"speaker":"test2"}，
     // 而插件的 `speaker` 是另一套语义（'me'/'them'）且会**校验** —— 于是每一行都被判成
