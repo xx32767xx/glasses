@@ -49,7 +49,7 @@ import { handleOrg } from './org-api.mjs'
 import { createWsHub } from '../lib/ws-hub.mjs'
 import { publishMeetingTerms, readCurrentMeeting } from '../lib/meeting-terms.mjs'
 import { loadSelection } from './org-api.mjs'
-import { listMembers, resolveFrameRoom, setMemberLang } from '../lib/rooms.mjs'
+import { listMembers, resolveFrameRoom, roomByCode, roomById, setMemberLang } from '../lib/rooms.mjs'
 import { floorState } from '../lib/floor.mjs'
 import {
   TERMS_LIMITS, getTable, loadTerms, mergePending, normalizeUser, putTable, saveActiveUser, saveTerms, validateTerms,
@@ -2339,11 +2339,17 @@ export async function startRelay(rawOptions = {}) {
               }
             }
           } else if (url.pathname === '/org/rooms/leave') {
-            const leftRoomId = decodeURIComponent(String(body.roomId ?? body.code ?? ''))
+            // 退出可以用 roomId 也可以用邀请码；重算语言集合需要的是**房间 id**
+            // （用邀请码去查 `room_members` 会查空，还会在 room-langs/ 下写出一个叫
+            //  `654321.json` 的垃圾文件 —— 5.13 差点就这么埋进去）。
+            const leftRaw = decodeURIComponent(String(body.roomId ?? body.code ?? ''))
+            const leftRoom = leftRaw === '' ? null : (roomById(options.dataDir, leftRaw)
+              ?? roomByCode(options.dataDir, leftRaw))
+            const leftRoomId = leftRoom !== null ? String(leftRoom.id) : leftRaw
             // 持麦者退出时服务端会把麦清空（lib/rooms.mjs）→ 留下的人也要立刻看到
             wsHub.broadcastFloor(leftRoomId)
             // 5.13：有人走了也要重算（他自己的语言不该再影响"译成几种"）
-            publishRoomLangs(leftRoomId)
+            if (leftRoom !== null) publishRoomLangs(leftRoomId)
             // 发起者退出 = 整场结束：立刻把还连着的人赶出去（4.44）。
             // 只广播状态不够 —— 他们会留在"已结束的会议"里继续点按钮。
             if (result.json !== null && result.json.closed === true) {
