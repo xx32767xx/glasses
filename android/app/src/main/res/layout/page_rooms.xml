@@ -93,6 +93,79 @@
                     android:text="@string/rooms_speak_pt"
                     android:textColor="@color/ink"
                     android:textSize="@dimen/text_body" />
+
+                <!-- 5.00：英语也能当**说话语言**（中/英/葡任意两种互译） -->
+                <TextView
+                    android:id="@+id/roomsLangEn"
+                    android:layout_width="0dp"
+                    android:layout_height="@dimen/touch_min"
+                    android:layout_marginStart="@dimen/space_gap_small"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_pill"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:text="@string/rooms_speak_en"
+                    android:textColor="@color/ink"
+                    android:textSize="@dimen/text_body" />
+            </LinearLayout>
+
+            <!-- 5.00：**这一场译成哪种语言**。三种语言并存时"译成对面那种"不唯一，
+                 所以必须显式选 —— 选错方向的译文看起来完全正常，比报错危险得多。 -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap"
+                android:text="@string/rooms_target_hint"
+                android:textColor="@color/ink_soft"
+                android:textSize="@dimen/text_secondary" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap_small"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/roomsTargetZh"
+                    android:layout_width="0dp"
+                    android:layout_height="@dimen/touch_min"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_pill"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:text="@string/rooms_target_zh"
+                    android:textColor="@color/ink"
+                    android:textSize="@dimen/text_body" />
+
+                <TextView
+                    android:id="@+id/roomsTargetPt"
+                    android:layout_width="0dp"
+                    android:layout_height="@dimen/touch_min"
+                    android:layout_marginStart="@dimen/space_gap_small"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_pill"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:text="@string/rooms_target_pt"
+                    android:textColor="@color/ink"
+                    android:textSize="@dimen/text_body" />
+
+                <TextView
+                    android:id="@+id/roomsTargetEn"
+                    android:layout_width="0dp"
+                    android:layout_height="@dimen/touch_min"
+                    android:layout_marginStart="@dimen/space_gap_small"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_pill"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:text="@string/rooms_target_en"
+                    android:textColor="@color/ink"
+                    android:textSize="@dimen/text_body" />
             </LinearLayout>
         </LinearLayout>
 

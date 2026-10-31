@@ -78,7 +78,7 @@ const HELP = `harness-side —— 常驻的 harness 侧进程（给手机 + 局�
 `
 
 export function parseArgs(argv) {
-  const options = { mode: 'live', dataDir: LIVE_DATA_DIR, cols: 40, lines: 3, pollMs: 150, keepInbox: false, proofread: true, termsRescue: false }
+  const options = { mode: 'live', dataDir: LIVE_DATA_DIR, cols: 40, lines: 3, pollMs: 150, keepInbox: false, proofread: true, termsRescue: false, targetLang: '' }
   const takesValue = new Set(['data-dir', 'inbox', 'bus', 'cols', 'lines', 'poll-ms',
     // 2026-10-23：允许把「热词表」指向任意一份快照（会议级术语快照 = var/data/meetings/<场次>/）。
     // 为什么需要：库（libraries/）与插件之间必须有个"冻结成一份表"的中间物 ——
@@ -90,6 +90,18 @@ export function parseArgs(argv) {
     if (token === '--proofread') { options.proofread = true; continue }
   if (token === '--no-proofread') { options.proofread = false; continue }
     if (token === '--terms-rescue') { options.termsRescue = true; continue }
+    // 5.00：这场会的**目标语言**（中 / 英 / 葡）。
+    // 三种语言并存时"译成哪种"不再唯一，所以必须由会议显式给 —— 见 start-multi 传房间的 target_lang。
+    if (token === '--to') {
+      const value = argv[index + 1]
+      if (value === undefined || value.startsWith('--')) throw new Error('--to 需要一个值（zh-CN / pt-BR / en-US）')
+      if (!['zh-CN', 'pt-BR', 'en-US'].includes(value)) {
+        throw new Error(`--to 只能是 zh-CN / pt-BR / en-US，收到 ${JSON.stringify(value)}`)
+      }
+      options.targetLang = value
+      index += 1
+      continue
+    }
     if (token === '--keep-inbox') { options.keepInbox = true; continue }
     if (token === '--help') { options.help = true; continue }
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -189,6 +201,8 @@ async function main() {
       // 热词临时修正（方向一实验，docs/15 §18，缺省关）：
       // 观测到漏写时问一次模型，可验证才替换那一小段；不改整句、不把校对当反证。
       termsRescue: options.termsRescue ? 'on' : 'off',
+      // 5.00：目标语言（空串 = 老行为：按 opposite(源语言) 推导，即中↔葡互译）
+      targetLang: options.targetLang,
     },
     extraRows: [`- name: '${repoFile('lib', 'keepalive.mjs')}'`],
   })

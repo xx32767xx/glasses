@@ -101,6 +101,7 @@
 
     <!-- 语言方向 -->
     <string name="lang_pt_short">葡萄牙语</string>
+    <string name="lang_en_short">英语</string>
     <string name="lang_zh_short">简体中文</string>
     <string name="lang_pt_full">葡萄牙语（巴西）</string>
     <string name="lang_zh_full">简体中文</string>
@@ -353,6 +354,15 @@
     <string name="rooms_my_lang_hint">它决定识别方向：对方的话会自动译成另一种语言。</string>
     <string name="rooms_speak_zh">我说中文</string>
     <string name="rooms_speak_pt">我说葡语</string>
+    <string name="rooms_speak_en">我说英语</string>
+    <string name="rooms_speak_en_on">我说英语 ✓</string>
+    <string name="rooms_target_hint">这一场译成哪种语言？（三种语言里选一种，对方读到的是它）</string>
+    <string name="rooms_target_zh">译成中文</string>
+    <string name="rooms_target_pt">译成葡语</string>
+    <string name="rooms_target_en">译成英语</string>
+    <string name="rooms_target_zh_on">译成中文 ✓</string>
+    <string name="rooms_target_pt_on">译成葡语 ✓</string>
+    <string name="rooms_target_en_on">译成英语 ✓</string>
     <string name="rooms_speak_zh_on">我说中文 ✓</string>
     <string name="rooms_speak_pt_on">我说葡语 ✓</string>
     <string name="rooms_create_title">创建会议</string>

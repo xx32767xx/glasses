@@ -108,7 +108,9 @@ const MAX_AUDIO_BYTES = 1024 * 1024
 const ALLOWED_RATES = [16000, 44100, 48000]
 
 /** 允许的语种标记（与收件箱行的 from 字段同一套取值）。 */
-const LANGS = ['zh-CN', 'pt-BR']
+// 5.00：中 / 英 / 葡三种。**译成哪种由会议的目标语言决定**（rooms.target_lang），
+// 不再靠 opposite(源语言) 猜 —— 三种语言时"对面"不唯一。
+const LANGS = ['zh-CN', 'pt-BR', 'en-US']
 
 /**
  * 显示预算的兜底值：只有在还没收到任何字幕帧时才用得上。
@@ -1424,8 +1426,8 @@ export async function startRelay(rawOptions = {}) {
           send(response, 400, { ok: false, error: 'text 必须是非空字符串' })
           return
         }
-        if (body.from !== undefined && body.from !== null && body.from !== '' && !['zh-CN', 'pt-BR'].includes(body.from)) {
-          send(response, 400, { ok: false, error: "from 只能是 'zh-CN' / 'pt-BR' 或省略" })
+        if (body.from !== undefined && body.from !== null && body.from !== '' && !LANGS.includes(body.from)) {
+          send(response, 400, { ok: false, error: `from 只能是 ${LANGS.join(' / ')} 或省略` })
           return
         }
         // 复用桥的写入器：收件箱的「一行一句话」规则只有一处实现

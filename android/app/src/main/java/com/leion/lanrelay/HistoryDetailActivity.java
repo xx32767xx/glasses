@@ -364,6 +364,8 @@ public class HistoryDetailActivity extends android.app.Activity {
     private String langLabel(String code) {
         if (code.startsWith("zh")) return getString(R.string.lang_zh_short);
         if (code.startsWith("pt")) return getString(R.string.lang_pt_short);
+        // 5.00：英语（en-US）
+        if (code.startsWith("en")) return getString(R.string.lang_en_short);
         return code;
     }
 

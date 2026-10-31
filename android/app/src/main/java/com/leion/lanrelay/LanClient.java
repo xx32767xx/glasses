@@ -855,10 +855,25 @@ public class LanClient {
 
     /** 建房并声明"我在会里说什么语言"（服务端据此决定识别与翻译方向）。 */
     public JSONObject orgCreateRoom(String name, String lang) throws IOException, org.json.JSONException {
+        return orgCreateRoom(name, lang, "");
+    }
+
+    /**
+     * 建房 + 说话语言 + **这一场译成哪种语言**（5.00）。
+     *
+     * <p>为什么目标语言必须随建房一起给：服务端要为这场会启动一套翻译管线，
+     * 而"译成哪种"直接决定提示词与方向。三种语言（中/英/葡）并存时"对面那种"不唯一，
+     * 等到第一句话再来猜就已经晚了 —— 猜错的译文看起来完全正常。
+     */
+    public JSONObject orgCreateRoom(String name, String lang, String targetLang)
+            throws IOException, org.json.JSONException {
         JSONObject body = new JSONObject();
         body.put("name", name);
         if (lang != null && !lang.isEmpty()) {
             body.put("lang", lang);
+        }
+        if (targetLang != null && !targetLang.isEmpty()) {
+            body.put("targetLang", targetLang);
         }
         return unwrap(requestWithCode("/org/rooms", "POST", body, 8000));
     }

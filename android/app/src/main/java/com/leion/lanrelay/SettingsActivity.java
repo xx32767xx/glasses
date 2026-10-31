@@ -38,6 +38,8 @@ public class SettingsActivity extends android.app.Activity {
     private EditText secretInput;
     private Button langZhButton;
     private Button langPtButton;
+    /** 5.00：英语也能当说话语言（中/英/葡任意两种互译）。 */
+    private Button langEnButton;
     private Button proofreadButton;
     /** 界面语言（4.56）：只换界面文字，与上面那两颗「我说话用什么语言」无关。 */
     private Button uiLangZhButton;
@@ -69,6 +71,7 @@ public class SettingsActivity extends android.app.Activity {
         secretInput = findViewById(R.id.setAppSecret);
         langZhButton = findViewById(R.id.setAppLangZh);
         langPtButton = findViewById(R.id.setAppLangPt);
+        langEnButton = findViewById(R.id.setAppLangEn);
         proofreadButton = findViewById(R.id.setAppProofread);
         uiLangZhButton = findViewById(R.id.setAppUiLangZh);
         uiLangPtButton = findViewById(R.id.setAppUiLangPt);
@@ -93,6 +96,7 @@ public class SettingsActivity extends android.app.Activity {
         uiLangEnButton.setOnClickListener(v -> applyUiLang(UiLang.EN));
         langZhButton.setOnClickListener(v -> setSpeakLanguage("zh-CN"));
         langPtButton.setOnClickListener(v -> setSpeakLanguage("pt-BR"));
+        langEnButton.setOnClickListener(v -> setSpeakLanguage("en-US"));
         proofreadButton.setOnClickListener(v -> toggleProofread());
         findViewById(R.id.setAppPrivacy).setOnClickListener(v ->
                 startActivity(new android.content.Intent(this, PrivacyActivity.class)));
@@ -187,21 +191,27 @@ public class SettingsActivity extends android.app.Activity {
     private void setSpeakLanguage(String lang) {
         getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("speakLang", lang).apply();
         applyLanguageButtons(lang);
-        status.setText(getString(R.string.st_set_to, "pt-BR".equals(lang)
-                ? getString(R.string.rooms_speak_pt) : getString(R.string.rooms_speak_zh))
-                + getString(R.string.suffix_next_meeting));
+        // 5.00：三种语言各说各的（原来只有"葡语 / 中文"两种文案，选了英语会显示"中文"）
+        String label = "pt-BR".equals(lang) ? getString(R.string.rooms_speak_pt)
+                : ("en-US".equals(lang) ? getString(R.string.rooms_speak_en) : getString(R.string.rooms_speak_zh));
+        status.setText(getString(R.string.st_set_to, label) + getString(R.string.suffix_next_meeting));
     }
 
     private void applyLanguageButtons(String lang) {
+        // 5.00：三选一（中/英/葡）。蓝 = 选中，深灰 = 未选；三个都必须能点
+        // （把选中的那个禁掉会让人以为界面卡死）。
+        boolean zh = "zh-CN".equals(lang) || lang == null || lang.isEmpty();
         boolean pt = "pt-BR".equals(lang);
-        boolean zh = !pt;
-        // 蓝 = 选中，深灰 = 未选。两个按钮都必须能点（不能把选中的那个禁掉，否则会"卡死"）
+        boolean en = "en-US".equals(lang);
         langZhButton.setBackgroundResource(zh ? R.drawable.bg_pill_active : R.drawable.bg_pill);
         langPtButton.setBackgroundResource(pt ? R.drawable.bg_pill_active : R.drawable.bg_pill);
+        langEnButton.setBackgroundResource(en ? R.drawable.bg_pill_active : R.drawable.bg_pill);
         langZhButton.setTextColor(getColor(zh ? R.color.on_brand : R.color.ink));
         langPtButton.setTextColor(getColor(pt ? R.color.on_brand : R.color.ink));
+        langEnButton.setTextColor(getColor(en ? R.color.on_brand : R.color.ink));
         langZhButton.setEnabled(true);
         langPtButton.setEnabled(true);
+        langEnButton.setEnabled(true);
     }
 
     // ── 校对开关（以电脑端为准）────────────────────────────────────────

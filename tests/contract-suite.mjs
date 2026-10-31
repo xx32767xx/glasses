@@ -314,7 +314,9 @@ export async function runContractSuite(adapter, { it, check, assert }) {
   await it('语种判不出来时明确失败，而不是猜一个方向', async () => {
     const result = await box.tools.get('leion_translate').execute({ text: 'ok' })
     check('未成功', result.ok === false, JSON.stringify(result))
-    check('给出了可照做的提示', result.failure.includes('from='), result.failure)
+    // 5.00：三种语言之后提示里点名了三个语种码（而不是只有 from= 这一种写法）
+    check('给出了可照做的提示', result.failure.includes('zh-CN') && result.failure.includes('pt-BR')
+      && result.failure.includes('en-US'), result.failure)
   })
 
   await it('显式指定语向时覆盖自动判定', async () => {

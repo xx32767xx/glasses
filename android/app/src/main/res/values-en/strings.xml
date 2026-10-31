@@ -68,6 +68,15 @@
     <string name="rooms_my_lang_hint">It sets the direction: what the other side says is translated into the other language.</string>
     <string name="rooms_speak_zh">I speak Chinese</string>
     <string name="rooms_speak_pt">I speak Portuguese</string>
+    <string name="rooms_speak_en">I speak English</string>
+    <string name="rooms_speak_en_on">I speak English ✓</string>
+    <string name="rooms_target_hint">Which language should this meeting translate into?</string>
+    <string name="rooms_target_zh">Into Chinese</string>
+    <string name="rooms_target_pt">Into Portuguese</string>
+    <string name="rooms_target_en">Into English</string>
+    <string name="rooms_target_zh_on">Into Chinese ✓</string>
+    <string name="rooms_target_pt_on">Into Portuguese ✓</string>
+    <string name="rooms_target_en_on">Into English ✓</string>
     <string name="rooms_speak_zh_on">I speak Chinese ✓</string>
     <string name="rooms_speak_pt_on">I speak Portuguese ✓</string>
     <string name="rooms_create_title">Create a meeting</string>
@@ -428,6 +437,7 @@ Server %2$s</string>
     <string name="hist_need_login">Sign in to see your history</string>
     <string name="hist_unknown_name">Untitled meeting</string>
     <string name="hist_detail_next">More content for this record is not decided yet (the minutes feature was dropped).</string>
+    <string name="lang_en_short">English</string>
     <string name="lang_zh_short">Chinese</string>
     <string name="lang_pt_short">Brazilian Portuguese</string>
     <string name="hist_delete_local">Delete on this phone</string>

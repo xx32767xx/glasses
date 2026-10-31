@@ -68,6 +68,15 @@
     <string name="rooms_my_lang_hint">Define a direção: o que o outro lado diz é traduzido para o outro idioma.</string>
     <string name="rooms_speak_zh">Eu falo chinês</string>
     <string name="rooms_speak_pt">Eu falo português</string>
+    <string name="rooms_speak_en">Eu falo inglês</string>
+    <string name="rooms_speak_en_on">Eu falo inglês ✓</string>
+    <string name="rooms_target_hint">Para qual idioma esta reunião deve traduzir?</string>
+    <string name="rooms_target_zh">Para chinês</string>
+    <string name="rooms_target_pt">Para português</string>
+    <string name="rooms_target_en">Para inglês</string>
+    <string name="rooms_target_zh_on">Para chinês ✓</string>
+    <string name="rooms_target_pt_on">Para português ✓</string>
+    <string name="rooms_target_en_on">Para inglês ✓</string>
     <string name="rooms_speak_zh_on">Eu falo chinês ✓</string>
     <string name="rooms_speak_pt_on">Eu falo português ✓</string>
     <string name="rooms_create_title">Criar reunião</string>
@@ -428,6 +437,7 @@ Servidor %2$s</string>
     <string name="hist_need_login">Entre na conta para ver o histórico</string>
     <string name="hist_unknown_name">Reunião sem nome</string>
     <string name="hist_detail_next">Mais conteúdo deste registro ainda não foi decidido (a ata foi descartada).</string>
+    <string name="lang_en_short">inglês</string>
     <string name="lang_zh_short">Chinês</string>
     <string name="lang_pt_short">Português (Brasil)</string>
     <string name="hist_delete_local">Excluir neste celular</string>

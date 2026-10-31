@@ -42,6 +42,8 @@ public class RoomsActivity extends android.app.Activity {
     private Button joinButton;
     /** 我在会议里说什么语言（zh-CN / pt-BR） */
     private String speakLang = "zh-CN";
+    /** 5.00：这一场译成哪种语言（空串 = 老行为按 opposite 推导，中↔葡互译）。 */
+    private String targetLang = "";
 
     @Override
     protected void attachBaseContext(android.content.Context base) {
@@ -129,8 +131,17 @@ public class RoomsActivity extends android.app.Activity {
         joinButton.setOnClickListener(v -> joinRoom());
         findViewById(R.id.roomsLangZh).setOnClickListener(v -> setSpeakLang("zh-CN"));
         findViewById(R.id.roomsLangPt).setOnClickListener(v -> setSpeakLang("pt-BR"));
+        // 5.00：中/英/葡任意两种互译 —— 英语也能当说话语言
+        findViewById(R.id.roomsLangEn).setOnClickListener(v -> setSpeakLang("en-US"));
         String savedLang = prefs.getString("speakLang", "zh-CN");
         setSpeakLang(savedLang == null || savedLang.isEmpty() ? "zh-CN" : savedLang);
+
+        // 5.00：这一场译成哪种语言（三种语言并存时"译成对面那种"不唯一，必须显式选）
+        findViewById(R.id.roomsTargetZh).setOnClickListener(v -> setTargetLang("zh-CN"));
+        findViewById(R.id.roomsTargetPt).setOnClickListener(v -> setTargetLang("pt-BR"));
+        findViewById(R.id.roomsTargetEn).setOnClickListener(v -> setTargetLang("en-US"));
+        String savedTarget = prefs.getString("targetLang", "");
+        setTargetLang(savedTarget == null ? "" : savedTarget);
     }
 
     @Override
@@ -152,15 +163,35 @@ public class RoomsActivity extends android.app.Activity {
         getSharedPreferences("leion", MODE_PRIVATE).edit().putString("speakLang", lang).apply();
         // ⚠️ 4.51：这一对在布局里是 **TextView**（4.47 的胶囊改的），原来按 Button 取会
         // 在 onCreate 里抛 ClassCastException —— 编译能过、一进大厅就崩。
-        TextView zh = findViewById(R.id.roomsLangZh);
-        TextView pt = findViewById(R.id.roomsLangPt);
-        boolean isZh = "zh-CN".equals(lang);
-        zh.setText(isZh ? getString(R.string.rooms_speak_zh_on) : getString(R.string.rooms_speak_zh));
-        pt.setText(isZh ? getString(R.string.rooms_speak_pt) : getString(R.string.rooms_speak_pt_on));
-        zh.setBackgroundResource(isZh ? R.drawable.bg_pill_active : R.drawable.bg_pill);
-        pt.setBackgroundResource(isZh ? R.drawable.bg_pill : R.drawable.bg_pill_active);
-        zh.setTextColor(getColor(isZh ? R.color.on_brand : R.color.ink));
-        pt.setTextColor(getColor(isZh ? R.color.ink : R.color.on_brand));
+        stylePills(R.id.roomsLangZh, R.string.rooms_speak_zh, R.string.rooms_speak_zh_on, "zh-CN".equals(lang));
+        stylePills(R.id.roomsLangPt, R.string.rooms_speak_pt, R.string.rooms_speak_pt_on, "pt-BR".equals(lang));
+        stylePills(R.id.roomsLangEn, R.string.rooms_speak_en, R.string.rooms_speak_en_on, "en-US".equals(lang));
+    }
+
+    /**
+     * 这一场译成哪种语言（5.00，三种语言里选一种）。
+     *
+     * <p>为什么必须显式选：三种语言并存时"译成对面那种"不唯一 —— 猜错的译文**看起来完全正常**，
+     * 只是整场译错了方向。所以参数由用户点，服务端把它落到 `rooms.target_lang`，
+     * 再传给这场会的大脑（`--to`）。
+     *
+     * <p>空串 = 老行为（中↔葡互译），保留它给"还没选"的老用户。
+     */
+    private void setTargetLang(String lang) {
+        targetLang = lang == null ? "" : lang;
+        getSharedPreferences("leion", MODE_PRIVATE).edit().putString("targetLang", targetLang).apply();
+        stylePills(R.id.roomsTargetZh, R.string.rooms_target_zh, R.string.rooms_target_zh_on, "zh-CN".equals(targetLang));
+        stylePills(R.id.roomsTargetPt, R.string.rooms_target_pt, R.string.rooms_target_pt_on, "pt-BR".equals(targetLang));
+        stylePills(R.id.roomsTargetEn, R.string.rooms_target_en, R.string.rooms_target_en_on, "en-US".equals(targetLang));
+    }
+
+    /** 一组胶囊的选中样式（三个语种共用，避免三份几乎一样的代码各改各的）。 */
+    private void stylePills(int viewId, int offText, int onText, boolean on) {
+        TextView pill = findViewById(viewId);
+        if (pill == null) return;
+        pill.setText(getString(on ? onText : offText));
+        pill.setBackgroundResource(on ? R.drawable.bg_pill_active : R.drawable.bg_pill);
+        pill.setTextColor(getColor(on ? R.color.on_brand : R.color.ink));
     }
 
     private void createRoom() {
@@ -174,7 +205,7 @@ public class RoomsActivity extends android.app.Activity {
             JSONObject body = null;
             String error = "";
             try {
-                body = client.orgCreateRoom(name, speakLang);
+                body = client.orgCreateRoom(name, speakLang, targetLang);
             } catch (Exception e) {
                 error = e.getMessage() == null ? e.toString() : e.getMessage();
             }

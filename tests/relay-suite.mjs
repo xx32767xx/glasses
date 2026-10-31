@@ -138,7 +138,8 @@ export async function runRelaySuite({ it, check, assert }) {
   await it('POST /say 拒绝空文本与非法语种标记', async () => {
     const empty = await call('/say', { method: 'POST', body: { text: '   ' } })
     check('空文本 400', empty.status === 400, String(empty.status))
-    const badFrom = await call('/say', { method: 'POST', body: { text: 'ok', from: 'en-US' } })
+    // 5.00：en-US 现在是**合法**语种了，换一个真的不支持的码来验拒绝
+      const badFrom = await call('/say', { method: 'POST', body: { text: 'ok', from: 'de-DE' } })
     check('非法 from 400', badFrom.status === 400, String(badFrom.status))
     const lines = await readInboxLines()
     check('这两次都没有写进收件箱', lines.length === 2, JSON.stringify(lines))
@@ -709,7 +710,8 @@ export async function runRelaySuite({ it, check, assert }) {
   })
 
   await it('非法语种返回 400', async () => {
-    const result = await postAudio(pcm(100), { lang: 'en-US' })
+    // 5.00：en-US 已支持，非法示例换成 de-DE
+      const result = await postAudio(pcm(100), { lang: 'de-DE' })
     check('400', result.status === 400, String(result.status))
     check('说明了允许值', String(result.json.error).includes('pt-BR'), String(result.json.error))
   })

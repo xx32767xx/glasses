@@ -149,7 +149,7 @@ EMIT_FORMAT = "text"
 
 # whisper 的两位语种码 → 收件箱/插件用的 tag。表外的语种不标 ——
 # 让插件按句子自动判定，比标一个它不认识的 tag 安全。
-LANG_TAGS = {"zh": "zh-CN", "pt": "pt-BR"}
+LANG_TAGS = {"zh": "zh-CN", "pt": "pt-BR", "en": "en-US"}
 
 
 def parse_lang_candidates(raw):
@@ -948,6 +948,9 @@ def silence_skip_reason(audio, threshold=SILENCE_SKIP_RMS) -> str | None:
 LANGUAGE_PROMPTS = {
     "zh": "以下是普通话的句子，请用简体中文输出。",
     "pt": "A seguir, frases em português do Brasil.",
+    # 5.00：英语这一条只是"想显式用时的候选"，**不进 DEFAULT_PROMPTS** ——
+    # 理由和中文那句被否掉一样：引导语在短片段上会被模型回显成一句假字幕。
+    "en": "The following are sentences in English.",
 }
 
 # ⚠️ **缺省会发哪句**：中文那句被实测否掉了（见上），所以这里没有 zh。

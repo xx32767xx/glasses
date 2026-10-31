@@ -856,8 +856,15 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('界面语言里 English 可选', !/android:enabled="false"/.test(enBlock)
       && /android:clickable="true"/.test(enBlock))
     const roomsXml = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout', 'page_rooms.xml'), 'utf-8')
-    check('说话语言仍只有中文与巴葡两颗（服务端只做这两种）',
-      /roomsLangZh/.test(roomsXml) && /roomsLangPt/.test(roomsXml) && !/roomsLangEn/.test(roomsXml))
+    // 5.00：中/英/葡三种都能当说话语言（服务端 LANGS 也加了 en-US）；
+    // 另外目标语言必须是**单独一组**选择 —— 三种语言时"译成对面那种"不唯一。
+    check('说话语言三颗：中文 / 葡语 / 英语',
+      /roomsLangZh/.test(roomsXml) && /roomsLangPt/.test(roomsXml) && /roomsLangEn/.test(roomsXml))
+    check('另有「译成哪种语言」一组（建房时必须选）',
+      /roomsTargetZh/.test(roomsXml) && /roomsTargetPt/.test(roomsXml) && /roomsTargetEn/.test(roomsXml))
+    const roomsJava = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay', 'RoomsActivity.java'), 'utf-8')
+    check('目标语言随建房请求发给服务端',
+      /orgCreateRoom\(name, speakLang, targetLang\)/.test(roomsJava))
     check('说话语言写进 speakLang（建会议时）', /putString\("speakLang"/.test(
       readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay', 'RoomsActivity.java'), 'utf-8')))
 
@@ -1347,6 +1354,8 @@ export async function runAndroidOrderSuite({ it, check }) {
       // 4.99：管理员清理历史的报错只出现在**管理台网页**（手机没这个界面），不需要三语映射。
       // 显式列在这里，是为了"漏掉"和"故意不映射"能分清。
       '清理失败', '不认识的模式',
+      // 5.00：建房时目标语言的参数校验（客户端只会发合法值，属开发期报错）
+      'targetLang 只能是',
     ]
     const ignore = (raw) => IGNORE.some((i) => raw.startsWith(i))
     const matched = (raw) => exact.includes(raw) || pre.some((p) => raw.startsWith(p))

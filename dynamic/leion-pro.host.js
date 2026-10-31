@@ -536,6 +536,15 @@ const CONFIG_DEFAULTS = {
   proofreadMaxAgeMs: 8000,
   /** 待校对队列的上限。积压说明机器跟不上，多排也只会更晚、更没意义。 */
   proofreadMaxQueue: 2,
+  /**
+   * 这场会的**目标语言**（5.00）。
+   *
+   * <p>只有中/葡两种时"译成另一种"是唯一的，所以以前不需要这个配置。
+   * 加了英语之后三种语言并存，"对面"不唯一 —— 目标必须由会议决定：
+   *   房间（`rooms.target_lang`）→ 每场会的大脑 `--to <lang>` → 这里。
+   * 空串 = 老行为（`opposite(源语言)`：中↔葡互译，英语兜底译成中文）。
+   */
+  targetLang: '',
 }
 
 const DEVICE = {
@@ -547,6 +556,14 @@ const DEVICE = {
 
 const ZH = 'zh-CN'
 const PT = 'pt-BR'
+/**
+ * 5.00：英语（美式）。
+ *
+ * <p>中 / 英 / 葡三种里它是"第三种"：**既可以是源、也可以是目标**。
+ * 加它之后"哪两种互译"不再唯一 —— 所以目标语言必须由**会议**给定
+ * （`rooms.target_lang` → 大脑 `--to` → `config.targetLang`），见 {@link resolveTarget}。
+ */
+const EN = 'en-US'
 
 /**
  * 这个路径看起来是不是绝对路径？
@@ -725,7 +742,24 @@ const PT_MARKERS = [
 ]
 const PT_DIACRITICS = 'ãõçáéêíóúâàü'
 
-/** 判定一段文本是中文还是巴葡；判不出来返回 'unknown'，让调用方决定，绝不猜。 */
+/**
+ * 英语的"形状"标记（5.00）。
+ *
+ * <p>为什么要它：中/英/葡三种里，**英文与巴葡共用拉丁字母**，光看字符集分不开。
+ * 所以用"高频功能词"当证据，并且要求 **≥2 个**才算 —— 一个词（比如 `no`、`a`）
+ * 在葡语和英语里都可能出现，拿单个词判语种是"猜"，而猜错语种会让整句译错方向。
+ *
+ * <p>真正的语种来源仍是**每句话自带**（识别进程会给 `from`、手机上报 `lang`）；
+ * 这里只是"没给 from 时"的兜底，所以宁可判 `${unknown}` 也不硬凑。
+ */
+const EN_MARKERS = [
+  'the', 'and', 'you', 'your', 'we', 'are', 'is', 'was', 'were', 'this', 'that', 'these',
+  'those', 'with', 'for', 'from', 'have', 'has', 'will', 'would', 'can', 'could', 'should',
+  'not', 'but', 'there', 'what', 'when', 'where', 'because', 'about', 'meeting', 'today',
+  'tomorrow', 'thanks', 'thank', 'hello', 'sorry', 'please', 'okay', 'yes', 'know', 'think',
+]
+
+/** 判定一段文本是中文 / 巴葡 / 英语；判不出来返回 'unknown'，让调用方决定，绝不猜。 */
 function detectLang(text) {
   const s = String(text === undefined ? '' : text)
   if (/[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/.test(s)) return ZH
@@ -737,14 +771,42 @@ function detectLang(text) {
   }
   const diacritic = [...lower].some(ch => PT_DIACRITICS.includes(ch))
   if (hits >= 1 || diacritic) return PT
+  // 5.00：巴葡证据一条都没有，才轮到英语 —— 且要**两个**以上功能词才算数。
+  let englishHits = 0
+  for (const marker of EN_MARKERS) {
+    if (padded.includes(' ' + marker + ' ')) englishHits += 1
+  }
+  if (englishHits >= 2) return EN
   return 'unknown'
 }
 
-/** 反向：同传永远是「译成听得懂的那边」。 */
+/**
+ * 「另一种语言」的**兜底**推导（5.00 起它只是兜底）。
+ *
+ * <p>⚠️ 三种语言并存时，"对面"不唯一 —— 所以真正的目标语言应当由**会议**给定
+ * （`rooms.target_lang` → 每场会的大脑 `--to` → `config.targetLang`）。
+ * 这个函数只在"没给目标"的老链路上起作用：中↔葡互译，英语默认译成中文。
+ */
 function opposite(lang) {
   if (lang === ZH) return PT
   if (lang === PT) return ZH
+  if (lang === EN) return ZH
   return 'unknown'
+}
+
+/**
+ * 这一句该译成哪种语言（5.00）。
+ *
+ * <p>优先级：**这一句显式给了 to** → **会议配置的目标语言** → 兜底 opposite(源语言)。
+ * 三个来源都拿不到才报错（宁可不译，也不要猜错方向 —— 译错方向时译文看起来完全正常）。
+ *
+ * @returns {{target: string, source: 'explicit'|'meeting'|'paired'|'none'}}
+ */
+function resolveTarget(from, argsTo, configTarget) {
+  if (typeof argsTo === 'string' && argsTo !== '') return { target: argsTo, source: 'explicit' }
+  if (typeof configTarget === 'string' && configTarget !== '') return { target: configTarget, source: 'meeting' }
+  const guess = opposite(from)
+  return { target: guess === 'unknown' ? '' : guess, source: guess === 'unknown' ? 'none' : 'paired' }
 }
 
 /**
@@ -762,36 +824,66 @@ function translationSystem(policy, from, to, termsHint) {
   if (policy === undefined || policy === null) {
     throw new Error('translationSystem 需要 policy（见 policy/br-pt.json 与 plugin/policy.generated.mjs）')
   }
-  const target = to === PT ? policy.variety.fullName : policy.variety.counterpart.name
+  const target = targetName(policy, to)
   const lines = [
     '你是资深的中巴同声传译译员，服务于现场口译场景。',
     '把用户给你的话翻译成' + target + '。',
     '硬性要求：',
   ]
-  // 「用巴葡表达」这类规则只在**产出巴葡**时才成立：译成中文时它毫无意义，
+  // 「用巴葡表达」这类规则只在**产出巴葡**时才成立：译成中文/英语时它毫无意义，
   // 甚至可能把模型往错的方向推。所以策略数据把它们分成通用的与巴葡专用的两组。
   const rules = to === PT
     ? policy.translationRules.concat(policy.ptBrRules)
-    : policy.translationRules
+    : (to === EN ? policy.translationRules.concat(EN_OUTPUT_RULES) : policy.translationRules)
   rules.forEach((rule, index) => {
     lines.push((index + 1) + '. ' + rule)
   })
-  // 只有"译成巴葡"时才附术语表：译成中文时这些词用不上，白白占上下文。
-  if (to === PT && policy.terminology.length > 0) {
-    lines.push('用词必须按巴葡（括号里是葡葡，不要用）：' + policy.terminology
-      .map(entry => entry.br + '（不用 ' + entry.ptpt + '）')
-      .join('、'))
+  // 术语表只有"译成中文/巴葡"时用得上（表里就是这两侧）；译成英语时这些词用不上。
+  if ((to === PT || to === ZH) && policy.terminology.length > 0) {
+    if (to === PT) {
+      lines.push('用词必须按巴葡（括号里是葡葡，不要用）：' + policy.terminology
+        .map(entry => entry.br + '（不用 ' + entry.ptpt + '）')
+        .join('、'))
+    } else {
+      lines.push('专名用中文规范写法：' + policy.terminology
+        .map(entry => entry.zh)
+        .join('、'))
+    }
   }
   // 本句专名提示（docs/15 §18.9）：只列**这句原文里真的出现了**的表内名字。
   // 实测（44 句 A/B）：规范写法出现率 53/56 → 56/56，prompt 只多约 27 token，
   // 没有一句被写坏、没有数字丢失。它把"模型写泛称/音译变体"这一类直接压掉，
   // 比事后修正省一次模型调用。
-  if (Array.isArray(termsHint) && termsHint.length > 0) {
+  // ⚠️ 5.00：译成英语时没有"英语规范写法"这一侧（术语表只有中文/巴葡两栏），
+  //    所以不注入 —— 硬塞中文名会让模型在英语译文里留下中文。
+  if (Array.isArray(termsHint) && termsHint.length > 0 && to !== EN) {
     const pairs = termsHint.map(entry => (to === PT ? entry.zh : entry.pt)
       + ' → ' + (to === PT ? entry.pt : entry.zh))
     lines.push('本句原文出现了这些名字，译文必须保留下列写法（原文没出现的名字不要添加）：' + pairs.join('；'))
   }
   return lines.join('\n')
+}
+
+/**
+ * 产出英语时的补充规则（5.00）。
+ *
+ * <p>为什么单独一组：`policy.translationRules` 是**通用**的（保真、数字、节奏），
+ * 巴葡的"不要用葡葡词"那类规则对英语毫无意义；而英语有它自己的坑 ——
+ * 最典型的是"中式英语"（逐字直译语序）和"翻译腔"（`I think that it is...` 层层套）。
+ * 这三条只约束**形式**，不改忠实度标准。
+ */
+const EN_OUTPUT_RULES = [
+  'Use natural spoken English (US). Do not translate word-by-word from the source word order.',
+  'Keep names, products and numbers exactly as they are; do not localize or translate proper nouns that are given in Latin script.',
+  'Output English only — never leave Chinese characters or Portuguese words in the translation.',
+]
+
+/** 目标语言的显示名（提示词里用）。三种语言的唯一来源，避免两处各写一份。 */
+function targetName(policy, to) {
+  if (to === EN) return '英语（English, US）'
+  if (to === PT) return policy.variety.fullName
+  if (to === ZH) return policy.variety.counterpart.name
+  return String(to)
 }
 
 /**
@@ -812,7 +904,7 @@ function proofreadSystem(policy, from, to, entries) {
   if (policy === undefined || policy === null) {
     throw new Error('proofreadSystem 需要 policy（见 policy/br-pt.json 与 plugin/policy.generated.mjs）')
   }
-  const target = to === PT ? policy.variety.fullName : policy.variety.counterpart.name
+  const target = targetName(policy, to)
   const lines = [
     '你在做**译文校对**：译文的目标语言是' + target + '。',
     '硬性要求：',
@@ -828,6 +920,7 @@ function proofreadSystem(policy, from, to, entries) {
       const zh = entry && entry.zh ? String(entry.zh) : ""
       const pt = entry && entry.pt ? String(entry.pt) : ""
       if (zh === "" || pt === "") continue
+      // 5.00：目标语言不同，"该保留哪一侧"也不同（译成英语时没有英语那一栏，见下）
       lines.push("- " + zh + " → " + pt)
     }
     lines.push("初译里若出现表外的专名，按初译保留，不要自行发明新写法。")
@@ -2885,10 +2978,20 @@ function createInterpreter(ctx, rawConfig, deps) {
 
       const from = args.from !== undefined && args.from !== '' ? args.from : detectLang(source)
       if (from === 'unknown') {
-        return { ok: false, failure: "判不出源语种。请显式传 from='zh-CN' 或 from='pt-BR'" }
+        return { ok: false, failure: '判不出源语种。请显式传 from（zh-CN / pt-BR / en-US）' }
       }
-      const to = args.to !== undefined && args.to !== '' ? args.to : opposite(from)
-      if (to === 'unknown') return { ok: false, failure: '目标语种无法推导，请显式传 to' }
+      // 5.00：三种语言并存时**不能靠"对面"猜目标**。优先级：
+      //   这一句显式给的 to → 这场会配置的目标语言（config.targetLang，来自 rooms.target_lang）
+      //   → 兜底 opposite(from)（老行为：中↔葡互译）
+      const resolved = resolveTarget(from, args.to, config.targetLang)
+      const to = resolved.target
+      if (to === '') {
+        return { ok: false, failure: '目标语种无法推导：请显式传 to，或给这场会配一个目标语言' }
+      }
+      if (to === from) {
+        // 源和目标相同 = 这一句不需要翻译。如实拒绝，而不是"译"出一份同语言的假字幕。
+        return { ok: false, failure: `源语种与目标语种相同（都是 ${from}），这一句不需要翻译` }
+      }
 
       // 佩戴者读的那一帧：永远是译成佩戴者母语（中文）的那一侧。
       const wearerReadsTranslation = to === ZH
@@ -3282,8 +3385,8 @@ function buildToolSpecs(rt) {
         + '佩戴者自己的话译成巴葡后作为出站内容返回（给对方的扬声器/第二块屏）。',
       parameters: {
         text: { type: 'string', required: true, description: '原文。通常来自 ASR，也可以是直接键入的一句话' },
-        from: { type: 'string', description: "源语种；缺省自动判定。'zh-CN' | 'pt-BR'" },
-        to: { type: 'string', description: '目标语种；缺省取 from 的反向' },
+        from: { type: 'string', description: "源语种；缺省自动判定。'zh-CN' | 'pt-BR' | 'en-US'" },
+        to: { type: 'string', description: "目标语种；缺省用这场会的目标语言（config.targetLang），再缺省取 from 的反向（中↔葡；英语兜底译成中文）" },
         speaker: { type: 'string', description: "这帧归属谁；只在 translator='none'（不翻译）时起作用", enum: ['them', 'me'] },
       },
       outputSchemaDsl: outputSchema({

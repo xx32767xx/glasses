@@ -2118,8 +2118,11 @@ def main():
     unknown = whisper_stream.json.loads(_capture_emit("json", "语种未知", None)[0])
     check("语种未知时不硬编 from（让插件自己判）", unknown == {"text": "语种未知"}, str(unknown))
 
-    other = whisper_stream.json.loads(_capture_emit("json", "hello", "en")[0])
-    check("表外语种也不硬编 from", other == {"text": "hello"}, str(other))
+    # 5.00：英语现在是**支持**的语种（映射到 en-US）——"表外"示例改用 de
+    eng = whisper_stream.json.loads(_capture_emit("json", "hello", "en")[0])
+    check("英语映射到 en-US", eng == {"text": "hello", "from": "en-US"}, str(eng))
+    other = whisper_stream.json.loads(_capture_emit("json", "hallo", "de")[0])
+    check("表外语种也不硬编 from", other == {"text": "hallo"}, str(other))
 
     check("空白句不产生任何行", _capture_emit("json", "   ", "zh") == [])
 

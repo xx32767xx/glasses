@@ -385,6 +385,11 @@ export function pipelineSteps(options, room) {
   brainArgs.push(options.proofread ? '--proofread' : '--no-proofread')
   if (options.offline) brainArgs.push('--offline')
   if (options.termsRescue) brainArgs.push('--terms-rescue')
+  // 5.00：把**这场会的目标语言**交给它的大脑。
+  // 房间在创建时选了目标语言（中/英/葡任意两种互译），三种语言时"译成哪种"只有会议自己知道 ——
+  // 靠 opposite(源语言) 猜在三种语言下不唯一（会译错方向，而错方向的译文看起来完全正常）。
+  const roomTarget = typeof room === 'object' && room !== null ? String(room.targetLang ?? '') : ''
+  if (roomTarget !== '') brainArgs.push('--to', roomTarget)
   if (options.termsPath && options.termsActivePath) {
     brainArgs.push('--terms-path', options.termsPath, '--terms-active-path', options.termsActivePath)
   }

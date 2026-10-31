@@ -411,7 +411,12 @@ export async function handleOrg(input) {
     if (method === 'POST') {
       const name = String(body.name ?? '').trim()
       if (name === '') return bad(400, '房间名不能为空')
-      const created = createRoom(root, { name, host: user, now })
+      // 5.00：建房时可以指定**目标语言**（中/英/葡任意两种互译 —— 三种语言时"译成哪种"必须显式）。
+    const targetLang = String(body.targetLang ?? '').trim()
+    if (targetLang !== '' && !['zh-CN', 'pt-BR', 'en-US'].includes(targetLang)) {
+      return bad(400, `targetLang 只能是 zh-CN / pt-BR / en-US 或省略，收到 ${JSON.stringify(targetLang)}`)
+    }
+    const created = createRoom(root, { name, host: user, targetLang, now })
       if (created.ok !== true) return bad(400, created.error)
       joinRoom(root, { room: created.room, username: user, lang: body.lang, now })
       return { status: 200, json: { ok: true, room: created.room } }

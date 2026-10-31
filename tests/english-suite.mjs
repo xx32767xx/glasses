@@ -1,0 +1,143 @@
+/**
+ * english-suite.mjs —— 中/英/葡三种语言的互译支持（5.00）
+ * ============================================================================
+ * 这一套守的是"**方向**"这件事，因为译错方向是本项目最危险的一类错误：
+ * 译文看着完全正常、语法没问题，只是整场译成了另一种语言 —— 用户可能半小时后才发现。
+ *
+ * 三条边界：
+ *   1. **目标语言必须能唯一确定**（三种语言时"对面那种"不唯一），
+ *      优先级：这一句显式给的 to → 会议配置 → 兜底 opposite(源语言)；
+ *   2. **语种判定绝不猜**：英文与巴葡共用拉丁字母，所以英文要求 ≥2 个功能词才算，
+ *      否则返回 unknown（宁可拒绝，也不要猜错方向）；
+ *   3. **源=目标时要明确拒绝**（"译成同一种语言"没有意义，产出的是假译文）。
+ */
+
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import {
+  EN, PT, ZH, detectLang, opposite, resolveTarget, translationSystem, proofreadSystem,
+  targetName, EN_OUTPUT_RULES, CONFIG_DEFAULTS,
+} from '../plugin/core.mjs'
+import { parseArgs as harnessParse } from '../scripts/harness-side.mjs'
+import { parseArgs as multiParse, pipelineSteps } from '../scripts/start-multi.mjs'
+
+const policy = JSON.parse(readFileSync(join(process.cwd(), 'policy', 'br-pt.json'), 'utf-8'))
+
+export async function runEnglishSuite({ it, check, assert }) {
+  await it('三种语言的常量与兜底方向', async () => {
+    check('英语是 en-US', EN === 'en-US', EN)
+    check('中→葡（老行为不变）', opposite(ZH) === PT, opposite(ZH))
+    check('葡→中（老行为不变）', opposite(PT) === ZH, opposite(PT))
+    check('英语兜底译成中文（没配目标时才走这条）', opposite(EN) === ZH, opposite(EN))
+    check('不认识的语种返回 unknown（不猜）', opposite('de-DE') === 'unknown', opposite('de-DE'))
+  })
+
+  await it('目标语言的优先级：显式 > 会议配置 > 兜底', async () => {
+    check('显式 to 最优先',
+      resolveTarget(ZH, EN, PT).target === EN && resolveTarget(ZH, EN, PT).source === 'explicit',
+      JSON.stringify(resolveTarget(ZH, EN, PT)))
+    check('没给 to 就用会议配置',
+      resolveTarget(ZH, '', EN).target === EN && resolveTarget(ZH, '', EN).source === 'meeting',
+      JSON.stringify(resolveTarget(ZH, '', EN)))
+    check('都没给才回落到"对面"（中↔葡）',
+      resolveTarget(ZH, '', '').target === PT && resolveTarget(ZH, '', '').source === 'paired',
+      JSON.stringify(resolveTarget(ZH, '', '')))
+    check('三种都拿不到时给空（调用方必须明确失败，不许猜）',
+      resolveTarget('de-DE', '', '').target === '', JSON.stringify(resolveTarget('de-DE', '', '')))
+    check('会议配置为空串等于"没配"（旧 settings.json 就是空串）',
+      resolveTarget(ZH, '', '').source === 'paired')
+  })
+
+  await it('语种判定：英文要够证据才认（绝不猜）', async () => {
+    check('中文立刻认出', detectLang('我们下午三点开会') === ZH, detectLang('我们下午三点开会'))
+    check('巴葡认出（有标记词）', detectLang('Vamos falar sobre a reunião') === PT,
+      detectLang('Vamos falar sobre a reunião'))
+    check('英文认出（两个以上功能词）', detectLang('We will have the meeting at three') === EN,
+      detectLang('We will have the meeting at three'))
+    // 关键负对照：单词 "no" 在葡语里也是 no —— 一个词不足以判语种
+    check('单个词不判（"no" → unknown）', detectLang('no') === 'unknown', detectLang('no'))
+    check('空文本 → unknown', detectLang('') === 'unknown', detectLang(''))
+    check('中文优先于英文（混排时以汉字为准）',
+      detectLang('我们明天 discuss the plan') === ZH, detectLang('我们明天 discuss the plan'))
+  })
+
+  await it('提示词：译成英语时不带巴葡口径、也不塞中文术语', async () => {
+    const toEn = translationSystem(policy, ZH, EN, [{ zh: '亮亮眼镜', pt: 'Leion Pro' }])
+    check('写明目标是英语', toEn.includes(targetName(policy, EN)), toEn.slice(0, 120))
+    for (const rule of EN_OUTPUT_RULES) {
+      check(`带英语输出规则：${rule.slice(0, 18)}…`, toEn.includes(rule), '缺规则')
+    }
+    check('**不带**巴葡专用规则（"用巴葡表达"那条译成英语时是错的）',
+      policy.ptBrRules.every(rule => toEn.includes(rule) === false), '混进了巴葡规则')
+    check('**不塞**中文术语提示（否则英语译文里会留中文名）',
+      toEn.includes('亮亮眼镜') === false, '术语被塞进了英语提示词')
+    const toPt = translationSystem(policy, ZH, PT, [{ zh: '亮亮眼镜', pt: 'Leion Pro' }])
+    check('译成葡语时仍然带巴葡规则', policy.ptBrRules.some(rule => toPt.includes(rule)))
+    check('译成葡语时仍然塞术语', toPt.includes('Leion Pro'), toPt.slice(-160))
+    check('目标语言的名字：三种都对',
+      targetName(policy, ZH).includes('中文') && targetName(policy, PT).includes('葡萄牙')
+        && targetName(policy, EN).includes('English'),
+      JSON.stringify([targetName(policy, ZH), targetName(policy, PT), targetName(policy, EN)]))
+    const proofEn = proofreadSystem(policy, ZH, EN, [{ zh: '亮亮眼镜', pt: 'Leion Pro' }])
+    check('校对提示词也认英语目标', proofEn.includes(targetName(policy, EN)), proofEn.slice(0, 120))
+  })
+
+  await it('插件配置里多了 targetLang（空串 = 老行为）', async () => {
+    check('有这一项', typeof CONFIG_DEFAULTS.targetLang === 'string', typeof CONFIG_DEFAULTS.targetLang)
+    check('缺省是空串（旧部署行为不变）', CONFIG_DEFAULTS.targetLang === '', CONFIG_DEFAULTS.targetLang)
+  })
+
+  await it('大脑认 --to（三种都接受，乱写立刻报错）', async () => {
+    check('--to en-US', harnessParse(['--to', 'en-US']).targetLang === EN,
+      harnessParse(['--to', 'en-US']).targetLang)
+    check('--to pt-BR', harnessParse(['--to', 'pt-BR']).targetLang === PT)
+    check('缺省空串', harnessParse([]).targetLang === '', harnessParse([]).targetLang)
+    assert.throws(() => harnessParse(['--to', 'de-DE']), /--to/)
+    assert.throws(() => harnessParse(['--to']), /--to/)
+  })
+
+  await it('start-multi：房间配了目标语言才给大脑传 --to', async () => {
+    const options = multiParse(['--data-dir', 'var/x'])
+    const withTarget = pipelineSteps(options, { id: 'room-en-aaaa', targetLang: EN })
+      .find(step => step.role === 'brain')
+    check('传了 --to en-US', withTarget.args.includes('--to')
+      && withTarget.args[withTarget.args.indexOf('--to') + 1] === EN, withTarget.args.join(' '))
+    const noTarget = pipelineSteps(options, { id: 'room-old-aaaa', targetLang: '' })
+      .find(step => step.role === 'brain')
+    check('没配就不传（旧房间行为不变）', noTarget.args.includes('--to') === false,
+      noTarget.args.join(' '))
+    // 服务端：LANGS 里有英语，房间记录带 targetLang
+    const relay = readFileSync(join(process.cwd(), 'relay', 'lan-relay.mjs'), 'utf-8')
+    check('relay 的 LANGS 有三种', /const LANGS = \['zh-CN', 'pt-BR', 'en-US'\]/.test(relay),
+      '语种白名单没加英语')
+    const api = readFileSync(join(process.cwd(), 'relay', 'org-api.mjs'), 'utf-8')
+    check('建房接口收 targetLang 并校验', /targetLang 只能是 zh-CN \/ pt-BR \/ en-US/.test(api))
+    const rooms = readFileSync(join(process.cwd(), 'lib', 'rooms.mjs'), 'utf-8')
+    check('rooms 表带 target_lang（升级旧库自动补列）',
+      readFileSync(join(process.cwd(), 'lib', 'db.mjs'), 'utf-8').includes("ALTER TABLE rooms ADD COLUMN target_lang"))
+    check('房间投影里带 targetLang', /targetLang: String\(row\.target_lang/.test(rooms))
+  })
+
+  await it('客户端：三种说话语言 + 一组"译成哪种语言"', async () => {
+    const resDir = join(process.cwd(), 'android', 'app', 'src', 'main', 'res')
+    const roomsXml = readFileSync(join(resDir, 'layout', 'page_rooms.xml'), 'utf-8')
+    check('说话语言有英语那颗', /@\+id\/roomsLangEn/.test(roomsXml))
+    check('目标语言三颗', /@\+id\/roomsTargetZh/.test(roomsXml) && /@\+id\/roomsTargetPt/.test(roomsXml)
+      && /@\+id\/roomsTargetEn/.test(roomsXml))
+    const zh = readFileSync(join(resDir, 'values', 'strings.xml'), 'utf-8')
+    check('三语文案都在', /rooms_target_en/.test(zh) && /rooms_speak_en/.test(zh)
+      && /lang_en_short/.test(zh))
+    const settingsXml = readFileSync(join(resDir, 'layout', 'page_settings_app.xml'), 'utf-8')
+    check('设置页也能选英语当说话语言', /@\+id\/setAppLangEn/.test(settingsXml))
+    const lanClient = readFileSync(join(process.cwd(), 'android', 'app', 'src', 'main', 'java',
+      'com', 'leion', 'lanrelay', 'LanClient.java'), 'utf-8')
+    check('建房时把目标语言发给服务端', /body\.put\("targetLang"/.test(lanClient))
+  })
+
+  await it('历史/转写里的语种也显示成人话（en-US → 英语）', async () => {
+    const detail = readFileSync(join(process.cwd(), 'android', 'app', 'src', 'main', 'java',
+      'com', 'leion', 'lanrelay', 'HistoryDetailActivity.java'), 'utf-8')
+    check('langLabel 认 en', /code\.startsWith\("en"\)/.test(detail)
+      && /R\.string\.lang_en_short/.test(detail), '英语语种码会原样显示成 en-US')
+  })
+}

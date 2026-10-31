@@ -131,6 +131,17 @@
                 android:text="@string/rooms_speak_pt"
                 android:textColor="@color/ink"
                 android:background="@drawable/tap_btn_secondary" />
+
+            <!-- 5.00：英语也能当说话语言（中/英/葡任意两种互译） -->
+            <Button
+                android:id="@+id/setAppLangEn"
+                android:layout_width="0dp"
+                android:layout_height="@dimen/height_field"
+                android:layout_marginStart="@dimen/space_gap_small"
+                android:layout_weight="1"
+                android:text="@string/rooms_speak_en"
+                android:textColor="@color/ink"
+                android:background="@drawable/tap_btn_secondary" />
         </LinearLayout>
 
         <!-- ── 界面语言（4.56）：中文 / Português / English ─────────────

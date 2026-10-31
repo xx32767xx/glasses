@@ -45,6 +45,7 @@ import { runLibrarySuite } from './library-suite.mjs'
 import { runOrgApiSuite } from './org-api-suite.mjs'
 import { runOrgRelaySuite } from './org-relay-suite.mjs'
 import { runPurgeHistorySuite } from './purge-history-suite.mjs'
+import { runEnglishSuite } from './english-suite.mjs'
 import { runDiscoverSuite } from './discover-suite.mjs'
 import { runAndroidOrderSuite } from './android-order-suite.mjs'
 import { runAsrPackSuite } from './asr-pack-suite.mjs'
@@ -271,6 +272,11 @@ await runOrgRelaySuite(helpers)
 // 以及数据库与磁盘（音频/总线/收件箱）要一起删干净。
 heading('管理员清理历史（清单 / 三种范围 / 进行中的不删 / dry-run 真的不删 / 文件一起删）')
 await runPurgeHistorySuite(helpers)
+
+// ── 7h. 中/英/葡三种语言的互译（5.00）────────────────────────────────────
+// 译错方向是本项目最危险的错误：译文看着完全正常，只是整场译成了另一种语言。
+heading('三种语言互译（目标语言优先级 / 语种判定不猜 / 英语提示词 / 房间目标语言 / 客户端三颗胶囊）')
+await runEnglishSuite(helpers)
 
 // ── 7d3. 热词匹配器（"已知变体 → 规范写法"，纯字符串、零模型调用）────────────
 // 这是全功能里唯一能改字幕文字的地方，所以每条规则都配成对的负对照：

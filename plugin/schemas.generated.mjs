@@ -170,11 +170,11 @@ export const TOOL_SCHEMAS = {
         },
         "from": {
           "type": "string",
-          "description": "源语种；缺省自动判定。'zh-CN' | 'pt-BR'"
+          "description": "源语种；缺省自动判定。'zh-CN' | 'pt-BR' | 'en-US'"
         },
         "to": {
           "type": "string",
-          "description": "目标语种；缺省取 from 的反向"
+          "description": "目标语种；缺省用这场会的目标语言（config.targetLang），再缺省取 from 的反向（中↔葡；英语兜底译成中文）"
         },
         "speaker": {
           "type": "string",
