@@ -20,7 +20,7 @@ import { startRelay, formatBanner, pcmLevel, describeLevel, roomAudioPath,
   PUBLIC_LIMITS } from '../relay/lan-relay.mjs'
 import { VAR_DIR } from '../lib/paths.mjs'
 import { takeFloor } from '../lib/floor.mjs'
-import { createRoom, joinRoom, listRoomTranscript } from '../lib/rooms.mjs'
+import { createRoom, joinRoom, listMembers, listRoomTranscript } from '../lib/rooms.mjs'
 import { dbPath, openDb } from '../lib/db.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -707,6 +707,44 @@ export async function runRelaySuite({ it, check, assert }) {
     const result = await postAudio(pcm(100))
     check('200', result.status === 200, String(result.status))
     check('缺省语种是 pt-BR', result.json.lang === 'pt-BR', String(result.json.lang))
+  })
+
+  await it('5.06：上传时自报的语种会**校正这个成员**的参会语言（否则他说英语也收不到字幕）', async () => {
+    // 现场：入会时登记的是中文，会中换成英语说话 —— 于是
+    //   ① 大脑的"听众语言集合"里没有英语 → 一句英文都不译；
+    //   ② 按语言扇出时他一条字幕都收不到（用户报的"说英文那个人不显示字幕"）。
+    const dir = join(TMP, 'member-lang')
+    await mkdir(dir, { recursive: true })
+    const created = createRoom(dir, { name: '语种同步', host: 'alice' })
+    joinRoom(dir, { room: created.room, username: 'alice', lang: 'zh-CN' })
+    joinRoom(dir, { room: created.room, username: 'bob', lang: 'zh-CN' })
+    const before = listMembers(dir, created.room.id)
+    check('两个人一开始都登记成中文',
+      before.every((one) => one.lang === 'zh-CN'), JSON.stringify(before.map((m) => [m.username, m.lang])))
+
+    const local = await startRelay({
+      dataDir: dir, port: 0, host: '127.0.0.1', secret: 'sync-secret', quiet: true,
+      inbox: join(dir, 'asr-inbox.jsonl'), bus: join(dir, 'subtitle-bus.json'),
+    })
+    try {
+      const query = new URLSearchParams({
+        rate: '16000', room: created.room.id, speaker: 'bob', lang: 'en-US',
+      })
+      const response = await fetch(`http://127.0.0.1:${local.port}/audio?${query}`, {
+        method: 'POST',
+        headers: { 'x-leion-secret': 'sync-secret', 'content-type': 'application/octet-stream' },
+        body: pcm(1600),
+      })
+      check('上传被接受', response.status === 200, String(response.status))
+      const after = listMembers(dir, created.room.id)
+      const bob = after.find((one) => one.username === 'bob')
+      const alice = after.find((one) => one.username === 'alice')
+      check('说英语的 bob 被校正成 en-US（这就是"他也能收到英文字幕"的前提）',
+        bob.lang === 'en-US', String(bob.lang))
+      check('别人的语言不许被动到', alice.lang === 'zh-CN', String(alice.lang))
+    } finally {
+      await local.close()
+    }
   })
 
   await it('非法语种返回 400', async () => {

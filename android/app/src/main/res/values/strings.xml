@@ -520,6 +520,8 @@
     <string name="st_saved_relogin">已保存。换了服务器后需要重新登录（登录页用同一账号）</string>
     <string name="st_saved">已保存</string>
     <string name="st_set_to">已设为：%1$s</string>
+    <!-- 5.06：会中换语言时用它 —— 这一场从现在起就生效（不是"下一场"） -->
+    <string name="st_lang_now">已切换：%1$s · 这一场从现在起生效</string>
     <string name="suffix_next_meeting">（下一场同传生效）</string>
     <string name="proof_on">校对：开（点一下关掉）</string>
     <string name="proof_off">校对：关（点一下打开）</string>

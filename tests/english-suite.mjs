@@ -239,6 +239,21 @@ export async function runEnglishSuite({ it, check, assert }) {
       /roomLangWritten/.test(relay) && /房间语种：\$\{audioRoom\} → \$\{lang\}/.test(relay))
   })
 
+  await it('会中换语言要当场生效（5.06：本地 hearLang + 服务端重新登记）', async () => {
+    const room = readFileSync(join(process.cwd(), 'android', 'app', 'src', 'main', 'java',
+      'com', 'leion', 'lanrelay', 'RoomActivity.java'), 'utf-8')
+    // 只改本地的表现是"收不到新语言的字幕但界面像没事"，只改服务端的表现是"服务端认为你会英语、
+    // 你自己还在按旧语言过滤" —— 两边都必须动。
+    check('计时循环里比对语言', /startTimer[\s\S]{0,600}syncSpokenLanguage\(\)/.test(room))
+    check('本地 hearLang 跟着变', /void syncSpokenLanguage\(\)[\s\S]{0,900}hearLang = want/.test(room))
+    check('上传器也换语种（正在说话时立刻生效）',
+      /void syncSpokenLanguage\(\)[\s\S]{0,900}mic\.setLanguage\(want\)/.test(room))
+    check('服务端重新登记（否则大脑的听众集合里没有这门语言 → 一句都不译）',
+      /void syncSpokenLanguage\(\)[\s\S]{0,1200}orgJoinRoom\(roomCode, want, null\)/.test(room))
+    check('进房第一次不重复打服务端（入会时已登记）', /boolean changed = !syncedSpeakLang\.isEmpty\(\)/.test(room))
+    check('邀请码来自房间详情（重新登记要用它）', /roomCode = code/.test(room))
+  })
+
   await it('转写：同一句的多语言译文合成**一行**（带 dst_by_lang）', async () => {
     const dbSource = readFileSync(join(process.cwd(), 'lib', 'db.mjs'), 'utf-8')
     check('utterances 有 dst_by_lang 列（旧库自动补）',

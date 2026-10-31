@@ -49,7 +49,7 @@ import { handleOrg } from './org-api.mjs'
 import { createWsHub } from '../lib/ws-hub.mjs'
 import { publishMeetingTerms, readCurrentMeeting } from '../lib/meeting-terms.mjs'
 import { loadSelection } from './org-api.mjs'
-import { listMembers, resolveFrameRoom } from '../lib/rooms.mjs'
+import { listMembers, resolveFrameRoom, setMemberLang } from '../lib/rooms.mjs'
 import { floorState } from '../lib/floor.mjs'
 import {
   TERMS_LIMITS, getTable, loadTerms, mergePending, normalizeUser, putTable, saveActiveUser, saveTerms, validateTerms,
@@ -1606,9 +1606,6 @@ export async function startRelay(rawOptions = {}) {
         if (audioRoom !== '') {
           state.audioRoomId = audioRoom
           state.audioRoomAt = Date.now()
-          // 5.00：**先**把听者语言同步给这场会的大脑 —— 它要在第一句就译成正确的几种语言；
-          // 等到"第一帧出来"才写就晚了（那已经是在译完之后）。
-          publishRoomLangs(audioRoom)
         }
         // 4.96：**上传者就是这句话的发言人**（用户提的办法，比"猜当前谁持麦"准得多）。
         //
@@ -1623,7 +1620,28 @@ export async function startRelay(rawOptions = {}) {
           const speaker = asUser !== null && asUser !== '' ? asUser : sanitizeSpeaker(claimed)
           if (speaker !== '') {
             state.roomSpeaker.set(audioRoom, { name: speaker, at: Date.now() })
+            // 5.06：**"这个人读哪种语言"以他实际上报的为准**。
+            //
+            // 原来 `room_members.lang` 只在入会那一刻写一次。用户在会中换成英语说话之后，
+            // 库里还是"中文"，于是连着错两件事：大脑的听众语言集合里没有英语（一句英文都不译）、
+            // 按语言扇出时他一条字幕都收不到。两条合起来正是用户报的
+            // 「我说英文，但对方那边（以及我自己）不显示字幕」。
+            // 现在每次上传都用**本人自报的语种**校正自己那一行（身份仍来自 token/speaker）。
+            try {
+              const synced = setMemberLang(options.dataDir, { roomId: audioRoom, username: speaker, lang })
+              if (synced.ok === true && synced.changed === true) {
+                debug(`[语言] ${speaker} 的参会语言更新为 ${lang}（按他上传时上报的语种）`)
+              }
+            } catch (error) {
+              debug(`[语言] 同步成员语言失败（不影响字幕）：${error?.message ?? error}`)
+            }
           }
+        }
+        // 5.00：**先**把听者语言同步给这场会的大脑 —— 它要在第一句就译成正确的几种语言；
+        // 等到"第一帧出来"才写就晚了（那已经是在译完之后）。
+        // 5.06：放在"校正成员语种"**之后**，否则这里写的还是上一句的旧集合。
+        if (audioRoom !== '') {
+          publishRoomLangs(audioRoom)
         }
 
         state.audioChain = state.audioChain.then(async () => {

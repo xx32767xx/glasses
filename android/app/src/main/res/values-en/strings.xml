@@ -227,6 +227,7 @@ Microphone: phone microphone (in use)</string>
     <string name="st_saved_relogin">Saved. After changing servers you must sign in again (same account on the sign-in page)</string>
     <string name="st_saved">Saved</string>
     <string name="st_set_to">Set to: %1$s</string>
+    <string name="st_lang_now">Switched to: %1$s · active for this meeting from now on</string>
     <string name="suffix_next_meeting"> (takes effect for the next session)</string>
     <string name="proof_on">Proofreading: on (tap to turn off)</string>
     <string name="proof_off">Proofreading: off (tap to turn on)</string>

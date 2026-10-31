@@ -145,6 +145,17 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
      * 就得再加一个字段和一处 UI，那是下一轮的事，这里先把规则写明。
      */
     private String hearLang = "";
+    /**
+     * 上一次**已经登记到服务端**的参会语言（5.06）。
+     *
+     * <p>用户可以在设置页随时换语言，而服务端的 `room_members.lang` 是"入会那一刻"的值。
+     * 一旦两者不一致：大脑的听众语言集合里没有新语言（**一句都不译**），
+     * 按语言扇出时这台设备也收不到新语言的字幕。所以这里在计时循环里比对，
+     * 变了就本地先切、再去服务端重新登记一次（见 {@link #syncSpokenLanguage()}）。
+     */
+    private String syncedSpeakLang = "";
+    /** 邀请码（重新登记语言时要用它；来自房间详情） */
+    private String roomCode = "";
     private Runnable pendingAfterPermission;
     private Button micUploadButton;
     private long lastHeartbeat = 0L;
@@ -240,6 +251,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // 纯听众（从不开麦）也要有值，否则三语会议里会收到两种语言的帧、都显示出来。
         hearLang = prefs.getString("speakLang", "");
         if (hearLang == null) hearLang = "";
+        // 5.06：会中换语言时用它比对（见 syncSpokenLanguage）
+        syncedSpeakLang = hearLang;
         String token = prefs.getString("accountToken", "");
 
         client = new LanClient(host, secret, this);
@@ -941,6 +954,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 if (room != null) {
                     String code = room.optString("code", "");
                     if (!code.isEmpty()) codeView.setText("#" + code);
+                    // 5.06：记下来 —— 会中换语言时要用邀请码把自己重新登记一次
+                    roomCode = code;
                     String name = room.optString("name", "");
                     if (!name.isEmpty()) titleView.setText(name);
                     String host = room.optString("host", "");
@@ -1109,9 +1124,47 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 long seconds = (System.currentTimeMillis() - startedAtMs) / 1000;
                 timerView.setText(String.format(java.util.Locale.US, "%02d:%02d",
                         seconds / 60, seconds % 60));
+                // 5.06：每秒顺手看一眼"我会中是不是换了语言"（改一次就生效，不用重进房间）
+                syncSpokenLanguage();
                 ui.postDelayed(this, 1000);
             }
         });
+    }
+
+    /**
+     * 会中换语言要**当场生效**（5.06）。
+     *
+     * <p>两件事必须一起做，少一件都会出问题：
+     * <ol>
+     *   <li><b>本地</b>：`hearLang` 换成新语言 —— 存量的按语言过滤/去重都看它；</li>
+     *   <li><b>服务端</b>：用自己的邀请码重新 `POST /org/rooms/join {code, lang}`，
+     *       把 `room_members.lang` 更新掉。不更新的话，大脑算出来的"听众语言集合"里
+     *       没有这门语言 —— 它**一句都不会译**，而按语言扇出时这台设备也收不到。</li>
+     * </ol>
+     * 入会时已经登记过一次，所以"进房后的第一次"只同步本地、不重复打服务端。
+     */
+    private void syncSpokenLanguage() {
+        final String want = getSharedPreferences("leion", MODE_PRIVATE).getString("speakLang", "");
+        if (want == null || want.isEmpty() || want.equals(syncedSpeakLang)) return;
+        final boolean changed = !syncedSpeakLang.isEmpty();
+        syncedSpeakLang = want;
+        hearLang = want;
+        if (mic != null) mic.setLanguage(want);
+        if (!changed || roomCode.isEmpty()) return;
+        hintLine.setText(getString(R.string.st_lang_now, langLabelOf(want)));
+        new Thread(() -> {
+            try {
+                client.orgJoinRoom(roomCode, want, null);
+            } catch (Exception ignored) {
+                // 网络不通就算了：下一次开麦上传时服务端还会用 &lang= 校正一次
+            }
+        }, "room-lang-sync").start();
+    }
+
+    private String langLabelOf(String lang) {
+        if ("pt-BR".equals(lang)) return getString(R.string.rooms_speak_pt);
+        if ("en-US".equals(lang)) return getString(R.string.rooms_speak_en);
+        return getString(R.string.rooms_speak_zh);
     }
 
     /** 停止上传并刷新按钮；`hint` 为空则保留当前提示。 */
