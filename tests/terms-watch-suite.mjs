@@ -69,6 +69,42 @@ export async function runTermsWatchSuite({ it, check }) {
     check('空表', detectTermsMiss('我们和亮亮视野合作。', 'X', [], 'zh-CN', 'pt-BR').length === 0)
   })
 
+  // ── 5.02 三语观测：中 → 英 也要看，缺栏的方向要跳过 ────────────────────
+  await it('观测（三语）：中→英 方向也观测；目标栏没登记就不观测（不假装知道该写什么）', () => {
+    const trilingual = validateTerms([
+      { zh: '货代', en: 'freight forwarder' },              // 缺葡语
+      { zh: '亮亮眼镜', pt: 'Leion Pro', en: 'Leion Pro' }, // 三栏齐全
+    ]).entries
+    const missEn = detectTermsMiss('货代很慢', 'the transit agent is slow', trilingual, 'zh-CN', 'en-US')
+    check('中→英：译文没写规范英语写法 → 记一笔',
+      missEn.length === 1 && missEn[0].zh === '货代', JSON.stringify(missEn))
+    const okEn = detectTermsMiss('货代很慢', 'the freight forwarder is slow', trilingual, 'zh-CN', 'en-US')
+    check('中→英：写了规范写法 → 不记', okEn.length === 0, JSON.stringify(okEn))
+    const noPt = detectTermsMiss('货代很慢', 'o agente é lento', trilingual, 'zh-CN', 'pt-BR')
+    check('中→葡：那条缺葡语栏 → 不观测（不猜葡语该写什么）',
+      noPt.every(event => event.zh !== '货代'), JSON.stringify(noPt))
+    const enToZh = detectTermsMiss('the Leion Pro arrived', '眼镜到了', trilingual, 'en-US', 'zh-CN')
+    check('英→中：英语侧提到了、中文译文没写规范写法 → 记一笔',
+      enToZh.length === 1 && enToZh[0].zh === '亮亮眼镜', JSON.stringify(enToZh))
+    const sameLane = detectTermsMiss('the Leion Pro arrived', 'The Leion Pro arrived', trilingual, 'en-US', 'en-US')
+    check('同语种 → 不做观测', sameLane.length === 0, JSON.stringify(sameLane))
+  })
+
+  await it('4b 强制执行闸（三语）：英语译文里初稿正确的规范写法消失 → 拦', () => {
+    // 布尔口径仍然可用（老调用点一个字没改），但英语必须传语言码，
+    // 否则会拿葡语写法去英语句子里找 → 这道闸对英语等于失效。
+    const entries = validateTerms([
+      { zh: '亮亮眼镜', pt: 'Leion Pro', en: 'Leion Pro' },
+      { zh: '货代', en: 'freight forwarder' },
+    ]).entries
+    check('英语：规范写法被换成别的说法 → 拦',
+      proofreadKeptNames('The freight forwarder is slow.', 'The agent is slow.', entries, 'en-US') !== null)
+    check('英语：原样保留 → 不拦',
+      proofreadKeptNames('The freight forwarder is slow.', 'The freight forwarder is slow.', entries, 'en-US') === null)
+    check('缺英语栏的条目不会被拿去当葡语写法判（那条没有葡语侧）',
+      proofreadKeptNames('The freight forwarder is slow.', 'Slow.', entries, 'pt-BR') === null)
+  })
+
   await it('4b 强制执行闸：初稿里正确的规范写法，校对结果里消失 → 拦', () => {
     // 实测：校对把 "óculos LLVision" 改成 "óculos Leion"、或把名字换掉/删掉。
     // 初稿里已经正确的规范写法消失了 → 这次校对整条丢弃。

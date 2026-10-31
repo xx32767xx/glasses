@@ -281,7 +281,9 @@ export async function handleOrg(input) {
     const created = await createRequest(root, {
       type: body.type,
       libraryId: body.libraryId,
-      entry: body.type === 'delete' ? null : { zh: body.zh, pt: body.pt },
+      // 5.02：三语术语 —— 中/葡/英任意两种即可（缺的那一栏留空，不假装有等价关系）。
+      // 合法性由 lib/requests.mjs → validateTerms 统一判，这里只做转发。
+      entry: body.type === 'delete' ? null : { zh: body.zh, pt: body.pt, en: body.en },
       targetKey: body.type === 'delete' ? body.zh : null,
       reason: body.reason,
       applicant: user, // ⚠️ 申请人是**服务端从 token 解出来的**，不信请求体里的 applicant

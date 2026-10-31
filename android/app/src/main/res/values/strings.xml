@@ -193,13 +193,13 @@
     <!-- 热词对照表（设置页入口 + 整页）。规程见 docs/15-热词对照表.md -->
     <string name="settings_terms">热词表</string>
     <string name="settings_terms_title">热词对照表</string>
-    <string name="settings_terms_hint">上传「中文 = 葡语」的名字对照，下一次同传开始时生效</string>
+    <string name="settings_terms_hint">上传「中文 = 葡语 = 英语」的名字对照（任填两种即可），下一次同传开始时生效</string>
     <string name="terms_title">术语库</string>
-    <string name="terms_intro">一行一条，用等号隔开：左边中文，右边葡语。这些名字在译文里会被强制写成右边的写法。</string>
+    <string name="terms_intro">一行一条，用等号或 Tab 隔开：中文、葡语、英语是等价的三种写法，填两种就够。这些名字在译文里会被强制写成对照的写法。</string>
     <string name="terms_user_label">用户名</string>
     <string name="terms_user_hint">用户名</string>
     <string name="terms_entries_label">对照表</string>
-    <string name="terms_entries_hint">中文 / 葡语</string>
+    <string name="terms_entries_hint">中文 / 葡语 / 英语</string>
     <string name="terms_validate">校验</string>
     <string name="terms_upload">上传</string>
     <string name="terms_load">从电脑拉取</string>
@@ -247,13 +247,14 @@
     <string name="terms_add_title">新增一条对照</string>
     <string name="terms_batch">批量导入</string>
     <string name="terms_batch_title">批量导入</string>
-    <string name="terms_batch_hint">每行一条，可用 Tab、逗号或等号分隔</string>
+    <string name="terms_batch_hint">每行一条：三栏（中文、葡语、英语）用 Tab 隔开，也可用逗号或等号分两栏</string>
     <string name="terms_col_zh">中文</string>
     <string name="terms_col_pt">葡语</string>
+    <string name="terms_col_en">英语</string>
     <string name="terms_delete">删除</string>
     <string name="terms_empty">暂无条目</string>
     <string name="terms_count">%1$d 条</string>
-    <string name="terms_add_both">中文与葡语均需填写</string>
+    <string name="terms_add_both">中文必填；葡语和英语至少填一种（三种语言里两种才构成对照）</string>
     <string name="terms_batch_none">未识别到可导入的行</string>
     <string name="terms_batch_done">导入了 %1$d 条</string>
     <string name="terms_status_local_invalid">以下条目需要修改</string>
@@ -642,9 +643,11 @@
     <string name="terms_req_form_title">%1$s · %2$s</string>
     <string name="terms_req_zh">中文条目</string>
     <string name="terms_req_pt">葡萄牙语译文</string>
+    <string name="terms_req_en">英语译文（可留空）</string>
     <string name="terms_req_sent">申请已提交，等管理员审批</string>
     <string name="terms_req_need_zh">先填中文条目</string>
     <string name="terms_req_need_pt">新增/修改要把葡语译文也填上</string>
+    <string name="terms_req_need_side">葡语和英语至少填一种：只有一种写法构不成对照</string>
     <string name="terms_req_failed">提交失败：%1$s</string>
     <string name="terms_status_pending">待审批</string>
     <string name="terms_status_approved">已通过</string>

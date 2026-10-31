@@ -273,11 +273,20 @@ public class TermLibActivity extends android.app.Activity {
         return getString(R.string.terms_status_pending);
     }
 
-    /** 申请里那条术语长什么样：删除只有 targetKey，新增/修改是 entry.zh。 */
+    /**
+     * 申请里那条术语长什么样：删除只有 targetKey，新增/修改是 entry 的中/葡/英三栏。
+     *
+     * <p>5.02 起三语：空着的那一栏**不显示**（而不是显示一个空箭头）——
+     * 两栏条目很常见，界面上写成「中文 → 英语」就够清楚了。
+     */
     private String entryText(JSONObject request) {
         JSONObject entry = request.optJSONObject("entry");
-        if (entry != null) return entry.optString("zh", "");
-        return request.optString("targetKey", "");
+        if (entry == null) return request.optString("targetKey", "");
+        StringBuilder out = new StringBuilder(entry.optString("zh", ""));
+        for (String side : new String[] { entry.optString("pt", ""), entry.optString("en", "") }) {
+            if (side != null && !side.isEmpty()) out.append(" → ").append(side);
+        }
+        return out.toString();
     }
 
     // ── 提申请 ──────────────────────────────────────────────────────────
@@ -307,13 +316,15 @@ public class TermLibActivity extends android.app.Activity {
         TextView libLine = form.findViewById(R.id.reqLibLine);
         final EditText zhInput = form.findViewById(R.id.reqZh);
         final EditText ptInput = form.findViewById(R.id.reqPt);
+        final EditText enInput = form.findViewById(R.id.reqEn);
         final EditText reasonInput = form.findViewById(R.id.reqReason);
 
         String libName = library.optString("name", library.optString("id", ""));
         libLine.setText(libName + " · " + kindLabel(type));
-        // 删除只要中文（要删的那条），新增/修改两个都要
-        boolean needPt = !"delete".equals(type);
-        ptInput.setVisibility(needPt ? View.VISIBLE : View.GONE);
+        // 删除只要中文（要删的那条）；新增/修改填三种语言里**至少两种**（5.02）
+        boolean needTranslation = !"delete".equals(type);
+        ptInput.setVisibility(needTranslation ? View.VISIBLE : View.GONE);
+        enInput.setVisibility(needTranslation ? View.VISIBLE : View.GONE);
 
         new android.app.AlertDialog.Builder(this)
                 .setTitle(getString(R.string.terms_req_form_title, libName, kindLabel(type)))
@@ -322,22 +333,26 @@ public class TermLibActivity extends android.app.Activity {
                 .setPositiveButton(R.string.terms_req_submit, (dialog, which) -> {
                     String zh = zhInput.getText().toString().trim();
                     String pt = ptInput.getText().toString().trim();
+                    String en = enInput.getText().toString().trim();
                     String reason = reasonInput.getText().toString().trim();
                     if (zh.isEmpty()) {
                         Toast.makeText(this, getString(R.string.terms_req_need_zh), Toast.LENGTH_SHORT).show();
                         return;
                     }
-                    if (needPt && pt.isEmpty()) {
-                        Toast.makeText(this, getString(R.string.terms_req_need_pt), Toast.LENGTH_SHORT).show();
+                    // 5.02：三种语言里至少两种（中文已在上面保证）—— 只有一种写法构不成等价关系。
+                    // 这条与电脑端 validateTerms 的 MISSING_SIDE 同一个口径，先在这里说清楚，
+                    // 免得用户填完、点了提交才被拒。
+                    if (needTranslation && pt.isEmpty() && en.isEmpty()) {
+                        Toast.makeText(this, getString(R.string.terms_req_need_side), Toast.LENGTH_SHORT).show();
                         return;
                     }
-                    submit(library.optString("id", ""), type, zh, pt, reason);
+                    submit(library.optString("id", ""), type, zh, pt, en, reason);
                 })
                 .show();
     }
 
     private void submit(final String libraryId, final String type, final String zh,
-                        final String pt, final String reason) {
+                        final String pt, final String en, final String reason) {
         new Thread(() -> {
             String failure = "";
             try {
@@ -345,11 +360,11 @@ public class TermLibActivity extends android.app.Activity {
                 body.put("type", type);
                 body.put("libraryId", libraryId);
                 // ⚠️ applicant 不放进去：服务端从 token 解，放了也会被忽略
+                body.put("zh", zh);
                 if (!"delete".equals(type)) {
-                    body.put("zh", zh);
+                    // 空的那一栏照实传空串：服务端按"两栏"处理（那一侧没有等价关系）
                     body.put("pt", pt);
-                } else {
-                    body.put("zh", zh);
+                    body.put("en", en);
                 }
                 body.put("reason", reason);
                 JSONObject result = client.orgCreateRequest(body);

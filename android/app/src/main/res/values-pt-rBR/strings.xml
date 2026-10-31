@@ -357,11 +357,13 @@ Estado: %4$s</string>
     <string name="terms_req_form_title">%1$s · %2$s</string>
     <string name="terms_req_zh">Termo em chinês</string>
     <string name="terms_req_pt">Tradução em português</string>
+    <string name="terms_req_en">Tradução em inglês (opcional)</string>
     <string name="terms_req_reason">Motivo (para quem aprova)</string>
     <string name="terms_req_submit">Enviar</string>
     <string name="terms_req_sent">Pedido enviado, aguardando aprovação</string>
     <string name="terms_req_need_zh">Preencha o termo em chinês</string>
     <string name="terms_req_need_pt">Inclusões e edições também precisam da tradução em português</string>
+    <string name="terms_req_need_side">Preencha português ou inglês: uma grafia só não forma par de tradução</string>
     <string name="terms_req_failed">Falha ao enviar: %1$s</string>
     <string name="terms_status_pending">Pendente</string>
     <string name="terms_status_approved">Aprovado</string>

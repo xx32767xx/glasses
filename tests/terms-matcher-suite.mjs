@@ -241,5 +241,46 @@ export async function runTermsMatcherSuite({ it, check, assert }) {
     const once = normalizePt('A LLVision cresceu.', entries)
     check('已经是规范写法 → 无改动', once.text === 'A LLVision cresceu.' && once.changed === false, JSON.stringify(once))
   })
+
+  // ── 12. 三语（5.02）：英语是**独立一栏** ──────────────────────────────
+  //
+  // 三种语言彼此等价，所以英语必须有自己那一条车道。最容易出的两个错：
+  //   ① 拿葡语那一栏去英语句子里找 → 永远"没出现"，英语方向**静默失效**；
+  //   ② 两栏条目（缺葡语/缺英语）的 `wrong` 带着**空格**当替换目标 → 把词删掉。
+  await it('normalize（英语）：英语变体 → 规范英语写法，绝不插入中文/葡语', () => {
+    const entries = table([{
+      zh: '亮亮眼镜', pt: 'Leion Pro', en: 'Leion Pro', enVariants: ['LeionPRO Eye'],
+    }])
+    const result = applyTerms('The LeionPRO Eye is new.', { entries, mode: 'normalize', lang: 'en-US' })
+    check('收敛成规范英语写法', result.text === 'The Leion Pro is new.', result.text)
+    check('没有汉字残留', /[\u4e00-\u9fa5]/.test(result.text) === false, result.text)
+    const already = applyTerms('The Leion Pro is new.', { entries, mode: 'normalize', lang: 'en-US' })
+    check('幂等', already.changed === false, JSON.stringify(already))
+  })
+
+  await it('normalize（英语）：老条目（只有中/葡）**不会**在英语里乱换', () => {
+    // 老条目没有 en：英语车道上它一个写法都没有 —— 葡语写法绝不能被当成英语变体
+    const entries = table([{ zh: '亮亮视野', pt: 'LLVision', wrong: ['Liangliang Vision'] }])
+    const result = applyTerms('Liangliang Vision grew and LLVision too.', {
+      entries, mode: 'normalize', lang: 'en-US',
+    })
+    check('一个字都不动', result.text === 'Liangliang Vision grew and LLVision too.', result.text)
+    check('没有 replace 事件', result.events.every(e => e.event !== 'replace'), JSON.stringify(result.events))
+  })
+
+  await it('两栏条目缺哪一栏，那一栏就整栏不生效（不会把词删成空）', () => {
+    // 只有中 + 英，缺葡语
+    const entries = table([{ zh: '货代', en: 'freight forwarder', wrong: ['agente de carga'] }])
+    const pt = applyTerms('O agente de carga chegou.', { entries, mode: 'normalize', lang: 'pt-BR' })
+    check('葡语栏没登记 → 葡语文本一个字都不动（不是删成空串）',
+      pt.text === 'O agente de carga chegou.', pt.text)
+    const en = applyTerms('The freight forwarder arrived.', { entries, mode: 'normalize', lang: 'en-US' })
+    check('英语栏登记了 → 英语方向照常工作（此句已是规范写法）',
+      en.text === 'The freight forwarder arrived.' && en.changed === false, JSON.stringify(en))
+    check('索引里葡语车道为空', buildIndex(entries).normalizePt.length === 0,
+      String(buildIndex(entries).normalizePt.length))
+    check('索引里英语车道非空', buildIndex(entries).normalizeEn.length > 0,
+      String(buildIndex(entries).normalizeEn.length))
+  })
 }
 

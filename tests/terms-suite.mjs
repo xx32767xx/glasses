@@ -149,6 +149,69 @@ export async function runTermsSuite({ it, check, assert }) {
     check('id 有前缀便于辨认', a.startsWith('t_'), a)
   })
 
+  // ── 1b. 三语术语（5.02）───────────────────────────────────────────────
+  //
+  // 用户定的规则：中文 / 英语 / 巴葡三种写法**彼此等价** —— 一种语言的句子
+  // 要按表里的等价关系译成另外两种。真实词表常常缺一栏，所以允许"两栏"，
+  // 缺的那一栏就是"没有等价关系"，**不假装有**。
+  await it('5.02 三语：三栏齐全通过，两栏可用（缺栏只警告），一栏拒绝', () => {
+    const three = validateTerms([{ zh: '亮亮眼镜', pt: 'Leion Pro', en: 'Leion Pro' }])
+    check('三栏通过', three.ok === true, JSON.stringify(three.rejected))
+    check('英语那一栏被保留', three.entries[0].en === 'Leion Pro', JSON.stringify(three.entries[0]))
+    check('三栏齐全 → 没有缺栏警告',
+      three.warnings.every(w => w.code !== 'WARN_SIDE_MISSING'), JSON.stringify(three.warnings))
+
+    const two = validateTerms([{ zh: '货代', en: 'freight forwarder' }])
+    check('两栏（中 + 英）通过', two.ok === true, JSON.stringify(two.rejected))
+    check('缺的葡语栏留空（不假装有等价关系）', two.entries[0].pt === '', JSON.stringify(two.entries[0]))
+    check('缺栏给警告，且说清是哪一栏',
+      two.warnings.some(w => w.code === 'WARN_SIDE_MISSING' && w.reason.includes('巴葡')),
+      JSON.stringify(two.warnings))
+
+    const one = validateTerms([{ zh: '货代' }])
+    check('只有一栏被拒（构不成等价关系）',
+      one.ok === false && one.rejected[0].code === 'MISSING_SIDE', JSON.stringify(one.rejected))
+    const noZh = validateTerms([{ pt: 'agente de carga', en: 'freight forwarder' }])
+    check('没有中文被拒（中文是这张表的主键侧）',
+      noZh.ok === false && noZh.rejected[0].code === 'MISSING_SIDE', JSON.stringify(noZh.rejected))
+  })
+
+  await it('5.02 三语：英语那一栏同样受"别写反/别写太短"的检查', () => {
+    const hanInEn = validateTerms([{ zh: '亮亮视野', pt: 'LLVision', en: '亮亮视野' }])
+    check('英语侧含汉字被拒', hanInEn.ok === false && hanInEn.rejected[0].code === 'HAN_IN_EN',
+      JSON.stringify(hanInEn.rejected))
+    // 只有中 + 英两栏时，"拉丁侧长度"必须取**英语那一栏**（葡语栏是空的）
+    const shortEn = validateTerms([{ zh: '机器学习', en: 'Me' }])
+    check('两栏条目按已填那一栏判长度 → 英语 2 字符被拒',
+      shortEn.ok === false && shortEn.rejected[0].code === 'TOO_SHORT', JSON.stringify(shortEn.rejected))
+    const badVariants = validateTerms([{ zh: '亮亮视野', pt: 'LLVision', enVariants: 'LL Vision' }])
+    check('enVariants 不是数组被拒',
+      badVariants.ok === false && badVariants.rejected[0].code === 'ENTRY_MALFORMED',
+      JSON.stringify(badVariants.rejected))
+  })
+
+  await it('5.02 三语：同一个写法跨栏出现要拦（葡=英是例外，替换幂等）', () => {
+    // 真实需求：产品名在葡语和英语里写法一样 —— 必须放行
+    const same = validateTerms([{ zh: '亮亮眼镜', pt: 'Leion Pro', en: 'Leion Pro' }])
+    check('葡语与英语同写法 → 通过', same.ok === true, JSON.stringify(same.rejected))
+    // 危险：某条的英语规范写法出现在另一条的葡语变体里 → 会来回替换
+    const clash = validateTerms([
+      { zh: '亮亮视野', pt: 'LLVision' },
+      { zh: '亮亮眼镜', pt: 'Óculos', en: 'llvision' },
+    ])
+    check('跨栏撞车被拦', clash.ok === false && ['ALIAS_CONFLICT', 'DUPLICATE_SOURCE', 'CYCLE'].includes(clash.rejected[0].code),
+      JSON.stringify(clash.rejected))
+  })
+
+  await it('5.02 三语：条目 id 只在内容真的变了才变（老条目不会被换号）', () => {
+    const legacy = validateTerms([{ zh: '亮亮视野', pt: 'LLVision' }]).entries[0].id
+    const explicit = validateTerms([{ zh: '亮亮视野', pt: 'LLVision', en: '' }]).entries[0].id
+    check('没填英语 ≈ 显式填空串 → 同一个 id',
+      legacy === explicit, legacy + ' vs ' + explicit)
+    const withEn = validateTerms([{ zh: '亮亮视野', pt: 'LLVision', en: 'LLVision' }]).entries[0].id
+    check('补上英语写法 → id 变（内容变了）', withEn !== legacy, withEn)
+  })
+
   await it('用户名归一：空 → default，非法字符被拒', () => {
     check('空回落 default', normalizeUser('').user === DEFAULT_USER)
     check('undefined 回落 default', normalizeUser(undefined).user === DEFAULT_USER)

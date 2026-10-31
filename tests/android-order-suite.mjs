@@ -1548,8 +1548,16 @@ export async function runAndroidOrderSuite({ it, check }) {
       && /orgWithdrawRequest\(/.test(termsJava))
     check('三种申请类型都在', /terms_req_add/.test(termsJava) && /terms_req_update/.test(termsJava)
       && /terms_req_delete/.test(termsJava))
-    check('删除只填中文、新增/修改要双语',
-      /ptInput\.setVisibility\(needPt \? View\.VISIBLE : View\.GONE\)/.test(termsJava))
+    // 5.02：三语术语 —— 删除只填中文；新增/修改要"中/葡/英里至少两种"
+    check('删除只填中文，新增/修改显示葡语+英语两栏',
+      /ptInput\.setVisibility\(needTranslation \? View\.VISIBLE : View\.GONE\)/.test(termsJava)
+      && /enInput\.setVisibility\(needTranslation \? View\.VISIBLE : View\.GONE\)/.test(termsJava))
+    check('表单里有英语那一栏（三语术语）',
+      /reqEn/.test(layout('dialog_term_request.xml')) && /R\.id\.reqEn/.test(termsJava))
+    check('提交时把英语一起送到服务端（缺的那栏照实传空串）',
+      /body\.put\("en", en\)/.test(termsJava))
+    check('本地先拦"只有一种语言"的申请（与电脑端 MISSING_SIDE 同一口径）',
+      /pt\.isEmpty\(\) && en\.isEmpty\(\)/.test(termsJava) && /terms_req_need_side/.test(termsJava))
     check('申请人由服务端定（请求体里不放 applicant）',
       /不要放 applicant|不放进去/.test(termsJava) && !/body\.put\("applicant"/.test(termsJava))
     check('申请表单在独立的对话框布局里', /dialog_term_request/.test(termsJava))

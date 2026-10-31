@@ -207,6 +207,17 @@
             android:textColor="@color/ink_soft"
             android:textSize="13sp" />
 
+        <!-- 5.02：三语术语的第三栏（这一整块仍是隐藏的旧录入界面，保留以便回滚） -->
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:fontFamily="sans-serif-medium"
+            android:gravity="center"
+            android:text="@string/terms_col_en"
+            android:textColor="@color/ink_soft"
+            android:textSize="13sp" />
+
         <TextView
             android:id="@+id/termsAdd"
             android:layout_width="wrap_content"

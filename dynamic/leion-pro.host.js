@@ -910,10 +910,21 @@ function translationSystem(policy, from, to, termsHint) {
   // 比事后修正省一次模型调用。
   // ⚠️ 5.00：译成英语时没有"英语规范写法"这一侧（术语表只有中文/巴葡两栏），
   //    所以不注入 —— 硬塞中文名会让模型在英语译文里留下中文。
-  if (Array.isArray(termsHint) && termsHint.length > 0 && to !== EN) {
-    const pairs = termsHint.map(entry => (to === PT ? entry.zh : entry.pt)
-      + ' → ' + (to === PT ? entry.pt : entry.zh))
-    lines.push('本句原文出现了这些名字，译文必须保留下列写法（原文没出现的名字不要添加）：' + pairs.join('；'))
+  if (Array.isArray(termsHint) && termsHint.length > 0) {
+    // 5.02：按**源→目标**两条车道取对应写法（中/英/葡等价）。
+    // 目标语言那一栏没登记的条目**跳过** —— 没有等价关系就不该给模型一个"必须保留"的写法。
+    const srcLane = langLane(from)
+    const tgtLane = langLane(to)
+    const pairs = []
+    for (const entry of termsHint) {
+      const left = termCanonical(entry, srcLane)
+      const right = termCanonical(entry, tgtLane)
+      if (left === '' || right === '' || left === right) continue
+      pairs.push(left + ' → ' + right)
+    }
+    if (pairs.length > 0) {
+      lines.push('本句原文出现了这些名字，译文必须保留下列写法（原文没出现的名字不要添加）：' + pairs.join('；'))
+    }
   }
   return lines.join('\n')
 }
@@ -1423,22 +1434,88 @@ function compactFold(text) {
 }
 
 /** 把表编译成"同语种归一"用的两个索引。 */
+/**
+ * 一条术语在某一种语言下的**全部写法**（5.02，三语）。
+ *
+ * - 规范写法：`zh` / `pt` / `en`
+ * - 该语言的变体：中文 = `variants`，葡语 = `approved`，英语 = `enVariants`
+ * - `wrong`（已知错写）三种语言共享 —— 它是"要纠正的写法"，不分语言
+ *
+ * 为什么抽出来：地图（index）、归一、观测、提示词四处都要"按语言取写法"，
+ * 各写一份必然漂 —— 而漂了的表现是"某个方向悄悄不生效"，最难发现。
+ */
+function termSideForms(entry, lang) {
+  const base = String(lang === undefined || lang === null ? '' : lang).toLowerCase()
+  if (entry === null || entry === undefined) return []
+  // ⚠️ 这一栏没登记规范写法（两栏条目的空栏）→ 这一栏**没有任何写法**可找。
+  //    必须在这里就返回空数组：否则 `wrong` 会被当成这一栏的写法带出去，
+  //    而它的替换目标是空串 —— 那会**把句子里的词删掉**（5.02 实测踩过）。
+  if (termCanonical(entry, base) === '') return []
+  const out = []
+  const push = (value) => {
+    const text = typeof value === 'string' ? value.trim() : ''
+    if (text !== '' && out.includes(text) === false) out.push(text)
+  }
+  if (base.startsWith('zh')) {
+    push(entry.zh)
+    for (const form of entry.variants ?? []) push(form)
+  } else if (base.startsWith('en')) {
+    push(entry.en)
+    for (const form of entry.enVariants ?? entry.approved ?? []) {
+      // ⚠️ 兼容：老条目没有 enVariants（只有 approved = 葡语写法）。
+      //    这时候**不能**把葡语写法当成英语变体 —— 那会让英语句子里的葡语词被替换成英语词。
+      //    所以只有 enVariants 明确存在时才用它。
+      if (Array.isArray(entry.enVariants)) push(form)
+    }
+  } else {
+    push(entry.pt)
+    for (const form of entry.approved ?? []) push(form)
+  }
+  for (const form of entry.wrong ?? []) push(form)
+  return out
+}
+
+/** 这条术语在某种语言下的**规范写法**（没登记返回空串 = 该方向没有等价关系）。 */
+function termCanonical(entry, lang) {
+  const base = String(lang === undefined || lang === null ? '' : lang).toLowerCase()
+  if (entry === null || entry === undefined) return ''
+  const value = base.startsWith('zh') ? entry.zh : (base.startsWith('en') ? entry.en : entry.pt)
+  return typeof value === 'string' ? value.trim() : ''
+}
+
 function buildTermsIndex(entries) {
   const zh = []
   const pt = []
+  const en = []
   for (const entry of entries || []) {
     for (const form of [entry.zh, ...(entry.variants || []), ...(entry.wrong || [])]) {
       if (typeof form === 'string' && form !== '') {
         zh.push({ entry, form, replacement: entry.zh, kind: 'zh' })
       }
     }
-    for (const form of [entry.pt, ...(entry.approved || []), ...(entry.wrong || [])]) {
-      if (typeof form === 'string' && form !== '') {
-        pt.push({ entry, form, replacement: entry.pt, kind: 'pt' })
+    // ⚠️ 两栏条目可能缺葡语侧（只有中/英）：`pt` 空串时整栏跳过，
+    //    否则 `wrong` 的替换目标是空串 → 把词删掉。
+    if (typeof entry.pt === 'string' && entry.pt !== '') {
+      for (const form of [entry.pt, ...(entry.approved || []), ...(entry.wrong || [])]) {
+        if (typeof form === 'string' && form !== '') {
+          pt.push({ entry, form, replacement: entry.pt, kind: 'pt' })
+        }
+      }
+    }
+    // 5.02：英语那一栏（老条目没有 en → 不往这一栏放任何东西）
+    //
+    // ⚠️ 必须整栏跳过：`replacement` 是 `entry.en`，两栏条目（只有中/葡）的 en 是空串，
+    //    要是把 `wrong` 塞进这一栏，替换结果就是**把词删掉** ——
+    //    这类 bug 表现成"英语字幕里少了几个词"，比乱换更难发现。
+    if (typeof entry.en === 'string' && entry.en !== '') {
+      for (const form of [entry.en, ...(entry.enVariants || []), ...(entry.wrong || [])]) {
+        if (typeof form === 'string' && form !== '') {
+          en.push({ entry, form, replacement: entry.en, kind: 'en' })
+        }
       }
     }
   }
-  return { zh, pt }
+  return { zh, pt, en }
 }
 
 /**
@@ -1459,8 +1536,11 @@ function normalizeTerms(text, lang, entries) {
     return { text: source, events: [], changed: false }
   }
   const isZh = String(lang).toLowerCase().startsWith('zh')
+  const isEn = String(lang).toLowerCase().startsWith('en')
   const index = buildTermsIndex(entries)
-  const candidates = isZh ? index.zh : index.pt
+  // 5.02：三条"语言车道"。中文用汉字边界判据，拉丁语系（葡/英）用紧凑串 + 词边界 ——
+  // 两者不能混（混了的表现是"某个方向突然乱替换"，见 docs/15 §5.1）。
+  const candidates = isZh ? index.zh : (isEn ? index.en : index.pt)
   const folded = foldForTerms(source)
   const compact = compactFold(source)
 
@@ -1545,31 +1625,46 @@ function normalizeTerms(text, lang, entries) {
  * 规则必须一致，否则会出现"归一认为没出现、观测认为出现了"这种自相矛盾的日志。
  */
 /**
+ * 把"语言"归一成三条车道之一（5.02）。
+ *
+ * <p>历史上这里有布尔值（`sourceZh === true` 表示中文、`false` 表示葡语），
+ * 演示台/评测脚本也按布尔调用。加英语之后布尔不够用了，所以这里**同时接受**
+ * 布尔与语言码：`true` → zh、`false` → pt、`'en-US'` → en。老调用一个字都不用改。
+ */
+function langLane(value) {
+  if (value === true) return 'zh'
+  if (value === false) return 'pt'
+  const text = String(value === undefined || value === null ? '' : value).toLowerCase()
+  if (text.startsWith('zh')) return 'zh'
+  if (text.startsWith('en')) return 'en'
+  return 'pt'
+}
+
+/**
  * "这句原文里出现了哪些表内条目" —— **唯一实现**。
  *
  * <p>产线（`termsHintFor`）与演示台/评测脚本都必须用它。为什么不允许各自实现：
  * 判断"是否提及"要同时考虑**变体**（原文说「亮亮眼睛」、条目写「亮亮眼镜」）、
- * **可接受写法**（葡语侧 `approved`）、折叠（大小写/重音/空格）与边界（中文危险邻接）。
- * 自己写个 `text.includes(entry.zh)` 会漏掉前两条 —— 演示台给出"本句不会加提示"，
- * 而产线其实会加，这种分叉比直接报错更难发现。
+ * **可接受写法**（葡语侧 `approved`、英语侧 `enVariants`）、折叠（大小写/重音/空格）
+ * 与边界（中文危险邻接）。自己写个 `text.includes(entry.zh)` 会漏掉前两条 ——
+ * 演示台给出"本句不会加提示"，而产线其实会加，这种分叉比直接报错更难发现。
  *
  * @param {string} text 原文
  * @param {object[]} entries 表内条目
- * @param {boolean} sourceZh 原文是中文（用 zh+variants）/ 否（用 pt+approved）
- * @returns {{zh: string, pt: string}[]} 命中的条目（顺序同入参）
+ * @param {boolean|string} sourceZh true = 中文 / false = 葡语 / 语言码（5.02 起支持 en-US）
+ * @returns {{zh: string, pt: string, en: string}[]} 命中的条目（顺序同入参）
  */
 function mentionedEntries(text, entries, sourceZh) {
   const source = String(text === undefined || text === null ? '' : text)
   if (source === '' || Array.isArray(entries) !== true) return []
+  const lane = langLane(sourceZh)
   const hint = []
   for (const entry of entries) {
     if (entry === null || typeof entry !== 'object') continue
-    const forms = sourceZh === true
-      ? [entry.zh, ...(entry.variants ?? [])]
-      : [entry.pt, ...(entry.approved ?? [])]
+    const forms = termSideForms(entry, lane)
     const mentioned = forms.some(form => typeof form === 'string' && form !== ''
-      && mentionsForm(source, form, sourceZh === true, entry.fold !== false, entry.strictBoundary === true))
-    if (mentioned) hint.push({ zh: entry.zh, pt: entry.pt })
+      && mentionsForm(source, form, lane === 'zh', entry.fold !== false, entry.strictBoundary === true))
+    if (mentioned) hint.push({ zh: entry.zh, pt: entry.pt, en: String(entry.en ?? '') })
   }
   return hint
 }
@@ -1621,24 +1716,25 @@ function detectTermsMiss(source, text, entries, from, to) {
   const src = String(source === undefined || source === null ? '' : source)
   const tgt = String(text === undefined || text === null ? '' : text)
   if (src === '' || tgt === '' || Array.isArray(entries) !== true || entries.length === 0) return []
-  const sourceZh = String(from).toLowerCase().startsWith('zh')
-  const targetZh = String(to).toLowerCase().startsWith('zh')
-  // 同语种（只会是异常配置）或方向不明 → 不做观测，宁缺勿错
-  if (sourceZh === targetZh) return []
+  const srcLane = langLane(from)
+  const tgtLane = langLane(to)
+  // 同一语言（只会是异常配置）或方向不明 → 不做观测，宁缺勿错
+  if (srcLane === tgtLane) return []
   const events = []
   for (const entry of entries) {
     const direction = entry.direction ?? 'auto'
-    if (direction === 'zh-to-pt' && (sourceZh === false || targetZh === true)) continue
-    if (direction === 'pt-to-zh' && (sourceZh === true || targetZh === false)) continue
+    // 老条目的 direction 只有中/葡两种取值：英语方向上不做限向（按 auto 处理）
+    if (direction === 'zh-to-pt' && (srcLane !== 'zh' || tgtLane === 'zh')) continue
+    if (direction === 'pt-to-zh' && (srcLane === 'zh' || tgtLane !== 'zh')) continue
     const foldEnabled = entry.fold !== false
-    const forms = sourceZh
-      ? [entry.zh, ...(entry.variants ?? [])]
-      : [entry.pt, ...(entry.approved ?? [])]
-    const canonical = targetZh ? entry.zh : entry.pt
+    const forms = termSideForms(entry, srcLane)
+    // 5.02：目标语言那一栏没登记 → 没有等价关系可用，不观测（也不假装知道该写什么）
+    const canonical = termCanonical(entry, tgtLane)
+    if (canonical === '') continue
     const mentioned = forms.some(form => typeof form === 'string' && form !== ''
-      && mentionsForm(src, form, sourceZh, foldEnabled, entry.strictBoundary === true))
+      && mentionsForm(src, form, srcLane === 'zh', foldEnabled, entry.strictBoundary === true))
     if (mentioned === false) continue
-    const canonicalPresent = mentionsForm(tgt, canonical, targetZh, foldEnabled, entry.strictBoundary === true)
+    const canonicalPresent = mentionsForm(tgt, canonical, tgtLane === 'zh', foldEnabled, entry.strictBoundary === true)
     if (canonicalPresent) continue
     events.push({
       event: 'watch', id: entry.id, zh: entry.zh,
@@ -1660,20 +1756,26 @@ function detectTermsMiss(source, text, entries, from, to) {
  * <p>注意：如果校对只是把*未登记变体*换成规范写法（方向是对的），初稿里**没有**规范写法，
  * 这道闸不拦；如果校对把规范写法换成**已登记**的变体，前面的 `applyTerms` 会先换回来，也不拦。
  *
+ * @param {boolean|string} targetLang 译文语种：`true`=中文 / `false`=葡语 / 语言码（5.02 起支持 `en-US`）
  * @returns {string | null} 有问题返回原因，没问题返回 null
  */
-function proofreadKeptNames(draft, corrected, entries, targetZh) {
+function proofreadKeptNames(draft, corrected, entries, targetLang) {
   const before = String(draft === undefined || draft === null ? '' : draft)
   const after = String(corrected === undefined || corrected === null ? '' : corrected)
   if (before === '' || after === '') return null
+  // 5.02：第四参从布尔（true=中文 / false=葡语）扩展成语言码。布尔仍然接受
+  // （老测试与老调用点一个字都不用改），但英语译文必须走 en 车道 ——
+  // 否则会拿葡语规范写法去英语句子里找，永远"没出现"，这道闸对英语等于失效。
+  const lane = langLane(targetLang)
+  const isZh = lane === 'zh'
   for (const entry of entries ?? []) {
     if (entry === null || typeof entry !== 'object') continue
-    const canonical = targetZh ? entry.zh : entry.pt
+    const canonical = termCanonical(entry, lane)
     if (typeof canonical !== 'string' || canonical === '') continue
     const foldEnabled = entry.fold !== false
     const strict = entry.strictBoundary === true
-    if (mentionsForm(before, canonical, targetZh, foldEnabled, strict) === false) continue
-    if (mentionsForm(after, canonical, targetZh, foldEnabled, strict) === true) continue
+    if (mentionsForm(before, canonical, isZh, foldEnabled, strict) === false) continue
+    if (mentionsForm(after, canonical, isZh, foldEnabled, strict) === true) continue
     return '「' + canonical + '」在初稿里是正确的，校对结果里没有了'
   }
   return null
@@ -1909,7 +2011,8 @@ function createInterpreter(ctx, rawConfig, deps) {
     if (termEntries.length === 0) return null
     const text = String(source === undefined || source === null ? '' : source)
     if (text === '') return null
-    const hint = mentionedEntries(text, termEntries, String(from).toLowerCase().startsWith('zh'))
+    // 5.02：按**源语言**取那一栏的写法（zh / pt / en 三条车道），不再只有"是中文/不是中文"
+    const hint = mentionedEntries(text, termEntries, langLane(from))
     return hint.length === 0 ? null : hint
   }
 
@@ -2200,8 +2303,7 @@ function createInterpreter(ctx, rawConfig, deps) {
       // （它仍会把 "óculos LLVision" 改成 "óculos Leion" 之类）。
       // 所以再加一道本地检查兜底：初稿里已经正确的规范写法，校对结果里不许消失 ——
       // 消失了说明它把名字改掉/删掉/换成别的写法了，这次校对结果**整条丢弃**。
-      const nameProblem = proofreadKeptNames(
-        item.draft, corrected, termEntries, String(item.to).toLowerCase().startsWith('zh'))
+      const nameProblem = proofreadKeptNames(item.draft, corrected, termEntries, item.to)
       if (nameProblem !== null) {
         state.proofread.rejected += 1
         state.proofread.lastNote = '校对动了专名（保持初译）：' + nameProblem

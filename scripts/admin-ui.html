@@ -446,8 +446,13 @@ async function openLibrary(id) {
       ? '<div class="empty">这个库是空的</div>'
       : entries.map((entry, index) => {
           const extra = (entry.approved || []).filter((f) => f !== entry.pt);
-          return '<div class="entry">' + (index + 1) + '. <b>' + entry.zh + '</b> → ' + entry.pt
+          // 5.02：三语 —— 缺的那一栏留空，界面上如实写成「（未填）」而不是省略
+          const side = (value) => (value ? value : '<i>（未填）</i>');
+          return '<div class="entry">' + (index + 1) + '. <b>' + entry.zh + '</b> → ' + side(entry.pt)
+            + ' → ' + side(entry.en)
             + (extra.length ? '<span class="tag">可接受：' + extra.join('、') + '</span>' : '')
+            + ((entry.enVariants || []).filter((f) => f !== entry.en).length
+              ? '<span class="tag">英语变体：' + entry.enVariants.filter((f) => f !== entry.en).join('、') + '</span>' : '')
             + ((entry.variants || []).length ? '<span class="tag">中文变体：' + entry.variants.join('、') + '</span>' : '')
             + '</div>';
         }).join('');
@@ -467,7 +472,7 @@ async function loadPending() {
       : rows.map((item) => '<div style="border:1px solid var(--line);border-radius:10px;padding:9px 11px;margin-bottom:8px">'
           + '<div><b>' + (item.type === 'add' ? '新增' : item.type === 'update' ? '修改' : '删除') + '</b>'
           + '「' + (item.entry ? item.entry.zh : item.targetKey) + '」'
-          + (item.entry ? ' → ' + item.entry.pt : '') + '</div>'
+          + (item.entry ? ' → ' + (item.entry.pt || '（未填）') + ' → ' + (item.entry.en || '（未填）') : '') + '</div>'
           + '<div class="mono">' + item.libraryId + ' · 申请人 ' + item.applicant + ' · 理由：' + item.reason + '</div>'
           + '<div class="row"><button class="btn ok" onclick="decide(\'' + item.id + '\',\'approve\')">通过</button>'
           + '<button class="btn bad" onclick="decide(\'' + item.id + '\',\'reject\')">驳回</button></div></div>').join('');

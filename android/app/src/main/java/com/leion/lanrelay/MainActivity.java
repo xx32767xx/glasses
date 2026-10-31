@@ -2183,8 +2183,9 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
      * 本地能看出来的问题（**不是权威校验**，只是"不用等网络的红字"）。
      *
      * <p>三条都直接来自被反馈的坑：
-     *  ① 一侧空着；
-     *  ② **葡语列写中文**（用户当场试出来的：葡语那栏能填中文，而原先只有上传才会被拒）；
+     *  ① 语言栏不足两种（5.02：中/葡/英任意两种，中文必有）；
+     *  ② **拉丁语那一栏写中文**（用户当场试出来的：葡语那栏能填中文，而原先只有上传才会被拒）；
+     *     5.02 起英语栏同理；
      *  ③ 太长（>200 字符，电脑也会拒，这里提前说）。
      *
      * @return null = 没看出问题
@@ -2196,12 +2197,17 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             if (entry == null) continue;
             String zh = entry.optString("zh", "");
             String pt = entry.optString("pt", "");
+            String en = entry.optString("en", "");
             String problem = null;
-            if (zh.isEmpty() || pt.isEmpty()) {
-                problem = "中文和葡语都要填";
+            if (zh.isEmpty()) {
+                problem = "中文栏要填";
+            } else if (pt.isEmpty() && en.isEmpty()) {
+                problem = "葡语和英语至少要填一种（三种语言里的两种才构得成对照）";
             } else if (pt.matches(".*[\\u4e00-\\u9fa5].*")) {
                 problem = "葡语这一栏写的是中文 —— 两栏可能填反了";
-            } else if (zh.length() > 200 || pt.length() > 200) {
+            } else if (en.matches(".*[\\u4e00-\\u9fa5].*")) {
+                problem = "英语这一栏写的是中文 —— 两栏可能填反了";
+            } else if (zh.length() > 200 || pt.length() > 200 || en.length() > 200) {
                 problem = "字数超过 200";
             }
             if (problem == null) continue;
@@ -2570,10 +2576,14 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         zhField.setHint(R.string.terms_col_zh);
         final EditText ptField = new EditText(this);
         ptField.setHint(R.string.terms_col_pt);
+        // 5.02：三语 —— 中/葡/英至少填两种（中文必有），缺的那栏留空
+        final EditText enField = new EditText(this);
+        enField.setHint(R.string.terms_col_en);
         final EditText reasonField = new EditText(this);
         reasonField.setHint(R.string.terms_req_reason);
         form.addView(zhField);
         form.addView(ptField);
+        form.addView(enField);
         form.addView(reasonField);
 
         new AlertDialog.Builder(this)
@@ -2582,15 +2592,21 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                 .setNegativeButton(android.R.string.cancel, null)
                 .setPositiveButton(R.string.terms_req_submit, (dialog, which) -> {
                     submitOrgRequest(lan, libraryId, zhField.getText().toString().trim(),
-                            ptField.getText().toString().trim(), reasonField.getText().toString().trim());
+                            ptField.getText().toString().trim(), enField.getText().toString().trim(),
+                            reasonField.getText().toString().trim());
                 })
                 .show();
     }
 
-    private void submitOrgRequest(final LanClient lan, final String libraryId,
-                                  final String zh, final String pt, final String reason) {
-        if (zh.isEmpty() || pt.isEmpty() || reason.isEmpty()) {
-            toast("中文名、目标写法、理由都要填");
+    private void submitOrgRequest(final LanClient lan, final String libraryId, final String zh,
+                                  final String pt, final String en, final String reason) {
+        if (zh.isEmpty() || reason.isEmpty()) {
+            toast("中文名和理由都要填");
+            return;
+        }
+        // 三种语言至少两种：只有一种写法构不成"等价关系"，电脑端也会以 MISSING_SIDE 拒绝
+        if (pt.isEmpty() && en.isEmpty()) {
+            toast(getString(R.string.terms_req_need_side));
             return;
         }
         new Thread(() -> {
@@ -2600,6 +2616,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                 body.put("libraryId", libraryId);
                 body.put("zh", zh);
                 body.put("pt", pt);
+                body.put("en", en);
                 body.put("reason", reason);
                 JSONObject result = lan.orgCreateRequest(body);
                 main.post(() -> {
@@ -2652,7 +2669,12 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         }
     }
 
-    /** 造一行：中文输入框 + 葡语输入框 + 删除。 */
+    /**
+     * 造一行：中文输入框 + 葡语输入框 + 英语输入框 + 删除。
+     *
+     * <p>5.02：三种语言彼此等价，所以三栏并列。窄屏上三栏确实挤 —— 但把某一栏藏起来
+     * 会更糟（用户看不见就不知道要填），所以保持三栏、每栏都能换行显示全文。
+     */
     private View buildTermRow(final int index) {
         final String[] pair = termsRowsData.get(index);
         LinearLayout row = new LinearLayout(this);
@@ -2670,8 +2692,14 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
         final EditText ptField = makeTermCell(pair[1], R.string.terms_col_pt);
         LinearLayout.LayoutParams ptParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        ptParams.setMarginEnd(dp(6));
         ptField.setLayoutParams(ptParams);
         ptField.addTextChangedListener(termCellWatcher(pair, 1, ptField));
+
+        final EditText enField = makeTermCell(pair.length > 2 ? pair[2] : "", R.string.terms_col_en);
+        LinearLayout.LayoutParams enParams = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        enField.setLayoutParams(enParams);
+        enField.addTextChangedListener(termCellWatcher(pair, 2, enField));
 
         TextView remove = new TextView(this);
         remove.setText("×");
@@ -2693,6 +2721,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
         row.addView(zhField);
         row.addView(ptField);
+        row.addView(enField);
         row.addView(remove);
         return row;
     }
@@ -2754,6 +2783,12 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         ptField.setTextSize(14f);
         box.addView(ptField);
 
+        // 5.02：第三栏（英语）。三种语言至少填两种，中文必有。
+        final EditText enField = new EditText(this);
+        enField.setHint(R.string.terms_col_en);
+        enField.setTextSize(14f);
+        box.addView(enField);
+
         new AlertDialog.Builder(this)
                 .setTitle(R.string.terms_add_title)
                 .setView(box)
@@ -2761,11 +2796,13 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                 .setPositiveButton(R.string.confirm, (dialog, which) -> {
                     String zh = zhField.getText().toString().trim();
                     String pt = ptField.getText().toString().trim();
-                    if (zh.isEmpty() || pt.isEmpty()) {
+                    String en = enField.getText().toString().trim();
+                    // 三种语言至少两种：只有一种写法构不成"等价关系"（电脑端同样会拒）
+                    if (zh.isEmpty() || (pt.isEmpty() && en.isEmpty())) {
                         showNote(getString(R.string.terms_add_both));
                         return;
                     }
-                    termsRowsData.add(new String[] { zh, pt });
+                    termsRowsData.add(new String[] { zh, pt, en });
                     saveTermsDraft();
                     renderTermsTable();
                     showTermsReport(getString(R.string.terms_count, termsRowsData.size()), R.color.brand, null, null);
@@ -2808,8 +2845,13 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     /**
      * 解析粘贴进来的文本并追加到表格。
      *
-     * <p>每行按 **Tab → 逗号（半角/全角）→ 等号（半角/全角）→ 多个空格** 的顺序找第一个分隔符。
-     * 只认两列；多出来的部分并进第二列（避免把葡语里的逗号切开）。
+     * <p>5.02：支持**三栏**（中 / 葡 / 英）。分隔符按 **Tab → 逗号（半角/全角）→
+     * 等号（半角/全角）→ 箭头 → 多个空格** 的顺序找。
+     *
+     * <p>为什么 Tab 优先、而且只有 Tab 才放心拆三栏：从 Excel 复制出来天然是 Tab，
+     * 而逗号在葡语/英语句子里本来就会出现 —— 按逗号拆三栏会把一句译文切成两半。
+     * 所以单字符分隔符只在"**恰好出现 1 次或 2 次**"时才按它拆（1 次=两栏、2 次=三栏），
+     * 出现更多次就只拆两栏，其余并进最后一栏（宁可少一栏，也不把译文切坏）。
      * 空行与 `#` 开头的行跳过。
      *
      * @return 实际导入的条数
@@ -2828,25 +2870,52 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         return added;
     }
 
-    /** 把一行拆成 {中文, 葡语}；拆不出来返回 null。 */
+    /** 把一行拆成 {中文, 葡语[, 英语]}；拆不出来返回 null。 */
     private static String[] splitTermLine(String line) {
-        final char[] separators = { '\t', ',', '，', '=', '＝', '→' };
-        for (char separator : separators) {
+        // Tab 与"两个以上空格"是**明确的分列**：出现就按它拆，最多三栏
+        for (char separator : new char[] { '\t' }) {
             int at = line.indexOf(separator);
             if (at <= 0) continue;
-            String left = line.substring(0, at).trim();
-            String right = line.substring(at + 1).trim();
+            String[] parts = splitByChar(line, separator, 3);
+            if (parts != null) return parts;
+        }
+        // 单字符分隔符：1 次 → 两栏；恰好 2 次 → 三栏；更多次 → 只拆两栏
+        for (char separator : new char[] { ',', '，', '=', '＝', '→' }) {
+            int first = line.indexOf(separator);
+            if (first <= 0) continue;
+            int second = line.indexOf(separator, first + 1);
+            if (second > first && line.indexOf(separator, second + 1) < 0) {
+                String[] parts = splitByChar(line, separator, 3);
+                if (parts != null) return parts;
+            }
+            String left = line.substring(0, first).trim();
+            String right = line.substring(first + 1).trim();
             if (left.isEmpty() || right.isEmpty()) continue;
-            return new String[] { left, right };
+            return new String[] { left, right, "" };
         }
         // 最后再试"两个以上空格"当分隔（从 Word 里粘过来常见）
         java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\s{2,}").matcher(line);
         if (matcher.find() && matcher.start() > 0) {
-            String left = line.substring(0, matcher.start()).trim();
-            String right = line.substring(matcher.end()).trim();
-            if (!left.isEmpty() && !right.isEmpty()) return new String[] { left, right };
+            String[] parts = splitByPattern(line, "\\s{2,}", 3);
+            if (parts != null) return parts;
         }
         return null;
+    }
+
+    /** 按单个字符切成最多 max 栏（多出来的并进最后一栏）；第一栏为空返回 null。 */
+    private static String[] splitByChar(String line, char separator, int max) {
+        return splitByPattern(line, java.util.regex.Pattern.quote(String.valueOf(separator)), max);
+    }
+
+    private static String[] splitByPattern(String line, String regex, int max) {
+        String[] raw = line.split(regex, max);
+        String[] out = new String[max];
+        for (int index = 0; index < max; index += 1) {
+            out[index] = index < raw.length ? raw[index].trim() : "";
+        }
+        // 前两栏必须有内容；第三栏可以为空（两栏条目）
+        if (out[0].isEmpty() || out[1].isEmpty()) return null;
+        return out;
     }
 
     // ── 草稿存取 ────────────────────────────────────────────────────────────
@@ -2854,10 +2923,12 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private void saveTermsDraft() {
         org.json.JSONArray array = new org.json.JSONArray();
         for (String[] pair : termsRowsData) {
-            if (pair[0].isEmpty() && pair[1].isEmpty()) continue;
+            // 5.02：三栏。空行 = 三栏全空（老的两栏草稿读进来时第三栏是空串）
+            if (pair[0].isEmpty() && pair[1].isEmpty() && cellAt(pair, 2).isEmpty()) continue;
             org.json.JSONArray row = new org.json.JSONArray();
             row.put(pair[0]);
             row.put(pair[1]);
+            row.put(cellAt(pair, 2));
             array.put(row);
         }
         prefs.edit().putString(KEY_TERMS_DRAFT, array.toString()).apply();
@@ -2872,12 +2943,20 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             for (int index = 0; index < array.length(); index += 1) {
                 org.json.JSONArray row = array.optJSONArray(index);
                 if (row == null) continue;
-                termsRowsData.add(new String[] { row.optString(0, ""), row.optString(1, "") });
+                // 老草稿只有两栏：第三栏读成空串（不报错、不丢数据）
+                termsRowsData.add(new String[] {
+                        row.optString(0, ""), row.optString(1, ""), row.optString(2, "") });
             }
         } catch (org.json.JSONException error) {
             // 草稿坏了就当没有：它只是"上次改到一半的东西"，绝不能影响使用
             termsRowsData.clear();
         }
+    }
+
+    /** 取第 n 栏（越界返回空串）：老草稿/老代码只造两栏的 String[]，不能让它们崩。 */
+    private static String cellAt(String[] row, int column) {
+        if (row == null || column < 0 || column >= row.length || row[column] == null) return "";
+        return row[column];
     }
 
     // ── 三个动作：校验 / 上传 / 从电脑拉取 ──────────────────────────────────
@@ -2891,13 +2970,16 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private org.json.JSONArray collectTermEntries() {
         org.json.JSONArray entries = new org.json.JSONArray();
         for (String[] pair : termsRowsData) {
-            String zh = pair[0] == null ? "" : pair[0].trim();
-            String pt = pair[1] == null ? "" : pair[1].trim();
-            if (zh.isEmpty() && pt.isEmpty()) continue;
+            String zh = cellAt(pair, 0).trim();
+            String pt = cellAt(pair, 1).trim();
+            String en = cellAt(pair, 2).trim();
+            if (zh.isEmpty() && pt.isEmpty() && en.isEmpty()) continue;
             try {
                 org.json.JSONObject entry = new org.json.JSONObject();
                 entry.put("zh", zh);
                 entry.put("pt", pt);
+                // 5.02：空的那一栏照实传空串 —— 电脑端按"两栏"处理（那一侧没有等价关系）
+                entry.put("en", en);
                 entries.put(entry);
             } catch (org.json.JSONException ignored) {
                 // 理论上不会发生；真发生了就跳过这一行，不中断整体
@@ -2994,7 +3076,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             for (int index = 0; index < rows.length(); index += 1) {
                 org.json.JSONObject row = rows.optJSONObject(index);
                 if (row == null) continue;
-                termsRowsData.add(new String[] { row.optString("zh", ""), row.optString("pt", "") });
+                termsRowsData.add(new String[] {
+                        row.optString("zh", ""), row.optString("pt", ""), row.optString("en", "") });
             }
             saveTermsDraft();
             renderTermsTable();

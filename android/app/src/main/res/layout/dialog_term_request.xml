@@ -3,7 +3,7 @@
   dialog_term_request.xml —— 术语库"申请修改"的表单（4.62）。
 
   三种申请共用这一张表单，靠 Java 里控制可见性：
-    新增 / 修改 → 中文 + 葡语译文 + 理由
+    新增 / 修改 → 中文 + 葡语 + 英语 + 理由（三种语言里**至少填两种**）
     删除       → 只填中文（要删的那条）+ 理由
   ⚠️ 不写色值与裸 dp/sp。
 -->
@@ -42,6 +42,25 @@
         android:layout_marginTop="@dimen/space_gap_small"
         android:background="@drawable/bg_input"
         android:hint="@string/terms_req_pt"
+        android:inputType="text"
+        android:paddingStart="@dimen/space_gap"
+        android:paddingEnd="@dimen/space_gap"
+        android:singleLine="true"
+        android:textColor="@color/ink"
+        android:textColorHint="@color/ink_faint"
+        android:textSize="@dimen/text_body" />
+
+    <!--
+      5.02：三语术语的第三栏。中 / 葡 / 英三种写法彼此等价，
+      **至少填两种**（中文必须有）—— 缺的那一栏留空，不假装有等价关系。
+    -->
+    <EditText
+        android:id="@+id/reqEn"
+        android:layout_width="match_parent"
+        android:layout_height="@dimen/height_field"
+        android:layout_marginTop="@dimen/space_gap_small"
+        android:background="@drawable/bg_input"
+        android:hint="@string/terms_req_en"
         android:inputType="text"
         android:paddingStart="@dimen/space_gap"
         android:paddingEnd="@dimen/space_gap"

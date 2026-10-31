@@ -357,11 +357,13 @@ State: %4$s</string>
     <string name="terms_req_form_title">%1$s · %2$s</string>
     <string name="terms_req_zh">Chinese term</string>
     <string name="terms_req_pt">Portuguese translation</string>
+    <string name="terms_req_en">English translation (optional)</string>
     <string name="terms_req_reason">Reason (for the reviewer)</string>
     <string name="terms_req_submit">Submit</string>
     <string name="terms_req_sent">Request submitted, waiting for approval</string>
     <string name="terms_req_need_zh">Fill in the Chinese term first</string>
     <string name="terms_req_need_pt">Adds and edits need the Portuguese translation too</string>
+    <string name="terms_req_need_side">Fill in Portuguese or English: one spelling alone is not a translation pair</string>
     <string name="terms_req_failed">Could not submit: %1$s</string>
     <string name="terms_status_pending">Pending</string>
     <string name="terms_status_approved">Approved</string>
