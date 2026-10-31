@@ -15,9 +15,10 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  EN, PT, ZH, detectLang, opposite, resolveTarget, translationSystem, proofreadSystem,
+  EN, PT, ZH, detectLang, opposite, resolveTarget, resolveTargets, translationSystem, proofreadSystem,
   targetName, EN_OUTPUT_RULES, CONFIG_DEFAULTS,
 } from '../plugin/core.mjs'
+import { createWsHub } from '../lib/ws-hub.mjs'
 import { parseArgs as harnessParse } from '../scripts/harness-side.mjs'
 import { parseArgs as multiParse, pipelineSteps } from '../scripts/start-multi.mjs'
 
@@ -132,6 +133,89 @@ export async function runEnglishSuite({ it, check, assert }) {
     const lanClient = readFileSync(join(process.cwd(), 'android', 'app', 'src', 'main', 'java',
       'com', 'leion', 'lanrelay', 'LanClient.java'), 'utf-8')
     check('建房时把目标语言发给服务端', /body\.put\("targetLang"/.test(lanClient))
+  })
+
+  await it('一句话译成**几种**：按听众语言去重（用户的架构）', async () => {
+    // 两个听众同语言 → 只译一份；不同语言 → 译两份
+    const same = resolveTargets(ZH, '', ['pt-BR', 'pt-BR'])
+    check('同语言听众只译一份', same.targets.length === 1 && same.targets[0] === PT,
+      JSON.stringify(same))
+    const diff = resolveTargets(ZH, '', ['pt-BR', 'en-US'])
+    check('不同语言听众译两份', diff.targets.length === 2, JSON.stringify(diff))
+    check('两份里没有源语言（绝不译成源语言）',
+      diff.targets.includes(ZH) === false, JSON.stringify(diff.targets))
+    // 所有人读的都是源语言 → 这一句**不需要**任何译文（不是回落到 opposite 白译一份）
+    const nobodyNeeds = resolveTargets(ZH, '', [ZH, ZH])
+    check('听众全都读源语言 → 不译（targets 为空）',
+      nobodyNeeds.targets.length === 0 && nobodyNeeds.source === 'listeners',
+      JSON.stringify(nobodyNeeds))
+    // 还没人登记 → 老行为
+    const legacy = resolveTargets(ZH, '', [])
+    check('没人登记时按老行为（中→葡）',
+      legacy.targets.length === 1 && legacy.targets[0] === PT && legacy.source === 'paired',
+      JSON.stringify(legacy))
+    // 显式覆盖
+    const override = resolveTargets(ZH, EN, ['pt-BR'])
+    check('会议显式指定时只译那一种（覆盖听众集合）',
+      override.targets.length === 1 && override.targets[0] === EN, JSON.stringify(override))
+    check('显式=源语言 → 不译', resolveTargets(ZH, ZH, ['pt-BR']).targets.length === 0)
+    check('三种语言全在时最多两份（源语言占一种）',
+      resolveTargets(ZH, '', [ZH, PT, EN]).targets.length === 2,
+      JSON.stringify(resolveTargets(ZH, '', [ZH, PT, EN]).targets))
+  })
+
+  await it('WS 按**语言**扇出（同语言的人不会收到别国语言的帧）', async () => {
+    const hub = createWsHub({ debug: () => {} })
+    check('hub 暴露了 applyRoomLangs / setHearLang',
+      typeof hub.applyRoomLangs === 'function' && typeof hub.setHearLang === 'function')
+    // 没有连接时安全返回 0
+    check('没有连接时返回 0', hub.broadcastFrame({ type: 'frame' }, 'room-x', EN) === 0)
+    const hubSource = readFileSync(join(process.cwd(), 'lib', 'ws-hub.mjs'), 'utf-8')
+    check('按 conn.hearLang 过滤', /conn\.hearLang/.test(hubSource))
+    check('没登记语言的连接照旧收（升级期不能吞字幕）',
+      /listening === '' \|\| listening === wanted/.test(hubSource))
+    check('relay 推帧时带上语言', /attribution\.roomId \?\? null, String\(frame\.lang \?\? ''\)\)/.test(
+      readFileSync(join(process.cwd(), 'relay', 'lan-relay.mjs'), 'utf-8')))
+  })
+
+  await it('start-multi 把听众语言侧车路径交给大脑（否则大脑没法按语言各译一份）', async () => {
+    const options = multiParse(['--data-dir', 'var/x'])
+    const brain = pipelineSteps(options, { id: 'room-multi-aaaa', targetLang: '' })
+      .find(step => step.role === 'brain')
+    const index = brain.args.indexOf('--hear-langs')
+    check('传了 --hear-langs', index >= 0, brain.args.join(' '))
+    check('路径是 <data-dir>/room-langs/<房间>.json（与 relay 写的位置一致）',
+      String(brain.args[index + 1]).replace(/\\/g, '/').endsWith('room-langs/room-multi-aaaa.json'),
+      String(brain.args[index + 1]))
+    const relaySource = readFileSync(join(process.cwd(), 'relay', 'lan-relay.mjs'), 'utf-8')
+    check('relay 写的就是这个位置', /join\(options\.dataDir, 'room-langs'/.test(relaySource))
+  })
+
+  await it('客户端：只显示自己语言那一份，且去重键带语言', async () => {
+    const room = readFileSync(join(process.cwd(), 'android', 'app', 'src', 'main', 'java',
+      'com', 'leion', 'lanrelay', 'RoomActivity.java'), 'utf-8')
+    check('有 hearLang 字段（读哪种语言）', /private String hearLang = ""/.test(room))
+    check('帧语言与我的不同 → 直接不显示',
+      /!frameLang\.isEmpty\(\) && !hearLang\.isEmpty\(\) && !frameLang\.equals\(hearLang\)/.test(room),
+      '没有按语言过滤，三语会议里会同时看到两份译文')
+    check('帧语言缺失时照旧显示（不吞字幕）',
+      /frameLang\.isEmpty\(\)/.test(room) && /return;/.test(room))
+    check('段落去重键带语言（否则第二份会覆盖第一份）',
+      /langKey\.isEmpty\(\) \? source : langKey \+ "\|" \+ source/.test(room),
+      '同一句的两种译文会互相覆盖')
+    check('心跳/上传路径也把语言记下来', /hearLang = speak;/.test(room))
+  })
+
+  await it('转写：同一句的多语言译文合成**一行**（带 dst_by_lang）', async () => {
+    const dbSource = readFileSync(join(process.cwd(), 'lib', 'db.mjs'), 'utf-8')
+    check('utterances 有 dst_by_lang 列（旧库自动补）',
+      /ALTER TABLE utterances ADD COLUMN dst_by_lang/.test(dbSource))
+    check('同源同说话人 60 秒内合并', /startAt - 60000/.test(dbSource) && /merged: true/.test(dbSource))
+    const relaySource = readFileSync(join(process.cwd(), 'relay', 'lan-relay.mjs'), 'utf-8')
+    check('relay 分清源语言与译文语言（frame.sourceLang / frame.lang）',
+      /srcLang: String\(frame\.sourceLang \?\? ''\)/.test(relaySource)
+        && /dstLang: String\(frame\.lang \?\? ''\)/.test(relaySource),
+      '单语言时看不出错，三种语言时必须分清')
   })
 
   await it('历史/转写里的语种也显示成人话（en-US → 英语）', async () => {

@@ -184,6 +184,16 @@ export const CONFIG_DEFAULTS = {
    * 空串 = 老行为（`opposite(源语言)`：中↔葡互译，英语兜底译成中文）。
    */
   targetLang: '',
+  /**
+   * 这场会的**听众语言侧车**（5.00）：relay 写的 `room-langs/<房间>.json`。
+   *
+   * <p>为什么用文件而不是配置：成员进出、改语言都可能发生在两句之间，而配置是启动时固定的
+   * （改配置要重启大脑，就赶不上"有人刚进来"这件事）。同一套做法见 `audio/<房间>.lang`（4.37）
+   * 与 `settings.json`（手机侧的校对开关）。
+   *
+   * <p>空串 = 不读文件，按老行为（`opposite(源语言)`）—— 老部署不受影响。
+   */
+  hearLangsPath: '',
 }
 
 export const DEVICE = {
@@ -191,6 +201,50 @@ export const DEVICE = {
   model: 'Leion Pro',
   aliases: ['GLXSS ME'],
   panel: '单目 AR 显示，供佩戴者阅读',
+}
+
+/**
+ * 这一句要译成哪几种语言（5.00）。
+ *
+ * <p><b>为什么是"几种"</b>：三语会议里同一句要给不同语言的人看 —— 但只译**实际有人在读**的
+ * 语言（`listenerLangs` 来自 relay 写的侧车，等于 `room_members.lang` 去重）。所以：
+ * 两个听众同语言 → 只译一份；不同语言 → 译两份（最多两份，因为只有三种语言、源语言占一种）。
+ *
+ * <p><b>排除源语言</b>：不排除就会"译成同语言"，产出一份看着正常、其实毫无意义的假字幕。
+ *
+ * <p>优先级（与 {@link resolveTarget} 一致，只是从"一个"变成"一组"）：
+ * 会议显式指定（`config.targetLang`，手机建房时选的覆盖值）→ 监听语言集合 → 兜底 opposite(源)。
+ *
+ * @param {string} from 源语言
+ * @param {string} override 显式目标（空串 = 不覆盖）
+ * @param {string[]} listenerLangs 听众登记的语言（可能为空）
+ * @returns {{targets: string[], source: 'override'|'listeners'|'paired'|'none'}}
+ */
+export function resolveTargets(from, override, listenerLangs) {
+  const clean = (list) => {
+    const seen = new Set()
+    for (const item of Array.isArray(list) ? list : []) {
+      const lang = String(item === undefined || item === null ? '' : item).trim()
+      if (lang === '' || lang === from) continue        // 源语言永远不作为目标
+      if (seen.has(lang)) continue                      // 去重：同语言只译一份
+      seen.add(lang)
+    }
+    return [...seen]
+  }
+  if (typeof override === 'string' && override !== '') {
+    const only = clean([override])
+    return { targets: only, source: only.length === 0 ? 'none' : 'override' }
+  }
+  const heard = clean(listenerLangs)
+  if (heard.length > 0) return { targets: heard, source: 'listeners' }
+  // ⚠️ 关键：**登记了语言、但清完是空**（所有人读的都是源语言）→ 这一句不需要任何译文。
+  //    如果这时回落到 opposite，就会给"没人需要的语言"白译一份 —— 既费钱又可能把
+  //    一份多余的字幕推给不该看到它的人。
+  const anyRegistered = (Array.isArray(listenerLangs) ? listenerLangs : [])
+    .some(item => String(item === undefined || item === null ? '' : item).trim() !== '')
+  if (anyRegistered) return { targets: [], source: 'listeners' }
+  const guess = opposite(from)
+  return { targets: guess === 'unknown' ? [] : [guess], source: guess === 'unknown' ? 'none' : 'paired' }
 }
 
 export const ZH = 'zh-CN'
@@ -2306,6 +2360,28 @@ export function createInterpreter(ctx, rawConfig, deps) {
     return { added }
   }
 
+  /**
+   * 读"这个房间的听众各自读哪种语言"（5.00）。
+   *
+   * <p>由 relay 写在 `<data-dir>/room-langs/<房间>.json`（`{ langs: [...], byUser: {...} }`），
+   * 内容等于 `room_members.lang` 去重。读不到就返回空数组 —— 那时按 `opposite(源语言)` 兜底，
+   * 也就是**老行为**（中↔葡互译），不会因为"读不到文件"而突然不译。
+   *
+   * <p>为什么每次都读：成员进出、改语言都可能在两句之间发生，而这份文件的写入是
+   * relay 在"变化时"才做的，读取代价只有一次 stat + 小 JSON 解析。
+   */
+  async function readListenerLangs() {
+    if (config.hearLangsPath === '') return []
+    try {
+      const text = await fs.readText(config.hearLangsPath)
+      const parsed = JSON.parse(text)
+      return Array.isArray(parsed?.langs) ? parsed.langs.map(item => String(item)) : []
+    } catch {
+      // 文件还不存在（第一句）或写了一半：都当"没有登记"，走老行为
+      return []
+    }
+  }
+
   /** 串行处理队列：同传不能并发，否则字幕会互相穿插。 */
   async function pump() {
     if (pumping) return
@@ -2317,19 +2393,45 @@ export function createInterpreter(ctx, rawConfig, deps) {
         const args = { text: item.text }
         if (item.from !== undefined) args.from = item.from
         if (item.to !== undefined) args.to = item.to
-        const result = await runTranslate(args)
-        if (result.ok === true) {
+        // ── 5.00：一句话可能要译成**几种**语言 ──────────────────────────────
+        // 依据是"这个房间的听众各自读哪种语言"（relay 写的侧车，等于成员 lang 去重）。
+        // 两个听众同语言 → 只译一份；不同语言 → 译两份（最多两份：三种语言、源语言占一种）。
+        // 显式给了 to（工具调用 / 会议覆盖值）就只译那一种，行为与 4.100 一致。
+        const targets = args.to !== undefined && args.to !== ''
+          ? [args.to]
+          : resolveTargets(item.from === undefined ? detectLang(item.text) : item.from,
+            config.targetLang, await readListenerLangs()).targets
+        if (targets.length === 0) {
+          // 所有人读的都是源语言（或判不出方向）：**不译**。不产出任何帧，
+          // 也不计错误 —— 这不是失败，是"这句话不需要翻译"。
           inbox.processed += 1
-          // 自动同传这条路上没有人在看工具的返回值，所以把每一句打进日志 ——
-          // 否则 transport 配成 'file' 时，整个 daemon 是完全静默的，出问题只能靠猜。
-          console.log('[leion-pro] ' + result.from + '→' + result.to + '  ' + result.translation)
-        } else {
-          inbox.errors += 1
-          inbox.lastError = result.failure
-          // 失败必须说出来：静默的 daemon 是最难排查的东西。
-          console.log('[leion-pro] ✗ 翻译失败：' + result.failure)
-          if (result.partial !== null && result.partial !== undefined && result.partial !== '') {
-            console.log('[leion-pro]   半截译文（已丢弃）：' + result.partial)
+          console.log('[leion-pro] 跳过翻译（不需要任何译文）：' + item.text)
+          continue
+        }
+        // 多个目标**并行**翻译：串行会让第二份语言多等一整次调用（字幕慢一倍）。
+        // 顺序性由"每个目标只有一次调用"保证，不需要额外串行。
+        const results = await Promise.all(targets.map((target, index) => {
+          const one = { text: item.text, to: target }
+          if (item.from !== undefined) one.from = item.from
+          // 校对只对**主目标**（第一份）做：翻倍花钱只改个别字，而第二份语言通常只有一个人在看。
+          if (index > 0) one.noProofread = true
+          return runTranslate(one)
+        }))
+        for (let index = 0; index < results.length; index += 1) {
+          const result = results[index]
+          if (result.ok === true) {
+            inbox.processed += 1
+            // 自动同传这条路上没有人在看工具的返回值，所以把每一句打进日志 ——
+            // 否则 transport 配成 'file' 时，整个 daemon 是完全静默的，出问题只能靠猜。
+            console.log('[leion-pro] ' + result.from + '→' + result.to + '  ' + result.translation)
+          } else {
+            inbox.errors += 1
+            inbox.lastError = result.failure
+            // 失败必须说出来：静默的 daemon 是最难排查的东西。
+            console.log('[leion-pro] ✗ 翻译失败（' + targets[index] + '）：' + result.failure)
+            if (result.partial !== null && result.partial !== undefined && result.partial !== '') {
+              console.log('[leion-pro]   半截译文（已丢弃）：' + result.partial)
+            }
           }
         }
       }
@@ -2708,7 +2810,9 @@ export function createInterpreter(ctx, rawConfig, deps) {
       // 放在这个位置而不是开头：翻译本身不该因为这个文件读失败而多等一拍。
       await refreshRuntimeSettings()
       await refreshTerms()
-      enqueueProofread({
+      // 5.00：第二份语言**不排校对** —— 校对会翻倍花钱而只改个别字，而第二份语言通常
+      // 只有一个人在看；主目标那一份照旧校对（保留"回头改错"的能力）。
+      if (args.noProofread !== true) enqueueProofread({
         source,
         from,
         to,

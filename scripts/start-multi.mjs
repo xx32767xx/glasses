@@ -390,6 +390,9 @@ export function pipelineSteps(options, room) {
   // 靠 opposite(源语言) 猜在三种语言下不唯一（会译错方向，而错方向的译文看起来完全正常）。
   const roomTarget = typeof room === 'object' && room !== null ? String(room.targetLang ?? '') : ''
   if (roomTarget !== '') brainArgs.push('--to', roomTarget)
+  // 5.00：把**听众语言侧车**的路径给它 —— relay 会在这个文件里写"这个房间的成员各自读哪种语言"，
+  // 大脑据此决定每句译成几种（同语言只译一份、不同语言译两份）。文件由 relay 创建，这里只给路径。
+  brainArgs.push('--hear-langs', join(options.dataDir, 'room-langs', `${roomId}.json`))
   if (options.termsPath && options.termsActivePath) {
     brainArgs.push('--terms-path', options.termsPath, '--terms-active-path', options.termsActivePath)
   }

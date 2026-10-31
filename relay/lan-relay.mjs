@@ -49,7 +49,7 @@ import { handleOrg } from './org-api.mjs'
 import { createWsHub } from '../lib/ws-hub.mjs'
 import { publishMeetingTerms, readCurrentMeeting } from '../lib/meeting-terms.mjs'
 import { loadSelection } from './org-api.mjs'
-import { resolveFrameRoom } from '../lib/rooms.mjs'
+import { listMembers, resolveFrameRoom } from '../lib/rooms.mjs'
 import { floorState } from '../lib/floor.mjs'
 import {
   TERMS_LIMITS, getTable, loadTerms, mergePending, normalizeUser, putTable, saveActiveUser, saveTerms, validateTerms,
@@ -647,6 +647,8 @@ export async function startRelay(rawOptions = {}) {
      * 记到旧的人名下 —— 宁可显示「无」，也不要张冠李戴。
      */
     roomSpeaker: new Map(),
+    /** 每个房间**上一次**告诉过大脑的听者语言集合（5.00：只在变化时写盘） */
+    roomLangsSent: new Map(),
     /** 每个房间收了多少字节音频（4.84 分流用；也给 /audio/rooms 报） */
     roomAudioBytes: new Map(),
     /** 复位日志限流用（4.81） */
@@ -785,6 +787,55 @@ export async function startRelay(rawOptions = {}) {
     return String(holder)
   }
 
+  /**
+   * 这个房间里"每个人读哪种语言"（5.00）。
+   *
+   * <p>三语会议里同一句要译成几种，取决于**听的人**分别是哪些语言 —— 这正是用户提的
+   * "BC 同语言就只译一份、不同语言就译两份"。数据源是 `room_members.lang`（入会时登记，
+   * 认证过的身份），不是客户端现报的。
+   *
+   * @returns {Map<string, string>} 用户名 → 语言
+   */
+  function roomLangsByUser(roomId) {
+    const map = new Map()
+    try {
+      for (const member of listMembers(options.dataDir, roomId)) {
+        const lang = String(member.lang ?? '').trim()
+        if (lang !== '') map.set(String(member.username), lang)
+      }
+    } catch (error) {
+      debug(`[语言] 读成员语言失败（不影响字幕）：${error?.message ?? error}`)
+    }
+    return map
+  }
+
+  /**
+   * 把"这个房间的语言集合"写给这场会的大脑 + 同步给 WS 连接（5.00）。
+   *
+   * <p>为什么要落文件：大脑是**另一个进程**（harness-side），只能靠文件/侧车知道会议状态
+   * （同一套做法见 `audio/<房间>.lang` 与 `settings.json`）。写的时候**只在变化时写**，
+   * 避免每秒一次无谓的写盘。
+   */
+  function publishRoomLangs(roomId) {
+    const byUser = roomLangsByUser(roomId)
+    const langs = [...new Set([...byUser.values()])].sort()
+    const key = langs.join('|')
+    if (state.roomLangsSent.get(roomId) !== key) {
+      state.roomLangsSent.set(roomId, key)
+      const file = join(options.dataDir, 'room-langs', `${String(roomId).replace(/[^A-Za-z0-9_-]/g, '_')}.json`)
+      void mkdir(dirname(file), { recursive: true })
+        .then(() => writeFile(file, JSON.stringify({
+          roomId, langs, byUser: Object.fromEntries(byUser), at: Date.now(),
+        }), 'utf-8'))
+        .catch((error) => debug(`[语言] 写侧车失败（不影响字幕）：${error?.message ?? error}`))
+      debug(`[语言] ${roomId} 的听者语言：${langs.length === 0 ? '（还没登记）' : langs.join(' / ')}`)
+    }
+    if (wsHub !== null) {
+      try { wsHub.applyRoomLangs(roomId, byUser) } catch { /* 没有连接就算了 */ }
+    }
+    return langs
+  }
+
   function publishFrame(frame, roomHint = '') {
     state.seq += 1
     state.frameCount += 1
@@ -816,6 +867,10 @@ export async function startRelay(rawOptions = {}) {
       delete frame.speakerName
     }
     state.lastFrame = frame
+    // 5.00：把"这个房间里每个人读哪种语言"同步给两条下游：
+    //   ① 写一份侧车给这场会的大脑（它据此决定这一句要译成哪几种）；
+    //   ② 同步给 WS 连接（按语言扇出要用）。
+    if (attribution.roomId !== null) publishRoomLangs(attribution.roomId)
     if (attribution.roomId !== null) {
       const roomSeq = (state.seqByRoom.get(attribution.roomId) ?? 0) + 1
       state.seqByRoom.set(attribution.roomId, roomSeq)
@@ -839,7 +894,10 @@ export async function startRelay(rawOptions = {}) {
         frame,
         roomId: attribution.roomId ?? null,
         roomSeq: attribution.roomId === null ? null : (state.seqByRoom.get(attribution.roomId) ?? null),
-      }, attribution.roomId ?? null)
+        // 5.00：这一帧是**译成哪种语言**的那一份。三语会议里同一句会有两份帧
+        // （如葡语一份、英语一份），只该发给读那种语言的人。
+        lang: String(frame.lang ?? ''),
+      }, attribution.roomId ?? null, String(frame.lang ?? ''))
     }
   }
 
@@ -935,7 +993,11 @@ export async function startRelay(rawOptions = {}) {
       // 那两个字是"相对于电脑"的说法，落进 utterances 之后，转写全文里就会出现
       // 一堆叫 `them` 的发言人（用户看到的就是"全是对方"）。
       username: String(frame.speakerName ?? ''),
-      srcLang: String(frame.lang ?? ''),
+      // 5.00：`frame.lang` 是**译文**语言（帧里的 text/lines 是译文），源语言在 `sourceLang`。
+      // 之前这里把 frame.lang 当源语言存，是"翻译方向"那类错误的同一个来源 ——
+      // 单语言时两者恰好总是相反，所以一直没暴露；变成三种语言后必须分清。
+      srcLang: String(frame.sourceLang ?? ''),
+      dstLang: String(frame.lang ?? ''),
       srcText: source,
       dstText: text,
       startAt: Date.now(),
@@ -1535,6 +1597,9 @@ export async function startRelay(rawOptions = {}) {
         if (audioRoom !== '') {
           state.audioRoomId = audioRoom
           state.audioRoomAt = Date.now()
+          // 5.00：**先**把听者语言同步给这场会的大脑 —— 它要在第一句就译成正确的几种语言；
+          // 等到"第一帧出来"才写就晚了（那已经是在译完之后）。
+          publishRoomLangs(audioRoom)
         }
         // 4.96：**上传者就是这句话的发言人**（用户提的办法，比"猜当前谁持麦"准得多）。
         //

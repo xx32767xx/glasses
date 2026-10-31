@@ -137,6 +137,14 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
      * 解析出来就成了一个叫「麦克风空闲」的发言人。状态文字不能当数据用。
      */
     private String holderName = "";
+    /**
+     * 我**读**哪种语言的字幕（5.00）。
+     *
+     * <p>三语会议里同一句会产出两份译文（比如葡语一份、英语一份），这台设备只该显示自己那份。
+     * 现在"说"和"读"是同一个值（入会时登记的 `speakLang`）—— 要分开（比如"我说中文但我能读葡语"）
+     * 就得再加一个字段和一处 UI，那是下一轮的事，这里先把规则写明。
+     */
+    private String hearLang = "";
     private Runnable pendingAfterPermission;
     private Button micUploadButton;
     private long lastHeartbeat = 0L;
@@ -228,6 +236,10 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         String host = prefs.getString("host", "");
         String secret = prefs.getString("secret", "");
         myName = prefs.getString("termsUser", "");
+        // 5.00：这台设备读哪种语言的字幕 = 入会时登记的说话语言。
+        // 纯听众（从不开麦）也要有值，否则三语会议里会收到两种语言的帧、都显示出来。
+        hearLang = prefs.getString("speakLang", "");
+        if (hearLang == null) hearLang = "";
         String token = prefs.getString("accountToken", "");
 
         client = new LanClient(host, secret, this);
@@ -345,7 +357,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                             frame.optBoolean("partial", false), missing,
                             // 4.96：用 LanClient.speakerNameOf —— 它把 JSON null 当成"没有"，
                             // 不然 optString 会返回字符串 "null"，界面上就出现一个叫 null 的发言人
-                            LanClient.speakerNameOf(frame));
+                            LanClient.speakerNameOf(frame),
+                            // 5.00：这一帧是译成哪种语言的那一份
+                            frame.isNull("lang") ? "" : frame.optString("lang", ""));
                 });
             }
 
@@ -814,6 +828,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         String speak = getSharedPreferences("leion", MODE_PRIVATE).getString("speakLang", "zh-CN");
         if (speak != null && !speak.isEmpty()) {
             mic.setLanguage(speak);
+            // 5.00：这台设备"读"的语言 = 我说的语言（三语会议只显示自己那份译文）
+            hearLang = speak;
         }
         String error = mic.start();
         if (error == null) {
@@ -1182,7 +1198,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     public void onFrame(String speaker, String lang, String[] lines, String text,
                         String source, String sourceLang, boolean partial, String[] termsMissing,
                         String speakerName) {
-        ui.post(() -> applyFrame(text, lines, source, partial, termsMissing, speakerName));
+        // 5.00：这里的 `lang` 就是"这一帧译成哪种语言"（relay 的帧字段），直接传给 applyFrame
+        ui.post(() -> applyFrame(text, lines, source, partial, termsMissing, speakerName, lang));
     }
 
     /**
@@ -1190,13 +1207,21 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
      * 迟早出现"长轮询能显示、WS 显示不出来"这种只在一半设备上出现的分裂。
      *
      * @param speakerName 这一句**是谁说的**（4.95：服务端随帧给出；空串 = 未知）
+     * @param lang        这一帧是**译成哪种语言**的（5.00：三语会议里同一句有两份帧，
+     *                    只显示自己登记的那一份；空串 = 老服务端，照旧显示）
      */
     private void applyFrame(String text, String[] lines, String source, boolean partial,
-                            String[] termsMissing, String speakerName) {
+                            String[] termsMissing, String speakerName, String lang) {
         String target = (text == null || text.isEmpty())
                 ? (lines == null ? "" : String.join("\n", lines)) : text;
+        String frameLang = lang == null ? "" : lang.trim();
+        // 5.00：只显示自己语言那一份。判据是本机登记的说话语言（同时作为"读的语言"）。
+        // 帧语言缺失（老服务端/无语言）时照旧显示 —— 宁可多显示，也不能吞掉字幕。
+        if (!frameLang.isEmpty() && !hearLang.isEmpty() && !frameLang.equals(hearLang)) {
+            return;
+        }
         renderSegment(target == null ? "" : target, source == null ? "" : source, partial,
-                speakerName == null ? "" : speakerName.trim());
+                speakerName == null ? "" : speakerName.trim(), frameLang);
         if (partial) {
             hintLine.setText(getString(R.string.st_generating));
         } else if (termsMissing != null && termsMissing.length > 0) {
@@ -1217,7 +1242,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
      *   <li><b>新句从下往上推</b>：追加后自动滚到底，读到的是最新的那句话。</li>
      * </ol>
      */
-    private void renderSegment(String target, String source, boolean partial, String speakerName) {
+    private void renderSegment(String target, String source, boolean partial, String speakerName,
+                               String lang) {
         if (target.isEmpty() && source.isEmpty()) return;
         if (emptyView.getVisibility() == View.VISIBLE) emptyView.setVisibility(View.GONE);
 
@@ -1235,7 +1261,10 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // ── 同一段判定（4.53）────────────────────────────────────────
         // 一句话会来三帧：增量 / 定稿 / 校对修订。它们的**原文相同**，
         // 所以"原文相同"就是同一段；原文缺失时退化成"上一条还是增量态"也算同一段。
-        String key = source.isEmpty() ? null : source;
+        // ⚠️ 5.00：键**必须带语言** —— 三语会议里同一句会来两份帧（葡语/英语），
+        // 只按原文判会把第二份当成"同一段的定稿"直接覆盖第一份（另一份语言就没了）。
+        String langKey = lang == null ? "" : lang;
+        String key = source.isEmpty() ? null : (langKey.isEmpty() ? source : langKey + "|" + source);
         boolean sameSegment = lastSegmentView != null && (
                 // ① 上一帧还是增量态 → 这一帧一定是它的定稿/校对修订。
                 //    这条最硬：产线是**逐句串行**的，一句话的增量之后不可能突然变成另一句。

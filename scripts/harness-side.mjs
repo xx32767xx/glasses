@@ -78,7 +78,7 @@ const HELP = `harness-side —— 常驻的 harness 侧进程（给手机 + 局�
 `
 
 export function parseArgs(argv) {
-  const options = { mode: 'live', dataDir: LIVE_DATA_DIR, cols: 40, lines: 3, pollMs: 150, keepInbox: false, proofread: true, termsRescue: false, targetLang: '' }
+  const options = { mode: 'live', dataDir: LIVE_DATA_DIR, cols: 40, lines: 3, pollMs: 150, keepInbox: false, proofread: true, termsRescue: false, targetLang: '', hearLangsPath: '' }
   const takesValue = new Set(['data-dir', 'inbox', 'bus', 'cols', 'lines', 'poll-ms',
     // 2026-10-23：允许把「热词表」指向任意一份快照（会议级术语快照 = var/data/meetings/<场次>/）。
     // 为什么需要：库（libraries/）与插件之间必须有个"冻结成一份表"的中间物 ——
@@ -92,6 +92,14 @@ export function parseArgs(argv) {
     if (token === '--terms-rescue') { options.termsRescue = true; continue }
     // 5.00：这场会的**目标语言**（中 / 英 / 葡）。
     // 三种语言并存时"译成哪种"不再唯一，所以必须由会议显式给 —— 见 start-multi 传房间的 target_lang。
+    // 5.00：听者语言侧车（relay 写、start-multi 传路径）。有它才能"按每个人的语言各译一份"。
+    if (token === '--hear-langs') {
+      const value = argv[index + 1]
+      if (value === undefined || value.startsWith('--')) throw new Error('--hear-langs 需要一个文件路径')
+      options.hearLangsPath = value
+      index += 1
+      continue
+    }
     if (token === '--to') {
       const value = argv[index + 1]
       if (value === undefined || value.startsWith('--')) throw new Error('--to 需要一个值（zh-CN / pt-BR / en-US）')
@@ -203,6 +211,8 @@ async function main() {
       termsRescue: options.termsRescue ? 'on' : 'off',
       // 5.00：目标语言（空串 = 老行为：按 opposite(源语言) 推导，即中↔葡互译）
       targetLang: options.targetLang,
+      // 5.00：relay 写的"这个房间的听众语言"侧车（成员 lang 去重）。空串 = 老行为。
+      hearLangsPath: options.hearLangsPath === '' ? '' : String(options.hearLangsPath),
     },
     extraRows: [`- name: '${repoFile('lib', 'keepalive.mjs')}'`],
   })

@@ -90,7 +90,8 @@ function openSocket(url) {
 export async function runWsSuite({ it, check }) {
   await it('4.86：WS 字幕帧按房间发（不再广播给所有房间）', async () => {
     const hubSource = readFileSync(join(process.cwd(), 'lib', 'ws-hub.mjs'), 'utf-8')
-    check('broadcastFrame 支持 roomId 参数', /function broadcastFrame\(payload, roomId = null\)/.test(hubSource))
+    // 5.00：签名多了 lang（按语言扇出），断言只要求前两个参数还在
+    check('broadcastFrame 支持 roomId 参数', /function broadcastFrame\(payload, roomId = null/.test(hubSource))
     check('给了 roomId 就只发给该房间',
       /if \(roomId !== null && roomId !== undefined && roomId !== ''\) \{\s*\n\s*const conns = rooms\.get/.test(hubSource))
     check('没给才广播（兼容老客户端）', /for \(const conns of rooms\.values\(\)\)/.test(hubSource))
