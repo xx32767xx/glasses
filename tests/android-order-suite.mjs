@@ -1093,6 +1093,17 @@ export async function runAndroidOrderSuite({ it, check }) {
     for (const id of ['roomCode', 'roomCopy', 'roomModeTag', 'roomRoleTag']) {
       check(`顶部第一行有 ${id}`, new RegExp(`@\\+id/${id}\\b`).test(room), id)
     }
+    // 5.07：那一格曾经是"布局里写死的缺省文案"，Java 拿到后**从没赋过值** ——
+    // 于是选葡语、选英语都一直显示「我说中文」（用户实测报的老 bug）。
+    const roomJava = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+    check('「我说…」那一格是按真实选择渲染的，不是静态文案',
+      /private void updateModeTag\(\)/.test(roomJava) && /modeTag\.setText\(/.test(roomJava),
+      '只改布局缺省值没用 —— 必须有人给它赋值')
+    check('进房时就渲染一次', /loadRoomHeader\(\);[\s\S]{0,400}updateModeTag\(\)/.test(roomJava))
+    check('会中换语言时跟着换', /void syncSpokenLanguage\(\)[\s\S]{0,600}updateModeTag\(\)/.test(roomJava))
+    check('三种语言都认（不只中文/葡语）',
+      /rooms_speak_en/.test(roomJava) && /rooms_speak_pt/.test(roomJava) && /rooms_speak_zh/.test(roomJava))
+    check('带着参会方式 5.04 收集的面对面/远程', /attend_mode_onsite/.test(roomJava) && /attend_mode_remote/.test(roomJava))
     // 顶部第二行：主题 · 人数 · 计时 · 退出
     for (const id of ['roomTitle', 'roomMembers', 'roomTimer', 'roomLeave']) {
       check(`顶部第二行有 ${id}`, new RegExp(`@\\+id/${id}\\b`).test(room), id)

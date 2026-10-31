@@ -158,6 +158,9 @@ public class CreateRoomActivity extends android.app.Activity {
 
     private void setAttendMode(String mode) {
         attendMode = mode == null ? "" : mode;
+        // 5.07：记下来 —— 房间页顶部那格「我说… · 面对面」要显示它，
+        // 而房间页与这里不是一个页面，只能靠 prefs 传（同一套做法见 speakLang）。
+        if (!attendMode.isEmpty()) prefs.edit().putString("attendMode", attendMode).apply();
         stylePills(R.id.createModeOnsite, R.string.attend_mode_onsite, R.string.attend_mode_onsite_on,
                 "onsite".equals(attendMode));
         stylePills(R.id.createModeRemote, R.string.attend_mode_remote, R.string.attend_mode_remote_on,

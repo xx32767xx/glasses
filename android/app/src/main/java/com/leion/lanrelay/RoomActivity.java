@@ -272,6 +272,11 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // 表现就是顶部一直是「#------」占位、角色永远显示「参与者」。
         loadRoomHeader();
 
+        // 5.07：顶部那一行「#邀请码 复制邀请 我说中文 发起者」里的**语言标签原来永远是中文** ——
+        // 布局里写死的缺省值（`@string/rooms_speak_zh`），而 `modeTag` 拿到之后从没被赋过值。
+        // 于是选葡语、选英语，那一格都一直显示「我说中文」（用户实测报的，是个老 bug）。
+        updateModeTag();
+
         micUploadButton = findViewById(R.id.roomUpload);
         // 4.76 的实时传声播放器；4.97 起**没有**手动开关（那颗胶囊已从底部删掉）——
         // 倾听全自动：进房间就听、自己说话时暂停防回声、说完恢复、重连重新订阅（见 applyListenState）。
@@ -1150,6 +1155,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         syncedSpeakLang = want;
         hearLang = want;
         if (mic != null) mic.setLanguage(want);
+        // 5.07：顶部那格「我说…」跟着换（它以前永远显示中文）
+        updateModeTag();
         if (!changed || roomCode.isEmpty()) return;
         hintLine.setText(getString(R.string.st_lang_now, langLabelOf(want)));
         new Thread(() -> {
@@ -1165,6 +1172,27 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         if ("pt-BR".equals(lang)) return getString(R.string.rooms_speak_pt);
         if ("en-US".equals(lang)) return getString(R.string.rooms_speak_en);
         return getString(R.string.rooms_speak_zh);
+    }
+
+    /**
+     * 顶部那一格「我说…」到底是什么（5.07）。
+     *
+     * <p>它原来只是布局里的缺省文案（中文），Java 侧拿到控件后**从没赋过值** ——
+     * 选葡语、选英语都照旧显示「我说中文」。这类"静态文案冒充状态"的 bug 很难从日志发现，
+     * 只有盯着界面看才会觉得不对（用户就是这么发现的）。
+     *
+     * <p>现在按**实际的两个选择**渲染：参会语言（我在会里说/读哪种）· 参会方式（面对面/远程）。
+     * 参会方式在 5.04 才收集，所以老数据可能没有 —— 那就只显示语言，不硬编一个方式。
+     */
+    private void updateModeTag() {
+        if (modeTag == null) return;
+        SharedPreferences prefs = getSharedPreferences("leion", MODE_PRIVATE);
+        String lang = prefs.getString("speakLang", "");
+        String mode = prefs.getString("attendMode", "");
+        String langText = langLabelOf(lang == null ? "" : lang);
+        String modeText = "remote".equals(mode) ? getString(R.string.attend_mode_remote)
+                : ("onsite".equals(mode) ? getString(R.string.attend_mode_onsite) : "");
+        modeTag.setText(modeText.isEmpty() ? langText : langText + " · " + modeText);
     }
 
     /** 停止上传并刷新按钮；`hint` 为空则保留当前提示。 */
