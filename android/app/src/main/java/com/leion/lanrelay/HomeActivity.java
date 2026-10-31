@@ -635,14 +635,15 @@ public class HomeActivity extends android.app.Activity {
     }
 
     /**
-     * 进房间列表，并告诉它"用户是想建还是想加入"。
+     * 首页两个入口各进**各自那一页**（5.04）。
      *
-     * <p>房间列表一页里有两件事（建房 / 加入）。首页既然给了两个入口，进来之后就该直接
-     * 落在对应那一半上（聚焦到输入框），而不是让人再找一遍。
+     * <p>原来是两件事进同一个大厅页、靠"聚焦到哪一半"来区分 —— 用户当场指出
+     * "无论我点加入会议还是创建会议 弹出的内容都是一样的"。字段本来就不一样
+     * （创建要主题+术语库，加入要邀请码），所以现在分成两页：
+     * 创建 → {@link CreateRoomActivity}，加入 → {@link JoinRoomActivity}。
      */
     private void openRooms(String focus) {
-        Intent intent = new Intent(this, RoomsActivity.class);
-        intent.putExtra(RoomsActivity.EXTRA_FOCUS, focus);
-        startActivity(intent);
+        Class<?> target = "join".equals(focus) ? JoinRoomActivity.class : CreateRoomActivity.class;
+        startActivity(new Intent(this, target));
     }
 }

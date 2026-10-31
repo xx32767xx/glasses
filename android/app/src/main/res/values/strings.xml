@@ -346,6 +346,37 @@
     <string name="st_register_failed">注册失败：%1$s</string>
     <string name="st_login_failed">登录失败：%1$s</string>
     <string name="common_back">返回</string>
+
+    <!--
+      5.04：创建 / 加入**各一页**（用户指出原来两件事弹的是同一张页面）。
+      创建页必填：会议主题 + 我的参会方式 + 我的参会语言；术语库是点开勾选的选填项。
+      加入页必填：邀请码 + 我的参会方式 + 我的参会语言。
+    -->
+    <string name="create_room_title">创建会议</string>
+    <string name="create_room_intro">填好主题、参会方式和参会语言就能开会；术语库可以不选。</string>
+    <string name="create_topic_label">会议主题</string>
+    <string name="create_topic_hint">例如：和圣保罗团队对齐交付</string>
+    <string name="create_room_submit">创建会议</string>
+    <string name="create_need_topic">先填会议主题</string>
+    <string name="create_libs_label">术语库</string>
+    <string name="create_libs_hint">点这一行挑这一场要用的库（可多选）；不选就不注入术语</string>
+    <string name="create_libs_none">未选择</string>
+    <string name="create_libs_count">已选 %1$d 个库</string>
+    <string name="create_libs_empty">电脑上还没有术语库</string>
+    <string name="create_libs_read_failed">读不到术语库：%1$s（不影响开会）</string>
+    <string name="join_room_title">加入会议</string>
+    <string name="join_room_intro">输入发起人给你的 6 位邀请码，再选你的参会方式和语言。</string>
+    <string name="join_code_label">邀请码</string>
+    <string name="join_code_hint">6 位数字</string>
+    <string name="join_room_submit">加入会议</string>
+    <string name="join_need_all">邀请码、参会方式、参会语言都要选</string>
+    <string name="attend_mode_label">我的参会方式</string>
+    <string name="attend_mode_hint">面对面：和对方在同一间屋子里（不外放声音）；远程：各自在不同地方。</string>
+    <string name="attend_mode_onsite">面对面</string>
+    <string name="attend_mode_onsite_on">面对面 ✓</string>
+    <string name="attend_mode_remote">远程</string>
+    <string name="attend_mode_remote_on">远程 ✓</string>
+    <string name="attend_onsite_no_speaker">面对面时不外放声音（用眼镜或耳机收音）—— 设备那一层还没接上，先记下这个选择</string>
     <string name="common_close">关闭</string>
     <string name="common_cancel">取消</string>
     <string name="ui_lang_title">界面语言</string>

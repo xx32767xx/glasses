@@ -867,6 +867,18 @@ public class LanClient {
      */
     public JSONObject orgCreateRoom(String name, String lang, String targetLang)
             throws IOException, org.json.JSONException {
+        return orgCreateRoom(name, lang, targetLang, null);
+    }
+
+    /**
+     * 建房（5.04）：主题 + 参会语言 + （可选）目标语言 + **参会方式**。
+     *
+     * <p>`mode` 是 `onsite`（面对面）/ `remote`（远程），现在只做"记下来"：
+     * 面对面不允许外放声音属于**设备连接**那一层，还没做（见 docs/21 §5.04）。
+     * 不传 = 没选过（老客户端），服务端存 NULL，不做默认猜测。
+     */
+    public JSONObject orgCreateRoom(String name, String lang, String targetLang, String mode)
+            throws IOException, org.json.JSONException {
         JSONObject body = new JSONObject();
         body.put("name", name);
         if (lang != null && !lang.isEmpty()) {
@@ -874,6 +886,9 @@ public class LanClient {
         }
         if (targetLang != null && !targetLang.isEmpty()) {
             body.put("targetLang", targetLang);
+        }
+        if (mode != null && !mode.isEmpty()) {
+            body.put("mode", mode);
         }
         return unwrap(requestWithCode("/org/rooms", "POST", body, 8000));
     }
@@ -885,10 +900,25 @@ public class LanClient {
 
     /** 凭码加入并声明"我在这会里说什么语言"。 */
     public JSONObject orgJoinRoom(String code, String lang) throws IOException, org.json.JSONException {
+        return orgJoinRoom(code, lang, null);
+    }
+
+    /**
+     * 凭码加入 + 参会语言 + **参会方式**（5.04，`onsite` / `remote`）。
+     *
+     * <p>参会方式不是装饰：面对面意味着两个人可能在**同一个房间**里说话，
+     * 那时候不能外放声音（会啸叫），要走眼镜/耳机收音 —— 那属于设备连接那一层，
+     * 本轮只把选择记下来（`room_members.mode`），等设备那条线接上再让它生效。
+     */
+    public JSONObject orgJoinRoom(String code, String lang, String mode)
+            throws IOException, org.json.JSONException {
         JSONObject body = new JSONObject();
         body.put("code", code);
         if (lang != null && !lang.isEmpty()) {
             body.put("lang", lang);
+        }
+        if (mode != null && !mode.isEmpty()) {
+            body.put("mode", mode);
         }
         return unwrap(requestWithCode("/org/rooms/join", "POST", body, 8000));
     }

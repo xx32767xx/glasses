@@ -1,0 +1,322 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<!--
+  page_create_room.xml 鈥斺€?銆屽垱寤哄悓浼犱細璁€嶇殑涓撶敤琛ㄥ崟锛?.04锛岀敤鎴锋寚瀹氾級銆?
+  涓轰粈涔堝崟鐙竴椤碉細鍘熸潵鐐广€屽垱寤恒€嶅拰銆屽姞鍏ャ€嶈繘鐨勬槸**鍚屼竴涓ぇ鍘?*锛屼袱杈瑰唴瀹逛竴鏍凤紝
+  鐢ㄦ埛褰撳満鎸囧嚭"寮瑰嚭鐨勫唴瀹归兘鏄竴鏍风殑"銆傜幇鍦ㄤ袱浠朵簨鍚勪竴椤碉紝瀛楁涔熷悇鏄悇鐨勶細
+
+      鍒涘缓锛氫細璁富棰?/ 鎴戠殑鍙備細鏂瑰紡 / 鎴戠殑鍙備細璇█ / 鏈搴擄紙鐐瑰紑鍕鹃€夛級
+      鍔犲叆锛氶個璇风爜   / 鎴戠殑鍙備細鏂瑰紡 / 鎴戠殑鍙備細璇█
+
+  鈿狅笍 鍓嶄笁涓槸**蹇呭～**锛氭病濉畬銆屽垱寤轰細璁€嶆寜閽槸鐏扮殑锛圝ava 閲?setEnabled 鎺э級銆?     鏈搴撴槸閫夊～ 鈥斺€?鍋氭硶鏄偣閭ｄ竴琛屽脊鍑轰竴涓彲鍕鹃€夌殑鍒楄〃锛堜笉鏄鐢ㄦ埛璁板簱 id锛夈€?
+  鈿狅笍 涓嶅啓鑹插€间笌瑁?dp/sp锛屽叏閮ㄨ蛋 @color / @dimen 璇箟 token銆?-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/page"
+    android:orientation="vertical">
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="@dimen/space_page">
+
+            <!-- 鏍囬 + 杩斿洖 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/create_room_title"
+                    android:textColor="@color/ink"
+                    android:textSize="@dimen/text_page_title"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/createBack"
+                    android:layout_width="wrap_content"
+                    android:layout_height="@dimen/touch_min"
+                    android:background="@drawable/tap_pill"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:paddingStart="@dimen/space_gap"
+                    android:paddingEnd="@dimen/space_gap"
+                    android:text="@string/common_back"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_body" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap_tiny"
+                android:text="@string/create_room_intro"
+                android:textColor="@color/ink_soft"
+                android:textSize="@dimen/text_secondary" />
+
+            <!-- 鈶?浼氳涓婚 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_card"
+                android:background="@drawable/bg_card"
+                android:orientation="vertical"
+                android:padding="@dimen/space_card">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/create_topic_label"
+                    android:textColor="@color/ink"
+                    android:textSize="@dimen/text_title"
+                    android:textStyle="bold" />
+
+                <EditText
+                    android:id="@+id/createTopic"
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/height_field"
+                    android:layout_marginTop="@dimen/space_gap"
+                    android:background="@drawable/bg_input"
+                    android:hint="@string/create_topic_hint"
+                    android:inputType="text"
+                    android:maxLength="40"
+                    android:paddingStart="@dimen/space_gap"
+                    android:paddingEnd="@dimen/space_gap"
+                    android:singleLine="true"
+                    android:textColor="@color/ink"
+                    android:textColorHint="@color/ink_faint"
+                    android:textSize="@dimen/text_body" />
+            </LinearLayout>
+
+            <!-- 鈶?鎴戠殑鍙備細鏂瑰紡锛堝繀閫夛級 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap"
+                android:background="@drawable/bg_card"
+                android:orientation="vertical"
+                android:padding="@dimen/space_card">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/attend_mode_label"
+                    android:textColor="@color/ink"
+                    android:textSize="@dimen/text_title"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/createModeHint"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap_tiny"
+                    android:text="@string/attend_mode_hint"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_secondary" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/createModeOnsite"
+                        android:layout_width="0dp"
+                        android:layout_height="@dimen/touch_min"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_pill"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:text="@string/attend_mode_onsite"
+                        android:textColor="@color/ink"
+                        android:textSize="@dimen/text_body" />
+
+                    <TextView
+                        android:id="@+id/createModeRemote"
+                        android:layout_width="0dp"
+                        android:layout_height="@dimen/touch_min"
+                        android:layout_marginStart="@dimen/space_gap_small"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_pill"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:text="@string/attend_mode_remote"
+                        android:textColor="@color/ink"
+                        android:textSize="@dimen/text_body" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- 鈶?鎴戠殑鍙備細璇█锛堝繀閫夛級 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap"
+                android:background="@drawable/bg_card"
+                android:orientation="vertical"
+                android:padding="@dimen/space_card">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/rooms_my_lang_title"
+                    android:textColor="@color/ink"
+                    android:textSize="@dimen/text_title"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap_tiny"
+                    android:text="@string/rooms_my_lang_hint"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_secondary" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/createLangZh"
+                        android:layout_width="0dp"
+                        android:layout_height="@dimen/touch_min"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_pill"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:text="@string/rooms_speak_zh"
+                        android:textColor="@color/ink"
+                        android:textSize="@dimen/text_body" />
+
+                    <TextView
+                        android:id="@+id/createLangPt"
+                        android:layout_width="0dp"
+                        android:layout_height="@dimen/touch_min"
+                        android:layout_marginStart="@dimen/space_gap_small"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_pill"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:text="@string/rooms_speak_pt"
+                        android:textColor="@color/ink"
+                        android:textSize="@dimen/text_body" />
+
+                    <TextView
+                        android:id="@+id/createLangEn"
+                        android:layout_width="0dp"
+                        android:layout_height="@dimen/touch_min"
+                        android:layout_marginStart="@dimen/space_gap_small"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_pill"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:text="@string/rooms_speak_en"
+                        android:textColor="@color/ink"
+                        android:textSize="@dimen/text_body" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- 鈶?鏈搴擄紙閫夊～锛岀偣寮€鍕鹃€夛級 -->
+            <LinearLayout
+                android:id="@+id/createLibsRow"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap"
+                android:background="@drawable/bg_card_tap"
+                android:clickable="true"
+                android:focusable="true"
+                android:orientation="vertical"
+                android:padding="@dimen/space_card">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/create_libs_label"
+                        android:textColor="@color/ink"
+                        android:textSize="@dimen/text_title"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/createLibsValue"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/create_libs_none"
+                        android:textColor="@color/brand"
+                        android:textSize="@dimen/text_body" />
+
+                    <ImageView
+                        android:layout_width="@dimen/icon_size_nav"
+                        android:layout_height="@dimen/icon_size_nav"
+                        android:layout_marginStart="@dimen/space_gap_tiny"
+                        android:alpha="0.45"
+                        android:contentDescription="@string/create_libs_label"
+                        android:src="@drawable/ic_chevron" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/createLibsHint"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap_tiny"
+                    android:text="@string/create_libs_hint"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_secondary" />
+            </LinearLayout>
+
+            <!-- 鐘舵€?/ 閿欒锛氬彧鍦ㄨ繖閲屾樉绀猴紝涓嶇敤 Toast 椤舵帀鎸夐挳 -->
+            <TextView
+                android:id="@+id/createHint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap"
+                android:textColor="@color/ink_soft"
+                android:textSize="@dimen/text_caption" />
+        </LinearLayout>
+    </ScrollView>
+
+    <!-- 搴曢儴鍔ㄤ綔锛氬彧鏈夊墠涓変釜閮芥寚瀹氫箣鍚庢墠鍙偣 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/surface"
+        android:orientation="vertical"
+        android:padding="@dimen/space_gap">
+
+        <Button
+            android:id="@+id/createSubmit"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/height_button"
+            android:background="@drawable/tap_btn_primary"
+            android:enabled="false"
+            android:text="@string/create_room_submit"
+            android:textAllCaps="false"
+            android:textColor="@color/on_brand"
+            android:textSize="@dimen/text_button" />
+    </LinearLayout>
+</LinearLayout>

@@ -59,6 +59,32 @@
     <string name="st_register_failed">Falha no cadastro: %1$s</string>
     <string name="st_login_failed">Falha ao entrar: %1$s</string>
     <string name="common_back">Voltar</string>
+    <!-- 5.04: páginas separadas para criar / entrar; três campos obrigatórios em cada uma -->
+    <string name="create_room_title">Criar reunião</string>
+    <string name="create_room_intro">Preencha o tema, como você participa e o seu idioma; o glossário é opcional.</string>
+    <string name="create_topic_label">Tema da reunião</string>
+    <string name="create_topic_hint">ex.: Alinhamento de entregas com o time de São Paulo</string>
+    <string name="create_room_submit">Criar reunião</string>
+    <string name="create_need_topic">Preencha o tema da reunião</string>
+    <string name="create_libs_label">Glossário</string>
+    <string name="create_libs_hint">Toque para escolher os glossários desta reunião (vários); nenhum = sem dicas de terminologia</string>
+    <string name="create_libs_none">Nenhum</string>
+    <string name="create_libs_count">%1$d selecionados</string>
+    <string name="create_libs_empty">O servidor ainda não tem glossários</string>
+    <string name="create_libs_read_failed">Não foi possível carregar os glossários: %1$s (a reunião funciona mesmo assim)</string>
+    <string name="join_room_title">Entrar na reunião</string>
+    <string name="join_room_intro">Digite o código de 6 dígitos do anfitrião e escolha como você participa e o seu idioma.</string>
+    <string name="join_code_label">Código de convite</string>
+    <string name="join_code_hint">6 dígitos</string>
+    <string name="join_room_submit">Entrar na reunião</string>
+    <string name="join_need_all">Código, forma de participação e idioma são obrigatórios</string>
+    <string name="attend_mode_label">Como eu participo</string>
+    <string name="attend_mode_hint">Presencial: na mesma sala que o outro lado (sem alto-falante); remoto: cada um em um lugar diferente.</string>
+    <string name="attend_mode_onsite">Presencial</string>
+    <string name="attend_mode_onsite_on">Presencial ✓</string>
+    <string name="attend_mode_remote">Remoto</string>
+    <string name="attend_mode_remote_on">Remoto ✓</string>
+    <string name="attend_onsite_no_speaker">Presencial significa sem alto-falante (óculos ou fone captam o som) — a conexão de dispositivos ainda não está ligada, então a escolha só fica registrada</string>
     <string name="common_close">Fechar</string>
     <string name="common_cancel">Cancelar</string>
     <string name="ui_lang_title">Idioma da interface</string>

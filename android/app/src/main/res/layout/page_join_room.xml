@@ -1,0 +1,260 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<!--
+  page_join_room.xml 鈥斺€?銆屽姞鍏ュ悓浼犱細璁€嶇殑涓撶敤琛ㄥ崟锛?.04锛岀敤鎴锋寚瀹氾級銆?
+  涓庡垱寤洪〉**鍚屼竴濂楄瑙変笌瀛楁椋庢牸**锛屽彧鏄涓€椤逛粠"浼氳涓婚"鎹㈡垚"閭€璇风爜"锛?
+      閭€璇风爜 / 鎴戠殑鍙備細鏂瑰紡 / 鎴戠殑鍙備細璇█
+
+  鈿狅笍 閭€璇风爜鏄?6 浣嶆暟瀛楋細inputType=number + maxLength 6锛堜笉鏄鐢ㄦ埛杈撴埧闂?id锛夈€?  鈿狅笍 涓夐」閮芥寚瀹氫箣鍚庛€屽姞鍏ヤ細璁€嶆墠鍙偣銆?  鈿狅笍 涓嶅啓鑹插€间笌瑁?dp/sp锛屽叏閮ㄨ蛋 @color / @dimen 璇箟 token銆?-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/page"
+    android:orientation="vertical">
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="@dimen/space_page">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/join_room_title"
+                    android:textColor="@color/ink"
+                    android:textSize="@dimen/text_page_title"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/joinBack"
+                    android:layout_width="wrap_content"
+                    android:layout_height="@dimen/touch_min"
+                    android:background="@drawable/tap_pill"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:paddingStart="@dimen/space_gap"
+                    android:paddingEnd="@dimen/space_gap"
+                    android:text="@string/common_back"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_body" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap_tiny"
+                android:text="@string/join_room_intro"
+                android:textColor="@color/ink_soft"
+                android:textSize="@dimen/text_secondary" />
+
+            <!-- 鈶?閭€璇风爜 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_card"
+                android:background="@drawable/bg_card"
+                android:orientation="vertical"
+                android:padding="@dimen/space_card">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/join_code_label"
+                    android:textColor="@color/ink"
+                    android:textSize="@dimen/text_title"
+                    android:textStyle="bold" />
+
+                <EditText
+                    android:id="@+id/joinCode"
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/height_field"
+                    android:layout_marginTop="@dimen/space_gap"
+                    android:background="@drawable/bg_input"
+                    android:hint="@string/join_code_hint"
+                    android:inputType="number"
+                    android:maxLength="6"
+                    android:paddingStart="@dimen/space_gap"
+                    android:paddingEnd="@dimen/space_gap"
+                    android:singleLine="true"
+                    android:textColor="@color/ink"
+                    android:textColorHint="@color/ink_faint"
+                    android:textSize="@dimen/text_body" />
+            </LinearLayout>
+
+            <!-- 鈶?鎴戠殑鍙備細鏂瑰紡锛堝繀閫夛級 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap"
+                android:background="@drawable/bg_card"
+                android:orientation="vertical"
+                android:padding="@dimen/space_card">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/attend_mode_label"
+                    android:textColor="@color/ink"
+                    android:textSize="@dimen/text_title"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap_tiny"
+                    android:text="@string/attend_mode_hint"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_secondary" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/joinModeOnsite"
+                        android:layout_width="0dp"
+                        android:layout_height="@dimen/touch_min"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_pill"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:text="@string/attend_mode_onsite"
+                        android:textColor="@color/ink"
+                        android:textSize="@dimen/text_body" />
+
+                    <TextView
+                        android:id="@+id/joinModeRemote"
+                        android:layout_width="0dp"
+                        android:layout_height="@dimen/touch_min"
+                        android:layout_marginStart="@dimen/space_gap_small"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_pill"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:text="@string/attend_mode_remote"
+                        android:textColor="@color/ink"
+                        android:textSize="@dimen/text_body" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- 鈶?鎴戠殑鍙備細璇█锛堝繀閫夛級 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap"
+                android:background="@drawable/bg_card"
+                android:orientation="vertical"
+                android:padding="@dimen/space_card">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/rooms_my_lang_title"
+                    android:textColor="@color/ink"
+                    android:textSize="@dimen/text_title"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap_tiny"
+                    android:text="@string/rooms_my_lang_hint"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_secondary" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/joinLangZh"
+                        android:layout_width="0dp"
+                        android:layout_height="@dimen/touch_min"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_pill"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:text="@string/rooms_speak_zh"
+                        android:textColor="@color/ink"
+                        android:textSize="@dimen/text_body" />
+
+                    <TextView
+                        android:id="@+id/joinLangPt"
+                        android:layout_width="0dp"
+                        android:layout_height="@dimen/touch_min"
+                        android:layout_marginStart="@dimen/space_gap_small"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_pill"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:text="@string/rooms_speak_pt"
+                        android:textColor="@color/ink"
+                        android:textSize="@dimen/text_body" />
+
+                    <TextView
+                        android:id="@+id/joinLangEn"
+                        android:layout_width="0dp"
+                        android:layout_height="@dimen/touch_min"
+                        android:layout_marginStart="@dimen/space_gap_small"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_pill"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:text="@string/rooms_speak_en"
+                        android:textColor="@color/ink"
+                        android:textSize="@dimen/text_body" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/joinHint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap"
+                android:textColor="@color/ink_soft"
+                android:textSize="@dimen/text_caption" />
+        </LinearLayout>
+    </ScrollView>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@color/surface"
+        android:orientation="vertical"
+        android:padding="@dimen/space_gap">
+
+        <Button
+            android:id="@+id/joinSubmit"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/height_button"
+            android:background="@drawable/tap_btn_primary"
+            android:enabled="false"
+            android:text="@string/join_room_submit"
+            android:textAllCaps="false"
+            android:textColor="@color/on_brand"
+            android:textSize="@dimen/text_button" />
+    </LinearLayout>
+</LinearLayout>

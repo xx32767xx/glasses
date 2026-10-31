@@ -52,7 +52,7 @@ import java.util.Locale;
  * /frame 长轮询、字幕原文+译文成对显示、眼镜投屏与折行翻页，全部在这一个文件里跑通。
  * 另一个同学要做翻译官 App 时，对照它跑一遍比读文档快（见 docs/23-集成契约.md §11）。
  *
- * <p>会议室那条线是 `HomeActivity` → `RoomsActivity` → `RoomActivity`，
+ * <p>会议室那条线是 `HomeActivity` → `CreateRoomActivity` / `JoinRoomActivity` → `RoomActivity`，
  * 两边共用 `LanClient` / `MicUploader` / `Records` / `GlassesSdk` 这些核心类。
  *
  * <p>新界面里的「旧版界面」入口**默认隐藏**（page_home.xml 的 homeLegacy），

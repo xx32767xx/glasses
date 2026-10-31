@@ -418,16 +418,17 @@ export async function handleOrg(input) {
     if (targetLang !== '' && !['zh-CN', 'pt-BR', 'en-US'].includes(targetLang)) {
       return bad(400, `targetLang 只能是 zh-CN / pt-BR / en-US 或省略，收到 ${JSON.stringify(targetLang)}`)
     }
-    const created = createRoom(root, { name, host: user, targetLang, now })
+      const created = createRoom(root, { name, host: user, targetLang, now })
       if (created.ok !== true) return bad(400, created.error)
-      joinRoom(root, { room: created.room, username: user, lang: body.lang, now })
+      // 5.04：建房者的「参会方式」也一起记下（面对面 / 远程）；不合法就当没说
+      joinRoom(root, { room: created.room, username: user, lang: body.lang, mode: body.mode, now })
       return { status: 200, json: { ok: true, room: created.room } }
     }
     return bad(405, '只支持 POST')
   }
 
   if (method === 'POST' && segments[1] === 'rooms' && segments[2] === 'join' && segments.length === 3) {
-    const joined = joinRoom(root, { code: body.code, username: user, lang: body.lang, now })
+    const joined = joinRoom(root, { code: body.code, username: user, lang: body.lang, mode: body.mode, now })
     if (joined.ok !== true) return bad(400, joined.error)
     return { status: 200, json: { ok: true, room: joined.room, members: joined.members } }
   }

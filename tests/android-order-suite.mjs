@@ -26,7 +26,7 @@
  * 但它精确覆盖了**最廉价、最常见、也最丢脸**的那一类：顺序写错。
  */
 
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { ROOT } from '../lib/paths.mjs'
 
@@ -421,10 +421,87 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('房间页不再能改本场术语库', !roomJava.includes('orgSetRoomLibraries'),
       '术语在进房那一刻就冻结了（docs/21：建房时选库 → 快照）')
 
-    // 反向：不能一边删按钮、一边把唯一的选库入口也弄丢 —— 建房流程里必须还在
-    const roomsJava = readFileSync(join(javaDir, 'RoomsActivity.java'), 'utf-8')
-    check('建房那一步仍然提供选库', roomsJava.includes('showLibraryPicker') && roomsJava.includes('orgSetRoomLibraries'),
+    // 反向：不能一边删按钮、一边把唯一的选库入口也弄丢 —— 建房页里必须还在（5.04 起在建房页）
+    const createJava = readFileSync(join(javaDir, 'CreateRoomActivity.java'), 'utf-8')
+    check('建房那一步仍然提供选库', createJava.includes('pickLibraries') && createJava.includes('orgSetRoomLibraries'),
       '否则用户就没有任何地方能选库了')
+  })
+
+  await it('5.04：创建 / 加入各一页，字段不同，前三个不齐不能提交', () => {
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const createXml = readFileSync(join(resDir, 'layout', 'page_create_room.xml'), 'utf-8')
+    const joinXml = readFileSync(join(resDir, 'layout', 'page_join_room.xml'), 'utf-8')
+    const createJava = readFileSync(join(javaDir, 'CreateRoomActivity.java'), 'utf-8')
+    const joinJava = readFileSync(join(javaDir, 'JoinRoomActivity.java'), 'utf-8')
+    const homeJava = readFileSync(join(javaDir, 'HomeActivity.java'), 'utf-8')
+
+    // ① 两页是两个不同的 Activity，首页各进各的（用户报的就是"两边内容一样"）
+    check('首页创建 → CreateRoomActivity、加入 → JoinRoomActivity',
+      /"join"\.equals\(focus\) \? JoinRoomActivity\.class : CreateRoomActivity\.class/.test(homeJava),
+      '又回到同一页就还是那个问题')
+    check('两页都在清单里注册', /\.CreateRoomActivity/.test(
+      readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'AndroidManifest.xml'), 'utf-8'))
+      && /\.JoinRoomActivity/.test(
+        readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'AndroidManifest.xml'), 'utf-8')))
+    check('旧的大厅页已退休（不再有 RoomsActivity / page_rooms.xml）',
+      existsSync(join(javaDir, 'RoomsActivity.java')) === false
+      && existsSync(join(resDir, 'layout', 'page_rooms.xml')) === false)
+
+    // ② 字段：创建 = 主题 + 方式 + 语言 + 术语库；加入 = 邀请码 + 方式 + 语言
+    check('创建页四块：主题 / 参会方式 / 参会语言 / 术语库',
+      /@\+id\/createTopic/.test(createXml) && /@\+id\/createModeOnsite/.test(createXml)
+      && /@\+id\/createLangZh/.test(createXml) && /@\+id\/createLibsRow/.test(createXml))
+    check('加入页三块：邀请码 / 参会方式 / 参会语言',
+      /@\+id\/joinCode/.test(joinXml) && /@\+id\/joinModeOnsite/.test(joinXml)
+      && /@\+id\/joinLangZh/.test(joinXml))
+    check('加入页没有"会议主题"、创建页没有"邀请码"',
+      !/@\+id\/joinTopic/.test(joinXml) && !/@\+id\/createCode/.test(createXml))
+    check('邀请码是 6 位数字输入', /inputType="number"/.test(joinXml) && /maxLength="6"/.test(joinXml))
+
+    // ③ 门禁：前三个不齐时按钮是禁用的（用户要求"只有前三个指定之后才能创建"）
+    check('创建按钮默认禁用', /@\+id\/createSubmit[\s\S]{0,400}android:enabled="false"/.test(createXml))
+    check('加入按钮默认禁用', /@\+id\/joinSubmit[\s\S]{0,400}android:enabled="false"/.test(joinXml))
+    check('创建页按"主题非空 + 语言已选 + 方式已选"开启按钮',
+      /boolean ready = topicInput[\s\S]{0,200}!speakLang\.isEmpty\(\) && !attendMode\.isEmpty\(\)/.test(createJava))
+    check('加入页按"邀请码 6 位 + 语言 + 方式"开启按钮',
+      /length\(\) >= 6[\s\S]{0,120}!attendMode\.isEmpty\(\)/.test(joinJava))
+    check('按钮禁用时看得出来（不是隐形不可点）',
+      /submitButton\.setAlpha\(ready \? 1f : 0\.45f\)/.test(createJava)
+      && /submitButton\.setAlpha\(ready \? 1f : 0\.45f\)/.test(joinJava))
+
+    // ④ 参会方式：面对面 / 远程，且只做选择（不外放这条要当场说清）
+    check('参会方式两种：面对面 / 远程',
+      /attend_mode_onsite/.test(createXml) && /attend_mode_remote/.test(createXml)
+      && /attend_mode_onsite/.test(joinXml) && /attend_mode_remote/.test(joinXml))
+    check('选了面对面会明说"不外放声音"',
+      /"onsite"\.equals\(attendMode\)[\s\S]{0,200}attend_onsite_no_speaker/.test(createJava))
+    check('参会方式随建房 / 加入请求发给服务端',
+      /body\.put\("mode", mode\)/.test(readFileSync(join(javaDir, 'LanClient.java'), 'utf-8'))
+      && /orgJoinRoom\(code, speakLang, attendMode\)/.test(joinJava))
+    check('参会方式不给默认值（猜错比多问一句糟）',
+      /setAttendMode\(""\)/.test(createJava) && /setAttendMode\(""\)/.test(joinJava))
+
+    // ⑤ 术语库：点一行弹勾选列表（不是让用户记库 id）
+    check('术语库是「点一行 → 勾选列表」', /createLibsRow[\s\S]{0,400}clickable="true"/.test(createXml)
+      && /setOnClickListener\(v -> pickLibraries\(\)\)/.test(createJava))
+    check('选完在行上显示已选个数', /create_libs_count/.test(createJava))
+    check('读不到库不影响开会（这一项是选填）', /create_libs_read_failed/.test(createJava))
+  })
+
+  await it('5.04：参会方式（面对面 / 远程）真的存在库里，且只接受两种取值', () => {
+    const db = readFileSync(join(ROOT, 'lib', 'db.mjs'), 'utf-8')
+    const rooms = readFileSync(join(ROOT, 'lib', 'rooms.mjs'), 'utf-8')
+    const api = readFileSync(join(ROOT, 'relay', 'org-api.mjs'), 'utf-8')
+    check('room_members 有 mode 列（旧库自动补列）',
+      /ALTER TABLE room_members ADD COLUMN mode TEXT/.test(db))
+    check('列表里也带着 mode（以后给"人员与设备"抽屉用）',
+      /MEMBER_MODES\.includes\(row\.mode\) \? row\.mode : null/.test(rooms))
+    check('只接受 onsite / remote，其它当没说（不猜）',
+      /MEMBER_MODES\.includes\(options\.mode\) \? options\.mode : null/.test(rooms))
+    check('建房与加入都把 mode 传到 joinRoom',
+      /joinRoom\(root, \{ room: created\.room, username: user, lang: body\.lang, mode: body\.mode, now \}\)/.test(api)
+      && /joinRoom\(root, \{ code: body\.code, username: user, lang: body\.lang, mode: body\.mode, now \}\)/.test(api))
   })
 
   await it('authWhoAmI 返回拆过包的正文（外壳会让"打开就判成没登录"，单会话下还顺带踢掉另一台）', () => {
@@ -616,22 +693,22 @@ export async function runAndroidOrderSuite({ it, check }) {
       '不复位 = 停过一次之后所有真错误都被吞掉')
   })
 
-  await it('建房后邀请码不会被选库框挡掉（4.41）', () => {
+  await it('建房后邀请码不会被选库框挡掉（4.41 → 5.04 选库搬进建房页，这条仍要成立）', () => {
     const src = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion',
-      'lanrelay', 'RoomsActivity.java'), 'utf-8')
+      'lanrelay', 'CreateRoomActivity.java'), 'utf-8')
 
-    // 现象：建房成功立刻弹术语库对话框，页面上的邀请码被整个盖住，用户来不及抄。
-    check('建房成功后先弹一条长 Toast 报邀请码（Toast 显示在对话框之上）',
+    // 现象（4.41）：建房成功立刻弹术语库对话框，页面上的邀请码被整个盖住，用户来不及抄。
+    // 5.04 把选库搬到**建房页**（点一行弹勾选列表），建房后不再弹，
+    // 但"建房成功当刻把邀请码说一次"这条要求仍然成立。
+    check('建房成功后先弹一条长 Toast 报邀请码',
       /Toast\.makeText\(this, getString\(R\.string\.toast_invite, code\), Toast\.LENGTH_LONG\)/.test(src),
-      '没有它，邀请码就被对话框盖住了')
-    check('邀请码被传进选库框', /chooseLibsAfterCreate\(id, room\.optString\("name", name\), code\)/.test(src))
-    check('选库框的标题里带着邀请码',
-      /codeLine \+ getString\(R\.string\.terms_dialog_title\)/.test(src), '标题要能直接看到码')
-    // 4.44：**不能**再给这个对话框加 setMessage —— AppCompat 在同时设置了 message 与
-    // multiChoiceItems 时会把列表挤掉，表现就是"框弹出来了但一个库都没有"（用户报过）。
-    check('选库框没有 setMessage（否则列表会被挤掉）',
-      /setTitle\(codeLine[\s\S]{0,200}?setMessage/.test(src) === false,
-      '标题带码即可，正文会挤掉多选列表')
+      '没有它，用户当场就没法把码发给别人')
+    check('选库是「点一行才弹」的勾选列表（不是建房后自动弹）',
+      /setMultiChoiceItems/.test(src) && /setOnClickListener\(v -> pickLibraries\(\)\)/.test(src))
+    // 4.44 的坑仍在：多选列表的对话框**不能**再给 setMessage —— AppCompat 会把列表挤掉
+    check('勾选列表没有 setMessage（否则列表会被挤掉）',
+      /setMultiChoiceItems[\s\S]{0,200}?setMessage/.test(src) === false,
+      '标题 + 列表即可，正文会挤掉多选项')
   })
 
   await it('被别处登录顶下线时要**当场提示**（4.41，用户报的"静默"）', () => {
@@ -639,7 +716,9 @@ export async function runAndroidOrderSuite({ it, check }) {
     const watch = readFileSync(join(javaDir, 'SessionWatch.java'), 'utf-8')
     const client = readFileSync(join(javaDir, 'LanClient.java'), 'utf-8')
     const home = readFileSync(join(javaDir, 'HomeActivity.java'), 'utf-8')
-    const rooms = readFileSync(join(javaDir, 'RoomsActivity.java'), 'utf-8')
+    const guard = readFileSync(join(javaDir, 'SessionGuard.java'), 'utf-8')
+    const createAct = readFileSync(join(javaDir, 'CreateRoomActivity.java'), 'utf-8')
+    const joinAct = readFileSync(join(javaDir, 'JoinRoomActivity.java'), 'utf-8')
     const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
 
     check('有会话监听类', /class SessionWatch/.test(watch))
@@ -654,7 +733,12 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('首页登录后开始监听', /private void startSessionWatch\(\)/.test(home) && /sessionWatch\.start\(\)/.test(home))
     check('首页被踢时清 token 并回登录页',
       /sessionWatch[\s\S]{0,600}remove\("accountToken"\)[\s\S]{0,300}showLogin\(\)/.test(home))
-    check('房间大厅也监听', /new SessionWatch\(client[\s\S]{0,500}sessionWatch\.start\(\)/.test(rooms))
+    // 5.04：创建页与加入页共用 SessionGuard（"同一件事只写一份"），不再各写一遍
+    check('创建页与加入页都用同一个守卫',
+      /new SessionGuard\(/.test(createAct) && /new SessionGuard\(/.test(joinAct) && /class SessionGuard/.test(guard))
+    check('守卫里两条路都走（推送 + 轮询）',
+      /new SessionWatch\(/.test(guard) && /new SessionSocket\(/.test(guard))
+    check('被踢只提示一次（轮询与推送可能同时发现）', /if \(fired\) return/.test(guard))
     check('房间内轮询发现 401 就提示并退出',
       /optInt\("httpStatus", 0\) == 401[\s\S]{0,200}showKicked\(/.test(room), '房间里也不能静默')
     check('showKicked 清掉本地 token 并结束页面',
@@ -706,30 +790,32 @@ export async function runAndroidOrderSuite({ it, check }) {
       '不能只靠 WS —— WS 断了人就留在空屋里')
   })
 
-  await it('被顶下线走推送：会话通道 + 轮询兜底（4.45）', () => {
+  await it('被顶下线走推送：会话通道 + 轮询兜底（4.45 → 5.04 收进 SessionGuard）', () => {
     const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
     const socket = readFileSync(join(javaDir, 'SessionSocket.java'), 'utf-8')
     const watch = readFileSync(join(javaDir, 'SessionWatch.java'), 'utf-8')
     const home = readFileSync(join(javaDir, 'HomeActivity.java'), 'utf-8')
-    const rooms = readFileSync(join(javaDir, 'RoomsActivity.java'), 'utf-8')
+    const guard = readFileSync(join(javaDir, 'SessionGuard.java'), 'utf-8')
 
     check('会话通道连的是 /ws?session=1', /\/ws\?session=1/.test(socket), '没有它就只能靠 10 秒轮询')
     check('认得 type=kicked', /"kicked"\.equals\(parsed\.optString\("type"/.test(socket))
     check('轮询间隔可调（推送活着时放慢）', /public void setIntervalMs\(long value\)/.test(watch))
     check('有"慢速间隔"常量（兜底不必跑那么勤）', /INTERVAL_SLOW_MS/.test(watch))
 
-    for (const [name, src] of [['首页', home], ['大厅', rooms]]) {
-      check(`${name}连了会话通道`, /new SessionSocket\([\s\S]{0,8000}sessionSocket\.start\(\)/.test(src), name)
-      check(`${name}收到 kicked 会清 token 并退出`, /onKicked\(String reason\)[\s\S]{0,2400}remove\("accountToken"\)/.test(src), name)
+    for (const [name, src] of [['首页', home], ['大厅守卫', guard]]) {
+      check(`${name}连了会话通道`, /new SessionSocket\([\s\S]{0,8000}\.start\(\)/.test(src), name)
+      check(`${name}收到 kicked 会清 token 并退出`,
+        /onKicked\(String reason\)[\s\S]{0,2400}remove\("accountToken"\)/.test(src), name)
       check(`${name}按推送是否在线调整轮询间隔`,
         /setIntervalMs\(online[\s\S]{0,120}INTERVAL_SLOW_MS/.test(src), name)
-      check(`${name}销毁时断开推送`, /onDestroy\(\)[\s\S]{0,800}sessionSocket\.stop\(\)/.test(src), name)
+      check(`${name}销毁时断开推送`, /(?:onDestroy|void stop)\(\)[\s\S]{0,800}\.stop\(\)/.test(src), name)
     }
   })
 
   await it('视觉体系：新页面只走 token，不写死色值与裸尺寸（4.47）', () => {
     const layoutDir = join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout')
-    const pages = ['page_home', 'page_rooms', 'page_room', 'page_settings_app', 'page_privacy']
+    const pages = ['page_home', 'page_room', 'page_settings_app', 'page_privacy',
+      'page_create_room', 'page_join_room']
 
     for (const name of pages) {
       const xml = readFileSync(join(layoutDir, `${name}.xml`), 'utf-8')
@@ -855,19 +941,23 @@ export async function runAndroidOrderSuite({ it, check }) {
     const enBlock = home.slice(home.indexOf('@+id/homeLangEn'), home.indexOf('@+id/homeLangPt'))
     check('界面语言里 English 可选', !/android:enabled="false"/.test(enBlock)
       && /android:clickable="true"/.test(enBlock))
-    const roomsXml = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout', 'page_rooms.xml'), 'utf-8')
+    const createXml = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout', 'page_create_room.xml'), 'utf-8')
+    const joinXml = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout', 'page_join_room.xml'), 'utf-8')
     // 5.00：中/英/葡三种都能当说话语言（服务端 LANGS 也加了 en-US）。
-    // 5.03：**不再要求选"译成哪种语言"** —— 用户质疑过"我不是说了根据用户的选择自动翻译"，
-    // 所以那一组胶囊整个删掉了，只留一行说明；译成什么由每位成员入会时选的语言决定。
-    check('说话语言三颗：中文 / 葡语 / 英语',
-      /roomsLangZh/.test(roomsXml) && /roomsLangPt/.test(roomsXml) && /roomsLangEn/.test(roomsXml))
-    check('建房页不再有「译成哪种语言」一组（自动按听众语言分发）',
-      !/roomsTarget/.test(roomsXml) && /rooms_auto_hint/.test(roomsXml))
-    const roomsJava = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay', 'RoomsActivity.java'), 'utf-8')
+    // 5.03：**不再要求选"译成哪种语言"**（那一组胶囊已删，只留一行说明）；
+    // 5.04：说话语言那一组搬到了创建页 / 加入页。
+    check('创建页有说话语言三颗：中文 / 葡语 / 英语',
+      /createLangZh/.test(createXml) && /createLangPt/.test(createXml) && /createLangEn/.test(createXml))
+    check('加入页也有说话语言三颗',
+      /joinLangZh/.test(joinXml) && /joinLangPt/.test(joinXml) && /joinLangEn/.test(joinXml))
+    check('两页都不再有「译成哪种语言」一组（自动按听众语言分发）',
+      !/roomsTarget/.test(createXml) && !/roomsTarget/.test(joinXml))
+    const createJava = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay', 'CreateRoomActivity.java'), 'utf-8')
     check('建房请求不传目标语言（交给服务端按听众语言决定）',
-      /orgCreateRoom\(name, speakLang\)/.test(roomsJava) && !/targetLang/.test(roomsJava))
-    check('说话语言写进 speakLang（建会议时）', /putString\("speakLang"/.test(
-      readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay', 'RoomsActivity.java'), 'utf-8')))
+      /orgCreateRoom\(topic, speakLang, "", attendMode\)/.test(createJava) && !/targetLang/.test(createJava))
+    check('说话语言写进 speakLang（建会议时）',
+      /putString\("speakLang"/.test(createJava) && /putString\("speakLang"/.test(
+        readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay', 'JoinRoomActivity.java'), 'utf-8')))
 
     // M4：不勾协议不许继续（注册/登录都要）
     check('协议勾选的门禁在 doLogin 最前面',
@@ -927,8 +1017,8 @@ export async function runAndroidOrderSuite({ it, check }) {
 
   await it('findViewById 的类型必须和布局里的控件一致（4.51 崩过：TextView 当 Button 取）', () => {
     // 这类错**编译能过**（findViewById 泛型擦成 View 再强转），一进页面就 ClassCastException。
-    // 4.47 把大厅的语言胶囊从 Button 改成 TextView，RoomsActivity 还在按 Button 取 —— 于是
-    // 点「会议房间」直接崩。这条检查把"id 存在但类型不对"也纳入门禁。
+    // 4.47 把语言胶囊从 Button 改成 TextView 而页面还按 Button 取 —— 点进去直接崩。
+    // 这条检查把"id 存在但类型不对"也纳入门禁；5.04 起覆盖创建页与加入页。
     const layoutDir = join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout')
     const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
 
@@ -1184,9 +1274,12 @@ export async function runAndroidOrderSuite({ it, check }) {
     const missingZh = [...en].filter((k) => !zh.has(k))
     check('英文/巴葡用到的键在中文里都有', missingZh.length === 0, missingZh.join(','))
 
-    // ② 会议室五页真正引用到的键，三份都得有（漏一个就是运行时崩溃或空白）
-    const pages = ['page_home.xml', 'page_rooms.xml', 'page_room.xml', 'page_settings_app.xml', 'page_privacy.xml']
-    const acts = ['HomeActivity.java', 'RoomsActivity.java', 'RoomActivity.java', 'SettingsActivity.java', 'PrivacyActivity.java']
+    // ② 会议室各页真正引用到的键，三份都得有（漏一个就是运行时崩溃或空白）
+    // 5.04：旧大厅 `page_rooms.xml` 拆成创建页 + 加入页，两份都纳入
+    const pages = ['page_home.xml', 'page_create_room.xml', 'page_join_room.xml', 'page_room.xml',
+      'page_settings_app.xml', 'page_privacy.xml']
+    const acts = ['HomeActivity.java', 'CreateRoomActivity.java', 'JoinRoomActivity.java',
+      'RoomActivity.java', 'SettingsActivity.java', 'PrivacyActivity.java']
     const refs = new Set()
     for (const f of pages) {
       for (const m of readFileSync(join(resDir, 'layout', f), 'utf-8').matchAll(/@string\/([A-Za-z0-9_]+)/g)) refs.add(m[1])
@@ -1268,12 +1361,13 @@ export async function runAndroidOrderSuite({ it, check }) {
       && /rooms_my_lang_title/.test(setPage))
   })
 
-  await it('4.59：「我的语言」是界面语言，说话语言在创建会议时选', () => {
+  await it('4.59：「我的语言」是界面语言，参会语言在创建 / 加入会议时选', () => {
     const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
     const layoutDir = join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout')
     const home = readFileSync(join(javaDir, 'HomeActivity.java'), 'utf-8')
-    const rooms = readFileSync(join(javaDir, 'RoomsActivity.java'), 'utf-8')
-    const roomsXml = readFileSync(join(layoutDir, 'page_rooms.xml'), 'utf-8')
+    const create = readFileSync(join(javaDir, 'CreateRoomActivity.java'), 'utf-8')
+    const createXml = readFileSync(join(layoutDir, 'page_create_room.xml'), 'utf-8')
+    const joinXml = readFileSync(join(layoutDir, 'page_join_room.xml'), 'utf-8')
     const homeXml = readFileSync(join(layoutDir, 'page_home.xml'), 'utf-8')
 
     // 登录页：三颗胶囊 = 界面语言，点了就存 uiLang 并重建
@@ -1281,17 +1375,19 @@ export async function runAndroidOrderSuite({ it, check }) {
       /langZhButton\.setOnClickListener\(v -> applyUiLang\(UiLang\.ZH\)\)/.test(home)
       && /langEnButton\.setOnClickListener\(v -> applyUiLang\(UiLang\.EN\)\)/.test(home)
       && /langPtButton\.setOnClickListener\(v -> applyUiLang\(UiLang\.PT\)\)/.test(home))
-    check('登录页不再自己决定说话语言（那件事在建会议时选）',
+    check('登录页不再自己决定参会语言（那件事在建会议时选）',
       !/applySpeakLang/.test(home) && !/retrieveSpeakLang/.test(home) && !/"speakLang"/.test(home))
     check('登录页三颗胶囊的名字：中文 / English / Português',
       /@string\/lang_zh/.test(homeXml) && /@string\/lang_en/.test(homeXml)
       && /@string\/lang_pt_native/.test(homeXml))
     check('说明写清这只改界面文字', /@string\/home_my_lang_hint/.test(homeXml))
 
-    // 房间列表（建会议）：这里才是说话/翻译方向
-    check('建会议时选说话语言', /@\+id\/roomsLangZh/.test(roomsXml) && /@\+id\/roomsLangPt/.test(roomsXml)
-      && /putString\("speakLang"/.test(rooms))
-    check('房间列表说明写的是识别方向', /@string\/rooms_my_lang_hint/.test(roomsXml))
+    // 创建 / 加入会议：这里才是参会语言（同时是"我读哪种语言"）
+    check('创建会议时选语言', /@\+id\/createLangZh/.test(createXml) && /@\+id\/createLangPt/.test(createXml)
+      && /putString\("speakLang"/.test(create))
+    check('加入会议时也选语言', /@\+id\/joinLangZh/.test(joinXml) && /@\+id\/joinLangEn/.test(joinXml))
+    check('两页都用同一句"说/读是同一个语言"的说明',
+      /@string\/rooms_my_lang_hint/.test(createXml) && /@string\/rooms_my_lang_hint/.test(joinXml))
   })
 
   await it('4.56：登录页那行空状态栏不再挂着', () => {
@@ -1381,9 +1477,10 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('映射用到的键三份资源都有', missing.length === 0, missing.join(','))
 
     // ⑤ 显示服务端文本的地方都必须过 ServerText（不许再把 optString("error") 直接甩给界面）
-    const acts = ['HomeActivity.java', 'RoomsActivity.java', 'RoomActivity.java', 'SettingsActivity.java']
+    const acts = ['HomeActivity.java', 'CreateRoomActivity.java', 'JoinRoomActivity.java',
+      'RoomActivity.java', 'SettingsActivity.java']
     const raw = acts.filter((f) => /optString\("(error|hint)"/.test(readFileSync(join(javaDir, f), 'utf-8')))
-    check('四个页面不再直接显示服务端原文', raw.length === 0, raw.join(','))
+    check('这几个页面不再直接显示服务端原文', raw.length === 0, raw.join(','))
     check('接到服务端文本的地方真的调了 ServerText', acts.every((f) =>
       /ServerText\.(of|from)\(/.test(readFileSync(join(javaDir, f), 'utf-8'))))
   })

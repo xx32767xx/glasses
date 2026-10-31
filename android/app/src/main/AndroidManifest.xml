@@ -114,12 +114,19 @@
             android:screenOrientation="portrait"
             android:configChanges="orientation|screenSize|keyboardHidden">
         </activity>
-        <!-- P3.3 rooms lobby -->
+        <!-- 5.04：创建 / 加入**各一页**（原来两件事进同一个大厅页，内容一样 —— 用户指出过）。
+             两页都从首页进，不对外导出。 -->
         <activity
-            android:name=".RoomsActivity"
-            android:exported="true"
-            android:label="会议房间">
-        </activity>
+            android:name=".CreateRoomActivity"
+            android:exported="false"
+            android:label="创建会议"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
+
+        <activity
+            android:name=".JoinRoomActivity"
+            android:exported="false"
+            android:label="加入会议"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
         <!-- P3.2：房间内页（独立 Activity，稳定性优先） -->
         <activity
             android:name=".RoomActivity"
