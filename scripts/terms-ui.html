@@ -158,7 +158,10 @@
         </div>
         <div class="row">
           <input type="text" id="reqZh" placeholder="中文名（如 骁龙 8 Gen 3）" style="flex:1">
-          <input type="text" id="reqPt" placeholder="目标写法（删除时留空）" style="flex:1">
+          <input type="text" id="reqPt" placeholder="葡语写法（可留空）" style="flex:1">
+        </div>
+        <div class="row">
+          <input type="text" id="reqEn" placeholder="英语写法（可留空；中/葡/英至少要两种）" style="flex:1">
         </div>
         <div class="row">
           <input type="text" id="reqReason" placeholder="申请理由（必填，审批要看）" style="flex:1">
@@ -204,8 +207,10 @@ function renderState() {
     : STATE.libraries.map((lib) => {
         const checked = STATE.selected.has(lib.id) ? 'checked' : '';
         const entries = lib.entries.map((entry) =>
-          `${entry.zh} → ${entry.pt}` +
+          // 5.02：三语 —— 缺的那一栏写（未填），一眼能看出"这一侧没有等价关系"
+          `${entry.zh} → ${entry.pt || '（未填）'} → ${entry.en || '（未填）'}` +
           (entry.approved && entry.approved.length ? ` · 可接受[${entry.approved.join('|')}]` : '') +
+          (entry.enVariants && entry.enVariants.length ? ` · 英语变体[${entry.enVariants.join('|')}]` : '') +
           (entry.variants && entry.variants.length ? ` · 变体[${entry.variants.join('|')}]` : '')
         ).join('<br>');
         return `<div class="lib">
@@ -226,7 +231,7 @@ function renderState() {
     ? '<div class="empty">没有待审申请</div>'
     : pending.map((item) => `<div class="req">
         <div><b>${item.type === 'add' ? '新增' : item.type === 'update' ? '修改' : '删除'}</b>
-          「${item.entry ? item.entry.zh : item.targetKey}」${item.entry ? ' → ' + item.entry.pt : ''}</div>
+          「${item.entry ? item.entry.zh : item.targetKey}」${item.entry ? ' → ' + (item.entry.pt || '（未填）') + ' → ' + (item.entry.en || '（未填）') : ''}</div>
         <div class="t">${item.libraryId} · 申请人 ${item.applicant} · ${item.reason}</div>
         <div class="row">
           <button class="ok" onclick="decide('${item.id}','approve')">通过</button>
@@ -323,7 +328,7 @@ async function submitRequest() {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       type, libraryId: el('reqLib').value,
-      zh: el('reqZh').value, pt: el('reqPt').value,
+      zh: el('reqZh').value, pt: el('reqPt').value, en: el('reqEn').value,
       reason: el('reqReason').value, applicant: 'alice@example.com',
     }),
   });

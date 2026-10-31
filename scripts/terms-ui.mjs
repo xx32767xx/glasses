@@ -162,7 +162,10 @@ export async function startTermsUi(options = {}) {
         const result = await createRequest(root, {
           type: String(body.type ?? 'add'),
           libraryId: String(body.libraryId ?? ''),
-          entry: body.type === 'delete' ? null : { zh: String(body.zh ?? ''), pt: String(body.pt ?? '') },
+          // 5.02：三语条目 —— 中/葡/英任意两种即可（缺的那栏留空）
+          entry: body.type === 'delete' ? null : {
+            zh: String(body.zh ?? ''), pt: String(body.pt ?? ''), en: String(body.en ?? ''),
+          },
           targetKey: body.type === 'delete' ? String(body.zh ?? '') : null,
           reason: String(body.reason ?? ''),
           applicant: String(body.applicant ?? 'ui@local'),

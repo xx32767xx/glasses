@@ -235,7 +235,12 @@ async function main() {
         return 0
       }
       for (const item of pending) {
-        console.log(`${item.id}  ${item.type}  ${item.libraryId}  「${item.entry?.zh ?? item.targetKey}」→ ${item.entry?.pt ?? '（删除）'}  申请人 ${item.applicant}  理由：${item.reason}`)
+        // 5.02：三语 —— 缺的那一栏写「（未填）」，别让人以为漏了
+        const entry = item.entry
+        const sides = entry === null || entry === undefined
+          ? '（删除）'
+          : ' → ' + (entry.pt || '（未填）') + ' → ' + (entry.en || '（未填）')
+        console.log(`${item.id}  ${item.type}  ${item.libraryId}  「${entry?.zh ?? item.targetKey}」${sides}  申请人 ${item.applicant}  理由：${item.reason}`)
       }
       if (badLines > 0) console.log(`（另有 ${badLines} 行坏数据被跳过）`)
       return 0

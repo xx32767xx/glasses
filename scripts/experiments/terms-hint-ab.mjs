@@ -56,7 +56,9 @@ const digitsOf = text => (String(text).match(/\d+(?:[.,]\d+)*/g) ?? []).map(v =>
 function hintFor(item) {
   const wanted = (item.mentions ?? [])
     .filter((mention, index) => (item.allowMissing ?? []).includes(index) === false)
-    .map(mention => mention.zh + ' → ' + mention.pt)
+    // 5.02：三语条目 —— 目标写法取**填了的那一栏**（葡语优先，没有就用英语）
+    .map(mention => mention.zh + ' → ' + (mention.pt || mention.en || ''))
+    .filter(line => line.endsWith('→ ') === false)
   if (wanted.length === 0) return '本句原文没有需要保持写法的专名。'
   return '本句原文出现了这些名字，译文必须保留下列写法（原文没出现的名字不要添加）：' + wanted.join('；')
 }
