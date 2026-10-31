@@ -156,17 +156,20 @@ export function parseArgs(argv = []) {
     cols: 40,
     lines: 3,
     maxRooms: 0,                 // 0 = 不限（只在 --parallel-translate 下有意义）
-    // ── 翻译管线是串行还是并行 ─────────────────────────────────────────────
+    // ── 翻译管线怎么跑 ─────────────────────────────────────────────────────
     //
-    // 缺省**串行**：同一时刻只有一场会在跑「识别 + 翻译」。
-    // 为什么默认关掉并行（2026-10-30 用户拍板）：显存只够一份模型。
-    // 每场会一套识别 = 一份 whisper（large-v3 float16 约 5GB），两场就是 10GB，
-    // 显存不够会 OOM，而**现象是"识别挂了"**——比直接报"显存不足"难查得多。
-    // 所以先串行：谁在说话就翻译谁，另一场排到它安静下来再切过去。
+    // 三种模式，缺省 queue（2026-10-30 按显存现状定的）：
     //
-    // 注意"串行"只关掉了**翻译管线**的并行，其他并行一件没少：
-    //   音频按房间分流、每场会一个字幕总线文件、房间级 WS 帧、历史与转写全文 —— 全都照旧。
-    parallelTranslate: false,
+    //   queue    （缺省）生产者-消费者：每场一个**切句**进程（纯 CPU、不加载模型）
+    //            把话写进 queue/asr/；识别是**全局唯一**一个进程（模型只加载一次），
+    //            按到达顺序取段，把文字送进那一场自己的收件箱；大脑每场一个（不占显存）。
+    //            → 两场会都能持续出字幕；积压只报不丢。
+    //   serial   每场一对「识别 + 大脑」，但同一刻只有一场在跑（谁说话翻谁）。
+    //            代价：切换要重载模型（几秒），排队那场暂时没字幕。
+    //   parallel 每场一对「识别 + 大脑」同时跑 —— 显存够两份模型才用。
+    translateMode: 'queue',
+    queueDir: null,              // null = <data-dir>/queue/asr
+    depthReportSec: 30,          // 队列深度多久报一次（0 = 不报）
     switchIdleMs: 15000,         // 正在跑的那场安静这么久 → 让位给别的场
     minHoldMs: 8000,             // 至少待这么久才允许切走（防止两场会来回抢，一直重载模型）
     only: [],
@@ -184,7 +187,8 @@ export function parseArgs(argv = []) {
     dryRun: false,
   }
   const takesValue = new Set(['data-dir', 'buses', 'port', 'poll-ms', 'grace-ms', 'cols', 'lines',
-    'max-rooms', 'only', 'whisper-model', 'compute', 'switch-idle-ms', 'min-hold-ms'])
+    'max-rooms', 'only', 'whisper-model', 'compute', 'switch-idle-ms', 'min-hold-ms',
+    'queue-dir', 'depth-report-s', 'translate-mode'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -199,8 +203,9 @@ export function parseArgs(argv = []) {
     if (key === 'public') { options.public = true; continue }
     if (key === 'quiet-logs') { options.writeLogs = false; continue }
     if (key === 'dry-run') { options.dryRun = true; continue }
-    if (key === 'parallel-translate') { options.parallelTranslate = true; continue }
-    if (key === 'serial-translate') { options.parallelTranslate = false; continue }
+    if (key === 'parallel-translate') { options.translateMode = 'parallel'; continue }
+    if (key === 'serial-translate') { options.translateMode = 'serial'; continue }
+    if (key === 'queue-translate') { options.translateMode = 'queue'; continue }
     if (!takesValue.has(key)) throw new Error(`未知选项 --${key}（用 --help 看用法）`)
     const value = argv[index + 1]
     if (value === undefined || value.startsWith('--')) throw new Error(`--${key} 需要一个值`)
@@ -217,6 +222,13 @@ export function parseArgs(argv = []) {
     else if (key === 'grace-ms') options.graceMs = Number(value)
     else if (key === 'switch-idle-ms') options.switchIdleMs = Number(value)
     else if (key === 'min-hold-ms') options.minHoldMs = Number(value)
+    else if (key === 'queue-dir') options.queueDir = value
+    else if (key === 'depth-report-s') options.depthReportSec = Number(value)
+    else if (key === 'translate-mode') {
+      const allowed = ['queue', 'serial', 'parallel']
+      if (!allowed.includes(value)) throw new Error(`--translate-mode 只能是 ${allowed.join(' / ')}`)
+      options.translateMode = value
+    }
     else if (key === 'cols') options.cols = Number(value)
     else if (key === 'lines') options.lines = Number(value)
     else if (key === 'port') options.port = Number(value)
@@ -240,11 +252,14 @@ export function parseArgs(argv = []) {
       throw new Error(`--${key === 'switchIdleMs' ? 'switch-idle-ms' : 'min-hold-ms'} 必须是非负整数，收到 ${JSON.stringify(options[key])}`)
     }
   }
-  // 串行模式下"--max-rooms 大于 1"是自相矛盾的：串行的定义就是同一刻只有一场。
-  // 与其静默按 1 处理（人会以为自己开了并行），不如让他明确选一次。
-  if (options.parallelTranslate !== true && options.maxRooms > 1) {
-    throw new Error('串行模式（缺省）同一刻只跑一场，--max-rooms > 1 要配 --parallel-translate'
-      + '（显存够、想真并行时再加）')
+  if (!Number.isInteger(options.depthReportSec) || options.depthReportSec < 0) {
+    throw new Error(`--depth-report-s 必须是非负整数，收到 ${JSON.stringify(options.depthReportSec)}`)
+  }
+  // 只有 serial 模式才是"同一刻只跑一场"；queue/parallel 都能多场同时跑。
+  // 串行模式下"--max-rooms 大于 1"自相矛盾 —— 与其静默按 1 处理（人会以为开了并行），
+  // 不如让他明确选一次。
+  if (options.translateMode === 'serial' && options.maxRooms > 1) {
+    throw new Error('serial 模式同一刻只跑一场，--max-rooms > 1 要换队列模式（缺省）或 --parallel-translate')
   }
   if (options.only.some(id => isSafeRoomId(id) === false)) {
     throw new Error(`--only 里的房间 id 只能是字母数字下划线连字符：${options.only.filter(id => !isSafeRoomId(id)).join(', ')}`)
@@ -252,10 +267,29 @@ export function parseArgs(argv = []) {
   // ⚠️ 数据目录必须解析成**绝对路径**（同 start-all：相对路径一路传下去会让插件静默读不到）。
   options.dataDir = resolve(options.dataDir)
   options.busesDir = options.busesDir === null ? join(options.dataDir, 'buses') : resolve(options.busesDir)
+  options.queueDir = options.queueDir === null
+    ? join(options.dataDir, 'queue', 'asr')
+    : resolve(options.queueDir)
   // 模型没指定就按设备选：GPU large-v3 / CPU small（依据见 docs/04 §11）。
   options.whisperModel = options.whisperModel
     ?? (options.device === 'cuda' ? 'large-v3' : 'small')
   return options
+}
+
+/** 三种翻译模式的标题与人话说明（横幅、dry-run 共用，避免两处各写一份）。 */
+const MODE_TITLES = { queue: '队列串行识别', serial: '整场串行', parallel: '各场并行' }
+
+export function describeMode(options) {
+  switch (options.translateMode) {
+    case 'queue':
+      return '队列（每场一个切句进程 + 唯一的识别消费者；两场都能出字幕，积压只报不丢）'
+    case 'serial':
+      return `整场串行（同一刻只翻一场，${options.switchIdleMs}ms 没声才换；切换要重载模型）`
+    case 'parallel':
+      return '各场并行（每场一份模型；显存要够）'
+    default:
+      return String(options.translateMode ?? '')
+  }
 }
 
 /** 串行模式切换时给人的一句人话（`chooseActiveRoom` 的 reason → 中文）。 */
@@ -292,10 +326,20 @@ export function relayStep(options) {
 }
 
 /**
- * 一场会的管线命令（识别 + 大脑）。
+ * 一场会的管线命令（切句 + 大脑；队列模式下切句不加载模型）。
+ *
+ * <p>三种模式（`options.translateMode`）在这一层分开：
+ *
+ * <ul>
+ *   <li><b>queue</b>（缺省，生产者-消费者）：每场一个**切句**进程（纯 CPU，不加载模型）
+ *       把话写进 `queue/asr/`；识别由**全局唯一**的 `asr-worker` 消费 —— 见 {@link workerStep}。
+ *       大脑仍然每场一个（不占显存），所以翻译是并行的。</li>
+ *   <li><b>serial</b>：每场一对「识别 + 大脑」，但同一刻只有一场在跑（谁说话翻谁）。</li>
+ *   <li><b>parallel</b>：每场一对「识别 + 大脑」同时跑（显存要够两份模型）。</li>
+ * </ul>
  *
  * <p>两个文件都**只属于这一场**：收件箱按房间名分文件、字幕总线按房间名分文件。
- * 这就是"并行"的全部秘密 —— 没有共享的可写状态，就不存在互相覆盖。
+ * 这就是"归属不串"的全部依据 —— 没有共享的可写状态，就不存在互相覆盖。
  */
 export function pipelineSteps(options, room) {
   const roomId = typeof room === 'string' ? room : room.id
@@ -304,19 +348,34 @@ export function pipelineSteps(options, room) {
   const label = shortRoomId(roomId)
   const steps = []
   if (options.transcriber) {
-    steps.push({
-      key: `${roomId}-asr`, role: 'asr', tag: '识别', label: `识别·${label}`, color,
-      script: join(ROOT, 'bridge', 'asr-bridge.mjs'),
-      args: [
-        '--inbox', files.inbox,
-        '--whisper-follow', files.audio,
-        '--whisper-model', options.whisperModel,
-        '--whisper-device', options.device,
-        '--whisper-compute', options.computeType,
-        // 语种跟着每句话走：手机随音频上报 lang，识别进程写进收件箱每一行（4.37 起）
-        '--format', 'json',
-      ],
-    })
+    if (options.translateMode === 'queue') {
+      // 切句：**不加载模型**，所以两场会各开一个也不占显存。
+      steps.push({
+        key: `${roomId}-cut`, role: 'cut', tag: '切句', label: `切句·${label}`, color,
+        script: join(ROOT, 'bridge', 'whisper_stream.py'), python: true,
+        args: [
+          '--segment-dir', options.queueDir,
+          '--tag', roomId,
+          '--follow', files.audio,
+          // 语种跟着手机走：旁文件 <pcm>.lang 由 relay 写（切出的段自带语种）
+          '--follow-poll-ms', '80',
+        ],
+      })
+    } else {
+      steps.push({
+        key: `${roomId}-asr`, role: 'asr', tag: '识别', label: `识别·${label}`, color,
+        script: join(ROOT, 'bridge', 'asr-bridge.mjs'),
+        args: [
+          '--inbox', files.inbox,
+          '--whisper-follow', files.audio,
+          '--whisper-model', options.whisperModel,
+          '--whisper-device', options.device,
+          '--whisper-compute', options.computeType,
+          // 语种跟着每句话走：手机随音频上报 lang，识别进程写进收件箱每一行（4.37 起）
+          '--format', 'json',
+        ],
+      })
+    }
   }
   const brainArgs = ['--data-dir', options.dataDir, '--cols', String(options.cols),
     '--lines', String(options.lines), '--inbox', files.inbox, '--bus', files.busFile,
@@ -334,6 +393,30 @@ export function pipelineSteps(options, room) {
     script: join(ROOT, 'scripts', 'harness-side.mjs'), args: brainArgs,
   })
   return steps
+}
+
+/**
+ * 全局唯一的那一步：识别消费者（队列模式）或转发（永远都有）。
+ *
+ * <p>为什么 worker 是**全局**而不是每场一个：模型只加载一次 —— 这是整个拆分的目的。
+ * 它挂了与转发挂了同等严重（所有房间都没字幕了），所以失败策略也相同：全体停。
+ */
+export function workerStep(options) {
+  return {
+    key: 'asr-worker', role: 'worker', tag: '识别', label: '识别', color: '\x1b[35m',
+    script: join(ROOT, 'bridge', 'asr-worker.mjs'),
+    args: [
+      '--queue-dir', options.queueDir,
+      '--inbox-dir', options.dataDir,
+      '--model', options.whisperModel,
+      '--device', options.device,
+      '--compute-type', options.computeType,
+      '--queue-poll-ms', '60',
+      '--depth-report-s', String(options.depthReportSec),
+      // 收件箱由本脚本按房间清，worker 只管追加（见 prepareRoomFiles）
+      '--keep-inbox',
+    ],
+  }
 }
 
 /**
@@ -590,16 +673,23 @@ export async function main(argv = process.argv.slice(2)) {
 
   console.log('')
   console.log('─'.repeat(72))
-  console.log(`  亮亮眼镜 · 多场会（一条命令，${options.parallelTranslate ? '翻译管线并行' : '翻译管线串行'}）`)
+  console.log(`  亮亮眼镜 · 多场会（一条命令，${MODE_TITLES[options.translateMode]}）`)
   console.log('─'.repeat(72))
   console.log(`  ${relay.color}${relay.label}${RESET}  ${relay.script.replace(ROOT, '.').replace(/\\/g, '/')} ${relay.args.join(' ')}`)
+  if (options.transcriber && options.translateMode === 'queue') {
+    const worker = workerStep(options)
+    console.log(`  ${worker.color}${worker.label}${RESET}  ${worker.script.replace(ROOT, '.').replace(/\\/g, '/')} ${worker.args.join(' ')}`)
+  }
   console.log('')
-  if (options.parallelTranslate) {
-    console.log(`  识别/大脑  每场会各一套同时跑（房间是手机决定的，脚本每 ${options.pollMs}ms 看一眼）`)
+  if (options.translateMode === 'queue') {
+    console.log(`  切句/识别  每场一个**切句**进程（纯 CPU，不加载模型）→ 队列 → **一个**识别进程（模型只加载一次）`)
+    console.log(`  ${DIM}           房间是手机决定的：每 ${options.pollMs}ms 看一眼，有人进会就补一套、散了就收${RESET}`)
+    console.log(`  ${DIM}           两场会都能持续出字幕（各自慢一点）；积压只报队列深度，**不丢数据**${RESET}`)
+  } else if (options.translateMode === 'parallel') {
+    console.log(`  识别/大脑  每场会各一套同时跑（每场一份模型；显存要够）`)
   } else {
     console.log(`  识别/大脑  同一刻**只跑一场**（谁在说话就翻译谁；其余排队，${options.switchIdleMs}ms 没声才换）`)
-    console.log(`  ${DIM}           为什么串行：每场会一套识别 = 一份模型（large-v3 约 5GB）。显存不够会 OOM，`)
-    console.log(`             而现象是"识别挂了"，比报"显存不足"难查得多。显存够了加 --parallel-translate。${RESET}`)
+    console.log(`  ${DIM}           为什么串行：每场会一套识别 = 一份模型（large-v3 约 5GB）${RESET}`)
   }
   console.log(`  字幕总线   ${options.busesDir.replace(/\\/g, '/')}/  ← **目录**：每场会一个 <房间id>.json，互不覆盖`)
   console.log(`  收件箱     ${options.dataDir.replace(/\\/g, '/')}/asr-inbox-<房间id>.jsonl`)
@@ -607,13 +697,18 @@ export async function main(argv = process.argv.slice(2)) {
   console.log(`  翻译后端   ${options.offline ? '离线例句表（只认得剧本 14 句）' : '真实模型（deepseek-official）'}`)
   console.log(`  校对       ${options.proofread ? '开启（每句多一次模型调用）' : '关闭（加 --proofread 打开）'}`)
   if (options.transcriber) {
-    console.log(`  识别模型   ${options.whisperModel} / ${options.device} / ${options.computeType}`)
+    if (options.translateMode === 'queue') {
+      console.log(`  识别       一份模型（全局唯一）${options.whisperModel} / ${options.device} / ${options.computeType}`)
+      console.log(`  队列       ${options.queueDir.replace(/\\/g, '/')}/  ← 每场一个切句进程写这里（切句不加载模型）`)
+      console.log(`  队列深度   每 ${options.depthReportSec}s 报一次（**不丢数据**：积压只报不丢）`)
+    } else {
+      console.log(`  识别模型   ${options.whisperModel} / ${options.device} / ${options.computeType}`)
+    }
   } else {
     console.log('  识别模型   未启动（--no-transcriber：只跑转发 + 大脑，手输文字那条路）')
   }
-  console.log(`  并发上限   ${options.parallelTranslate
-    ? (options.maxRooms > 0 ? `${options.maxRooms} 场` : '不限（--max-rooms 可限流）')
-    : '1 场（串行；--parallel-translate 才并行）'}；房间没人后 ${options.graceMs}ms 才收管线`)
+  console.log(`  翻译模式   ${describeMode(options)}`
+    + `；房间没人后 ${options.graceMs}ms 才收管线`)
   console.log(`  术语来源   ${termSummary ?? '旧的全局表（<data-dir>/terms.json；手机上"开始同传"后会发布会议术语）'}`)
   console.log(`  数据目录   ${options.dataDir}`)
   for (const note of envNotes) console.log(`  ${note}`)
@@ -630,9 +725,9 @@ export async function main(argv = process.argv.slice(2)) {
     } else if (plannedRooms.length === 0) {
       console.log('  现在没有"开着且有人"的房间 —— 真的跑起来后会一直等，有人进会就补一套管线。')
     } else {
-      // 串行模式只会有**一场**真的跑起来；其余排在那儿等（谁说话就换谁）
-      const planned = options.parallelTranslate ? plannedRooms : plannedRooms.slice(0, 1)
-      const queued = options.parallelTranslate ? [] : plannedRooms.slice(1)
+      // serial 模式只会有**一场**真的跑起来；queue/parallel 都是每场一套
+      const planned = options.translateMode === 'serial' ? plannedRooms.slice(0, 1) : plannedRooms
+      const queued = options.translateMode === 'serial' ? plannedRooms.slice(1) : []
       console.log(`  现在会起 ${planned.length} 套管线`
         + `${queued.length > 0 ? `（另有 ${queued.length} 场排队，谁说话就换谁）` : ''}：`)
       for (const room of planned) {
@@ -647,7 +742,7 @@ export async function main(argv = process.argv.slice(2)) {
         console.log(`    ${DIM}… 排队中：${room.id}「${room.name || '未命名'}」邀请码 ${room.code}，${room.members} 人${RESET}`)
       }
     }
-    const hint = memoryHint(options, options.parallelTranslate ? Math.max(1, plannedRooms.length) : 1)
+    const hint = memoryHint(options, options.translateMode === 'parallel' ? Math.max(1, plannedRooms.length) : 1)
     if (hint) console.log(`\n  ${hint}`)
     console.log('')
     console.log('（--dry-run：只检查并显示将要做什么，没有真的启动任何进程）')
@@ -665,6 +760,7 @@ export async function main(argv = process.argv.slice(2)) {
   let absentSince = new Map()
   let stopping = false
   let timer = null
+  let worker = null                  // 队列模式下全局唯一的识别消费者
   let tickCount = 0
   let maxRoomsWarned = false
   let readErrorWarned = false
@@ -681,14 +777,18 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   function spawnStep(step, roomId) {
-    const child = spawn(process.execPath, [step.script, ...step.args], {
+    // 切句那一步是 **python**（whisper_stream.py --segment-dir），其余都是 node。
+    // 为什么切句是 python：分层与能量判定的实现只有一份（UtteranceSegmenter），
+    // 在 JS 里再写一份等于把"切句参数"变成两处真相。
+    const command = step.python === true ? (process.env.PYTHON ?? 'python') : process.execPath
+    const child = spawn(command, [step.script, ...step.args], {
       cwd: ROOT,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: spawnEnv,
     })
     child.step = step
     children.add(child)
-    const logStream = ensureLog(step.key, `node ${step.script} ${step.args.join(' ')}`)
+    const logStream = ensureLog(step.key, `${step.python === true ? 'python' : 'node'} ${step.script} ${step.args.join(' ')}`)
     const prefix = `${step.color}[${step.label}]${RESET} `
     // 每路流各自留半行：stdout 与 stderr 混用同一个缓冲会把两个流的一半拼在一起（乱码）。
     for (const [stream, sink] of [[child.stdout, process.stdout], [child.stderr, process.stderr]]) {
@@ -760,10 +860,11 @@ export async function main(argv = process.argv.slice(2)) {
 
   function onChildExit(step, roomId, code, signal) {
     if (roomId === null) {
-      // 转发进程是所有人的出口，它死了整条链就废了
+      // roomId === null = **全局**进程（转发、识别消费者）。它们没有"别的房间能顶上"：
+      // 转发死了手机连不上；识别消费者死了所有房间都没字幕。所以一律全体停。
       console.error('')
-      console.error(`[${step.label}] ⚠️ 转发进程退出了（code=${code ?? '-'} signal=${signal ?? '-'}）。`)
-      console.error('  没有它手机连不上，多场会一起停 —— 现在把其他进程也停掉。')
+      console.error(`[${step.label}] ⚠️ ${step.label}进程退出了（code=${code ?? '-'} signal=${signal ?? '-'}）。`)
+      console.error(`  ${step.label} 是所有房间共用的一个进程，它没了整条链就废了 —— 现在把其他进程也停掉。`)
       void shutdown(1)
       return
     }
@@ -820,8 +921,13 @@ export async function main(argv = process.argv.slice(2)) {
   process.on('SIGINT', () => { void shutdown(0) })
   process.on('SIGTERM', () => { void shutdown(0) })
 
-  // 转发先起（它是所有人的出口），然后才开始看房间表。
+  // 先起**全局**进程：转发（所有人的出口）+ 队列模式下的识别消费者（模型只加载一次）。
+  // 再开始看房间表 —— 房间是手机建的，只能边看边补。
   spawnStep(relay, null)
+  if (options.transcriber && options.translateMode === 'queue') {
+    mkdirSync(options.queueDir, { recursive: true })
+    worker = spawnStep(workerStep(options), null)
+  }
 
   async function tick() {
     timer = null
@@ -840,7 +946,7 @@ export async function main(argv = process.argv.slice(2)) {
 
     const desired = pickRooms(snapshot.rooms, options)
     // 上限被吃掉时**说一次**，别让人以为脚本漏了房间
-    if (options.parallelTranslate && options.maxRooms > 0 && !maxRoomsWarned) {
+    if (options.maxRooms > 0 && !maxRoomsWarned) {
       const uncapped = pickRooms(snapshot.rooms, { ...options, maxRooms: 0 })
       if (uncapped.length > desired.length) {
         maxRoomsWarned = true
@@ -858,7 +964,9 @@ export async function main(argv = process.argv.slice(2)) {
     absentSince = plan.absentSince
     for (const roomId of plan.stops) stopRoom(roomId, '房间已关闭或没人了')
 
-    if (options.parallelTranslate) {
+    if (options.translateMode !== 'serial') {
+      // queue / parallel：每场一套（queue 的"省显存"靠切句不加载模型 + 全局唯一识别，
+      // 而不是靠"只跑一场"）。失败重试也按房间各自算。
       for (const room of desired) {
         if (running.has(room.id)) continue
         const failure = failures.get(room.id)

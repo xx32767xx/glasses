@@ -316,6 +316,27 @@ def parse_args(argv=None):
                              "既不给幻听机会，也省一次识别。缺省 0.02 与人声门槛同一个数；"
                              "实测在 0.012~0.019 的敲击/呼吸段上，Whisper 会吐「谢谢大家」「搅拌均匀」这类假字幕。")
     parser.add_argument("--self-check", action="store_true", help="只检查依赖与模型能否加载")
+    # ── 生产者 / 消费者两步（显存只够一份模型时的架构）────────────────────────
+    #
+    # 背景：一场会一套"切句+识别"= 一份模型（large-v3 float16 约 5GB）。两场会同时开就要
+    # 两份 —— 显存不够。拆成两步之后：
+    #   ① `--segment-dir <dir> --tag <房间id>`：只切句（纯 CPU，**不加载模型**），
+    #      每切出一段就写一个 <时间>-<房间>.pcm + .json 到队列目录；
+    #   ② `--queue-dir <dir>`：只有一个进程，**模型只加载一次**，按到达顺序取队列最前面
+    #      的那一段转写，把文字连同房间号一起输出。
+    # 好处：两场会都能持续出字幕（各自慢一点），而不是一场彻底饿着；模型不再反复加载。
+    parser.add_argument("--segment-dir", default=None,
+                        help="生产者模式：只切句、不加载模型，把每段话写进这个队列目录")
+    parser.add_argument("--queue-dir", default=None,
+                        help="消费者模式：从这个队列目录按到达顺序取段转写（模型只加载一次）")
+    parser.add_argument("--tag", default=None,
+                        help="生产者模式：给切出的段打上房间 id（消费者靠它把文字送回正确的房间）")
+    parser.add_argument("--queue-poll-ms", type=int, default=60,
+                        help="消费者模式：多久看一次队列（缺省 60ms）")
+    parser.add_argument("--queue-depth-report-s", type=float, default=30.0,
+                        help="消费者模式：每隔多少秒报一次队列深度（缺省 30；0 = 不报）。"
+                             "**不丢数据**，只是把「落后多少」变成看得见的数字 —— "
+                             "要不要开始丢弃，等看到真实数字再定")
     args = parser.parse_args(argv)
     # 把 `--lang-candidates zh,pt` 解析成元组；空串 = 不限定（回到全域挑最大）。
     # 顺带做校验：写错了就**明确报错**，而不是静默变成一个空集（空集会让限定悄悄失效，
@@ -325,6 +346,204 @@ def parse_args(argv=None):
     except ValueError as error:
         parser.error(str(error))
     return args
+
+
+# ── 生产者 / 消费者（切句与识别分开，见 --segment-dir / --queue-dir 的说明）──────
+
+QUEUE_META_SUFFIX = ".json"
+
+
+def _write_segment(queue_dir, tag, samplerate, audio, np, language=None):
+    """把一段话落进队列：裸 PCM + 一份 meta。返回写出的文件名（供日志/测试）。"""
+    os.makedirs(queue_dir, exist_ok=True)
+    # 文件名按**时间戳**排：消费者直接按名字排序就是"到达顺序"（FIFO），
+    # 不需要额外的队列索引文件 —— 少一个能被写坏的东西。
+    stamp = f"{int(time.time() * 1000):013d}"
+    room = str(tag or "unknown")
+    seq = 0
+    while True:
+        base = f"{stamp}-{room}-{seq:03d}"
+        pcm_path = os.path.join(queue_dir, base + ".pcm")
+        if not os.path.exists(pcm_path):
+            break
+        seq += 1
+    data = np.asarray(audio, dtype=np.float32)
+    pcm = (np.clip(data, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
+    meta = {
+        "room": room,
+        "rate": int(samplerate),
+        "ms": int(round(len(data) * 1000.0 / float(samplerate))),
+        "lang": None if language is None else str(language),
+        "queuedAt": int(time.time() * 1000),
+    }
+    # ⚠️ **先写 pcm、最后写 meta**：消费者只认 meta 存在的段。
+    # 反过来的话，可能读到"有 meta、pcm 还没写完"的半段 —— 那会把半句话送去识别。
+    tmp = pcm_path + ".part"
+    with open(tmp, "wb") as handle:
+        handle.write(pcm)
+    os.replace(tmp, pcm_path)
+    meta_tmp = os.path.join(queue_dir, base + QUEUE_META_SUFFIX + ".part")
+    with open(meta_tmp, "w", encoding="utf-8") as handle:
+        json.dump(meta, handle, ensure_ascii=False)
+    os.replace(meta_tmp, os.path.join(queue_dir, base + QUEUE_META_SUFFIX))
+    # 返回**基名**（不含扩展名）：消费者那边（`_pending_segments` / asr-worker）也用它当键，
+    # 两边用同一个东西才不会有"多了个 .pcm 的键"这种低级错位。
+    return base
+
+
+def run_segment_producer(args, np):
+    """只切句、不加载模型（每场会一个进程，几乎不占资源）。"""
+    if not args.follow:
+        print("[whisper_stream] --segment-dir 需要配 --follow（尾随那场会的 pcm）", file=sys.stderr)
+        return 2
+    segmenter = UtteranceSegmenter(
+        args.samplerate, args.block_ms, args.silence_ms,
+        args.min_speech_ms, args.max_speech_ms, args.rms_threshold, args.preroll_ms, np,
+        adaptive=args.adaptive, rms_floor=args.rms_floor, noise_multiplier=args.noise_multiplier,
+        short_utterance_ms=args.short_utterance_ms, short_silence_ms=args.short_silence_ms,
+        cut_pause_ms=args.cut_pause_ms,
+    )
+    follower = PcmFollower(
+        args.follow, args.samplerate, np, segmenter.block,
+        follow_rate_path=args.follow_rate,
+        from_start=args.follow_from_start,
+    )
+    language = None if args.no_sidecar_lang else follower.read_language(default=args.language)
+    if language is None:
+        language = args.language
+    follower.lang_notice = None
+    idle = IdleTracker(args.idle_flush_ms, args.follow_poll_ms)
+    # 与 follow 模式一致：给了 --stop-after-idle 就自己收尾退出（测试与"手机停了"都要它）
+    idle_stop_ms = (None if args.stop_after_idle is None
+                    else max(1, int(args.stop_after_idle * 1000)))
+    print(f"[切句] {args.tag or '?'} 尾随 {args.follow} → 队列 {args.segment_dir}"
+          f"（**不加载模型**，只做能量切句）", file=sys.stderr, flush=True)
+
+    produced = 0
+
+    def flush(utterance):
+        nonlocal produced
+        if utterance is None or len(utterance) == 0:
+            return
+        name = _write_segment(args.segment_dir, args.tag, args.samplerate, utterance, np, language)
+        produced += 1
+        print(f"[切句] {args.tag or '?'} → {name}"
+              f"（{len(utterance) / args.samplerate:.1f}s，累计 {produced} 段）",
+              file=sys.stderr, flush=True)
+
+    try:
+        while True:
+            blocks = follower.read()
+            if not args.no_sidecar_lang:
+                language = follower.read_language(default=language)
+            if blocks:
+                idle.saw_data()
+                for block in blocks:
+                    for utterance in segmenter.push(block):
+                        flush(utterance)
+            else:
+                if idle.saw_nothing() and segmenter.speaking:
+                    flush(segmenter.flush())
+                if idle_stop_ms is not None and idle.idle_ms >= idle_stop_ms:
+                    print(f"[切句] 连续 {args.stop_after_idle}s 没有新音频，收尾退出",
+                          file=sys.stderr, flush=True)
+                    break
+                time.sleep(max(0.01, args.follow_poll_ms / 1000.0))
+    except KeyboardInterrupt:
+        print("\n[切句] 收到 Ctrl-C", file=sys.stderr)
+    flush(segmenter.flush())
+    print(f"[切句] 退出：共切出 {produced} 段", file=sys.stderr, flush=True)
+    return 0
+
+
+def _pending_segments(queue_dir):
+    """队列里"已经写完"的段，按到达顺序（文件名即时间戳）排好。
+
+    <p>只认 `.json` meta 存在的段：pcm 是先写的、meta 是最后写的，
+    所以"有 meta"就等于"这段完整写完了"（见 `_write_segment` 的说明）。
+    """
+    try:
+        names = os.listdir(queue_dir)
+    except OSError:
+        return []
+    bases = sorted(name[:-len(QUEUE_META_SUFFIX)] for name in names
+                   if name.endswith(QUEUE_META_SUFFIX) and not name.endswith(".part"))
+    return [base for base in bases
+            if os.path.exists(os.path.join(queue_dir, base + ".pcm"))]
+
+
+def _read_segment(queue_dir, base, np):
+    """读出一段；读不到返回 None（可能刚被别的进程消费掉了）。"""
+    try:
+        with open(os.path.join(queue_dir, base + QUEUE_META_SUFFIX), encoding="utf-8") as handle:
+            meta = json.load(handle)
+        with open(os.path.join(queue_dir, base + ".pcm"), "rb") as handle:
+            raw = handle.read()
+    except (OSError, ValueError):
+        return None
+    audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+    return meta, audio
+
+
+def run_queue_consumer(args, np, model):
+    """消费者：模型只加载一次，按到达顺序取队列最前面的一段转写。
+
+    <p><b>为什么"一个进程"而不是每场一个</b>：显存。而为什么用队列而不是"切到那一场去跟"：
+    切场要重载模型（几秒），队列只是"换一段音频喂给同一个模型"，代价接近 0。
+    <p><b>不丢数据</b>（2026-10-30 用户拍板）：积压时只**报队列深度与最长等待**，
+    让人看到"落后多少"，再决定要不要引入丢弃策略。
+    """
+    print(f"[识别] 队列模式：{args.queue_dir}（模型只加载一次；"
+          f"按到达顺序取，不丢数据）", file=sys.stderr, flush=True)
+    processed = 0
+    last_report = time.monotonic()
+    waited_ms_max = 0
+    while True:
+        bases = _pending_segments(args.queue_dir)
+        if not bases:
+            time.sleep(max(0.01, args.queue_poll_ms / 1000.0))
+        for base in bases:
+            got = _read_segment(args.queue_dir, base, np)
+            if got is None:
+                continue
+            meta, audio = got
+            waited_ms_max = max(waited_ms_max, int(time.time() * 1000) - int(meta.get("queuedAt") or 0))
+            language = meta.get("lang") or args.language
+            text, empty, reason, overrode, kind, resolved_language = transcribe(
+                model, audio, language,
+                args.min_logprob, args.no_speech_prob,
+                beam_size=args.beam_size,
+                silence_floor=args.silence_skip_level,
+                hint_text=None if args.no_prompt else prompt_for(language, args.initial_prompt),
+                context_text=None,
+                do_normalize=not args.no_normalize,
+                candidates=args.lang_candidates,
+            )
+            seconds = len(audio) / float(meta.get("rate") or args.samplerate)
+            if empty:
+                print(f"  [丢弃 {seconds:.1f}s，房间 {meta.get('room')}：{reason or '没有内容'}]",
+                      file=sys.stderr, flush=True)
+            else:
+                # ⚠️ 每行都带 room：下游（asr-worker）靠它把文字送回**这一场**的收件箱。
+                # 队列模式与"一个收件箱"的旧模式差别就在这里 —— 归属是**数据自带的**，不靠猜。
+                print(json.dumps({"room": meta.get("room"), "text": text,
+                                  "from": resolved_language},
+                                 ensure_ascii=False), flush=True)
+            processed += 1
+            # ⚠️ 处理完就删：队列目录同时是"待处理清单"，删掉才算消费完。
+            for suffix in (".pcm", QUEUE_META_SUFFIX):
+                try:
+                    os.unlink(os.path.join(args.queue_dir, base + suffix))
+                except OSError:
+                    pass
+        now = time.monotonic()
+        if args.queue_depth_report_s > 0 and now - last_report >= args.queue_depth_report_s:
+            last_report = now
+            pending = len(_pending_segments(args.queue_dir))
+            if pending > 0 or processed > 0:
+                print(f"[识别] 队列深度 {pending} 段，最长已等 {waited_ms_max / 1000.0:.1f}s，"
+                      f"累计转写 {processed} 段", file=sys.stderr, flush=True)
+            waited_ms_max = 0
 
 
 # ── 依赖 ─────────────────────────────────────────────────────────────────────
@@ -1521,6 +1740,17 @@ def main():
     need_audio = args.file is None and args.follow is None
     np, WhisperModel, sounddevice = load_dependencies(need_audio)
 
+    # ── 生产者模式（--segment-dir）：只切句，不加载模型 ────────────────────────
+    #
+    # 为什么要这个模式（2026-10-30，按显存现状定的架构）：
+    # 一场会一套"分段+识别"= 一份 whisper 模型（large-v3 float16 约 5GB），
+    # 而两场会同时开是真实需求。把**切句**（纯 CPU 的能量判定）与**识别**（吃显存）
+    # 拆开之后，切句可以每场一个进程（几乎不占资源），识别只留**一个**进程：
+    # 它从队列里按到达顺序取"一段话"，转写完把文字送回那一段所属的房间。
+    # 这样两场会都能持续出字幕（各自慢一点），而且模型只加载一次。
+    if args.segment_dir is not None:
+        return run_segment_producer(args, np)
+
     compute_type, compute_note = resolve_compute_type(args.compute_type, args.device)
     if compute_note:
         print(f"[whisper_stream] {compute_note}", file=sys.stderr)
@@ -1556,6 +1786,11 @@ def main():
     if args.self_check:
         print("[whisper_stream] --self-check 通过：依赖与模型都能加载", file=sys.stderr)
         return 0
+
+    # ── 消费者模式（--queue-dir）：模型只加载一次，从队列取段 ─────────────────
+    # 放在预热**之后**：队列里可能已经堆着几段，第一段不该再付那十几秒的固定开销。
+    if args.queue_dir is not None:
+        return run_queue_consumer(args, np, model)
 
     segmenter = UtteranceSegmenter(
         args.samplerate, args.block_ms, args.silence_ms,

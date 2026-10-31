@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path'
 import {
   isSafeRoomId, memoryHint, parseArgs, pickRooms, pipelineSteps, planStop, prepareRoomFiles,
-  readOpenRooms, relayStep, roomColor, roomFiles, shortRoomId, main,
+  readOpenRooms, relayStep, roomColor, roomFiles, shortRoomId, main, workerStep, describeMode,
   chooseActiveRoom, describeSwitchReason, readRoomActivity,
 } from '../scripts/start-multi.mjs'
 import { createRoom, joinRoom } from '../lib/rooms.mjs'
@@ -73,19 +73,28 @@ export async function runStartMultiSuite({ it, check, assert }) {
 
   // ── 2. 每场会一套管线，而且**不共享任何可写文件** ───────────────────────────
 
-  await it('一场会两条命令：识别跟自己的 pcm、大脑写自己的总线', async () => {
+  await it('一场会一套管线：切句跟自己的 pcm、大脑写自己的总线', async () => {
     const options = parseArgs(['--data-dir', 'var/x'])
+    const steps = pipelineSteps(options, { id: ROOM_A })
+    assert.deepEqual(steps.map(step => step.role), ['cut', 'brain'])
+    const cut = steps.find(step => step.role === 'cut')
+    const brain = steps.find(step => step.role === 'brain')
+    check('切句尾随这一场自己的 pcm',
+      cut.args[cut.args.indexOf('--follow') + 1] === roomFiles(options, ROOM_A).audio, cut.args.join(' '))
+    check('大脑的 --bus 是**这一场**的 json 文件', argsOf(brain).includes(`${ROOM_A}.json`), argsOf(brain))
+    check('大脑用 --keep-inbox（清空由本脚本统一做，见 prepareRoomFiles）',
+      argsOf(brain).includes('--keep-inbox'), argsOf(brain))
+  })
+
+  await it('--translate-mode parallel：回到"每场一对识别+大脑"（显存够时才用）', async () => {
+    const options = parseArgs(['--data-dir', 'var/x', '--translate-mode', 'parallel'])
     const steps = pipelineSteps(options, { id: ROOM_A })
     assert.deepEqual(steps.map(step => step.role), ['asr', 'brain'])
     const asr = steps.find(step => step.role === 'asr')
-    const brain = steps.find(step => step.role === 'brain')
     check('识别用 --whisper-follow 跟分流音频', argsOf(asr).includes('--whisper-follow'), argsOf(asr))
     check('并且是**按房间命名**的 pcm',
       argsOf(asr).includes(`audio\\${ROOM_A}.pcm`) || argsOf(asr).includes(`audio/${ROOM_A}.pcm`), argsOf(asr))
     check('识别一律 --format json（语种跟着每句话走）', argsOf(asr).includes('--format json'), argsOf(asr))
-    check('大脑的 --bus 是**这一场**的 json 文件', argsOf(brain).includes(`${ROOM_A}.json`), argsOf(brain))
-    check('大脑用 --keep-inbox（清空由本脚本统一做，见 prepareRoomFiles）',
-      argsOf(brain).includes('--keep-inbox'), argsOf(brain))
   })
 
   await it('两场会的三个文件互不相同（并行的全部依据）', async () => {
@@ -162,7 +171,7 @@ export async function runStartMultiSuite({ it, check, assert }) {
 
   await it('识别命令能被 asr-bridge 自己的 parseArgs() 接受（--whisper-follow 真的展开成尾随）', async () => {
     const { parseArgs: bridgeParse } = await import('../bridge/asr-bridge.mjs')
-    const options = parseArgs(['--data-dir', 'var/x'])
+    const options = parseArgs(['--data-dir', 'var/x', '--translate-mode', 'parallel'])
     const asr = pipelineSteps(options, { id: ROOM_A }).find(step => step.role === 'asr')
     const parsed = bridgeParse(asr.args)
     check('接受这些参数', parsed !== null && typeof parsed === 'object', JSON.stringify(asr.args))
@@ -281,16 +290,87 @@ export async function runStartMultiSuite({ it, check, assert }) {
       activity.get(S2).at === -Infinity, String(activity.get(S2).at))
   })
 
-  await it('串行是缺省；--parallel-translate 才并行；--max-rooms > 1 必须配它', async () => {
-    check('缺省串行', parseArgs([]).parallelTranslate === false)
-    check('串行时 --max-rooms 只能是 1（缺省 0 也算不限制到 1）', parseArgs(['--max-rooms', '1']).maxRooms === 1)
-    assert.throws(() => parseArgs(['--max-rooms', '2']), /parallel-translate/)
-    check('--parallel-translate 之后可以 > 1',
-      parseArgs(['--parallel-translate', '--max-rooms', '2']).maxRooms === 2)
-    check('--serial-translate 可以显式声明（命令自解释）',
-      parseArgs(['--serial-translate']).parallelTranslate === false)
+  await it('串行是可选模式；缺省是队列；--max-rooms > 1 只在 serial 下报错', async () => {
+    check('缺省是队列（生产者-消费者）', parseArgs([]).translateMode === 'queue', parseArgs([]).translateMode)
+    check('队列目录缺省在数据目录下',
+      parseArgs([]).queueDir.endsWith(join('queue', 'asr')), parseArgs([]).queueDir)
+    check('--translate-mode serial 生效', parseArgs(['--translate-mode', 'serial']).translateMode === 'serial')
+    check('--translate-mode parallel 生效', parseArgs(['--translate-mode', 'parallel']).translateMode === 'parallel')
+    check('--serial-translate / --parallel-translate 是别名',
+      parseArgs(['--serial-translate']).translateMode === 'serial'
+        && parseArgs(['--parallel-translate']).translateMode === 'parallel')
+    check('队列模式下 --max-rooms 2 允许（两场都跑，只是共用一份模型）',
+      parseArgs(['--max-rooms', '2']).maxRooms === 2)
+    assert.throws(() => parseArgs(['--translate-mode', 'serial', '--max-rooms', '2']), /serial/)
+    assert.throws(() => parseArgs(['--translate-mode', 'nope']), /translate-mode/)
     assert.throws(() => parseArgs(['--switch-idle-ms', '-1']), /switch-idle-ms/)
     assert.throws(() => parseArgs(['--min-hold-ms', 'x']), /min-hold-ms/)
+    assert.throws(() => parseArgs(['--depth-report-s', '-3']), /depth-report-s/)
+    check('--queue-dir 会解析成绝对路径',
+      /^[A-Za-z]:[\\/]|^\//.test(parseArgs(['--queue-dir', 'var/q']).queueDir),
+      parseArgs(['--queue-dir', 'var/q']).queueDir)
+  })
+
+  // ── 2c. 队列模式（生产者-消费者）：切句不加载模型，识别只有一个 ─────────────
+
+  await it('队列模式：每场一个**切句**进程，且它不加载模型', async () => {
+    const options = parseArgs([])
+    check('缺省就是队列模式', options.translateMode === 'queue', options.translateMode)
+    const steps = pipelineSteps(options, { id: ROOM_A })
+    const cut = steps.find(step => step.role === 'cut')
+    check('有切句这一步', cut !== undefined, JSON.stringify(steps.map(s => s.role)))
+    check('跑的是 whisper_stream.py（与识别同一份切句实现）',
+      cut.script.endsWith('whisper_stream.py'), cut.script)
+    check('标了 python（本脚本要用 python 起它）', cut.python === true, String(cut.python))
+    check('带 --segment-dir 指向队列', cut.args.includes('--segment-dir'), cut.args.join(' '))
+    check('带 --tag 房间号（消费者靠它送回正确的房间）',
+      cut.args[cut.args.indexOf('--tag') + 1] === ROOM_A, cut.args.join(' '))
+    check('尾随这一场自己的 pcm',
+      cut.args[cut.args.indexOf('--follow') + 1] === roomFiles(options, ROOM_A).audio,
+      cut.args.join(' '))
+    check('命令行里**没有 --model**（切句不加载模型 = 不占显存）',
+      cut.args.includes('--model') === false, cut.args.join(' '))
+    check('仍然有大脑（翻译每场一个，不占显存）',
+      steps.some(step => step.role === 'brain'), JSON.stringify(steps.map(s => s.role)))
+  })
+
+  await it('队列模式：识别消费者是**全局一个**，模型参数在这里', async () => {
+    const options = parseArgs(['--data-dir', 'var/x'])
+    const worker = workerStep(options)
+    check('脚本是 bridge/asr-worker.mjs', worker.script.endsWith('asr-worker.mjs'), worker.script)
+    check('--queue-dir 指向队列', worker.args[worker.args.indexOf('--queue-dir') + 1] === options.queueDir,
+      worker.args.join(' '))
+    check('--inbox-dir 指向数据目录（收件箱按房间分文件放在这里）',
+      worker.args[worker.args.indexOf('--inbox-dir') + 1] === options.dataDir, worker.args.join(' '))
+    check('模型/设备/精度在这里（只有这一个进程加载模型）',
+      worker.args.includes('--model') && worker.args.includes('--device')
+        && worker.args.includes('--compute-type'), worker.args.join(' '))
+    check('--keep-inbox：清空由 start-multi 按房间做',
+      worker.args.includes('--keep-inbox'), worker.args.join(' '))
+  })
+
+  await it('队列模式的参数能被 asr-worker 自己的 parseArgs() 接受', async () => {
+    const { parseArgs: workerParse } = await import('../bridge/asr-worker.mjs')
+    const options = parseArgs(['--data-dir', 'var/x', '--cpu'])      // start-multi 用 --cpu 表示 CPU
+    const parsed = workerParse(workerStep(options).args)
+    check('接受这些参数', parsed !== null && typeof parsed === 'object')
+    check('队列目录对得上', parsed.queueDir === options.queueDir, String(parsed.queueDir))
+    check('收件箱目录对得上', parsed.inboxDir === options.dataDir, String(parsed.inboxDir))
+    check('CPU 时精度自动变 int8（不是照抄 float16）', parsed.computeType === 'int8', parsed.computeType)
+    check('keep-inbox 生效', parsed.keepInbox === true, String(parsed.keepInbox))
+  })
+
+  await it('python 切句端真的认这些参数（源码里三个都要在）', async () => {
+    const source = readFileSync(new URL('../bridge/whisper_stream.py', import.meta.url), 'utf-8')
+    for (const flag of ['--segment-dir', '--queue-dir', '--tag']) {
+      check(`whisper_stream.py 定义了 ${flag}`, source.includes(`"${flag}"`), flag)
+    }
+    check('生产者不构造 WhisperModel（在 run_segment_producer 里）',
+      /def run_segment_producer/.test(source)
+        && /return run_segment_producer\(args, np\)/.test(source), '缺生产者分支')
+    check('消费者在模型加载**之后**才进入（首段不再付预热的十几秒）',
+      source.indexOf('return run_queue_consumer(args, np, model)') > source.indexOf('WhisperModel(args.model'),
+      '顺序不对')
   })
 
   // ── 3. 房间调度：哪些该跑、哪些该收 ────────────────────────────────────────
@@ -440,7 +520,7 @@ export async function runStartMultiSuite({ it, check, assert }) {
 
   // ── 8. 真跑一遍 --dry-run（走完整个启动前逻辑）──────────────────────────────
 
-  await it('--dry-run（缺省串行）：只起 1 套管线，另一场明确标"排队中"', async () => {
+  await it('--dry-run（缺省队列）：每场一套「切句+大脑」，识别只有一个', async () => {
     const base = join(VAR_DIR, 'test', 'multi-suite-dryrun')
     rmSync(base, { recursive: true, force: true })
     mkdirSync(base, { recursive: true })
@@ -452,20 +532,42 @@ export async function runStartMultiSuite({ it, check, assert }) {
       '--port', '18797', '--data-dir', base]))
     check('退出码 0', code === 0, String(code))
     check('印了转发进程', output.includes('lan-relay.mjs'), output.slice(0, 400))
-    check('说明 --bus 是目录', output.includes('目录'), output.slice(0, 800))
-    check('横幅写明是串行', output.includes('串行'), output.slice(0, 800))
-    check('只起 1 套管线', output.includes('现在会起 1 套管线'), output.slice(-1200))
-    check('另一场标了排队中', output.includes('排队中') && output.includes(second.room.id), output.slice(-1200))
-    check('真起的那一套是**最早**建的那场（顺序稳定）',
-      output.includes(first.room.id), output.slice(-1200))
-    check('串行模式不再算"几份模型"的账（横幅里解释原因不算）',
-      output.includes('2 场会并行') === false, output.slice(-600))
-    check('说明了 dry-run 没真启动', output.includes('没有真的启动'), output.slice(-300))
-    check('没有建 buses 目录（dry-run 不留副作用）', existsSync(join(base, 'buses')) === false)
+    check('印了唯一的识别消费者（队列模式）', output.includes('asr-worker.mjs'), output.slice(0, 900))
+    check('横幅说清是队列模式', output.includes('队列'), output.slice(0, 900))
+    check('**两场**各起一套（队列模式不需要牺牲一场）', output.includes('现在会起 2 套管线'), output.slice(-1400))
+    check('两场会都在里面',
+      output.includes(first.room.id) && output.includes(second.room.id), output.slice(-1400))
+    check('每场都有切句（--segment-dir / --tag）',
+      (output.match(/--segment-dir/g) ?? []).length >= 2 && (output.match(/--tag room-/g) ?? []).length >= 2,
+      output.slice(-1500))
+    check('切句**不加载模型**（命令行里没有 --model）',
+      /切句·\S+\s+\S+whisper_stream\.py[^\n]*--model/.test(output) === false, output.slice(-1500))
+    check('每场都有大脑（--bus 各一份）', (output.match(/--bus /g) ?? []).length >= 2, output.slice(-1500))
+    check('说明了积压只报不丢', output.includes('不丢数据') || output.includes('不丢'), output.slice(0, 1200))
+    check('没有建 buses/queue 目录（dry-run 不留副作用）',
+      existsSync(join(base, 'buses')) === false && existsSync(join(base, 'queue')) === false)
     rmSync(base, { recursive: true, force: true })
   })
 
-  await it('--dry-run --parallel-translate：两套管线都起，并给出显存账', async () => {
+  await it('--dry-run --translate-mode serial：只起 1 套，另一场标"排队中"', async () => {
+    const base = join(VAR_DIR, 'test', 'multi-suite-dryrun-serial')
+    rmSync(base, { recursive: true, force: true })
+    mkdirSync(base, { recursive: true })
+    const first = createRoom(base, { name: '甲会议', host: 'anqi' })
+    const second = createRoom(base, { name: '乙会议', host: 'bruno' })
+    joinRoom(base, { roomId: second.room.id, username: 'carla' })
+
+    const { code, output } = await captureStdout(() => main(['--dry-run', '--quiet-logs',
+      '--translate-mode', 'serial', '--port', '18795', '--data-dir', base]))
+    check('退出码 0', code === 0, String(code))
+    check('只起 1 套管线', output.includes('现在会起 1 套管线'), output.slice(-1200))
+    check('另一场标了排队中', output.includes('排队中') && output.includes(second.room.id), output.slice(-1200))
+    check('真起的那一套是最早建的那场', output.includes(first.room.id), output.slice(-1200))
+    check('串行模式不出"几份模型"的账', output.includes('2 场会并行') === false, output.slice(-600))
+    rmSync(base, { recursive: true, force: true })
+  })
+
+  await it('--dry-run --translate-mode parallel：两套都起，并给出显存账', async () => {
     const base = join(VAR_DIR, 'test', 'multi-suite-dryrun-par')
     rmSync(base, { recursive: true, force: true })
     mkdirSync(base, { recursive: true })
@@ -474,14 +576,11 @@ export async function runStartMultiSuite({ it, check, assert }) {
     joinRoom(base, { roomId: second.room.id, username: 'carla' })
 
     const { code, output } = await captureStdout(() => main(['--dry-run', '--quiet-logs',
-      '--parallel-translate', '--port', '18796', '--data-dir', base]))
+      '--translate-mode', 'parallel', '--port', '18796', '--data-dir', base]))
     check('退出码 0', code === 0, String(code))
     check('两套管线都起', output.includes('现在会起 2 套管线'), output.slice(-1200))
-    check('两场会都在里面',
-      output.includes(first.room.id) && output.includes(second.room.id), output.slice(-1200))
-    check('每场会都有识别（--whisper-follow）与大脑（--bus）',
-      (output.match(/--whisper-follow/g) ?? []).length >= 2
-        && (output.match(/--bus /g) ?? []).length >= 2, output.slice(-1500))
+    check('每场会都用识别桥（--whisper-follow）',
+      (output.match(/--whisper-follow/g) ?? []).length >= 2, output.slice(-1500))
     check('提醒了显存怎么算', output.includes('显存'), output.slice(-800))
     rmSync(base, { recursive: true, force: true })
   })

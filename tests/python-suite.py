@@ -32,6 +32,7 @@ import wave
 import contextlib
 import inspect
 import io
+import json
 from pathlib import Path
 
 import numpy as np
@@ -2145,6 +2146,70 @@ def main():
     check("加载模型被 try/except 包着（不再甩 traceback）",
           "try:\n        model = WhisperModel(" in source)
     check("失败时返回非零退出码", "return 2" in source)
+
+    # ── 生产者-消费者队列（切句与识别分开，显存只够一份模型）──────────────────
+    #
+    # 这是"两场会同时开"的关键缝合处，而且**跨语言**：python 写队列、node 读队列。
+    # 所以这里钉的是**磁盘上的契约**（文件名排序 = 到达顺序、meta 字段、原子性），
+    # 而不是"某个函数返回了什么" —— 契约一漂移，对面就静默读不到。
+    heading("队列契约 · 切句（写）与识别（读）之间的磁盘格式")
+    import shutil
+
+    # ⚠️ 用仓库里的 var/test，不用系统临时目录：受限环境里系统临时目录可能写不进去，
+    #    那会把"契约坏了"和"环境不让写"混成同一个报错。
+    queue_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                             "var", "test", "queue-contract")
+    shutil.rmtree(queue_dir, ignore_errors=True)
+    os.makedirs(queue_dir, exist_ok=True)
+    try:
+        queue_tone = np.zeros(1600, dtype=np.float32)
+        queue_tone[100:900] = 0.3
+        name_a = whisper_stream._write_segment(queue_dir, "room-A", 16000, queue_tone, np, "zh")
+        name_b = whisper_stream._write_segment(queue_dir, "room-B", 16000, queue_tone, np, None)
+        check("写出的段文件名以毫秒时间戳开头（排序即到达顺序）",
+              name_a.split("-")[0].isdigit() and len(name_a.split("-")[0]) == 13, name_a)
+        check("文件名里带房间号（消费者靠它送回正确的房间）", "room-A" in name_a, name_a)
+        check("pcm 与 meta 两个文件都在", os.path.exists(os.path.join(queue_dir, name_a + ".pcm"))
+              and os.path.exists(os.path.join(queue_dir, name_a + ".json")))
+        meta = json.load(open(os.path.join(queue_dir, name_a + ".json"), encoding="utf-8"))
+        check("meta 里有 room / rate / ms", meta.get("room") == "room-A"
+              and meta.get("rate") == 16000 and meta.get("ms") == 100, json.dumps(meta, ensure_ascii=False))
+        check("meta 里有语种（切句时从手机的旁文件读到的）", meta.get("lang") == "zh", str(meta.get("lang")))
+        check("meta 里有入队时间（消费者用它算『最长已等』）",
+              isinstance(meta.get("queuedAt"), int) and meta["queuedAt"] > 0)
+        # 原子性：先写 pcm 再写 meta。写到一半时消费者**看不到**这一段。
+        check("没有残留 .part 临时文件",
+              [n for n in os.listdir(queue_dir) if n.endswith(".part")] == [])
+        pending = whisper_stream._pending_segments(queue_dir)
+        check("读出来的段按到达顺序排列（先写的在前）", pending == sorted(pending), str(pending))
+        check("两段都在（不同房间）", len(pending) == 2, str(pending))
+        read_back = whisper_stream._read_segment(queue_dir, name_a, np)
+        check("能读回来：meta + 音频都在", read_back is not None and len(read_back[1]) == 1600)
+        # 只有 pcm、没有 meta = 没写完：必须不算数（否则会送半句话去识别）
+        half = os.path.join(queue_dir, "9999999999999-room-Z-000.pcm")
+        open(half, "wb").write(b"\x00\x00" * 100)
+        check("只有 pcm 没有 meta 的段不算数", "9999999999999-room-Z-000" not in
+              whisper_stream._pending_segments(queue_dir), str(whisper_stream._pending_segments(queue_dir)))
+        check("不存在的目录返回空列表（不会炸）",
+              whisper_stream._pending_segments(os.path.join(queue_dir, "__nope__")) == [])
+    finally:
+        shutil.rmtree(queue_dir, ignore_errors=True)
+
+    heading("队列契约 · 切句端真的不加载模型")
+    producer_src = inspect.getsource(whisper_stream.run_segment_producer)
+    check("生产者里没有构造 WhisperModel", "WhisperModel(" not in producer_src)
+    check("生产者只做切句 + 落队列", "_write_segment(" in producer_src)
+    check("生产者必须配 --follow（否则不知道跟谁）", "--follow" in producer_src)
+    consumer_src = inspect.getsource(whisper_stream.run_queue_consumer)
+    check("消费者每行都带 room（下游靠它送回正确的房间）", '"room":' in consumer_src.replace("'", '"')
+          or "\"room\":" in consumer_src, consumer_src[:200])
+    check("消费者处理完就删那一段（队列目录同时是待办清单）", "os.unlink" in consumer_src)
+    check("消费者只**报**队列深度、不丢数据（没有任何按深度/时长丢弃的逻辑）",
+          "drop" not in consumer_src.lower() and "max_queue" not in consumer_src.lower()
+          and "queue_max" not in consumer_src.lower(), "看起来开始丢数据了")
+    check("删段只发生在**转写之后**（处理完才算消费，绝不提前删）",
+          consumer_src.index("os.unlink") > consumer_src.index("processed += 1"),
+          "unlink 出现在转写之前")
 
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
     if failures:

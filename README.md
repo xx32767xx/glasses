@@ -36,11 +36,11 @@ node scripts/start-all.mjs             # 转发 + 识别 + 大脑，日志带前
                                        # --cpu 用 CPU 识别 / --offline 不联网 / --open-window 另开调试窗口
 
 # C2) **多场会同时开**：同样一条命令，房间由手机决定
-node scripts/start-multi.mjs           # 一个转发（读目录）+ 每场会自动补一套识别/大脑
-                                       # ⚠️ 缺省「翻译管线串行」：同一刻只翻一场（显存只够一份模型）
-                                       #    另一场排队，但音频照常按房间落盘；谁说话就翻谁
-                                       # --parallel-translate 显存够才并行 / --whisper-model medium 省显存
-                                       # --dry-run 看会起什么（不会真起）
+node scripts/start-multi.mjs           # 一个转发 + 每场一个「切句」+ 每场一个「大脑」
+                                       # 识别只有**一个**进程（模型只加载一次）—— 显存只够一份模型
+                                       # 切句不加载模型 → 两场会都能出字幕，积压只报队列深度、不丢数据
+                                       # --translate-mode serial|parallel 换回整场串行/各场并行
+                                       # --depth-report-s 10 更勤地报队列深度 / --dry-run 先看会起什么
 node scripts/build-apk.mjs             # 构建安卓 App → android/README.md 有完整步骤
 node scripts/test-account.mjs          # 备好测试账户 + 预置热词表（验证热词表/账户时用）
 node scripts/terms-admin.mjs --help    # 术语库 / 申请审批 / 会议快照（管理员建库→用户申请→审批→快照）
@@ -83,6 +83,7 @@ node scripts/fake-phone.mjs --wav var/audio/zh/short-16k.wav --url http://127.0.
 | `dynamic/leion-pro.host.js` | 生成：**动态插件**，可直接粘贴给创造模式的 `cordis_define` |
 | `lib/display-samples.mjs` | **眼镜校准句的唯一来源**（中文取自测试句集、葡语取自真实定稿帧，逐条记出处）→ 生成 `android/.../res/values/display_samples.xml` |
 | `bridge/asr-bridge.mjs` | **ASR 桥**（harness 之外）：把语音识别结果变成收件箱里的一行一句话；`--whisper-follow` 直接尾随手机上传的音频 |
+| `bridge/asr-worker.mjs` | **唯一的识别消费者**（4.89）：一份模型服务所有房间 —— 从 `queue/asr/` 按到达顺序取「一段话」转写，把文字连同房间号写回 `asr-inbox-<房间>.jsonl`（格式与老链路一致，大脑零改动）。积压只报队列深度、不丢数据 |
 | `bridge/whisper_stream.py` | 本地 Whisper 引擎（faster-whisper）：按音量切句 + 自适应门槛 + 防幻听 + 预热；`--follow` 尾随手机上传的裸 PCM ✅ 已实测，见 `docs/04` |
 | `bridge/whisper_transcribe.py` | 转写单个音频文件并测耗时/RTF（自带解码器，绕开 PyAV 版本坑） |
 | `bridge/make_long_wav.py` | 把短录音拼成长的测试音频（可加底噪），用来测真实延迟 |
@@ -97,7 +98,7 @@ node scripts/fake-phone.mjs --wav var/audio/zh/short-16k.wav --url http://127.0.
 | `relay/lan-relay.mjs` | **局域网转发**：手机 ↔ 电脑，5 个端点 + 共享密钥（含 `POST /audio` 录音上传，见下） |
 | `scripts/harness-side.mjs` | 常驻的 harness 侧进程（真实组合 + 插件，文件模式） |
 | `scripts/start-all.mjs` | **一键启动**：一次起齐"转发 + 识别 + 大脑"，日志带前缀汇总、Ctrl-C 全停、先查端口有没有被旧进程占着 |
-| `scripts/start-multi.mjs` | **多场会的一条命令**：转发只起一个（`--bus` 给**目录**），每个开着且有人在的房间各写 `buses/<房间id>.json`；房间散了宽限 60 秒再收；日志按房间分文件、退出时归档。**缺省翻译管线串行**（显存只够一份模型）：同一刻只翻一场，谁说话就翻谁，另一场排队但音频照常落盘；`--parallel-translate` 才并行。边界写在 `docs/21` §4.88：老同传 App 不带 `room=` 所以不走这条路，术语快照目前是全局一份 |
+| `scripts/start-multi.mjs` | **多场会的一条命令**（4.89 起按**生产者-消费者**）：转发只起一个（`--bus` 给**目录**），每场会一个**切句**进程（纯 CPU、不加载模型）把话写进 `queue/asr/`，识别由**全局唯一**的 `asr-worker` 消费（模型只加载一次），大脑每场一个（不占显存、并行）。积压只报队列深度、**不丢数据**；`--translate-mode serial|parallel` 可换回整场串行/各场并行。边界：老同传 App 不带 `room=` 不走这条路、术语快照仍是全局一份、队列模式不共享上下文续传 |
 | `scripts/test-account.mjs` | **测试账户一条命令备好**：建账户（密码 scrypt 加盐哈希）+ 写一份预置热词表（含实测出现过的 `wrong` 写法），凭据落到 `var/live/test-account.json`。验证热词表/账户这条线时不用再手点手机；`--show` 看状态、`--reset` 清理 |
 | `scripts/fake-phone.mjs` | **假手机**：没有手机时按同样的协议逐块上传音频，用来验证「录音上传」那条路 |
 | `scripts/net-doctor.mjs` | **网络体检**：手机连不上时把"地址变了 / 不在同一网段 / 进程没在听 / 防火墙拦了"分开报；`--watch` 还能判断包到底有没有到电脑（用来区分防火墙与校园网隔离） |
