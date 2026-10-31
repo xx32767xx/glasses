@@ -181,6 +181,29 @@ export async function runLibrarySuite({ it, check, assert }) {
     check('库里现在有 3 个库', all.length === 3, all.map((library) => library.name).join(','))
   })
 
+  await it('5.02 三语条目：存进库（SQLite）再读回来，英语那一栏与 enVariants 都还在', async () => {
+    const categories = await loadCategories(prod)
+    const categoryId = categories.categories[0].id
+    const saved = await saveLibrary(prod, {
+      name: '三语库', categoryId, priority: 30,
+      entries: [
+        { zh: '亮亮眼镜', pt: 'Leion Pro', en: 'Leion Pro', enVariants: ['LeionPRO Eye'] },
+        // 两栏条目：缺葡语，只有中 + 英
+        { zh: '货代', en: 'freight forwarder' },
+      ],
+    }, { by: 'boss@example.com' })
+    check('库建成功', saved.ok === true, saved.error)
+    const back = await loadLibrary(prod, saved.library.id)
+    check('读回来了', back !== null)
+    const three = back.entries.find((entry) => entry.zh === '亮亮眼镜')
+    check('英语那一栏存住了（不是被 SQLite 那一层丢掉）', three.en === 'Leion Pro', JSON.stringify(three))
+    check('英语变体也存住了', Array.isArray(three.enVariants) && three.enVariants.includes('LeionPRO Eye'),
+      JSON.stringify(three.enVariants))
+    const two = back.entries.find((entry) => entry.zh === '货代')
+    check('两栏条目：葡语是空串而不是 undefined', two.pt === '', JSON.stringify(two))
+    check('两栏条目：英语照常保存', two.en === 'freight forwarder', JSON.stringify(two))
+  })
+
   await it('跨库冲突能被发现（只报告，不裁决）', async () => {
     const all = await listLibraries(prod)
     const first = all.find((library) => library.name === '国际物流')
