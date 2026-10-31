@@ -2400,7 +2400,15 @@ export function createInterpreter(ctx, rawConfig, deps) {
   /** 由 api.translate 填充：收件箱要复用的就是那条翻译管线。 */
   let runTranslate = null
 
-  /** 一行可以是纯文本，也可以是 {"text":...,"from":...,"to":...}。 */
+  /**
+   * 一行可以是纯文本，也可以是 {"text":...,"from":...,"to":...}。
+   *
+   * <p>⚠️ 这条是**跨进程协议**（尤其 `speaker` 的 'me'/'them' 两值语义，
+   * 与 `speakerName` 的真名是两回事）。写错了会让整条链路**静默哑掉** ——
+   * 5.08 把真名写进 `speaker`，于是每一行都被判成坏行，字幕一句都不出（5.10 才修好）。
+   * 它在实例闭包里，导出不了；所以由 `tests/contract-suite.mjs` 走**真实收件箱**
+   * 端到端钉住（喂一行、看能不能出帧），而不是直接调这个函数。
+   */
   function parseInboxLine(raw) {
     const line = raw.trim()
     if (line === '') return null
@@ -2424,6 +2432,11 @@ export function createInterpreter(ctx, rawConfig, deps) {
       // speaker 只有 translator: 'none'（纯显示通道）时才用得上：那种模式下
       // 插件不做语向判定，帧归属于谁必须由写入方告知。
       speaker: typeof parsed.speaker === 'string' ? parsed.speaker : undefined,
+      // ⚠️ 5.10：**真名要走 `speakerName`，绝不能塞进 `speaker`**。
+      // `speaker` 在这条协议里是"相对佩戴者"的两值枚举（'me' / 'them'），所以这里会校验；
+      // 队列链路（切句按说话人分轨）会把**真名**一起写进来，字段名必须与它区分开 ——
+      // 5.08 就是把它写进了 `speaker`，结果每一行都被判成坏行，字幕一句都不出。
+      speakerName: typeof parsed.speakerName === 'string' ? parsed.speakerName : undefined,
     }
   }
 

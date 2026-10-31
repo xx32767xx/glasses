@@ -502,7 +502,8 @@ def run_segment_producer_dir(args, np):
             return
         if not state["unknown"]:
             state["unknown"] = True
-            lang_path = root / f"{name}.lang"
+            # 旁文件是**追加后缀**（`<pcm>.lang`），与 relay 写的位置一致
+            lang_path = root / f"{name}.pcm.lang"
             print(f"[切句] {args.tag or '?'} {name} 没有语种可带（{lang_path} 读不到或为空）"
                   f"→ 他的段不带语种，识别时在 {tuple(args.lang_candidates or ())} 里按模型判定",
                   file=sys.stderr, flush=True)
@@ -576,8 +577,8 @@ def run_segment_producer(args, np):
                     else max(1, int(args.stop_after_idle * 1000)))
     print(f"[切句] {args.tag or '?'} 尾随 {args.follow} → 队列 {args.segment_dir}"
           f"（**不加载模型**，只做能量切句）", file=sys.stderr, flush=True)
-    # 语种旁文件的路径（与 PcmFollower 用的是同一个规则：<pcm>.with_suffix('.lang')）
-    lang_path = Path(args.follow).with_suffix('.lang')
+    # 语种旁文件的路径（与 PcmFollower 用的是同一个规则：`<pcm>.lang`，**追加**不是替换）
+    lang_path = Path(str(args.follow) + '.lang')
     # 5.05：**没有语种这件事必须说出来**。原来它是静默降级的：
     #   切出的段 `lang: null` → 识别端退回候选集挑一个 → 英语被按中文解码，
     #   而日志里只有一行"语种限定生效"，看不出根因是"旁文件没写/没读到"。
@@ -1649,8 +1650,17 @@ class PcmFollower:
     def __init__(self, path, fallback_rate, np, block_samples, follow_rate_path=None,
                  from_start=False):
         self.path = Path(path)
-        self.rate_path = Path(follow_rate_path) if follow_rate_path else self.path.with_suffix('.rate')
-        self.lang_path = self.path.with_suffix('.lang')
+        # ⚠️ 旁文件是**追加后缀**：`<pcm>.rate` / `<pcm>.lang`（relay 就是那么写的）。
+        #
+        # 这里原来是 `with_suffix('.rate')` —— 那会**替换**扩展名：`test2.pcm` → `test2.rate`，
+        # 而 relay 写的是 `test2.pcm.rate`。两边看着都"符合文档"，实际永远读不到：
+        #   · 语种读不到 → 段里 `lang: null` → 识别端退回候选集，日志上只看到
+        #     「语种限定生效：全局最大是 en，限定到 ('zh','pt') 后取 zh」这种下游现象；
+        #   · 采样率读不到 → 手机降级到 44.1kHz 时会被当成 16kHz 解码（声音变调、识别全乱）。
+        # 2026-10-31 用户实测的「没有语种可带」就是这个：relay 日志写着写了
+        # `.../test2.pcm.lang`，切句端却在读 `.../test2.lang`。
+        self.rate_path = Path(follow_rate_path) if follow_rate_path else Path(str(self.path) + '.rate')
+        self.lang_path = Path(str(self.path) + '.lang')
         self.fallback_rate = fallback_rate
         self.np = np
         self.block_samples = block_samples

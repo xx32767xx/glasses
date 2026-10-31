@@ -737,9 +737,11 @@ export async function startRelay(rawOptions = {}) {
     audioChunks: 0,
     /** 音频轮转次数（超过 --audio-max-bytes 就把旧文件改名成 .1 再来一个）。 */
     audioRotations: 0,
-    /** 音频日志聚合用：上次打印到第几块、什么时候、当时的 rate/lang。 */
-    audioLoggedChunk: 0,
-    audioLoggedAt: 0,
+    /** 音频日志聚合用：**按房间**记上次打印到第几块、什么时候（5.10：全局键是 `(全局)`）。 */
+    audioLoggedChunk: new Map(),
+    audioLoggedAt: new Map(),
+    /** 每个房间已经收了多少块（5.10：手机上的"第 N 块"应该按这一场算）。 */
+    roomChunks: new Map(),
     audioLoggedRate: null,
     audioLoggedLang: null,
     audioRateValue: null,
@@ -1117,9 +1119,13 @@ export async function startRelay(rawOptions = {}) {
    * 那两个数永远是准的，日志只是心跳。
    */
   function logAudioChunk(body, info) {
-    const chunk = state.audioChunks
-    const previous = state.audioLoggedChunk
-    const elapsed = Date.now() - state.audioLoggedAt
+    // 5.10：块号与秒数都**按房间**（有房间时），否则"第 1 块"会接着上一场继续数、
+    // "累计 N 秒"会带上前几次测试的音频 —— 两个数字都会让人以为系统坏了。
+    const room = typeof info.room === 'string' ? info.room : ''
+    const key = room === '' ? '(全局)' : room
+    const chunk = room === '' ? state.audioChunks : (state.roomChunks.get(room) ?? 0)
+    const previous = state.audioLoggedChunk.get(key) ?? 0
+    const elapsed = Date.now() - (state.audioLoggedAt.get(key) ?? 0)
     const first = previous === 0
     // 新一次录音 / 采样率或语种变了 → 立刻打，这些是"状态变了"，不能等
     const important = first || info.fresh === true
@@ -1132,12 +1138,13 @@ export async function startRelay(rawOptions = {}) {
     // 措辞说明白：音源现在可能是眼镜的麦克风（见 docs/09 §12），不再是"手机音频"。
     // 转发进程本身看不到音源（链路上没有这个字段），所以这里只说"音频"，
     // 不替调用方声称它来自哪个设备。
-    debug(`📥 收到音频：${range} → 累计 ${info.totalSeconds.toFixed(1)}s`
+    debug(`📥 收到音频：${room === '' ? '' : `房间 ${room} `}${range}`
+      + ` → 这一场累计 ${info.totalSeconds.toFixed(1)}s`
       + ` @ ${info.rate}Hz，语种 ${info.lang}${info.fresh === true ? '（开始了新一次录音）' : ''}`)
     // 电平单独一行：这是"到底有没有录到人声"的唯一直接证据（见 pcmLevel 的注释）
     debug(`   ${describeLevel(pcmLevel(body))}`)
-    state.audioLoggedChunk = chunk
-    state.audioLoggedAt = Date.now()
+    state.audioLoggedChunk.set(key, chunk)
+    state.audioLoggedAt.set(key, Date.now())
     state.audioLoggedRate = info.rate
     state.audioLoggedLang = info.lang
   }
@@ -1710,6 +1717,15 @@ export async function startRelay(rawOptions = {}) {
           //   · 文件会一直长（16k 单声道 = 32KB/秒，一小时约 115MB），可在重启时清掉 ——
           //     start-all 每次启动都会清，识别进程自己也会从文件末尾开始跟（不重放旧的）。
           if (body.length > 0) {
+            // 5.10：**新一次录音**（fresh=1）时把这个房间的计数器归零 ——
+            // 手机界面上的"已上传 N 秒 / 第 N 块"应该是**这一场**的数字。
+            // 全局文件不截断（上面那段说了为什么），但计数可以归零，那是纯展示数据。
+            if (fresh === true && audioRoom !== '') {
+              state.roomAudioBytes.set(audioRoom, 0)
+              state.roomChunks.set(audioRoom, 0)
+              state.audioLoggedChunk.set(audioRoom, 0)
+              state.audioLoggedAt.delete(audioRoom)
+            }
             // 先判上限再写：这样一块音频要么整块进老文件、要么整块进新文件，不会被劈成两半
             if (options.audioMaxBytes > 0
                 && state.audioBytes + body.length > options.audioMaxBytes) {
@@ -1760,6 +1776,10 @@ export async function startRelay(rawOptions = {}) {
             }
           }
           state.audioChunks += 1
+          // 5.10：按房间也数一份（日志里的"第 N 块"与回执里的 chunks 都用它）
+          if (audioRoom !== '') {
+            state.roomChunks.set(audioRoom, (state.roomChunks.get(audioRoom) ?? 0) + 1)
+          }
           // 4.76：同一块音频也推给本房间愿意听的人（实时传声）
           // 4.91：**先**把采样率告诉听的人（只在变化时发一帧）——
           //       手机录音可能降级到 44.1 kHz，播放端固定按 16 kHz 放会快放/慢放，
@@ -1803,9 +1823,22 @@ export async function startRelay(rawOptions = {}) {
           return
         }
 
-        const totalSeconds = state.audioRateValue ? state.audioBytes / 2 / state.audioRateValue : 0
+        // ⚠️ 5.10：这里的秒数**必须按房间算**，不能报全局累计。
+        //
+        // 现场日志：「📥 收到音频：第 1 块 → 累计 334.5s」，而这场会才刚开口 ——
+        // 因为 `state.audioBytes` 是从**全局** `audio-in.pcm` 的现有大小起步的，
+        // 而那个文件**永远不清**（见下面"只追加"那段）。于是"累计"其实是
+        // "这台机器上所有历史测试的总时长"，一眼看过去只觉得数字荒谬。
+        // 现在：有房间就报**这一场**（`fresh=1` 时从 0 重新算），没房间才退回全局。
+        const roomSeconds = audioRoom !== ''
+          ? (state.roomAudioBytes.get(audioRoom) ?? 0) / 2 / (state.audioRateValue ?? rate)
+          : 0
+        const totalSeconds = audioRoom !== ''
+          ? roomSeconds
+          : (state.audioRateValue ? state.audioBytes / 2 / state.audioRateValue : 0)
         logAudioChunk(body, {
           fresh,
+          room: audioRoom,
           rate: state.audioRateValue ?? rate,
           lang: state.audioLangValue ?? lang,
           totalSeconds,
@@ -1814,10 +1847,13 @@ export async function startRelay(rawOptions = {}) {
           ok: true,
           bytes: body.length,
           totalBytes: state.audioBytes,
-          chunks: state.audioChunks,
+          // 5.10：`seconds` = **这一场**已经上传的时长（`fresh=1` 起算）；
+          // 需要"这台机器一共收了多少"的排障场景看 `serverBytes`。
+          seconds: totalSeconds,
+          serverBytes: state.audioBytes,
+          chunks: audioRoom === '' ? state.audioChunks : (state.roomChunks.get(audioRoom) ?? 0),
           rate: state.audioRateValue ?? rate,
           lang: state.audioLangValue ?? lang,
-          seconds: totalSeconds,
           fresh,
         })
         return

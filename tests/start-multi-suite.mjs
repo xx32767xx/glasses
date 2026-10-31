@@ -435,7 +435,10 @@ export async function runStartMultiSuite({ it, check, assert }) {
     const lines = readFileSync(join(base, `asr-inbox-${ROOM_A}.jsonl`), 'utf-8').trim().split('\n')
     check('落盘时已经把 zh 换成 zh-CN', JSON.parse(lines[0]).from === 'zh-CN', lines[0])
     check('葡语保持不变', JSON.parse(lines[1]).from === 'pt-BR', lines[1])
-    check('带 speaker 的行把它写进去', JSON.parse(lines[2]).speaker === 'bob', lines[2])
+    check('带 speaker 的行把它写进去（字段名叫 speakerName，不叫 speaker）',
+      JSON.parse(lines[2]).speakerName === 'bob', lines[2])
+    check('绝不写成 speaker（那个名字在插件里是 me/them，写了会让整行被判坏）',
+      JSON.parse(lines[2]).speaker === undefined, lines[2])
     check('不说话人时不写这个字段（老链路格式不变）',
       JSON.parse(lines[0]).speaker === undefined, lines[0])
     rmSync(base, { recursive: true, force: true })

@@ -164,12 +164,15 @@ export function normalizeLangTag(from) {
  */
 export function appendInboxLine(inboxDir, roomId, text, from, { fs = null, speaker = '' } = {}) {
   const tag = normalizeLangTag(from)
-  // 5.08：段是从**某个人的分轨文件**切出来的，所以"这句话是谁说的"是数据自带的。
-  // 这一行多带一个 `speaker`（老链路没有这个字段，大脑与插件对此不敏感，纯增量）。
+  // 5.10：说话人跟着这一行走。**字段名必须是 `speakerName`，不能叫 `speaker`** ——
+  // 插件那边的 `speaker` 是另一套语义（相对佩戴者的 `'me' / 'them'`），
+  // 而且 `parseInboxLine` 会**校验**它：写个真名进去会让这一行直接被判成坏行，
+  // 于是**一句字幕都出不来**。5.08 就是这么把整条链路搞哑的（现场："音频都识别不了了"）。
+  // 同一个名字在两个模块里表示不同东西，是这次真正的坑。
   const who = typeof speaker === 'string' ? speaker.trim() : ''
   const body = { text }
   if (tag !== null) body.from = tag
-  if (who !== '') body.speaker = who
+  if (who !== '') body.speakerName = who
   const line = JSON.stringify(body)
   const file = inboxPathFor(inboxDir, roomId)
   if (fs !== null) {                     // 测试注入：不必真写盘

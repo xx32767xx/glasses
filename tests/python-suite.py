@@ -485,6 +485,33 @@ def main():
 
     # 语种标记 → Whisper 码。手机说的是 pt-BR / zh-CN，Whisper 要的是 pt / zh；
     # 认不出来时要返回 None（让 Whisper 自己判），而不是猜一个错的语种。
+    heading("旁文件命名契约 · relay 写什么、切句端就必须读什么（5.10）")
+    # 真实事故（2026-10-31）：relay 写 `<pcm>.lang`（追加后缀：`test2.pcm.lang`），
+    # 而切句端用 `Path(pcm).with_suffix('.lang')` —— 那是**替换**扩展名，去找 `test2.lang`。
+    # 两边都"符合文档"，实际永远读不到，表现是：
+    #   · 语种一直 `null` → 识别端退回候选集（日志上只有下游的"语种限定生效"）；
+    #   · 采样率手机降级到 44.1k 时被当成 16k 解码（变调、识别全乱）。
+    # 所以这里直接钉**文件名**本身，而不是钉"能不能读到"。
+    _sidecar_dir = ROOT / "var" / "test" / "python-suite" / "sidecar"
+    import shutil as _shutil          # 这个文件里 shutil 是后面才导入的，局部导入避免作用域问题
+    _shutil.rmtree(_sidecar_dir, ignore_errors=True)
+    _sidecar_dir.mkdir(parents=True, exist_ok=True)
+    _pcm = _sidecar_dir / "test2.pcm"
+    _pcm.write_bytes(b"")
+    (_sidecar_dir / "test2.pcm.lang").write_text("en-US\n", encoding="utf-8")
+    (_sidecar_dir / "test2.pcm.rate").write_text("44100\n", encoding="utf-8")
+    _follower = PcmFollower(_pcm, TARGET_RATE, np, 1600)
+    check("旁文件是**追加后缀** `<pcm>.lang`（与 relay 写的位置一致）",
+          _follower.lang_path.name == "test2.pcm.lang", _follower.lang_path.name)
+    check("采样率旁文件同理 `<pcm>.rate`",
+          _follower.rate_path.name == "test2.pcm.rate", _follower.rate_path.name)
+    check("能真的读到语种（不是空手而归）", _follower.read_language() == "en", str(_follower.read_language()))
+    check("也能真的读到采样率", _follower.read_rate() == 44100, str(_follower.read_rate()))
+    # 反向：老的 `.lang`（替换扩展名那种）**不该**被当成旁文件 —— 否则又回到"两个位置都看"的模糊态
+    (_sidecar_dir / "test2.log").write_text("x\n", encoding="utf-8")
+    check("不会去读 test2.log 这类别的文件", _follower.lang_path.name != "test2.log")
+    _shutil.rmtree(_sidecar_dir, ignore_errors=True)
+
     heading("语种标记转换 · whisper_language_of")
     check("pt-BR → pt", whisper_language_of("pt-BR") == "pt", str(whisper_language_of("pt-BR")))
     check("zh-CN → zh", whisper_language_of("zh-CN") == "zh", str(whisper_language_of("zh-CN")))

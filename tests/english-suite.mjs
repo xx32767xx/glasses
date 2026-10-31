@@ -230,8 +230,9 @@ export async function runEnglishSuite({ it, check, assert }) {
       !/--lang-candidates/.test(multi) && !/--lang-candidates/.test(worker),
       '有人写死成 zh,pt 时，英语会静默失效')
     // 没有语种时必须说出来（原来这一段是静默的：段里 lang=null，日志上只有下游现象）
+    // 5.10：旁文件是**追加后缀** `<pcm>.lang`（relay 就是那么写的），不是替换扩展名
     check('切句端会报"没有语种可带"以及读的是哪个旁文件',
-      /没有语种可带（/.test(whisper) && /lang_path = Path\(args\.follow\)\.with_suffix\('\.lang'\)/.test(whisper))
+      /没有语种可带（/.test(whisper) && /lang_path = Path\(str\(args\.follow\) \+ '\.lang'\)/.test(whisper))
     check('有了语种也会报一行（从哪一段起生效）', /语种 = \{tag\}（Whisper 码/.test(whisper))
     // 转发端：旁文件写的是什么语种，必须在日志里查得到
     const relay = readFileSync(join(process.cwd(), 'relay', 'lan-relay.mjs'), 'utf-8')

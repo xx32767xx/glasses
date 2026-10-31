@@ -598,6 +598,31 @@ export function planStop({ running = [], desired = [], absentSince = new Map(), 
 }
 
 /**
+ * 数一个文件有多少行（不存在算 0）。
+ *
+ * <p>用途只有一个：看门狗每行"收件箱 N 行 / 字幕 M 帧"。**这个数字是排障的分水岭** ——
+ * 识别端说"累计转写 7 段"但收件箱是 0 行，说明写收件箱那一环断了；
+ * 收件箱有 7 行而总线是 0 帧，说明大脑那一环没产出（翻译失败/没起来）。
+ * 全靠"界面上什么都没有"是推不出来的。
+ */
+export function countLines(file) {
+  try {
+    const text = readFileSync(file, 'utf-8')
+    return text.split('\n').filter((line) => line.trim() !== '').length
+  } catch { return 0 }
+}
+
+/** 数一个字幕总线文件里有几帧（不存在 / 坏 JSON 都算 0）。 */
+export function countFrames(file) {
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf-8'))
+    const frame = parsed?.frame ?? parsed
+    if (Array.isArray(frame)) return frame.length
+    return frame === null || frame === undefined ? 0 : 1
+  } catch { return 0 }
+}
+
+/**
  * 显存提醒（只在真的可能出问题时出现）。
  *
  * <p>⚠️ 这句话**必须看模式**（5.09 修）。原来它无条件按"每场会一套识别 = 每场一份模型"
@@ -1120,8 +1145,18 @@ export async function main(argv = process.argv.slice(2)) {
     // 每 20 轮（缺省 1 分钟）打一行"还活着"，否则终端长时间没输出会让人怀疑它挂了
     if (tickCount % 20 === 0) {
       const names = [...running.keys()].map(shortRoomId)
+      // 5.10：把**每一环的产量**带出来 —— "收件箱有 12 行、字幕 0 帧"能立刻指出断在哪，
+      // 比"界面上什么都没有"有用得多。这条正是被"音频都识别不了了"逼出来的：
+      // 当时只能看到切句在出段、识别在转写，却看不出收件箱有没有行、总线有没有帧。
+      const perRoom = [...running.entries()].map(([roomId]) => {
+        const files = roomFiles(options, roomId)
+        const inbox = countLines(files.inbox)
+        const frames = countFrames(files.busFile)
+        return `${shortRoomId(roomId)} 收件箱 ${inbox} 行 · 字幕 ${frames} 帧`
+      })
       console.log(`  ${DIM}· 还在看（开着的房间 ${snapshot.rooms.length} 个，`
         + `在翻译 ${running.size} 场${names.length > 0 ? `：${names.join(' / ')}` : ''}）${RESET}`)
+      if (perRoom.length > 0) console.log(`  ${DIM}  ${perRoom.join(' | ')}${RESET}`)
     }
     schedule()
   }

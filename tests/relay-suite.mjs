@@ -359,6 +359,41 @@ export async function runRelaySuite({ it, check, assert }) {
     }
   })
 
+  await it('5.10：回执里的"第几块 / 累计几秒"按**这一场**算（不是开机以来的总和）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'roomcount-'))
+    const secret = 's3cret-0123456789abcdef'
+    const relay = await startRelay({ dataDir: dir, port: 0, host: '127.0.0.1', secret, quiet: true })
+    try {
+      const base = `http://127.0.0.1:${relay.port}`
+      const post = (room, bytes, { fresh = false } = {}) => fetch(
+        `${base}/audio?rate=16000&room=${encodeURIComponent(room)}&speaker=alice`
+        + `${fresh ? '&fresh=1' : ''}`,
+        { method: 'POST', headers: { 'X-Leion-Secret': secret }, body: Buffer.alloc(bytes, 7) })
+        .then((response) => response.json())
+
+      // 1 秒 @16k = 32000 字节
+      const first = await post('room-1', 32000, { fresh: true })
+      check('新一次录音的第 1 块：chunks=1', first.chunks === 1, JSON.stringify(first))
+      check('秒数只算这一场（1 秒）', Math.abs(first.seconds - 1) < 0.05, String(first.seconds))
+      const second = await post('room-1', 16000)
+      check('第 2 块的块号接着这一场数', second.chunks === 2, JSON.stringify(second))
+      check('秒数是这一场的累计（1.5 秒）', Math.abs(second.seconds - 1.5) < 0.05, String(second.seconds))
+      // 另一场会是**自己的**计数，不会接着上一场数
+      const other = await post('room-2', 32000, { fresh: true })
+      check('另一场会从第 1 块开始', other.chunks === 1, JSON.stringify(other))
+      // 现场那个 bug：秒数一直涨到几百秒（全局 audio-in.pcm 的历史总和）。
+      // 现在再按一次"重新录音"，这一场必须从 0 重新算。
+      const restart = await post('room-1', 16000, { fresh: true })
+      check('重新录音后这一场从 1 秒重新算', restart.chunks === 1 && Math.abs(restart.seconds - 0.5) < 0.05,
+        JSON.stringify(restart))
+      check('全局总量仍然在（排障用 serverBytes）',
+        typeof restart.serverBytes === 'number' && restart.serverBytes > 0, String(restart.serverBytes))
+    } finally {
+      relay.close?.()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   await it('长轮询：没有新帧就挂住，来新帧后立刻返回（不是等超时）', async () => {
     const started = Date.now()
     const pending = call('/frame?since=1')

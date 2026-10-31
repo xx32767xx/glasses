@@ -656,6 +656,50 @@ export async function runContractSuite(adapter, { it, check, assert }) {
     await auto.tools.get('leion_inbox').execute({ action: 'stop' })
   })
 
+  await it('5.10：收件箱行里的真名必须叫 speakerName（叫 speaker 会让整条链路哑掉）', async () => {
+    // 现场：切句按说话人分轨之后，收件箱行写成 {"text":…,"from":…,"speaker":"test2"}，
+    // 而插件的 `speaker` 是另一套语义（'me'/'them'）且会**校验** —— 于是每一行都被判成
+    // 坏行，字幕一句都不出，界面上看就是"音频都识别不了了"。
+    // 这条断言走**真实收件箱**（喂一行、看有没有出帧），不是直接调内部函数。
+    const { appendInboxLine } = await import('../bridge/asr-worker.mjs')
+    const store = new Map()
+    const path = inboxPathOf('inbox-speaker.jsonl')
+    const write = (line) => store.set(path, (store.get(path) ?? '') + line + '\n')
+
+    const named = await adapter.create({
+      llm: makeFakeLlm(), fs: makeFakeFs(store), config: { inboxPath: path, inboxPollMs: 120 },
+    })
+    // 用真实的生产写入函数写行 —— 这样"写的一方"和"读的一方"的口径一起被钉住
+    // （注入的 fs 只需要一个 append(file, line)，不必真落盘）
+    appendInboxLine(inboxPathOf(''), 'room-x', 'A reunião de hoje passou para as três.',
+      'pt-BR', { fs: { append: (file, line) => write(line) } })
+    const got = await waitFor(async () =>
+      (await named.tools.get('leion_inbox').execute({ action: 'status' })).processed >= 1)
+    const status = await named.tools.get('leion_inbox').execute({ action: 'status' })
+    check('带 speakerName 的行被正常处理（出字幕）', got, JSON.stringify(status))
+    check('没有把它当成坏行', status.errors === 0, String(status.lastError))
+    const history = await named.tools.get('leion_history').execute({ limit: 5 })
+    check('确实产出了字幕', history.entries.length >= 1, JSON.stringify(history.entries))
+    await named.tools.get('leion_inbox').execute({ action: 'stop' })
+
+    // 反向：真名塞进 `speaker` 必须继续被判成坏行（协议不能被悄悄改宽，
+    // 否则"me/them 与真名"两套语义又会混在一起）
+    const store2 = new Map()
+    const path2 = inboxPathOf('inbox-speaker-bad.jsonl')
+    store2.set(path2, JSON.stringify({ text: '你好', speaker: 'bob' }) + '\n')
+    const bad = await adapter.create({
+      llm: makeFakeLlm(), fs: makeFakeFs(store2), config: { inboxPath: path2, inboxPollMs: 120 },
+    })
+    await waitFor(async () =>
+      (await bad.tools.get('leion_inbox').execute({ action: 'status' })).errors >= 1)
+    const badStatus = await bad.tools.get('leion_inbox').execute({ action: 'status' })
+    check('speaker 里写真名 → 判成坏行（协议仍然只认 me/them）',
+      badStatus.errors >= 1, JSON.stringify(badStatus))
+    check('错误信息指明了允许值',
+      String(badStatus.lastError).includes('me'), String(badStatus.lastError))
+    await bad.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
   // ── 5c. 大模型校对（第二遍，讯飞那种"先出译文、再回头改"）──────────────────
   //
   // 这一组断言的顺序是有讲究的：
