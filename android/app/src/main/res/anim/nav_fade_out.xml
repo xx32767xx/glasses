@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  底部导航切换时旧页的退场：淡出（与 nav_fade_in 同时长，两页交叉淡化 120ms）。
+
+  ⚠️ 同样**没有 translate**：底部导航是平级切换，旧页不该往左滑走 ——
+  那看起来像"退出这一层"，而用户只是换了个标签页。
+-->
+<set xmlns:android="http://schemas.android.com/apk/res/android">
+    <alpha
+        android:duration="120"
+        android:fromAlpha="1.0"
+        android:toAlpha="0.0" />
+</set>

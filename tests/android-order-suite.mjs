@@ -530,12 +530,12 @@ export async function runAndroidOrderSuite({ it, check }) {
     // 2) 首页能进得去（否则页面存在也白做）
     // 4.60：设置不再是一个按钮，而是底部导航的「我的」
     check('首页底部导航能进「我的」', homeXml.includes('@layout/inc_bottom_nav')
-      && /homeNavMe[\s\S]{0,200}MeActivity\.class/.test(homeJava), '没有入口')
+      && /homeNavMe[\s\S]{0,200}NavTabs\.ME|homeNavMe[\s\S]{0,200}MeActivity\.class/.test(homeJava), '没有入口')
     check('设置从「我的」里的翻译服务那行进',
       /meRowService[\s\S]{0,120}SettingsActivity\.class/.test(
         readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay', 'MeActivity.java'), 'utf-8')))
     check('首页底部导航打开「我的」页',
-      /homeNavMe[\s\S]{0,200}MeActivity\.class/.test(homeJava), homeJava.slice(0, 80))
+      /homeNavMe[\s\S]{0,200}(MeActivity\.class|NavTabs\.ME)/.test(homeJava), homeJava.slice(0, 80))
     check('设置页能进隐私页',
       /setAppPrivacy[\s\S]{0,160}PrivacyActivity\.class/.test(settingsJava))
 
@@ -1436,8 +1436,8 @@ export async function runAndroidOrderSuite({ it, check }) {
       && /@string\/nav_me/.test(navXml))
     // 4.69：历史有页面了，这一项要能进去（之前是灰着的占位）
     check('历史导航能进历史页',
-      /homeNavHistory\)\.setOnClickListener[\s\S]{0,160}HistoryActivity\.class/.test(java))
-    check('我的进「我的」页', /homeNavMe\)\.setOnClickListener[\s\S]{0,200}MeActivity\.class/.test(java))
+      /homeNavHistory\)\.setOnClickListener[\s\S]{0,160}(HistoryActivity\.class|NavTabs\.HISTORY)/.test(java))
+    check('我的进「我的」页', /homeNavMe\)\.setOnClickListener[\s\S]{0,200}(MeActivity\.class|NavTabs\.ME)/.test(java))
     // 4.62：导航抽成公共片段，所以这里只验"include 在 ScrollView 之后"
     check('底部导航固定（不在 ScrollView 里）',
       home.indexOf('</ScrollView>') < home.indexOf('@layout/inc_bottom_nav'))
@@ -1694,8 +1694,8 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('历史页把「历史」点亮', /NavTabs\.apply\(this, NavTabs\.HISTORY\)/.test(history))
     const home = java('HomeActivity.java')
     const me = java('MeActivity.java')
-    check('首页的历史导航进得去', /homeNavHistory\)\.setOnClickListener[\s\S]{0,160}HistoryActivity\.class/.test(home))
-    check('「我的」里的历史导航也进得去', /homeNavHistory\)\.setOnClickListener[\s\S]{0,160}HistoryActivity\.class/.test(me))
+    check('首页的历史导航进得去', /homeNavHistory\)\.setOnClickListener[\s\S]{0,160}(HistoryActivity\.class|NavTabs\.HISTORY)/.test(home))
+    check('「我的」里的历史导航也进得去', /homeNavHistory\)\.setOnClickListener[\s\S]{0,160}(HistoryActivity\.class|NavTabs\.HISTORY)/.test(me))
 
     // ⑥ 服务端：只返回我参加过的 + 保留期由服务端给
     const rooms = readFileSync(join(ROOT, 'lib', 'rooms.mjs'), 'utf-8')
@@ -1885,6 +1885,57 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('失败原因能取出来', /public String lastError\(\)/.test(player))
     check('丢弃块数能取出来', /public long droppedChunks\(\)/.test(player))
     check('AudioTrack 创建失败不再静默 return', /AudioTrack 创建失败/.test(player))
+  })
+
+  // 4.93：底部导航"从右侧推入覆盖"的观感问题。
+  // 三个页面原来是各自 startActivity，走的是 Activity 默认转场 = "打开下一层"，
+  // 而底部导航是平级切换 —— 水平推移会让人以为在前进/后退（用户实测反馈）。
+  await it('4.93：底部导航是平级切换 —— 淡入淡出，不用默认的"从右侧推入"', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const animDir = join(ROOT, 'android', 'app', 'src', 'main', 'res', 'anim')
+    const nav = readFileSync(join(javaDir, 'NavTabs.java'), 'utf-8')
+    const home = readFileSync(join(javaDir, 'HomeActivity.java'), 'utf-8')
+    const me = readFileSync(join(javaDir, 'MeActivity.java'), 'utf-8')
+    const history = readFileSync(join(javaDir, 'HistoryActivity.java'), 'utf-8')
+    const fadeIn = readFileSync(join(animDir, 'nav_fade_in.xml'), 'utf-8')
+    const fadeOut = readFileSync(join(animDir, 'nav_fade_out.xml'), 'utf-8')
+
+    // ① 换页动画：只有 alpha，**不许有 translate**（有位移就又变回"推入"了）
+    //    ⚠️ 先剥注释再查：这两个文件的注释里就写着"没有 translate"，不剥会把注释当代码。
+    const stripXmlComments = (text) => text.replace(/<!--[\s\S]*?-->/g, '')
+    const fadeInCode = stripXmlComments(fadeIn)
+    const fadeOutCode = stripXmlComments(fadeOut)
+    check('nav_fade_in 存在且是淡入', /<alpha/.test(fadeInCode) && /fromAlpha="0.0"/.test(fadeInCode), '缺 alpha')
+    check('nav_fade_out 存在且是淡出', /<alpha/.test(fadeOutCode) && /toAlpha="0.0"/.test(fadeOutCode), '缺 alpha')
+    check('**没有水平/垂直位移**',
+      /<translate/.test(fadeInCode) === false && /<translate/.test(fadeOutCode) === false,
+      '加了位移就又变成"推入"')
+    check('时长够短（≤200ms，不让人觉得在等动画）',
+      (fadeInCode.match(/duration="(\d+)"/) ?? [])[1] !== undefined
+        && Number((fadeInCode.match(/duration="(\d+)"/) ?? [0, 999])[1]) <= 200,
+      (fadeInCode.match(/duration="(\d+)"/) ?? [])[1])
+
+    // ② 统一入口：三个页面都必须走 NavTabs.go，不许各写一份 startActivity
+    for (const [label, source] of [['首页', home], ['我的', me], ['历史', history]]) {
+      check(`${label}的导航项走 NavTabs.go`,
+        /NavTabs\.go\(this, NavTabs\.(HOME|HISTORY|ME)\)/.test(source), '还在直接 startActivity')
+    }
+    check('切换时指定了交叉淡化转场',
+      /overridePendingTransition\(R\.anim\.nav_fade_in, R\.anim\.nav_fade_out\)/.test(nav), '缺转场')
+    check('返回键也走同一套淡化（同一件事不能两种动画）',
+      /onBackPressed[\s\S]{0,200}nav_fade_in/.test(me) && /onBackPressed[\s\S]{0,200}nav_fade_in/.test(history),
+      '返回键还是默认动画')
+
+    // ③ 栈管理：别越叠越高；回首页要复用已有实例
+    check('非首页之间切换会关掉当前页（栈里最多「首页 + 当前页」）',
+      /if \(tab != HOME && from\.getClass\(\) != HomeActivity\.class\) \{\s*\n\s*from\.finish\(\);/.test(nav),
+      '标签页会互相压着')
+    check('切到标签页复用在栈里的实例（REORDER_TO_FRONT，不重建不重复拉数据）',
+      /FLAG_ACTIVITY_REORDER_TO_FRONT \| Intent\.FLAG_ACTIVITY_SINGLE_TOP/.test(nav), '缺 REORDER_TO_FRONT')
+    check('回首页用 CLEAR_TOP（不会叠出好几个首页）',
+      /FLAG_ACTIVITY_CLEAR_TOP \| Intent\.FLAG_ACTIVITY_SINGLE_TOP/.test(nav), '缺 CLEAR_TOP')
+    check('点当前这一页什么都不做（不重启自己）',
+      /if \(from\.getClass\(\) == target\) return;/.test(nav), '缺自我点击短路')
   })
 
   await it('4.81：/frame 的 seq 不许被 info() 覆盖（否则死循环刷日志）', () => {

@@ -171,10 +171,9 @@ public class HomeActivity extends android.app.Activity {
         langEntry.setOnClickListener(v -> showUiLangPicker());
         // 首页这颗已经在这儿了，点了什么都不做（导航项本身要可点，否则看着像坏了）
         findViewById(R.id.homeNavHome).setOnClickListener(v -> { });
-        findViewById(R.id.homeNavHistory).setOnClickListener(v ->
-                startActivity(new Intent(this, HistoryActivity.class)));
-        findViewById(R.id.homeNavMe).setOnClickListener(v ->
-                startActivity(new Intent(this, MeActivity.class)));
+        // 4.93：底部导航统一走 NavTabs.go —— 交叉淡化换页，不用默认的"从右侧推入覆盖"
+        findViewById(R.id.homeNavHistory).setOnClickListener(v -> NavTabs.go(this, NavTabs.HISTORY));
+        findViewById(R.id.homeNavMe).setOnClickListener(v -> NavTabs.go(this, NavTabs.ME));
         findViewById(R.id.homeLegacy).setOnClickListener(v ->
                 startActivity(new Intent(this, MainActivity.class)));
         findViewById(R.id.homeLogout).setOnClickListener(v -> logout());

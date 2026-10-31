@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  底部导航切换：**淡入淡出，不做水平位移**。
+
+  为什么不能用默认动画：默认的 Activity 转场是"打开下一层"（从右侧推入、覆盖旧页），
+  而底部导航是**平级切换** —— 用户的心智是"换了一页"，不是"进去了"。
+  水平推移会让人以为自己在前进/后退，还会露出旧页被盖住的边缘（用户实测反馈就是这个）。
+
+  为什么 120ms：短到不觉得"在等动画"，又长到足以让两页之间的切换不刺眼。
+  ⚠️ 这里刻意**没有 translate**：一旦加了水平位移，就又变回"推入"了。
+-->
+<set xmlns:android="http://schemas.android.com/apk/res/android">
+    <alpha
+        android:duration="120"
+        android:fromAlpha="0.0"
+        android:toAlpha="1.0" />
+</set>

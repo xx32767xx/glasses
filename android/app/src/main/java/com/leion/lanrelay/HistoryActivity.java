@@ -66,9 +66,9 @@ public class HistoryActivity extends android.app.Activity {
         hintView = findViewById(R.id.historyHint);
         list = findViewById(R.id.historyList);
 
-        findViewById(R.id.homeNavHome).setOnClickListener(v -> goHome());
-        findViewById(R.id.homeNavMe).setOnClickListener(v ->
-                startActivity(new Intent(this, MeActivity.class)));
+        // 底部导航（4.93）：统一走 NavTabs.go —— 交叉淡化换页，不用默认的"从右侧推入覆盖"
+        findViewById(R.id.homeNavHome).setOnClickListener(v -> NavTabs.go(this, NavTabs.HOME));
+        findViewById(R.id.homeNavMe).setOnClickListener(v -> NavTabs.go(this, NavTabs.ME));
         findViewById(R.id.homeNavHistory).setOnClickListener(v -> { });
 
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
@@ -85,12 +85,23 @@ public class HistoryActivity extends android.app.Activity {
         load();
     }
 
-    /** 首页那颗：回到返回栈里已有的首页（没有才新开），别叠出一串。 */
+    /**
+     * 返回键也走同一套淡化（4.93）：否则点导航是淡化、按返回是"从右侧推回"，
+     * 同一件事两种动画，看着像两个机制在抢。
+     */
+    @Override
+    public void onBackPressed() {
+        super.onBackPressed();
+        overridePendingTransition(R.anim.nav_fade_in, R.anim.nav_fade_out);
+    }
+
+    /** 回到首页（4.93 起只是转调 {@link NavTabs#go}，动画与底部导航完全一致）。
+     *
+     * <p>保留这个薄壳是因为它被别的路径用到（详情页返回、空状态引导），
+     * 而"回首页"的行为只能有一处实现 —— 分散写就会各用各的动画。
+     */
     private void goHome() {
-        Intent intent = new Intent(this, HomeActivity.class);
-        intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        startActivity(intent);
-        finish();
+        NavTabs.go(this, NavTabs.HOME);
     }
 
     private void load() {

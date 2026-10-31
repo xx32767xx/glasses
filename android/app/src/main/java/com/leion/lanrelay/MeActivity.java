@@ -91,17 +91,11 @@ public class MeActivity extends android.app.Activity {
         findViewById(R.id.meRowHelp).setOnClickListener(v -> showHelp());
         findViewById(R.id.meLogout).setOnClickListener(v -> confirmLogout());
 
-        // 底部导航：首页跳回去；历史还没有内容；我的就是这一页
-        // 首页那颗：回到返回栈里已有的首页（没有才新开），否则来回点会叠出一串首页
-        findViewById(R.id.homeNavHome).setOnClickListener(v -> {
-            Intent intent = new Intent(this, HomeActivity.class);
-            intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-            startActivity(intent);
-            finish();
-        });
+        // 底部导航（4.93）：统一走 NavTabs.go —— 交叉淡化换页（不是默认的"从右侧推入覆盖"），
+        // 并且栈里最多留「首页 + 当前页」，来回点不会叠出一串页面。
+        findViewById(R.id.homeNavHome).setOnClickListener(v -> NavTabs.go(this, NavTabs.HOME));
         findViewById(R.id.homeNavMe).setOnClickListener(v -> { });
-        findViewById(R.id.homeNavHistory).setOnClickListener(v ->
-                startActivity(new Intent(this, HistoryActivity.class)));
+        findViewById(R.id.homeNavHistory).setOnClickListener(v -> NavTabs.go(this, NavTabs.HISTORY));
         NavTabs.apply(this, NavTabs.ME);
 
         refreshAll();
@@ -110,6 +104,18 @@ public class MeActivity extends android.app.Activity {
     }
 
     // ── 个人卡片 ────────────────────────────────────────────────────────
+    /**
+     * 返回键也走同一套淡化（4.93）。
+     *
+     * <p>不写这一条的话：点导航切页是淡化，按返回键却还是"从右侧推回"——
+     * 同一件事两种动画，看着像两个不同的机制在抢。
+     */
+    @Override
+    public void onBackPressed() {
+        super.onBackPressed();
+        overridePendingTransition(R.anim.nav_fade_in, R.anim.nav_fade_out);
+    }
+
     private void refreshAll() {
         String shown = userName == null ? "" : userName;
         nameView.setText(shown);
