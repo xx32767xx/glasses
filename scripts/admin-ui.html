@@ -33,6 +33,8 @@
   .btn.ghost { background:transparent; border:1px solid var(--line); color:var(--muted); font-weight:500; padding:7px 12px; }
   .btn.ok { background:var(--ok); color:#052e20; padding:6px 12px; font-weight:600; }
   .btn.bad { background:var(--bad); color:#2b0b12; padding:6px 12px; font-weight:600; }
+    /* 4.99：不可逆的清理动作，用危险色标注（和普通按钮区分开） */
+    .btn.danger { background:rgba(229,72,77,.16); color:#ff8b8f; border:1px solid rgba(229,72,77,.5); padding:6px 12px; font-weight:600; }
   .msg { margin-top:12px; font-size:12.5px; min-height:18px; color:var(--muted); }
   .msg.err { color:var(--bad); }
 
@@ -159,6 +161,29 @@
     </section>
 
     <section class="panel" style="grid-column:1/-1">
+      <h2>会议历史数据 <span class="pill" id="historyPill">—</span></h2>
+      <div class="body">
+        <div class="mono">
+          会议一多，数据库里的转写和 <code>audio/</code> 下的录音会一直长。这里可以看清楚
+          <b>每场会占多少</b>，再按范围清理。⚠️ 清理是<b>真的删数据</b>（不是"从我的列表里藏起来"），
+          <b>进行中的会议永远不删</b>。
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button class="btn ghost" onclick="loadHistoryAdmin()">刷新</button>
+          <input id="purgeDays" placeholder="保留天数（默认 7）" style="width:170px">
+          <button class="btn" onclick="purgeHistoryOlder()">删除更早的已结束会议</button>
+          <button class="btn danger" onclick="purgeHistoryAll()">清空全部已结束会议</button>
+        </div>
+        <div class="row">
+          <button class="btn ghost" onclick="toggleAllHistory()">全选/取消</button>
+          <button class="btn" onclick="purgeHistorySelected()">删除选中的</button>
+          <span class="tag" id="historySelection">未选中</span>
+        </div>
+        <div id="historyAdmin"><div class="empty">加载中…</div></div>
+      </div>
+    </section>
+
+    <section class="panel" style="grid-column:1/-1">
       <h2>批量导入库</h2>
       <div class="body">
         <div class="mono">粘贴 JSON 数组；每条一个库（<code>id</code> 可省，省了就是新建）。</div>
@@ -259,6 +284,119 @@ function enterConsole() {
   pill.className = 'pill ' + (me.role === 'admin' ? 'on' : '');
   document.getElementById('who').textContent = me.user + (me.role === 'admin' ? '' : '（非管理员：只能看库，改不了）');
   loadDataset(); loadMeeting(); loadRooms(); loadLibraries(); loadPending(); loadAccounts();
+  loadHistoryAdmin();
+}
+
+// ── 4.99 会议历史数据（清理）──────────────────────────────────────────────
+// 为什么放在管理员页：「数据越来越多、测试环境的也没保留价值」，但删哪些要**看得见**再决定。
+// 三个入口：删更早的（按天数）、删全部已结束的、删勾选的。进行中的会议永远不会被删。
+let historyRows = [];
+const historyChecked = new Set();
+
+function humanBytes(bytes) {
+  const n = Number(bytes || 0);
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+  return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+}
+
+function when(text) {
+  return text ? String(text).slice(0, 16).replace('T', ' ') : '—';
+}
+
+async function loadHistoryAdmin() {
+  const box = document.getElementById('historyAdmin');
+  const pill = document.getElementById('historyPill');
+  try {
+    const data = await api('/org/history/admin');
+    historyRows = data.items || [];
+    const totals = data.totals || {};
+    pill.textContent = (totals.rooms || 0) + ' 场 · ' + (totals.utterances || 0) + ' 条转写 · '
+      + humanBytes(totals.audioDirBytes || 0);
+    pill.className = 'pill on';
+    if (historyRows.length === 0) {
+      box.innerHTML = '<div class="empty">还没有任何会议记录</div>';
+      document.getElementById('historySelection').textContent = '未选中';
+      return;
+    }
+    box.innerHTML = '<table><thead><tr>'
+      + '<th></th><th>会议</th><th>邀请码</th><th>发起者</th><th>成员</th><th>转写</th>'
+      + '<th>音频</th><th>最早一条</th><th>最近一条</th><th>状态</th></tr></thead><tbody>'
+      + historyRows.map((r) => '<tr>'
+        + '<td><input type="checkbox" data-id="' + r.id + '" '
+        + (historyChecked.has(r.id) ? 'checked' : '')
+        + (r.active ? ' disabled title="进行中的会议不能删"' : '') + '></td>'
+        + '<td><b>' + r.name + '</b></td>'
+        + '<td class="mono">' + r.code + '</td>'
+        + '<td>' + (r.host || '—') + '</td>'
+        + '<td>' + r.members + ' 人</td>'
+        + '<td>' + r.utterances + ' 条</td>'
+        + '<td class="mono">' + humanBytes(r.audioBytes) + '</td>'
+        + '<td class="mono">' + when(r.firstAt) + '</td>'
+        + '<td class="mono">' + when(r.lastAt) + '</td>'
+        + '<td>' + (r.active ? '<span class="tag">进行中</span>' : '已结束') + '</td></tr>').join('')
+      + '</tbody></table>';
+    box.querySelectorAll('input[type=checkbox]').forEach((el) => {
+      el.addEventListener('change', () => {
+        if (el.checked) historyChecked.add(el.dataset.id); else historyChecked.delete(el.dataset.id);
+        renderHistorySelection();
+      });
+    });
+    renderHistorySelection();
+  } catch (error) {
+    pill.textContent = '—';
+    box.innerHTML = '<div class="empty">' + String(error.message || error) + '</div>';
+  }
+}
+
+function renderHistorySelection() {
+  const label = document.getElementById('historySelection');
+  const deletable = historyRows.filter((r) => historyChecked.has(r.id) && !r.active);
+  label.textContent = deletable.length === 0 ? '未选中' : '已选中 ' + deletable.length + ' 场';
+}
+
+function toggleAllHistory() {
+  const ended = historyRows.filter((r) => !r.active);
+  const allChecked = ended.length > 0 && ended.every((r) => historyChecked.has(r.id));
+  historyChecked.clear();
+  if (!allChecked) ended.forEach((r) => historyChecked.add(r.id));
+  loadHistoryAdmin();
+}
+
+async function purgeHistorySelected() {
+  const ids = historyRows.filter((r) => historyChecked.has(r.id) && !r.active).map((r) => r.id);
+  if (ids.length === 0) { toast('先勾选要删的会议（进行中的删不了）'); return; }
+  if (!confirm('删除选中的 ' + ids.length + ' 场会议？\n转写、成员、音频、字幕总线都会被删掉，不能恢复。')) return;
+  await doPurge({ mode: 'rooms', roomIds: ids });
+}
+
+async function purgeHistoryOlder() {
+  const days = Number(document.getElementById('purgeDays').value || 7);
+  if (!confirm('删除 ' + days + ' 天以前**已结束**的会议？\n转写与音频都会被删掉，不能恢复。')) return;
+  await doPurge({ mode: 'older-than', days });
+}
+
+async function purgeHistoryAll() {
+  if (!confirm('清空**全部已结束**的会议？\n这是批量删数据，不能恢复。进行中的会议不受影响。')) return;
+  if (!confirm('再确认一次：真的清空吗？')) return;
+  await doPurge({ mode: 'all' });
+}
+
+async function doPurge(payload) {
+  try {
+    const data = await api('/org/history/admin/purge', {
+      method: 'POST', body: JSON.stringify(payload),
+    });
+    const skipped = (data.skipped || []).length;
+    toast('删了 ' + data.deletedRooms + ' 场 / ' + data.deletedUtterances + ' 条转写，'
+      + '释放 ' + humanBytes(data.freedBytes) + (skipped ? '（跳过 ' + skipped + ' 场）' : ''));
+    historyChecked.clear();
+    loadHistoryAdmin();
+    loadRooms();
+  } catch (error) {
+    toast('清理失败：' + String(error.message || error));
+  }
 }
 
 async function loadMeeting() {

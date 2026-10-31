@@ -29,7 +29,7 @@ import { readJson, writeJsonAtomic } from '../lib/store.mjs'
 import { listLibraries, loadLibrary, loadCategories, saveLibrary, importLibraries } from '../lib/libraries.mjs'
 import { createRequest, decideRequest, hideRequest, loadRequests, pendingOf, visibleOfMine, withdrawRequest } from '../lib/requests.mjs'
 import { writeMeetingSnapshot } from '../lib/snapshot.mjs'
-import { createRoom, hideHistoryForUser, isRoomClosed, joinRoom, leaveRoom, listHistory, listMembers, listRoomTranscript, listRooms, removeMember, roomByCode, roomById, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
+import { createRoom, hideHistoryForUser, isRoomClosed, joinRoom, leaveRoom, listHistory, listHistoryForAdmin, listMembers, listRoomTranscript, listRooms, purgeHistory, removeMember, roomByCode, roomById, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
 import { FLOOR_LOCKED_LEASE_MS, FLOOR_LEASE_MS, floorState, forceReleaseFloor, heartbeatFloor, releaseFloor, setFloorLock, sweepExpiredFloor, takeFloor } from '../lib/floor.mjs'
 import { publishMeetingTerms } from '../lib/meeting-terms.mjs'
 
@@ -184,7 +184,10 @@ export async function handleOrg(input) {
   }
 
   // 历史记录（4.69）：我参加过的会议 + 字幕保存期（客户端顶部要写“记录保存 N 天”）。
-  if (method === 'GET' && segments[0] === 'org' && segments[1] === 'history') {
+  // ⚠️ 4.99：管理员那两条（/org/history/admin…）必须排在**这条之前** —— 否则
+  // `/org/history/admin` 会被这条宽匹配接走（它只要求 meeting.configure，测试账号也能读），
+  // 表现是"非管理员居然读到了整机清单"。测试里专门钉了这一点。
+  if (method === 'GET' && segments[0] === 'org' && segments[1] === 'history' && segments[2] !== 'admin') {
     if (allowed(role, 'meeting.configure') !== true) return deny(role, 'meeting.configure')
     // handleOrg 拿到的是**路径串**（不是 URL 对象）：query 自己切，不能写 url.searchParams
     const queryAt = path.indexOf('?')
@@ -200,6 +203,75 @@ export async function handleOrg(input) {
         // 保留期由服务端定（start-all / relay 的 --utterance-retention-days），客户端不自己编一个
         // 保留期由服务端定（relay 的 --utterance-retention-days）；客户端不自己编一个
         retentionDays: Number(input.utteranceRetentionDays ?? 7),
+      },
+    }
+  }
+
+  // ── 4.99 管理员：会议历史数据的清单与清理 ────────────────────────────────
+  //
+  // 为什么需要：会议一多，`utterances` 表与 `audio/` 目录会一直长；测试环境的数据
+  // 本来也没有保留价值。但"删哪些"必须**看得见**才敢删 —— 所以先给清单（每场会的
+  // 转写条数、时间跨度、音频大小），再给三种清理范围，全部进管理员页。
+  if (method === 'GET' && segments[1] === 'history' && segments[2] === 'admin') {
+    if (allowed(role, 'history.purge') !== true) return deny(role, 'history.purge')
+    const inventory = listHistoryForAdmin(root, { limit: 500 })
+    // 音频体积按文件算（relay 的 roomAudioPath 是唯一规则，这里不重复拼路径）
+    const items = inventory.items.map((one) => {
+      let audioBytes = 0
+      try {
+        audioBytes = Number(input.audioBytesOf?.(one.id) ?? 0)
+      } catch { audioBytes = 0 }
+      return { ...one, audioBytes }
+    })
+    const totalAudioBytes = items.reduce((sum, one) => sum + one.audioBytes, 0)
+    return {
+      status: 200,
+      json: {
+        ok: true,
+        items,
+        totals: {
+          ...inventory.totals,
+          audioBytes: totalAudioBytes,
+          // 整目录的音频（含已经结束、已经不在清单里的会议）
+          audioDirBytes: Number(input.audioDirBytes?.() ?? 0),
+        },
+        retentionDays: Number(input.utteranceRetentionDays ?? 7),
+      },
+    }
+  }
+
+  if (method === 'POST' && segments[1] === 'history' && segments[3] === 'purge' && segments.length === 4) {
+    if (allowed(role, 'history.purge') !== true) return deny(role, 'history.purge')
+    const mode = String(body.mode ?? 'older-than')
+    const result = purgeHistory(root, {
+      mode,
+      days: Number(body.days ?? 7),
+      roomIds: Array.isArray(body.roomIds) ? body.roomIds : [],
+      now,
+    })
+    if (result.ok !== true) return bad(400, result.error ?? '清理失败')
+    // 文件（音频 / 字幕总线 / 收件箱）由 relay 那边删 —— 它才有那几个路径的规则
+    let freedBytes = 0
+    if (typeof input.purgeHistoryFiles === 'function') {
+      try {
+        freedBytes = Number(input.purgeHistoryFiles(result.roomIds) ?? 0)
+      } catch (error) {
+        // 数据库已清、文件没删干净只是占点空间 —— 不能因此给管理员报错
+        // （他会以为"没删成功"反复点，每次都失败）。留一行日志即可。
+        if (typeof input.debug === 'function') {
+          input.debug(`清理文件失败（数据库已清）：${String(error?.message ?? error)}`)
+        }
+      }
+    }
+    return {
+      status: 200,
+      json: {
+        ok: true,
+        mode,
+        deletedRooms: result.deletedRooms,
+        deletedUtterances: result.deletedUtterances,
+        freedBytes,
+        skipped: result.skipped ?? [],
       },
     }
   }

@@ -33,7 +33,7 @@
 import { createServer } from 'node:http'
 import { createHash, randomBytes } from 'node:crypto'
 import { mkdir, appendFile, readFile, rename, stat, writeFile } from 'node:fs/promises'
-import { existsSync, mkdirSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import { readdir } from 'node:fs/promises'
 import { networkInterfaces } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -487,6 +487,50 @@ export function clientIp(request) {
 export function roomAudioPath(dataDir, roomId) {
   const safe = String(roomId ?? '').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64)
   return join(String(dataDir), 'audio', (safe === '' ? 'unknown' : safe) + '.pcm')
+}
+
+/**
+ * 删掉一场会议**留在磁盘上的东西**（4.99，管理员清理历史时用）。
+ *
+ * <p>这些文件的路径规则只有这个进程知道，所以清理也放在这里 —— 让 org-api 那边
+ * 重新拼一遍路径，迟早会拼错（拼错就是删掉别人的文件）。
+ *
+ * <p>逐类处理，**任何一类失败都不影响其它类**（清理是一次性动作，不该因为一个被占住的
+ * 文件就整批失败）：
+ * <ul>
+ *   <li>`audio/<房间>.pcm` 与它的 `.rate` / `.lang` 旁文件（原始录音，最占地方）；</li>
+ *   <li>`buses/<房间>.json`（目录模式每场一份；**单文件模式绝不动** —— 那是所有房间共用的）；</li>
+ *   <li>`asr-inbox-<房间>.jsonl`（收件箱按房间分文件）。</li>
+ * </ul>
+ *
+ * @returns {number} 实际释放的字节数（删不掉的按 0 算）
+ */
+export function removeRoomDataFiles(dataDir, roomIds, busPath = '') {
+  let freed = 0
+  const kill = (file) => {
+    try {
+      const size = statSync(file).size
+      unlinkSync(file)
+      freed += Number(size ?? 0)
+    } catch { /* 不存在 / 被占着：跳过 */ }
+  }
+  const bus = String(busPath ?? '')
+  let busIsDir = false
+  try {
+    busIsDir = bus !== '' && (bus.endsWith('/') || bus.endsWith('\\')
+      || (existsSync(bus) === true && statSync(bus).isDirectory()))
+  } catch { busIsDir = false }
+  for (const roomId of Array.isArray(roomIds) ? roomIds : []) {
+    const id = String(roomId ?? '').trim()
+    if (id === '') continue
+    const audio = roomAudioPath(dataDir, id)
+    kill(audio)
+    kill(audio + '.rate')
+    kill(audio + '.lang')
+    kill(join(dataDir, `asr-inbox-${id}.jsonl`))
+    if (busIsDir === true) kill(join(bus, `${id}.json`))
+  }
+  return freed
 }
 
 /**
@@ -2030,6 +2074,26 @@ export async function startRelay(rawOptions = {}) {
           root: options.dataDir,
           // 历史页顶部要写"记录保存 N 天"：这个值只能是服务端说，客户端不编
           utteranceRetentionDays: options.utteranceRetentionDays,
+          // ── 4.99 管理员清理历史：清单要"每个房间占多少音频"，清理要"把文件也删掉" ──
+          // 路径规则只有这个文件知道（roomAudioPath / 总线目录 / 收件箱按房间分文件），
+          // 所以由这里交给 org-api 回调，而不是让那边重新拼一遍路径（拼错就是删错文件）。
+          audioBytesOf: (roomId) => {
+            try {
+              return statSync(roomAudioPath(options.dataDir, roomId)).size
+            } catch { return 0 }
+          },
+          audioDirBytes: () => {
+            try {
+              const dir = join(options.dataDir, 'audio')
+              let total = 0
+              for (const name of readdirSync(dir)) {
+                try { total += statSync(join(dir, name)).size } catch { /* 正在写 */ }
+              }
+              return total
+            } catch { return 0 }
+          },
+          purgeHistoryFiles: (roomIds) => removeRoomDataFiles(options.dataDir, roomIds, options.busesDir ?? options.bus),
+          debug,
           // 断线清扫（4.42）：GET /floor 发现"锁着麦但人不在"时，顺手推给全房间
           onFloorSwept: (roomId, swept) => {
             try {

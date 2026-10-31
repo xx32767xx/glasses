@@ -44,6 +44,7 @@ import { runTermsEvalSuite } from './terms-eval-suite.mjs'
 import { runLibrarySuite } from './library-suite.mjs'
 import { runOrgApiSuite } from './org-api-suite.mjs'
 import { runOrgRelaySuite } from './org-relay-suite.mjs'
+import { runPurgeHistorySuite } from './purge-history-suite.mjs'
 import { runDiscoverSuite } from './discover-suite.mjs'
 import { runAndroidOrderSuite } from './android-order-suite.mjs'
 import { runAsrPackSuite } from './asr-pack-suite.mjs'
@@ -263,6 +264,13 @@ await runOrgApiSuite(helpers)
 // ── 7f. 同一批接口走真实 HTTP：token / 角色 / 验证码登录 / 管理页 ───────────────
 heading('组织接口·HTTP（邮箱验证码登录 / 无 token 401 / 用户 403 / 申请→审批闭环）')
 await runOrgRelaySuite(helpers)
+
+// ── 7g. 管理员清理会议历史（4.99）─────────────────────────────────────────
+// 这一套守的是「删数据」的三条边界：**进行中的会议永远不删**、
+// **dry-run 真的不删**（第一版 CLI 的"预览"直接就把数据删了）、
+// 以及数据库与磁盘（音频/总线/收件箱）要一起删干净。
+heading('管理员清理历史（清单 / 三种范围 / 进行中的不删 / dry-run 真的不删 / 文件一起删）')
+await runPurgeHistorySuite(helpers)
 
 // ── 7d3. 热词匹配器（"已知变体 → 规范写法"，纯字符串、零模型调用）────────────
 // 这是全功能里唯一能改字幕文字的地方，所以每条规则都配成对的负对照：

@@ -1344,6 +1344,9 @@ export async function runAndroidOrderSuite({ it, check }) {
       'libraryIds 必须是数组',
       // 申请审批侧（只有管理员 / 服务端自己会触发，手机上碰不到）
       '决定只能是', '缺少审批人', '缺少申请人',
+      // 4.99：管理员清理历史的报错只出现在**管理台网页**（手机没这个界面），不需要三语映射。
+      // 显式列在这里，是为了"漏掉"和"故意不映射"能分清。
+      '清理失败', '不认识的模式',
     ]
     const ignore = (raw) => IGNORE.some((i) => raw.startsWith(i))
     const matched = (raw) => exact.includes(raw) || pre.some((p) => raw.startsWith(p))
