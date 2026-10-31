@@ -651,6 +651,15 @@ export async function startRelay(rawOptions = {}) {
     roomLangsSent: new Map(),
     /** 每个房间收了多少字节音频（4.84 分流用；也给 /audio/rooms 报） */
     roomAudioBytes: new Map(),
+    /**
+     * 每个房间**已经写进 `<pcm>.lang` 的那个语种**（5.05）。
+     *
+     * <p>为什么要记：识别端读的就是那个旁文件。如果手机从来没上报过语种（或者上报的
+     * 是别的房间），旁文件就没有/是旧的，识别端于是"不知道这段是什么语言" ——
+     * 而日志上只看得到"识别端语种限定生效"这种下游现象，看不出根因在**上游没写**。
+     * 所以这里在**值变化时**打一行，把"这一场的语种到底是什么"钉在转发日志里。
+     */
+    roomLangWritten: new Map(),
     /** 复位日志限流用（4.81） */
     resetLogAt: 0,
     resetBurst: 0,
@@ -1675,6 +1684,12 @@ export async function startRelay(rawOptions = {}) {
               try {
                 await writeFile(`${target}.rate`, String(rate) + '\n', 'utf-8')
                 await writeFile(`${target}.lang`, String(lang) + '\n', 'utf-8')
+                // 5.05：语种只在**变化时**报一行 —— 旁文件写的是识别端唯一看得到的东西，
+                // "手机到底有没有上报语种"必须能在转发日志里查到（否则只能猜）。
+                if (state.roomLangWritten.get(audioRoom) !== lang) {
+                  state.roomLangWritten.set(audioRoom, lang)
+                  debug(`🗣 房间语种：${audioRoom} → ${lang}（已写 ${target}.lang，识别端按它解码）`)
+                }
               } catch (error) {
                 debug(`🎙 写房间旁文件失败（不影响音频）：${error && error.message ? error.message : error}`)
               }

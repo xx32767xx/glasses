@@ -196,10 +196,17 @@ def parse_args(argv=None):
     # 实测依据（pt-coraa 20 条真实巴葡口语，large-v3）：
     #   不限定 → 判定 {pt:19, he:1}，词错率 13.3%，那条被认成希伯来语的整句报废（100%）
     #   限定   → 只会是 pt 或 zh，整体 12.2%
-    # 这个系统只可能是中文与巴葡，所以"在 99 种里挑"是纯亏的自由度。
+    # 这个系统只可能是中文、巴葡与英语，所以"在 99 种里挑"是纯亏的自由度。
+    #
+    # ⚠️ 这条缺省值**漏过英语**（5.05 修，用户实测报的）：
+    #    5.00 起支持三种语言，但这里仍然是 `zh,pt` —— 于是"手机没上报语种"的那些段，
+    #    英语被强制按中文解码，日志里写着
+    #    「语种限定生效：全局最大是 en，限定到 ('zh','pt') 后取 zh」，
+    #    而出来的中文字幕是**听着像话、其实全错**的那一类（再译成葡语就更像真的了）。
+    #    护栏本身没错，错的是"候选集没跟着语言数量一起改"。
     # 传空串（`--lang-candidates ""`）可以关掉限定，回到"全域挑最大"。
-    parser.add_argument("--lang-candidates", default="zh,pt",
-                        help="不指定语种时的候选集（逗号分隔，缺省 zh,pt；空串=不限定）")
+    parser.add_argument("--lang-candidates", default="zh,pt,en",
+                        help="不指定语种时的候选集（逗号分隔，缺省 zh,pt,en；空串=不限定）")
     parser.add_argument("--file", default=None, help="转写一个音频文件而不是麦克风")
     parser.add_argument("--follow", default=None,
                         help="尾随一个**不断追加**的裸 PCM 文件（16-bit 小端、单声道）。"
@@ -418,6 +425,16 @@ def run_segment_producer(args, np):
                     else max(1, int(args.stop_after_idle * 1000)))
     print(f"[切句] {args.tag or '?'} 尾随 {args.follow} → 队列 {args.segment_dir}"
           f"（**不加载模型**，只做能量切句）", file=sys.stderr, flush=True)
+    # 语种旁文件的路径（与 PcmFollower 用的是同一个规则：<pcm>.with_suffix('.lang')）
+    lang_path = Path(args.follow).with_suffix('.lang')
+    # 5.05：**没有语种这件事必须说出来**。原来它是静默降级的：
+    #   切出的段 `lang: null` → 识别端退回候选集挑一个 → 英语被按中文解码，
+    #   而日志里只有一行"语种限定生效"，看不出根因是"旁文件没写/没读到"。
+    #   现在两种情形各报一次（启动时报一次，之后只在变化时报）：
+    #     · 有语种 → 说清是什么、从哪一段起生效；
+    #     · 没有语种 → 说清哪条路径读不到、这些段将不带语种、识别时会在哪些语言里挑。
+    reported_language = None
+    unknown_noticed = False
 
     produced = 0
 
@@ -431,11 +448,33 @@ def run_segment_producer(args, np):
               f"（{len(utterance) / args.samplerate:.1f}s，累计 {produced} 段）",
               file=sys.stderr, flush=True)
 
+    def report_language():
+        """把"之后切出的段带什么语种"说清楚（只在变化时打印一次）。"""
+        nonlocal unknown_noticed, reported_language
+        if language is not None:
+            unknown_noticed = False
+            if language != reported_language:
+                reported_language = language
+                tag = follower.lang_notice[0] if follower.lang_notice is not None else language
+                follower.lang_notice = None
+                print(f"[切句] {args.tag or '?'} 语种 = {tag}（Whisper 码 {language}）"
+                      f"→ 之后切出的每段都带它", file=sys.stderr, flush=True)
+            return
+        if not unknown_noticed:
+            unknown_noticed = True
+            print(f"[切句] {args.tag or '?'} 没有语种可带（{lang_path} 读不到或为空）"
+                  f"→ 这些段不带语种，识别时在 {tuple(args.lang_candidates or ())} 里按模型判定",
+                  file=sys.stderr, flush=True)
+
+    if not args.no_sidecar_lang:
+        report_language()
+
     try:
         while True:
             blocks = follower.read()
             if not args.no_sidecar_lang:
                 language = follower.read_language(default=language)
+                report_language()
             if blocks:
                 idle.saw_data()
                 for block in blocks:

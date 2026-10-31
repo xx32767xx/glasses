@@ -500,8 +500,15 @@ def main():
     #   限定到 zh,pt → 只会是这两种，词错率 12.2%（与"直接强制 pt"一模一样）
     # 这个系统只可能是中文与巴葡，所以"在 99 种里挑"是纯亏的自由度。
     heading("限定候选语种 · --lang-candidates")
-    check("缺省就是 zh,pt（护栏默认生效，不靠人记得加）",
-          parse_args([]).lang_candidates == ("zh", "pt"), str(parse_args([]).lang_candidates))
+    # ⚠️ 5.05 改过缺省值：原来是 `zh,pt`，而 5.00 起系统已经有**三种语言**（中/英/葡）。
+    #    漏掉英语的后果不是"报错"，而是**英语被强制按中文解码**：用户实测日志
+    #      「语种限定生效：全局最大是 en，限定到 ('zh','pt') 后取 zh」
+    #    于是英文说话生成一段听起来像话、其实全错的中文，再译成葡语就更像真的了。
+    #    所以这条断言现在钉的是"缺省必须覆盖全部三种语言"。
+    check("缺省覆盖三种语言 zh,pt,en（护栏默认生效，不靠人记得加）",
+          parse_args([]).lang_candidates == ("zh", "pt", "en"), str(parse_args([]).lang_candidates))
+    check("缺省里必须有英语（少了它 = 英语被按中文解码）",
+          "en" in parse_args([]).lang_candidates, str(parse_args([]).lang_candidates))
     check("显式写也对", parse_args(["--lang-candidates", "zh,pt"]).lang_candidates == ("zh", "pt"))
     check("顺序按写法走、重复会去掉",
           parse_args(["--lang-candidates", "pt,pt,zh"]).lang_candidates == ("pt", "zh"),
@@ -561,6 +568,14 @@ def main():
     tricky = [("he", 0.64), ("pt", 0.30), ("zh", 0.02)]
     check("全局最大是 he 时，限定到 zh,pt 要取 pt（实测那条整句报废就是 he）",
           pick_language(tricky, ("zh", "pt")) == "pt", str(pick_language(tricky, ("zh", "pt"))))
+    # 5.05：三语之后最容易犯的错 —— 明明说了英语，候选集里没有 en，于是被判成中文。
+    english = [("en", 0.82), ("pt", 0.11), ("zh", 0.03)]
+    check("英语占优 + 缺省候选集（含 en）→ 取 en（这就是 5.05 修的那条）",
+          pick_language(english, parse_args([]).lang_candidates) == "en",
+          str(pick_language(english, parse_args([]).lang_candidates)))
+    check("英语占优 + 旧的两语候选集 → 会被迫取 pt/zh（证明漏掉 en 真的会错）",
+          pick_language(english, ("zh", "pt")) == "pt",
+          str(pick_language(english, ("zh", "pt"))))
     check("不限定时仍然取全局最大（保留旧行为，便于对照）",
           pick_language(tricky, None) is None, "None = 不判，由调用方交给 Whisper 自动")
     clear = [("pt", 0.91), ("zh", 0.05)]

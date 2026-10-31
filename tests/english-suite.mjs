@@ -217,6 +217,28 @@ export async function runEnglishSuite({ it, check, assert }) {
     check('心跳/上传路径也把语言记下来', /hearLang = speak;/.test(room))
   })
 
+  await it('识别端的候选语种必须覆盖三种语言（5.05：漏了 en = 英语被按中文解码）', async () => {
+    const whisper = readFileSync(join(process.cwd(), 'bridge', 'whisper_stream.py'), 'utf-8')
+    // 用户实测日志：「语种限定生效：全局最大是 en，限定到 ('zh','pt') 后取 zh」
+    // 这句一出现，英语就被当成中文认了 —— 出来的中文字幕听着像话、其实全错。
+    check('缺省候选集含英语',
+      /--lang-candidates", default="zh,pt,en"/.test(whisper), '缺省里没有 en，英语方向必错')
+    // 产线**不能**自己把候选集收窄：谁传了 --lang-candidates，谁就要为"漏语种"负责
+    const multi = readFileSync(join(process.cwd(), 'scripts', 'start-multi.mjs'), 'utf-8')
+    const worker = readFileSync(join(process.cwd(), 'bridge', 'asr-worker.mjs'), 'utf-8')
+    check('start-multi 与 asr-worker 都不写死候选集（用缺省）',
+      !/--lang-candidates/.test(multi) && !/--lang-candidates/.test(worker),
+      '有人写死成 zh,pt 时，英语会静默失效')
+    // 没有语种时必须说出来（原来这一段是静默的：段里 lang=null，日志上只有下游现象）
+    check('切句端会报"没有语种可带"以及读的是哪个旁文件',
+      /没有语种可带（/.test(whisper) && /lang_path = Path\(args\.follow\)\.with_suffix\('\.lang'\)/.test(whisper))
+    check('有了语种也会报一行（从哪一段起生效）', /语种 = \{tag\}（Whisper 码/.test(whisper))
+    // 转发端：旁文件写的是什么语种，必须在日志里查得到
+    const relay = readFileSync(join(process.cwd(), 'relay', 'lan-relay.mjs'), 'utf-8')
+    check('relay 在语种变化时打一行（旁文件写的内容可见）',
+      /roomLangWritten/.test(relay) && /房间语种：\$\{audioRoom\} → \$\{lang\}/.test(relay))
+  })
+
   await it('转写：同一句的多语言译文合成**一行**（带 dst_by_lang）', async () => {
     const dbSource = readFileSync(join(process.cwd(), 'lib', 'db.mjs'), 'utf-8')
     check('utterances 有 dst_by_lang 列（旧库自动补）',
