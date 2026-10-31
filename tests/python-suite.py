@@ -2211,6 +2211,24 @@ def main():
           consumer_src.index("os.unlink") > consumer_src.index("processed += 1"),
           "unlink 出现在转写之前")
 
+    heading("队列契约 · 语种码 → 语种标签（4.94：这一个 bug 让翻译全废）")
+    # 真实事故：队列消费者把 Whisper 码（`zh`）原样写进收件箱的 `from`，
+    # 插件判不出翻译方向，报「目标语种无法推导，请显式传 to」——
+    # 识别其实完全正常，所以这条错误把人带去了完全无关的地方。
+    check("zh → zh-CN", whisper_stream.language_tag("zh") == "zh-CN")
+    check("pt → pt-BR", whisper_stream.language_tag("pt") == "pt-BR")
+    check("已经是标签时幂等（zh-CN 原样返回）", whisper_stream.language_tag("zh-CN") == "zh-CN")
+    check("大小写/空格容忍（ ZH ）", whisper_stream.language_tag(" ZH ") == "zh-CN")
+    check("None → None（不猜）", whisper_stream.language_tag(None) is None)
+    check("认不出的码 → None（不猜）", whisper_stream.language_tag("xx") is None)
+    check("空串 → None", whisper_stream.language_tag("") is None)
+    consumer_src_again = inspect.getsource(whisper_stream.run_queue_consumer)
+    check("队列消费者用 language_tag 转换（不是原样写 resolved_language）",
+          "language_tag(resolved_language)" in consumer_src_again
+          and '"from": resolved_language' not in consumer_src_again, "又写回 Whisper 码了")
+    check("emit 也走同一个函数（两条出口不许各写一份映射）",
+          "language_tag(language)" in inspect.getsource(whisper_stream.emit), "emit 里还在查 LANG_TAGS")
+
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
     if failures:
         print("")

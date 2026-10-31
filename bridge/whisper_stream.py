@@ -526,9 +526,16 @@ def run_queue_consumer(args, np, model):
             else:
                 # ⚠️ 每行都带 room：下游（asr-worker）靠它把文字送回**这一场**的收件箱。
                 # 队列模式与"一个收件箱"的旧模式差别就在这里 —— 归属是**数据自带的**，不靠猜。
-                print(json.dumps({"room": meta.get("room"), "text": text,
-                                  "from": resolved_language},
-                                 ensure_ascii=False), flush=True)
+                #
+                # ⚠️ 4.94：`from` 必须是**语种标签**（`zh-CN`），不是 Whisper 码（`zh`）。
+                #    这里原样写 `resolved_language` 时，插件判不出翻译方向，报的是
+                #    「目标语种无法推导，请显式传 to」—— 而识别其实完全正常，
+                #    所以这条错误会把人的注意力引到错误的地方（用户实测踩到）。
+                payload = {"room": meta.get("room"), "text": text}
+                tag = language_tag(resolved_language)
+                if tag is not None:
+                    payload["from"] = tag
+                print(json.dumps(payload, ensure_ascii=False), flush=True)
             processed += 1
             # ⚠️ 处理完就删：队列目录同时是"待处理清单"，删掉才算消费完。
             for suffix in (".pcm", QUEUE_META_SUFFIX):
@@ -1617,6 +1624,27 @@ class IdleTracker:
 
 # ── 主流程 ───────────────────────────────────────────────────────────────────
 
+def language_tag(code):
+    """Whisper 语种码 → 收件箱/手机用的语种标签（`zh` → `zh-CN`）。
+
+    <p>为什么必须单独一个函数：这是**两种码的边界**，而两边都"看起来对"——
+    `zh` 和 `zh-CN` 都长得像语种，写错了不会报错，只会让插件判不出翻译方向。
+    4.94 就是这么错的：队列消费者把 `resolved_language`（Whisper 码 `zh`）原样写进
+    `from`，插件于是报「目标语种无法推导，请显式传 to」——识别是好的、翻译全废，
+    而日志里只有一句与语种无关的报错。
+    认不出来返回 None（让下游自己判，**不猜**）。已经是标签的（`zh-CN`）原样返回 ——
+    幂等，免得"归一化两次"这种低级错误。
+    """
+    if not isinstance(code, str):
+        return None
+    text = code.strip()
+    if text == "":
+        return None
+    if text in LANG_TAGS.values():
+        return text
+    return LANG_TAGS.get(text.split("-")[0].lower())
+
+
 def emit(text: str, language=None):
     """一行一句话，立刻 flush：延迟就是同传的命。
 
@@ -1629,7 +1657,7 @@ def emit(text: str, language=None):
         return
     if EMIT_FORMAT == "json":
         payload = {"text": clean}
-        tag = LANG_TAGS.get(language)
+        tag = language_tag(language)
         if tag is not None:
             payload["from"] = tag
         print(json.dumps(payload, ensure_ascii=False), flush=True)

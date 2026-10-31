@@ -135,6 +135,27 @@ export function inboxPathFor(inboxDir, roomId) {
 }
 
 /**
+ * 语种码 → 语种标签（`zh` → `zh-CN`）。
+ *
+ * <p><b>唯一真相在 python 那边</b>（`whisper_stream.language_tag` / `LANG_TAGS`），
+ * 这里只是一道**保险**：4.94 出的那个 bug（队列消费者把 `zh` 原样当 `from` 写进收件箱）
+ * 让插件报「目标语种无法推导，请显式传 to」——识别全对、翻译全废，而错误信息完全没提语种。
+ * 这类错误在两侧任何一侧写错都会复现，所以两边都归一化；真的走到这里会打一行 stderr，
+ * 提醒"上游又漂了"，而不是悄悄吃掉。
+ */
+export function normalizeLangTag(from) {
+  if (typeof from !== 'string') return null
+  const text = from.trim()
+  if (text === '') return null
+  if (text.includes('-')) return text            // 已经是 zh-CN / pt-BR
+  const code = text.toLowerCase()
+  if (code === 'zh') return 'zh-CN'
+  if (code === 'pt') return 'pt-BR'
+  if (code === 'en') return 'en-US'
+  return null                                    // 认不出：交给插件自己判，**不猜**
+}
+
+/**
  * 把一行识别结果落进对应房间的收件箱。
  *
  * <p>格式与老链路**完全一致**（`{"text":…,"from":…}` 一行一句），所以大脑与插件零改动。
@@ -142,9 +163,8 @@ export function inboxPathFor(inboxDir, roomId) {
  * 常开句柄会让"某一场会关掉后文件还被占着"（Windows 上改不了名、删不掉）。
  */
 export function appendInboxLine(inboxDir, roomId, text, from, { fs = null } = {}) {
-  const line = JSON.stringify(from === null || from === undefined
-    ? { text }
-    : { text, from })
+  const tag = normalizeLangTag(from)
+  const line = JSON.stringify(tag === null ? { text } : { text, from: tag })
   const file = inboxPathFor(inboxDir, roomId)
   if (fs !== null) {                     // 测试注入：不必真写盘
     fs.append(file, line + '\n')
@@ -293,7 +313,16 @@ export async function main(argv = process.argv.slice(2)) {
     }
     const spoken = typeof payload.text === 'string' ? payload.text.trim() : ''
     if (spoken === '') return                 // 空句不写（与老链路一致）
-    appendInboxLine(options.inboxDir, room, spoken, payload.from ?? null)
+    const raw = payload.from ?? null
+    const tag = normalizeLangTag(raw)
+    if (tag === null && raw !== null && raw !== undefined && String(raw).trim() !== '') {
+      // 上游给了个认不出的语种码 → 明确说一句，而不是静默丢掉方向（4.94 的教训）
+      process.stderr.write(`${TAG} 认不出的语种码 ${JSON.stringify(raw)}（房间 ${room}），`
+        + '这一行不带 from，插件会自己判方向\n')
+    } else if (tag !== raw && tag !== null) {
+      process.stderr.write(`${TAG} 语种码归一化：${JSON.stringify(raw)} → ${tag}（房间 ${room}）\n`)
+    }
+    appendInboxLine(options.inboxDir, room, spoken, raw)
     if (process.env.LEION_DEBUG === '1') {
       process.stdout.write(`${TAG} ${room} → ${spoken}\n`)
     }

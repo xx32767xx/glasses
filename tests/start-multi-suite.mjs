@@ -403,6 +403,27 @@ export async function runStartMultiSuite({ it, check, assert }) {
     rmSync(base, { recursive: true, force: true })
   })
 
+  await it('收件箱里的 from 必须是语种标签（4.94：写了 zh 就翻译全废）', async () => {
+    // 真实事故：队列消费者把 Whisper 码 `zh` 写成 from，插件报
+    // 「目标语种无法推导，请显式传 to」——识别是好的，翻译一条都出不来。
+    const { normalizeLangTag, appendInboxLine } = await import('../bridge/asr-worker.mjs')
+    check('zh → zh-CN', normalizeLangTag('zh') === 'zh-CN', String(normalizeLangTag('zh')))
+    check('pt → pt-BR', normalizeLangTag('pt') === 'pt-BR', String(normalizeLangTag('pt')))
+    check('已经是标签就原样保留', normalizeLangTag('zh-CN') === 'zh-CN', String(normalizeLangTag('zh-CN')))
+    check('认不出的不猜', normalizeLangTag('xx') === null, String(normalizeLangTag('xx')))
+    check('空/非字符串不猜', normalizeLangTag('') === null && normalizeLangTag(null) === null)
+
+    const base = join(VAR_DIR, 'test', 'multi-suite-inbox-tag')
+    rmSync(base, { recursive: true, force: true })
+    mkdirSync(base, { recursive: true })
+    appendInboxLine(base, ROOM_A, '这句话', 'zh')
+    appendInboxLine(base, ROOM_A, 'outra frase', 'pt-BR')
+    const lines = readFileSync(join(base, `asr-inbox-${ROOM_A}.jsonl`), 'utf-8').trim().split('\n')
+    check('落盘时已经把 zh 换成 zh-CN', JSON.parse(lines[0]).from === 'zh-CN', lines[0])
+    check('葡语保持不变', JSON.parse(lines[1]).from === 'pt-BR', lines[1])
+    rmSync(base, { recursive: true, force: true })
+  })
+
   // ── 3. 房间调度：哪些该跑、哪些该收 ────────────────────────────────────────
 
   const rooms = [
