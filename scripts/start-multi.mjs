@@ -6,12 +6,15 @@
  * 它和 start-all 的分工（这是**唯一**需要记住的一点）：
  *
  *   start-all  = 单套管线：转发 + 识别 + 大脑，收件箱/字幕总线都是**一个文件**。
- *   start-multi= 多场会并行：转发**一个**（读目录）+ 每场会**各一套**识别/大脑。
+ *   start-multi= 多场会并行：转发**一个**（读目录）+ 每场会**一个切句 + 一个大脑**，
+ *                识别是**全局唯一一个**（模型只加载一次）—— 见下面的"三种识别模式"。
  *
  * 原因是并发下"谁说的话"必须能分开：
- *   · 手机上传音频时带 `room=<房间id>`，relay 把声音**分流**到 `audio/<房间id>.pcm`；
- *   · 每场会一套识别进程各跟自己的 pcm，各写自己的收件箱；
- *   · 每场会一套大脑，各写自己的字幕总线文件 `buses/<房间id>.json`；
+ *   · 手机上传音频时带 `room=<房间id>`，relay 把声音**按房间、按说话人**分流到
+ *     `audio/<房间id>/<说话人>.pcm`（5.08：每人一路，语种才不会被别人覆盖）；
+ *   · 每场会**一个切句进程**尾随自己那个目录（纯 CPU、不加载模型），把段写进共享队列；
+ *   · **一个**识别消费者（`bridge/asr-worker.mjs`）从队列取段转写 —— 一份模型服务所有房间；
+ *   · 每场会一个大脑，各写自己的字幕总线文件 `buses/<房间id>.json`；
  *   · relay 用 `--bus <目录>` 读这个目录 —— 一个文件一场会，互不覆盖。
  *
  * 为什么要有它：那份手写四终端说明（docs/24 §6.5.3）只是**示例**，
@@ -20,7 +23,9 @@
  * 缺管线就补一套、房间散了就把那套收掉，并且只起一个转发进程。
  *
  * 它不会做的事（刻意不做）：
- *   · 不会自动改模型档位 —— 显存不够会**直说**（见启动横幅的提示），但要你自己决定；
+ *   · 不会自动改模型档位 —— **显存不够会直说**（见启动横幅与 memoryHint），但要你自己决定。
+ *     注意：缺省是**队列模式，显存里只有一份模型**；只有 `--parallel-translate`
+ *     才是"每场一份"，那时 `--whisper-model/--compute/--max-rooms` 才有意义；
  *   · 不会把一场会的术语快照隔离出去 —— `meeting-terms/` 目前是**全局一份**，
  *     两场会都点"开始同传"时后者覆盖前者（docs/21 §4.86 写了这件事和代价）；
  *   · 不会假装老同传 App 也走这条路 —— 它上传音频不带 `room=`，走的是单房间 start-all。
@@ -65,18 +70,25 @@ const HELP = `start-multi —— 一条命令起「多场会并行」
   --compute <类型>       GPU 精度：float16（缺省）/ int8_float16 / int8_float32 / int8 / float32
   --whisper-model <尺寸> tiny/base/small/medium/large-v3（缺省：GPU large-v3、CPU small）
 
-  --parallel-translate   翻译管线**并行**（缺省是串行，见下）。每场会各占一份模型，
-                         显存够才开；配 --max-rooms 限流
-  --serial-translate     显式声明串行（缺省行为，写出来是为了让命令自解释）
+  --queue-translate      显式声明队列模式（**缺省就是这个**，写出来是为了让命令自解释）
+  --serial-translate     串行：同一刻只翻一场（换场要重载模型）
+  --parallel-translate   并行：每场各占一份模型（显存够两份才开），配 --max-rooms 限流
   --switch-idle-ms <n>   串行模式下，正在翻的那场安静多久才让位（缺省 15000）
   --min-hold-ms <n>      至少待多久才允许切走（缺省 8000，防止两场来回抢、一直重载模型）
-  --max-rooms <n>        并行模式下最多几场（缺省 0 = 不限）；串行模式下只能 1
+  --max-rooms <n>        同时最多几场（缺省 0 = 不限）；串行模式下只能 1
 
-  串行 vs 并行（缺省串行，2026-10-30 定）：每场会一套识别 = 一份 whisper 模型
-  （large-v3 float16 约 5GB）。显存不够会 OOM，而现象是"识别挂了"，比报"显存不足"难查。
-  所以缺省**同一刻只翻一场**：谁在说话就翻谁，另一场排队（它的音频照常按房间落盘，
-  轮到它时从"现在"往后翻）。**其他并行一件没少**：音频按房间分流、每场一个字幕总线、
-  房间级 WS 帧、历史与转写全文。显存够了加 --parallel-translate 就恢复并行。
+  三种识别模式（**缺省 queue**，2026-10-30 按显存现状定的）：
+
+    queue（缺省） 每场一个**切句**进程（纯 CPU、**不加载模型**）→ 队列 → **一个**识别进程。
+                  → **显存里始终只有 1 份模型**，与房间数无关。房间多只影响吞吐：
+                    积压会报队列深度，**不丢数据**。
+    serial       每场一对「识别 + 大脑」，但同一刻只跑一场 → 显存里也是 1 份模型，
+                 代价是每次换场**重载模型（几秒）**；另一场的音频照常落盘，轮到它时从"现在"往后翻。
+    parallel     每场一对「识别 + 大脑」同时跑 → **每场一份模型**（large-v3 float16 约 5GB，
+                 两场约 10GB）。这时显存不够会 OOM，而现象是"识别挂了"，比报"显存不足"难查。
+                 ⚠️ 只有这个模式才需要 --whisper-model medium / --compute int8_float16 / --max-rooms。
+  其他并行一件没少（与模式无关）：音频按房间**按说话人**分流、每场一个字幕总线、
+  房间级 WS 帧、历史与转写全文。
   --only <id,id>         只跑这几场（调试用）
   --poll-ms <n>          房间轮询间隔（缺省 3000）
   --grace-ms <n>         房间没人了之后等多久才收管线（缺省 60000）
@@ -588,17 +600,37 @@ export function planStop({ running = [], desired = [], absentSince = new Map(), 
 /**
  * 显存提醒（只在真的可能出问题时出现）。
  *
- * <p>每场会一套识别进程 = 每场会一份模型。large-v3 float16 约 5GB，
- * 两张卡都没有的时候，第二个房间起来就会 OOM 而**看起来像"识别挂了"**。
- * 与其等它 OOM，不如在启动横幅上就把账算清楚。
+ * <p>⚠️ 这句话**必须看模式**（5.09 修）。原来它无条件按"每场会一套识别 = 每场一份模型"
+ * 去算，于是队列模式（缺省）下开了两场会，横幅写着
+ * 「⚠️ 2 场会并行 = 2 份 large-v3（合计约 10.0GB）… 建议 --whisper-model medium」——
+ * 而实际上队列模式**只有一份模型**（全局唯一的 asr-worker），每个房间那个进程是
+ * **切句**（纯 CPU、不加载模型）。用户当场就看出来了："我看你依然起了两个模型去识别？"
+ *
+ * <p>三种模式的实际占用量：
+ * <ul>
+ *   <li><b>queue</b>（缺省）：1 份模型服务所有房间；房间多只影响**吞吐**（积压只报不丢），不影响显存；</li>
+ *   <li><b>serial</b>：同一刻只跑一场 → 显存里始终 1 份；代价是每次换场**重载模型**（几秒）；</li>
+ *   <li><b>parallel</b>：每场一份，N 场就是 N×。<b>这才是那句 warning 真正适用的地方</b>。</li>
+ * </ul>
  */
 export function memoryHint(options, roomCount) {
   if (roomCount <= 1) return null
+  const mode = options.translateMode ?? 'queue'
+  const perModel = options.whisperModel === 'large-v3' ? 5 : options.whisperModel === 'medium' ? 2.5 : 1
+  if (mode === 'queue') {
+    // 一份模型，与房间数无关。房间多要担心的是"识别跟不上"（积压），不是显存。
+    return `ℹ️ ${roomCount} 场会共用**一份**模型（队列模式：识别只有全局一个进程，其余是纯 CPU 的切句）`
+      + `——显存不随房间数增长；房间再多只影响吞吐，积压只报队列深度、不丢数据`
+  }
+  if (mode === 'serial') {
+    return `ℹ️ ${roomCount} 场会里同一刻只翻译一场（串行）——显存里始终只有 1 份 ${options.whisperModel}`
+      + `（${perModel}GB）。代价是每次换场要重载模型；想真并行用 --parallel-translate`
+  }
+  // parallel：每场一份，这才是原来那句话
   if (options.device !== 'cuda') {
     return `⚠️ ${roomCount} 场会并行 = ${roomCount} 份识别进程（CPU）。机器扛得住就好，扛不住就用 --max-rooms 限流`
   }
-  const perRoom = options.whisperModel === 'large-v3' ? 5 : options.whisperModel === 'medium' ? 2.5 : 1
-  return `⚠️ ${roomCount} 场会并行 = ${roomCount} 份 ${options.whisperModel}（每份约 ${perRoom}GB 显存，合计约 ${(perRoom * roomCount).toFixed(1)}GB）。`
+  return `⚠️ ${roomCount} 场会并行 = ${roomCount} 份 ${options.whisperModel}（每份约 ${perModel}GB 显存，合计约 ${(perModel * roomCount).toFixed(1)}GB）。`
     + `显存不够会直接 OOM、表现像"识别挂了" —— 建议 --whisper-model medium 或 --compute int8_float16，或用 --max-rooms 限流`
 }
 

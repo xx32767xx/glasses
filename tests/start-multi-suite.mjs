@@ -552,15 +552,30 @@ export async function runStartMultiSuite({ it, check, assert }) {
 
   // ── 7. 显存提醒与参数校验 ──────────────────────────────────────────────────
 
-  await it('显存提醒只在真会出问题时出现，而且说得具体', async () => {
-    const gpu = parseArgs([])                                  // cuda + large-v3
+  await it('显存提醒必须看**模式**：缺省队列模式只有一份模型，不许吓唬人', async () => {
+    // 现场：用户开了两场会，横幅写着「2 场会并行 = 2 份 large-v3（合计约 10.0GB）」，
+    // 而队列模式（缺省）里识别只有**一个**进程，其余进程是纯 CPU 的切句。
+    // 他当场反问"我看你依然起了两个模型去识别？"—— 那句话是两语/并行时代留下的，早就错了。
+    const gpu = parseArgs([])                                  // cuda + large-v3，缺省 queue
+    check('缺省模式就是队列', parseArgs([]).translateMode === 'queue', String(parseArgs([]).translateMode))
     check('一场会不啰嗦', memoryHint(gpu, 1) === null)
-    const two = memoryHint(gpu, 2)
-    check('两场会就提醒', typeof two === 'string' && two.includes('large-v3'), String(two))
-    check('给出可操作的三个办法',
-      /--whisper-model|--compute|--max-rooms/.test(String(two)), String(two))
+    const queueTwo = memoryHint(gpu, 2)
+    check('队列模式：说清"一份模型服务多场"',
+      String(queueTwo).includes('一份') && String(queueTwo).includes('切句'), String(queueTwo))
+    check('队列模式：不再报"N 份 large-v3 / 合计 X GB"',
+      /份 large-v3|合计约/.test(String(queueTwo)) === false, String(queueTwo))
+    // 串行：同一刻只有一份在显存里
+    const serialTwo = memoryHint(parseArgs(['--serial-translate']), 2)
+    check('串行模式：说明显存里始终只有一份，代价是重载',
+      String(serialTwo).includes('只翻译一场') && String(serialTwo).includes('重载'), String(serialTwo))
+    // 并行才是原来那句话适用的地方
+    const parTwo = memoryHint(parseArgs(['--parallel-translate']), 2)
+    check('并行模式：两场就是两份模型，并给出三个办法',
+      String(parTwo).includes('2 份') && /--whisper-model|--compute|--max-rooms/.test(String(parTwo)),
+      String(parTwo))
     check('CPU 上是另一种说法（没有显存这回事）',
-      memoryHint(parseArgs(['--cpu']), 2).includes('CPU'), memoryHint(parseArgs(['--cpu']), 2))
+      memoryHint(parseArgs(['--cpu', '--parallel-translate']), 2).includes('CPU'),
+      memoryHint(parseArgs(['--cpu', '--parallel-translate']), 2))
   })
 
   await it('参数校验：拼错了立刻报错，而不是起一半', async () => {
