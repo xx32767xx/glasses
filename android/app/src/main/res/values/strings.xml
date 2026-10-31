@@ -727,9 +727,6 @@
     <string name="export_failed">导出失败：%1$s</string>
     <string name="doc_title">会议记录</string>
     <string name="transcript_filter_soon">筛选功能还没做（转写格式先定）</string>
-    <string name="room_listen_off">声音：关</string>
-    <string name="room_listen_on">声音：开</string>
-    <string name="room_listen_hint">关掉之后你就听不到对方的声音；自己说话时会自动暂停（防回声）</string>
     <string name="filter_speaker">按发言人</string>
     <string name="filter_lang">按语言</string>
     <string name="filter_all">全部</string>

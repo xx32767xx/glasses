@@ -118,7 +118,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     private MicUploader mic;
     /** 4.76：实时传声——播放别人的声音。 */
     private RoomAudioPlayer audioPlayer;
-    private TextView listenButton;
+    // 4.97：「正在听」胶囊按钮已删除（倾听全自动），所以不再需要这个引用
     /** 我是不是正在听（与服务端的 listen 开关保持一致）。 */
     private boolean listening = false;
     /**
@@ -248,10 +248,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         loadRoomHeader();
 
         micUploadButton = findViewById(R.id.roomUpload);
-        // 4.76：音频播放器与开关
-        listenButton = findViewById(R.id.roomListen);
+        // 4.76 的实时传声播放器；4.97 起**没有**手动开关（那颗胶囊已从底部删掉）——
+        // 倾听全自动：进房间就听、自己说话时暂停防回声、说完恢复、重连重新订阅（见 applyListenState）。
         audioPlayer = new RoomAudioPlayer();
-        listenButton.setOnClickListener(v -> toggleListen());
         // 隐藏的「开始同传」：原型里没有它，开麦即开始上传；这里只留一个落点备用
         micUploadButton.setOnClickListener(v -> toggleMic());
         updateUploadButton();
@@ -660,31 +659,16 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     }
 
     /**
-     * 开/关"听声音"（4.76）。4.91 起这里只管**意图**，"此刻放不放"由 {@link #applyListenState()} 决定。
-     *
-     * <p>为什么自己开麦时不让听：你的手机就在你嘴边，放出来只会是回声 ——
-     * 但**说完要能自动恢复**，否则"你说完我说"的会议里，每人一开口就把自己的耳朵关掉了。
-     */
-    private void toggleListen() {
-        listenWanted = !listenWanted;
-        if (listenWanted && holding) {
-            // 现在正在说话：先记住意图，说完自动开始放
-            Toast.makeText(this, getString(R.string.room_listen_hint), Toast.LENGTH_SHORT).show();
-        }
-        applyListenState();
-    }
-
-    /**
-     * 按"我想听 + 我此刻没在说话"决定要不要真的收音频（4.91）。
+     * 按"要不要听 + 我此刻没在说话"决定really要不要收音频（4.91，4.97 起没有手动开关）。
      *
      * <p>幂等：状态没变就什么都不做（避免每次发言权刷新都重启播放器和重发一条 WS 消息）。
+     *
+     * <p>4.97：底部那颗「正在听」胶囊删掉了（按钮太多，小屏挤），所以这里不再刷任何按钮，
+     * 只剩"放还是不放"这一个决定。要临时静音直接把系统音量按下去即可。
      */
     private void applyListenState() {
         boolean shouldPlay = listenWanted && !holding;
-        if (shouldPlay == listening) {
-            renderListenButton();
-            return;
-        }
+        if (shouldPlay == listening) return;
         listening = shouldPlay;
         if (floorSocket != null) floorSocket.sendListen(shouldPlay);
         if (audioPlayer != null) {
@@ -694,27 +678,15 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 audioPlayer.stop();
             }
         }
-        renderListenButton();
     }
 
-    /** 停止收音频 + 停止播放（也告诉服务器不要再发）。保留"我想听"的意图。 */
+    /** 停止收音频 + 停止播放（也告诉服务器不要再发）。只在内部状态需要时用。 */
     private void stopListening() {
         listenWanted = false;
-        if (!listening) {
-            renderListenButton();
-            return;
-        }
+        if (!listening) return;
         listening = false;
         if (floorSocket != null) floorSocket.sendListen(false);
         if (audioPlayer != null) audioPlayer.stop();
-        renderListenButton();
-    }
-
-    private void renderListenButton() {
-        if (listenButton == null) return;
-        listenButton.setText(getString(listening ? R.string.room_listen_on : R.string.room_listen_off));
-        listenButton.setBackgroundResource(listening ? R.drawable.bg_chip_brand : R.drawable.bg_chip);
-        listenButton.setTextColor(getColor(listening ? R.color.brand : R.color.ink_soft));
     }
 
     private String hostName() {

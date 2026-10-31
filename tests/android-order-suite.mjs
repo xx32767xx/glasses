@@ -1832,14 +1832,18 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('队列满了丢最旧的（延迟优先）', /droppedChunks \+= 1/.test(player))
     check('二进制帧回调', /public void onMessage\(java\.nio\.ByteBuffer/.test(java('FloorSocket.java')))
     check('开启倾听就把开关发给服务端', /sendListen\(on\)/.test(java('FloorSocket.java')))
-    check('房间页有「听声音」开关', /@\+id\/roomListen/.test(
-      readFileSync(join(resDir, 'layout', 'page_room.xml'), 'utf-8')))
+    // 4.97：底部那颗「正在听」胶囊**已删除**（按钮太多、小屏挤），倾听改全自动
+    const roomXml = readFileSync(join(resDir, 'layout', 'page_room.xml'), 'utf-8')
+    check('房间页不再有「听声音」胶囊（4.97 删除）',
+      /@\+id\/roomListen/.test(roomXml) === false, '那颗开关还在位')
+    check('对应的文案也一起删干净', /room_listen_(on|off|hint)/.test(roomXml) === false)
     check('拿麦时**暂停**播放（不是把开关永久关掉）', /applyListenState\(\);/.test(room))
     check('服务端兜底：持麦者的连接不收自己的声音',
       /exceptUser !== '' && String\(conn\.user\) === String\(exceptUser\)/.test(hub)
       && /broadcastRoomAudio\(audioRoom, body, holderNow\)/.test(relay))
     check('离开房间释放播放器', /audioPlayer\.stop\(\)/.test(room))
-    check('提示戴耳机（回声的取舍写在界面里）', /room_listen_hint/.test(room))
+    check('没有人再引用那颗按钮（删干净了）',
+      /listenButton|renderListenButton|toggleListen/.test(room) === false, '还有残留引用')
   })
 
   // 4.91 修的是 4.76 里那个"说不清但一定遇到"的 bug：
@@ -1990,13 +1994,13 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('名字回退顺序：帧 → 当前持麦 → 「对方」',
       /if \(who\.isEmpty\(\)\) who = holderName;/.test(roomCode)
         && /whoLabel = who\.isEmpty\(\) \? getString\(R\.string\.room_other\) : who/.test(roomCode))
-    // 4.96：无人说话时显示「无」，而且那个「声音」按钮的文案要说明它是个开关
+    // 4.96：无人说话时显示「无」
     const zhStrings = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml'), 'utf-8')
     check('顶部"发言人"在没人说话时显示「无」',
       /<string name="room_no_speaker">无<\/string>/.test(zhStrings), '还是"麦克风空闲"')
-    check('右下角那颗改成说明它是开关（声音：开/关）',
-      /<string name="room_listen_on">声音：开<\/string>/.test(zhStrings)
-        && /<string name="room_listen_off">声音：关<\/string>/.test(zhStrings), '还写着"正在听"')
+    // 4.97：那颗「声音」胶囊已删（按钮太多、小屏挤），文案也一并删掉
+    check('「声音」胶囊的文案已删除（不再有 room_listen_*）',
+      /room_listen_(on|off|hint)/.test(zhStrings) === false, '文案还留着')
     check('**状态文字不许当人名**：speakerBarName 不再解析 speakerBar 文本',
       /private String speakerBarName\(\) \{[^}]*holderName/.test(roomCode)
         && /speakerBar\.getText\(\)[\s\S]{0,80}room_speaker_prefix/.test(roomCode) === false,

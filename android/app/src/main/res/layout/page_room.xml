@@ -354,21 +354,15 @@
                     android:contentDescription="@string/room_source_desc" />
             </LinearLayout>
 
-            <!-- 4.76：实时传声开关（默认关；自己开麦时不听，避免回声） -->
-            <TextView
-                android:id="@+id/roomListen"
-                android:layout_width="wrap_content"
-                android:layout_height="@dimen/touch_min"
-                android:layout_marginStart="@dimen/space_gap_small"
-                android:background="@drawable/bg_chip"
-                android:clickable="true"
-                android:focusable="true"
-                android:gravity="center"
-                android:paddingStart="@dimen/space_gap"
-                android:paddingEnd="@dimen/space_gap"
-                android:text="@string/room_listen_off"
-                android:textColor="@color/ink_soft"
-                android:textSize="@dimen/text_secondary" />
+            <!--
+                4.97：这里原来有一颗「正在听 / 听声音」的胶囊开关（4.76），**已删除**。
+                两个理由：
+                  ① 底部按钮本来就多，小屏手机上这一行已经被挤（用户反馈）；
+                  ② 4.91 起倾听是**自动**的 —— 进房间就听、自己说话时自动暂停（防回声）、
+                     说完自动恢复、重连自动重新订阅。留着那颗只在"手动静音对方"时有用，
+                     而那个场景极少，代价是占掉一行里最值钱的位置。
+                想临时静音，直接把手机音量按下去即可 —— 系统音量本来就管用。
+            -->
 
             <Button
                 android:id="@+id/roomLeave"
