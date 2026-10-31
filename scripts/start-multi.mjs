@@ -44,7 +44,7 @@
  */
 
 import { spawn } from 'node:child_process'
-import { createWriteStream, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { LOGS_DIR, ROOT } from '../lib/paths.mjs'
@@ -601,6 +601,38 @@ export function prepareRoomFiles(files) {
   try { if (existsSync(files.busFile)) unlinkSync(files.busFile) } catch { /* 有人正读着就算了 */ }
 }
 
+/**
+ * 启动时清掉**上一次运行**留下的中间文件（总线 / 队列）。
+ *
+ * <p>为什么必须做（真实踩过，2026-10-31 用户的第一份运行输出里就能看到）：
+ * relay 在目录模式下会把 `buses/` 里**每一个** `<房间id>.json` 当成"这一场刚出的字幕"读进来。
+ * 上次调试留下的三份总线文件于是被当成三帧真实字幕：终端里刷出
+ * 「📺 字幕已更新（第 1/2/3 帧·定稿）」并且**落进了 utterances 表**（历史记录里凭空多三条）。
+ * 房间 id 是随机的、那些会也早已结束，所以没造成串会；但"启动瞬间冒出旧字幕"这一点
+ * 会让人以为系统坏了 —— 而且它污染的是**历史记录**这种以后很难清的东西。
+ *
+ * <p>队列同理：上次没消费掉的段会在这次被重新转写，然后写进那个（早已结束的）房间的收件箱。
+ *
+ * <p>只删"中间状态"，不碰 `audio/`（那是原始录音，可以事后重跑识别）与收件箱（按房间清）。
+ * @returns {{buses: number, segments: number}}
+ */
+export function clearStaleRunState(options, readDir = readdirSync, remove = unlinkSync) {
+  const cleared = { buses: 0, segments: 0 }
+  try {
+    for (const name of readDir(options.busesDir)) {
+      if (name.endsWith('.json') !== true) continue
+      try { remove(join(options.busesDir, name)); cleared.buses += 1 } catch { /* 被占着就算了 */ }
+    }
+  } catch { /* 目录还不存在：本来就没有旧文件 */ }
+  try {
+    for (const name of readDir(options.queueDir)) {
+      if (name.endsWith('.pcm') !== true && name.endsWith('.json') !== true) continue
+      try { remove(join(options.queueDir, name)); cleared.segments += 1 } catch { /* 同上 */ }
+    }
+  } catch { /* 同上 */ }
+  return cleared
+}
+
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
 /**
@@ -619,6 +651,8 @@ export function readOpenRooms(dataDir, fileExists = existsSync) {
 export async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv)
   if (options.help) { process.stdout.write(HELP); return 0 }
+  /** 启动时清掉的旧中间文件（供横幅说明，见 clearStaleRunState）。 */
+  let staleState = { buses: 0, segments: 0 }
 
   // ── 启动前的三件检查（顺序照 start-all：先能不能写、再端口、最后拼命令）──────
   if (!options.dryRun) {
@@ -648,6 +682,9 @@ export async function main(argv = process.argv.slice(2)) {
       console.error('')
       return 1
     }
+    // 端口空出来了才清中间状态：万一上面报"端口被占"，那是另一个实例还在跑，别去动它的文件。
+    try { mkdirSync(options.queueDir, { recursive: true }) } catch { /* 起切句时还会再建 */ }
+    staleState = clearStaleRunState(options)
   }
 
   // ── 会议级术语快照：有就传下去（每场会读的都是"当前这一份"）────────────────
@@ -711,6 +748,10 @@ export async function main(argv = process.argv.slice(2)) {
     + `；房间没人后 ${options.graceMs}ms 才收管线`)
   console.log(`  术语来源   ${termSummary ?? '旧的全局表（<data-dir>/terms.json；手机上"开始同传"后会发布会议术语）'}`)
   console.log(`  数据目录   ${options.dataDir}`)
+  if (staleState.buses > 0 || staleState.segments > 0) {
+    console.log(`  已清旧状态 ${staleState.buses} 份旧总线 + ${staleState.segments} 段旧队列`
+      + '（不清的话 relay 一启动就把上次的字幕当新帧重播，还会落进历史记录）')
+  }
   for (const note of envNotes) console.log(`  ${note}`)
   console.log('')
   console.log(`  ${DIM}⚠️ 老同传 App 上传音频不带 room=，它的声音只会进全局 audio-in.pcm —— `

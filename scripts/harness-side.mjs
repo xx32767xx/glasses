@@ -218,7 +218,8 @@ async function main() {
     : '关闭（缺省；加 --terms-rescue 打开，见 docs/15 §18）'}`)
   console.log(`  收件箱      ${options.inbox}`)
   if (options.keepInbox) {
-    console.log('              （保留了旧内容：--keep-inbox，旧行会被重新翻译一遍）')
+    console.log('              （带 --keep-inbox 启动：本进程不自己清空；'
+      + '用 start-multi 起的时候它已经按房间清过一次了）')
   } else if (droppedLines > 0) {
     console.log(`              （启动时清掉了上次留下的 ${droppedLines} 行旧内容；想保留加 --keep-inbox）`)
   }
@@ -226,7 +227,8 @@ async function main() {
   console.log(`  显示预算    ${options.cols} 列 × ${options.lines} 行`)
   if (created > 0) console.log(`  组合目录    ${composeDir}`)
   console.log('')
-  console.log('  下一步：另一个终端跑  node relay/lan-relay.mjs')
+  console.log('  下一步：另一个终端跑  node relay/lan-relay.mjs'
+    + '（用 start-all / start-multi 启动时它已经在跑了，忽略这行）')
   console.log('─'.repeat(68))
   console.log('')
 

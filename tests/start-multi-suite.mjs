@@ -13,11 +13,11 @@
  * 而这里的价值本来就在"拼命令 + 调度决策"，不在"真跑起来"。
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   isSafeRoomId, memoryHint, parseArgs, pickRooms, pipelineSteps, planStop, prepareRoomFiles,
-  readOpenRooms, relayStep, roomColor, roomFiles, shortRoomId, main, workerStep, describeMode,
+  readOpenRooms, relayStep, roomColor, roomFiles, shortRoomId, main, workerStep, describeMode, clearStaleRunState,
   chooseActiveRoom, describeSwitchReason, readRoomActivity,
 } from '../scripts/start-multi.mjs'
 import { createRoom, joinRoom } from '../lib/rooms.mjs'
@@ -371,6 +371,36 @@ export async function runStartMultiSuite({ it, check, assert }) {
     check('消费者在模型加载**之后**才进入（首段不再付预热的十几秒）',
       source.indexOf('return run_queue_consumer(args, np, model)') > source.indexOf('WhisperModel(args.model'),
       '顺序不对')
+  })
+
+  await it('启动时清掉上次留下的总线/队列（否则 relay 把旧字幕当新帧重播）', async () => {
+    // 真实事故（2026-10-31 用户第一份输出）：relay 目录模式下会把 buses/ 里**每个** json
+    // 当成"这一场刚出的字幕"，于是上次调试留下的三份旧总线被重播成三帧定稿，
+    // 还落进了 utterances（历史记录凭空多三条）。
+    const base = join(VAR_DIR, 'test', 'multi-suite-stale')
+    rmSync(base, { recursive: true, force: true })
+    mkdirSync(join(base, 'buses'), { recursive: true })
+    mkdirSync(join(base, 'queue', 'asr'), { recursive: true })
+    const options = parseArgs(['--data-dir', base])
+    writeFileSync(join(options.busesDir, 'room-old-1.json'), '{"lines":["旧字幕"]}', 'utf-8')
+    writeFileSync(join(options.busesDir, 'room-old-2.json'), '{"lines":["更旧的字幕"]}', 'utf-8')
+    writeFileSync(join(options.busesDir, 'keep-me.txt'), 'x', 'utf-8')     // 非 json 不碰
+    writeFileSync(join(options.queueDir, '1700000000000-room-old-1-000.pcm'), 'x', 'utf-8')
+    writeFileSync(join(options.queueDir, '1700000000000-room-old-1-000.json'), '{}', 'utf-8')
+
+    const cleared = clearStaleRunState(options)
+    check('清掉 2 份旧总线', cleared.buses === 2, String(cleared.buses))
+    check('清掉 2 个队列文件（pcm + meta）', cleared.segments === 2, String(cleared.segments))
+    check('目录里的 json 都没了',
+      readdirSync(options.busesDir).filter(name => name.endsWith('.json')).length === 0,
+      readdirSync(options.busesDir).join(','))
+    check('非 json 的东西不碰（别误删别人的文件）',
+      existsSync(join(options.busesDir, 'keep-me.txt')) === true)
+    check('队列目录空了',
+      readdirSync(options.queueDir).length === 0, readdirSync(options.queueDir).join(','))
+    check('目录不存在时不报错（第一次跑）',
+      clearStaleRunState(parseArgs(['--data-dir', join(base, '__nope__')])).buses === 0)
+    rmSync(base, { recursive: true, force: true })
   })
 
   // ── 3. 房间调度：哪些该跑、哪些该收 ────────────────────────────────────────
