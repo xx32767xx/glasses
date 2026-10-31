@@ -1938,6 +1938,59 @@ export async function runAndroidOrderSuite({ it, check }) {
       /if \(from\.getClass\(\) == target\) return;/.test(nav), '缺自我点击短路')
   })
 
+  // 4.95：字幕卡片的"发言人"全是「麦克风空闲」/ 全显示「对方」。
+  // 根因：发言人是从**顶部那行状态文字**里反解出来的（没人在麦上时那行是「麦克风空闲」），
+  // 而"是不是我说的"用的是"我此刻是否持麦"——两者都与"这句话是谁说的"无关。
+  await it('4.95：发言人取自**这一帧**（不许拿"当前谁持麦"或状态文字去猜）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const relay = readFileSync(join(ROOT, 'relay', 'lan-relay.mjs'), 'utf-8')
+    const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+    const client = readFileSync(join(javaDir, 'LanClient.java'), 'utf-8')
+    const main = readFileSync(join(javaDir, 'MainActivity.java'), 'utf-8')
+    // 注释里会提到旧写法，所以判"有没有旧代码"时先剥注释
+    const roomCode = room.replace(/\/\*[\s\S]*?\*\//g, '').split('\n')
+      .filter(line => line.trim().startsWith('//') === false).join('\n')
+
+    // ① 服务端：发布这一帧时读一次持麦者，随帧带给手机
+    check('发布帧时附上真实发言人',
+      /frame\.speakerName = speakerNow === '' \? null : speakerNow/.test(relay), '缺 speakerName')
+    check('发言人来自 floorState（发布那一刻的持麦者）',
+      /const speakerNow = floorState\(options\.dataDir, attribution\.roomId\)\.holder/.test(relay))
+    check('落库的 username 用真实用户名，不再存 me/them',
+      /username: String\(frame\.speakerName \?\? ''\)/.test(relay)
+        && /username: String\(frame\.speaker \?\? ''\)/.test(relay) === false,
+      'utterances 里还在存 me/them')
+
+    // ② 客户端：帧里的 speakerName 一路传到卡片
+    check('长轮询回调带上 speakerName', /String speakerName\);/.test(client), '接口没扩')
+    check('客户端把帧里的 speakerName 传出来', /optString\("speakerName", ""\)/.test(client))
+    check('WS 那条路也读 speakerName', /optString\("speakerName", ""\)/.test(room))
+    check('旧页面（同传 App）跟着改了签名', /final String speakerName\) \{/.test(main), 'MainActivity 没跟上')
+
+    // ③ 卡片：按帧判"是不是我说的"，既不看 holding 也不解析状态文字
+    check('mine 用 who（帧里给的发言人）判',
+      /boolean mine = myName != null && !myName\.isEmpty\(\) && who\.equals\(myName\)/.test(roomCode))
+    check('不再用"我是否持麦"当发言人', /boolean mine = [^;]*&& holding;/.test(roomCode) === false,
+      '又用 holding 判 mine 了')
+    check('名字回退顺序：帧 → 当前持麦 → 「对方」',
+      /if \(who\.isEmpty\(\)\) who = holderName;/.test(roomCode)
+        && /whoLabel = who\.isEmpty\(\) \? getString\(R\.string\.room_other\) : who/.test(roomCode))
+    check('**状态文字不许当人名**：speakerBarName 不再解析 speakerBar 文本',
+      /private String speakerBarName\(\) \{[^}]*holderName/.test(roomCode)
+        && /speakerBar\.getText\(\)[\s\S]{0,80}room_speaker_prefix/.test(roomCode) === false,
+      '还在从"发言人："那句文字里反解名字')
+    check('holderName 字段由发言权状态写入',
+      /holderName = holder == null \? "" : holder\.trim\(\);/.test(roomCode))
+    check('抽屉里标出正在发言的人',
+      /name\.equals\(holderName\) \? getString\(R\.string\.room_speaking_suffix\)/.test(roomCode))
+    for (const dir of ['values', 'values-en', 'values-pt-rBR']) {
+      check(`${dir} 有 room_speaking_suffix`,
+        /name="room_speaking_suffix"/.test(
+          readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', dir, 'strings.xml'), 'utf-8')),
+        dir)
+    }
+  })
+
   await it('4.81：/frame 的 seq 不许被 info() 覆盖（否则死循环刷日志）', () => {
     const relay = readFileSync(join(ROOT, 'relay', 'lan-relay.mjs'), 'utf-8')
     const client = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay', 'LanClient.java'), 'utf-8')

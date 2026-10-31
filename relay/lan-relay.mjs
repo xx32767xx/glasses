@@ -689,6 +689,18 @@ export async function startRelay(rawOptions = {}) {
         speaker: frame.speaker ?? '',
       })
     if (attribution.roomId !== null) frame.roomId = attribution.roomId
+    // 4.95：把**这句话到底是谁说的**一并带给手机。
+    //
+    // 为什么要服务端加：总线帧里的 `speaker` 只有 `me`/`them` 两种值（那是"相对于电脑"的说法，
+    // 对手机毫无意义）。于是手机端只能拿"当前谁持麦"去猜 —— 而字幕是**逐帧**产生的，
+    // 猜就必然错位（用户实测：没人在麦上时每张卡的发言人都显示「麦克风空闲」）。
+    // 服务端在**发布这一帧的时刻**读一次持麦者，就是最接近真相的那个名字。
+    if (attribution.roomId !== null) {
+      const speakerNow = floorState(options.dataDir, attribution.roomId).holder ?? ''
+      frame.speakerName = speakerNow === '' ? null : speakerNow
+    } else {
+      frame.speakerName = null
+    }
     state.lastFrame = frame
     if (attribution.roomId !== null) {
       const roomSeq = (state.seqByRoom.get(attribution.roomId) ?? 0) + 1
@@ -805,7 +817,10 @@ export async function startRelay(rawOptions = {}) {
     }
     const saved = appendUtterance(options.dataDir, {
       roomId: attribution.roomId,
-      username: String(frame.speaker ?? ''),
+      // 4.95：存**真实用户名**（`speakerName`），不再存 `me`/`them`。
+      // 那两个字是"相对于电脑"的说法，落进 utterances 之后，转写全文里就会出现
+      // 一堆叫 `them` 的发言人（用户看到的就是"全是对方"）。
+      username: String(frame.speakerName ?? ''),
       srcLang: String(frame.lang ?? ''),
       srcText: source,
       dstText: text,

@@ -418,6 +418,7 @@
     <string name="room_me_my">我</string>
     <string name="room_me_suffix">（我）</string>
     <string name="room_i_said">我说的话</string>
+    <string name="room_speaking_suffix"> · 正在发言</string>
     <string name="room_other">对方</string>
     <string name="btn_remove">移出</string>
     <string name="btn_force_release">解除 %1$s 的锁定</string>

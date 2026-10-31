@@ -129,6 +129,14 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
      * 会议里"听得到别人"是预期行为，不该让每个人每次都手动点一下。
      */
     private boolean listenWanted = true;
+    /**
+     * 当前持麦者（4.95）。
+     *
+     * <p>为什么要单独存一份：以前"谁在说话"是从**顶部那行文字**里反向解析出来的
+     * （`speakerBar.getText()` 去掉前缀）—— 而没人在麦上时那行文字是「麦克风空闲」，
+     * 解析出来就成了一个叫「麦克风空闲」的发言人。状态文字不能当数据用。
+     */
+    private String holderName = "";
     private Runnable pendingAfterPermission;
     private Button micUploadButton;
     private long lastHeartbeat = 0L;
@@ -333,7 +341,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                         for (int i = 0; i < missing.length; i++) missing[i] = missArray.optString(i, "");
                     }
                     applyFrame(frame.optString("text", ""), lines, frame.optString("source", ""),
-                            frame.optBoolean("partial", false), missing);
+                            frame.optBoolean("partial", false), missing,
+                            // 4.95：这一句是谁说的 —— 用**帧里带的名字**，不用"当前谁持麦"去猜
+                            frame.optString("speakerName", ""));
                 });
             }
 
@@ -496,7 +506,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         return "null".equals(value) ? "" : value;
     }
     private void takingChanged(String holder, boolean isLocked) {
-        holding = holder != null && holder.equals(myName) && !holder.isEmpty();
+        holderName = holder == null ? "" : holder.trim();
+        holding = !holderName.isEmpty() && holderName.equals(myName);
         locked = isLocked;
         boolean anyHolder = holder != null && !holder.isEmpty();
         boolean iAmHost = myName.equals(hostName());
@@ -987,7 +998,11 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
 
             TextView label = new TextView(this);
             String suffix = name.equals(myName) ? getString(R.string.room_me_suffix) : "";
-            label.setText(name + suffix);
+            // 4.95：正在说话的人就在他的名字后面标出来。
+            // 这是抽屉里唯一需要"谁在说"的地方，而以前它只能靠顶部那行文字反解 ——
+            // 于是没人在麦上时，抽屉里也显示着一个叫「麦克风空闲」的发言人。
+            String speaking = name.equals(holderName) ? getString(R.string.room_speaking_suffix) : "";
+            label.setText(name + suffix + speaking);
             label.setTextColor(getColor(R.color.ink));
             label.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12);
             LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
@@ -1021,12 +1036,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         }
     }
 
+    /** 当前持麦者（4.95：读字段，不再从状态文字里反解 —— 那会解出「麦克风空闲」这种"人名"）。 */
     private String holder() {
-        String text = speakerBar.getText() == null ? "" : speakerBar.getText().toString();
-        if (!text.startsWith(getString(R.string.room_speaker_prefix))) return "";
-        text = text.substring(getString(R.string.room_speaker_prefix).length());
-        int cut = text.indexOf('（');
-        return cut > 0 ? text.substring(0, cut) : text;
+        return holderName == null ? "" : holderName;
     }
 
     /** 移出成员要二次确认：这是个不可撤销（对方视角）的动作。 */
@@ -1193,18 +1205,23 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
 
     @Override
     public void onFrame(String speaker, String lang, String[] lines, String text,
-                        String source, String sourceLang, boolean partial, String[] termsMissing) {
-        ui.post(() -> applyFrame(text, lines, source, partial, termsMissing));
+                        String source, String sourceLang, boolean partial, String[] termsMissing,
+                        String speakerName) {
+        ui.post(() -> applyFrame(text, lines, source, partial, termsMissing, speakerName));
     }
 
     /**
      * 渲染一帧字幕。**长轮询与 WS 推送都走这里**（4.43），否则两条路各写一份，
      * 迟早出现"长轮询能显示、WS 显示不出来"这种只在一半设备上出现的分裂。
+     *
+     * @param speakerName 这一句**是谁说的**（4.95：服务端随帧给出；空串 = 未知）
      */
-    private void applyFrame(String text, String[] lines, String source, boolean partial, String[] termsMissing) {
+    private void applyFrame(String text, String[] lines, String source, boolean partial,
+                            String[] termsMissing, String speakerName) {
         String target = (text == null || text.isEmpty())
                 ? (lines == null ? "" : String.join("\n", lines)) : text;
-        renderSegment(target == null ? "" : target, source == null ? "" : source, partial);
+        renderSegment(target == null ? "" : target, source == null ? "" : source, partial,
+                speakerName == null ? "" : speakerName.trim());
         if (partial) {
             hintLine.setText(getString(R.string.st_generating));
         } else if (termsMissing != null && termsMissing.length > 0) {
@@ -1225,11 +1242,20 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
      *   <li><b>新句从下往上推</b>：追加后自动滚到底，读到的是最新的那句话。</li>
      * </ol>
      */
-    private void renderSegment(String target, String source, boolean partial) {
+    private void renderSegment(String target, String source, boolean partial, String speakerName) {
         if (target.isEmpty() && source.isEmpty()) return;
         if (emptyView.getVisibility() == View.VISIBLE) emptyView.setVisibility(View.GONE);
 
-        boolean mine = myName != null && !myName.isEmpty() && holding;
+        // 4.95：**这一句是谁说的**。
+        //
+        // 原来写的是 `mine = … && holding` —— 用的是"我此刻是否持麦"，而不是"这句话是谁说的"。
+        // 结果：没人在麦上时每张卡片的发言人都显示「麦克风空闲」，而且永远显示"对方"。
+        // 现在按帧里带的 `speakerName` 判；服务端没给（老服务端）时退回"当前持麦者"，
+        // 再退不回就显示「对方」——**绝不再把状态文字当成发言人名字**。
+        String who = speakerName;
+        if (who.isEmpty()) who = holderName;
+        boolean mine = myName != null && !myName.isEmpty() && who.equals(myName);
+        String whoLabel = who.isEmpty() ? getString(R.string.room_other) : who;
 
         // ── 同一段判定（4.53）────────────────────────────────────────
         // 一句话会来三帧：增量 / 定稿 / 校对修订。它们的**原文相同**，
@@ -1274,7 +1300,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
 
         TextView avatar = new TextView(this);
-        avatar.setText(mine ? getString(R.string.room_me_my) : firstChar(speakerBarName()));
+        avatar.setText(mine ? getString(R.string.room_me_my) : firstChar(whoLabel));
         avatar.setGravity(android.view.Gravity.CENTER);
         avatar.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12);
         avatar.setTextColor(getColor(R.color.brand));
@@ -1283,7 +1309,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         head.addView(avatar, new LinearLayout.LayoutParams(dot, dot));
 
         TextView name = new TextView(this);
-        name.setText(speakerBarName());
+        name.setText(mine ? getString(R.string.room_me_my) : whoLabel);
         name.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12);
         name.setTextColor(getColor(R.color.ink_soft));
         LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(
@@ -1376,14 +1402,16 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         subtitleScroll.post(() -> subtitleScroll.fullScroll(View.FOCUS_DOWN));
     }
 
+    /**
+     * 「谁在说话」的**数据**来源（4.95）。
+     *
+     * <p>以前这里是"从 speakerBar 的文字里反向解析"：没人在麦上时那行是「麦克风空闲」，
+     * 解析结果就成了一个叫「麦克风空闲」的发言人（用户看到的就是这个）。
+     * 现在直接读 {@link #holderName}（由发言权状态写入），并且**只返回名字或空串**，
+     * 状态文字一律不进这一层 —— 空串由调用方决定怎么显示。
+     */
     private String speakerBarName() {
-        String text = speakerBar.getText() == null ? "" : speakerBar.getText().toString();
-        if (text.startsWith(getString(R.string.room_speaker_prefix))) {
-            text = text.substring(getString(R.string.room_speaker_prefix).length());
-        }
-        int cut = text.indexOf('（');
-        if (cut > 0) text = text.substring(0, cut);
-        return text.isEmpty() ? getString(R.string.room_other) : text;
+        return holderName == null ? "" : holderName;
     }
 
     private static String firstChar(String text) {

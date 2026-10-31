@@ -901,7 +901,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     @Override
     public void onFrame(final String speaker, final String lang, final String[] lines,
                         final String text, final String source, final String sourceLang,
-                        final boolean partial, final String[] termsMissing) {
+                        final boolean partial, final String[] termsMissing,
+                        final String speakerName) {
         main.post(() -> {
             framesSeen += 1;
             busSeen = true;

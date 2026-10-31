@@ -133,6 +133,7 @@ Microphone: phone microphone (in use)</string>
     <string name="room_me_my">Me</string>
     <string name="room_me_suffix"> (me)</string>
     <string name="room_i_said">What I said</string>
+    <string name="room_speaking_suffix"> · speaking</string>
     <string name="room_other">The other person</string>
     <string name="btn_remove">Remove</string>
     <string name="btn_force_release">Unlock %1$s</string>

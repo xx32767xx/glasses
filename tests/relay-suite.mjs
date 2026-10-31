@@ -19,6 +19,8 @@ import { startRelay, formatBanner, pcmLevel, describeLevel, roomAudioPath,
   createRateLimiter, clientIp, resolveSecret, formatPublicChecklist,
   PUBLIC_LIMITS } from '../relay/lan-relay.mjs'
 import { VAR_DIR } from '../lib/paths.mjs'
+import { takeFloor } from '../lib/floor.mjs'
+import { createRoom, joinRoom, listRoomTranscript } from '../lib/rooms.mjs'
 import { dbPath, openDb } from '../lib/db.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -205,6 +207,63 @@ export async function runRelaySuite({ it, check, assert }) {
       check('B 没被 A 覆盖', b2.frame === null || b2.frame.text === '乙房间说的话',
         JSON.stringify(b2.frame?.text))
       check('B 的序号没被 A 推进', b2.seq === 1, String(b2.seq))
+    } finally {
+      relay.close?.()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // 4.95：字幕帧要带**这一句是谁说的**。
+  // 为什么要服务端给：总线帧里的 `speaker` 只有 me/them（相对电脑的说法），手机拿它没法显示，
+  // 只能拿"当前谁持麦"去猜 —— 而字幕是逐帧产生的，猜必然错位
+  // （用户实测：没人在麦上时，每张字幕卡片的发言人都显示成「麦克风空闲」）。
+  await it('4.95：字幕帧带上真实发言人（发布那一刻的持麦者）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'speakername-'))
+    const secret = 's3cret-0123456789abcdef'
+    const buses = join(dir, 'buses')
+    await mkdir(buses, { recursive: true })
+    const room = createRoom(dir, { name: '谁的会', host: 'alice' })
+    joinRoom(dir, { roomId: room.room.id, username: 'bob' })
+    const relay = await startRelay({
+      dataDir: dir, port: 0, host: '127.0.0.1', secret, quiet: true, bus: buses, pollHoldMs: 300,
+    })
+    try {
+      const base = `http://127.0.0.1:${relay.port}`
+      const headers = { 'X-Leion-Secret': secret }
+      const busFile = join(buses, `${room.room.id}.json`)
+      const frame = (text, at) => JSON.stringify({
+        speaker: 'them', lang: 'pt-BR', lines: [text], text, source: text, partial: false, at,
+      })
+
+      // ① 没人在麦上 → speakerName 必须是 null（界面据此显示「对方」，而不是"麦克风空闲"）
+      await writeFile(busFile, frame('没人在说的时候这句', '1'), 'utf-8')
+      await new Promise((resolve) => setTimeout(resolve, 400))
+      const idle = await (await fetch(`${base}/frame?since=0&room=${room.room.id}`, { headers })).json()
+      check('没人持麦时 speakerName 是 null',
+        idle.frame !== null && idle.frame.speakerName === null, JSON.stringify(idle.frame?.speakerName))
+
+      // ② alice 拿麦 → 下一帧的发言人就该是 alice
+      takeFloor(dir, { roomId: room.room.id, username: 'alice' })
+      await writeFile(busFile, frame('alice 说的这句', '2'), 'utf-8')
+      await new Promise((resolve) => setTimeout(resolve, 400))
+      const mine = await (await fetch(`${base}/frame?since=1&room=${room.room.id}`, { headers })).json()
+      check('持麦者随帧下发', mine.frame?.speakerName === 'alice', JSON.stringify(mine.frame?.speakerName))
+
+      // ③ 换人持麦 → 发言人跟着换（不是"永远第一个说话的人"）
+      takeFloor(dir, { roomId: room.room.id, username: 'bob' })
+      await writeFile(busFile, frame('bob 说的这句', '3'), 'utf-8')
+      await new Promise((resolve) => setTimeout(resolve, 400))
+      const bob = await (await fetch(`${base}/frame?since=2&room=${room.room.id}`, { headers })).json()
+      check('换人之后发言人跟着换', bob.frame?.speakerName === 'bob', JSON.stringify(bob.frame?.speakerName))
+
+      // ④ 转写全文里存的也必须是真实用户名（以前存的是 them）
+      const stored = (await import('../lib/rooms.mjs')).listRoomTranscript(dir, {
+        roomId: room.room.id, user: 'alice',
+      })
+      const names = stored.ok === true ? stored.lines.map(line => line.username) : []
+      check('落库的发言人不是 me/them', names.every(name => name === '' || name === 'alice' || name === 'bob'),
+        JSON.stringify(names))
+      check('至少记下了 bob 那一句', names.includes('bob'), JSON.stringify(names))
     } finally {
       relay.close?.()
       rmSync(dir, { recursive: true, force: true })

@@ -64,9 +64,15 @@ public class LanClient {
          * 为什么 source 和 partial 都要：界面按"原文在上、译文在下"成对显示，
          * 并且要把"增量 → 定稿 → 校对修订"落到**同一条**片段上。
          * 少了这两个字段，手机只能靠猜（猜错的表现是字幕永远挂着「生成中」）。
+         *
+         * <p>4.95 新增 {@code speakerName}：这一句**到底是谁说的**（服务端在发布该帧时读到的持麦者）。
+         * 它与 {@code speaker}（`me`/`them`，那是"相对电脑"的说法）不是一回事 ——
+         * 界面要用前者，否则只能拿"当前谁持麦"去猜；而字幕是**逐帧**产生的，猜必然错位
+         * （用户实测：没人在麦上时，每张卡片的发言人都显示成「麦克风空闲」）。
          */
         void onFrame(String speaker, String lang, String[] lines, String text,
-                     String source, String sourceLang, boolean partial, String[] termsMissing);
+                     String source, String sourceLang, boolean partial, String[] termsMissing,
+                     String speakerName);
 
         /** 出错了（网络不通、密钥错、被拒绝等）。 */
         void onError(String message);
@@ -687,7 +693,8 @@ public class LanClient {
                                 frame.optString("source", ""),
                                 frame.optString("sourceLang", "unknown"),
                                 frame.optBoolean("partial", false),
-                                missing);
+                                missing,
+                                frame.optString("speakerName", ""));
                     }
                 }
             } catch (Exception error) {

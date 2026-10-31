@@ -133,6 +133,7 @@ Microfone: microfone do celular (em uso)</string>
     <string name="room_me_my">Eu</string>
     <string name="room_me_suffix"> (eu)</string>
     <string name="room_i_said">O que eu disse</string>
+    <string name="room_speaking_suffix"> · a falar</string>
     <string name="room_other">A outra pessoa</string>
     <string name="btn_remove">Remover</string>
     <string name="btn_force_release">Desbloquear %1$s</string>
