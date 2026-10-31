@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import {
   isSafeRoomId, memoryHint, parseArgs, pickRooms, pipelineSteps, planStop, prepareRoomFiles,
   readOpenRooms, relayStep, roomColor, roomFiles, shortRoomId, main,
+  chooseActiveRoom, describeSwitchReason, readRoomActivity,
 } from '../scripts/start-multi.mjs'
 import { createRoom, joinRoom } from '../lib/rooms.mjs'
 import { roomAudioPath } from '../relay/lan-relay.mjs'
@@ -172,6 +173,126 @@ export async function runStartMultiSuite({ it, check, assert }) {
     check('语种不写死（跟着每句话走）', parsed.command.includes('--language') === false, String(parsed.command))
   })
 
+  // ── 3b. 串行模式：同一刻只翻一场，谁在说话就翻谁（缺省行为）──────────────────
+
+  const S1 = 'room-serif11-aaaa'
+  const S2 = 'room-serif22-bbbb'
+  const serRooms = [
+    { id: S1, code: '111111', name: '甲', members: 2, createdAt: '2026-01-01T00:00:00.000Z', holder: null },
+    { id: S2, code: '222222', name: '乙', members: 1, createdAt: '2026-01-02T00:00:00.000Z', holder: null },
+  ]
+
+  await it('串行：一个房间都没有 → 什么都不跑', async () => {
+    const choice = chooseActiveRoom({ rooms: [], running: null, activity: new Map(), now: 1000 })
+    check('没有可跑的房间', choice.roomId === null, JSON.stringify(choice))
+  })
+
+  await it('串行：正在翻的那场还在说话 → 不切换（切换要重载模型，很贵）', async () => {
+    const choice = chooseActiveRoom({
+      rooms: serRooms,
+      running: S1,
+      activity: new Map([[S1, { bytes: 100, at: 5000 }], [S2, { bytes: 0, at: -Infinity }]]),
+      now: 6000, idleMs: 15000, minHoldMs: 8000, runningSince: 1000,
+    })
+    check('保持 S1', choice.roomId === S1, JSON.stringify(choice))
+    check('不切', choice.switch === false, String(choice.switch))
+  })
+
+  await it('串行：另一场说话了、这一场安静了 → 换过去', async () => {
+    const choice = chooseActiveRoom({
+      rooms: serRooms,
+      running: S1,
+      // S1 最后一声是很久以前，S2 刚刚有声音
+      activity: new Map([[S1, { bytes: 100, at: 1000 }], [S2, { bytes: 50, at: 59000 }]]),
+      now: 60000, idleMs: 15000, minHoldMs: 8000, runningSince: 1000,
+    })
+    check('换成 S2', choice.roomId === S2, JSON.stringify(choice))
+    check('标了"要切"', choice.switch === true)
+    check('理由说得出来', describeSwitchReason(choice.reason).includes('声音'), describeSwitchReason(choice.reason))
+  })
+
+  await it('串行：刚切过去还没待够 → 忍着不切（否则两场来回抢，一直重载模型）', async () => {
+    const choice = chooseActiveRoom({
+      rooms: serRooms,
+      running: S1,
+      activity: new Map([[S1, { bytes: 100, at: 1000 }], [S2, { bytes: 50, at: 59000 }]]),
+      now: 60000, idleMs: 15000, minHoldMs: 8000, runningSince: 55000,   // 才 5 秒
+    })
+    check('先忍着', choice.roomId === S1, JSON.stringify(choice))
+    check('不切', choice.switch === false)
+  })
+
+  await it('串行：持麦的房间优先（有人正在说话就是当下在产生内容的那一场）', async () => {
+    const rooms = serRooms.map(room => ({ ...room, holder: room.id === S2 ? 'bruno' : null }))
+    const choice = chooseActiveRoom({
+      rooms, running: null,
+      // S1 更"近"有声音，但 S2 有人拿着麦克风
+      activity: new Map([[S1, { bytes: 9, at: 59000 }], [S2, { bytes: 5, at: 1000 }]]),
+      now: 60000, idleMs: 15000,
+    })
+    check('选持麦的 S2', choice.roomId === S2, JSON.stringify(choice))
+    check('理由写明是持麦', choice.reason === 'floor-holder', choice.reason)
+  })
+
+  await it('串行：两场都有人说话 → 挑声音更新的那场（必然只能服务一场，就服务更像真相的）', async () => {
+    const rooms = serRooms.map(room => ({ ...room, holder: room.id === S1 ? 'anqi' : 'bruno' }))
+    const choice = chooseActiveRoom({
+      rooms, running: null,
+      activity: new Map([[S1, { bytes: 9, at: 30000 }], [S2, { bytes: 5, at: 59000 }]]),
+      now: 60000, idleMs: 15000,
+    })
+    check('选更近的 S2', choice.roomId === S2, JSON.stringify(choice))
+    check('理由区分得开', choice.reason === 'floor-holder-busiest', choice.reason)
+  })
+
+  await it('串行：都没在说话 → 轮流（最久没被服务的先上，防止某场永远排不到）', async () => {
+    const choice = chooseActiveRoom({
+      rooms: serRooms, running: null, activity: new Map(), now: 60000,
+      lastServedAt: new Map([[S1, 50000]]),      // S2 从来没轮到过
+    })
+    check('从没服务过的 S2 优先', choice.roomId === S2, JSON.stringify(choice))
+    check('理由写明是轮换', choice.reason === 'round-robin', choice.reason)
+    const again = chooseActiveRoom({
+      rooms: serRooms, running: null, activity: new Map(), now: 70000,
+      lastServedAt: new Map([[S1, 50000], [S2, 65000]]),
+    })
+    check('下一次轮到 S1', again.roomId === S1, JSON.stringify(again))
+  })
+
+  await it('串行：正在翻的那场散会了 → 立刻换（这条不受最小停留时间限制）', async () => {
+    const choice = chooseActiveRoom({
+      rooms: [serRooms[1]],                     // S1 已经不在了
+      running: S1, activity: new Map(),
+      now: 60000, minHoldMs: 8000, runningSince: 59000,
+    })
+    check('换成 S2', choice.roomId === S2, JSON.stringify(choice))
+    check('标了"要切"', choice.switch === true)
+  })
+
+  await it('串行：活跃度只看文件大小（不读音频内容），拿不到就当没声', async () => {
+    const options = parseArgs(['--data-dir', 'var/x'])
+    const activity = readRoomActivity(options, [S1, S2], (file) => {
+      if (String(file).includes(S1)) return { size: 2048, mtimeMs: 1234 }
+      throw new Error('还没有这个房间的 pcm')
+    })
+    check('有文件的记下大小与时间',
+      activity.get(S1).bytes === 2048 && activity.get(S1).at === 1234, JSON.stringify(activity.get(S1)))
+    check('没文件的当成没声（at = -Infinity，比较时永远最旧）',
+      activity.get(S2).at === -Infinity, String(activity.get(S2).at))
+  })
+
+  await it('串行是缺省；--parallel-translate 才并行；--max-rooms > 1 必须配它', async () => {
+    check('缺省串行', parseArgs([]).parallelTranslate === false)
+    check('串行时 --max-rooms 只能是 1（缺省 0 也算不限制到 1）', parseArgs(['--max-rooms', '1']).maxRooms === 1)
+    assert.throws(() => parseArgs(['--max-rooms', '2']), /parallel-translate/)
+    check('--parallel-translate 之后可以 > 1',
+      parseArgs(['--parallel-translate', '--max-rooms', '2']).maxRooms === 2)
+    check('--serial-translate 可以显式声明（命令自解释）',
+      parseArgs(['--serial-translate']).parallelTranslate === false)
+    assert.throws(() => parseArgs(['--switch-idle-ms', '-1']), /switch-idle-ms/)
+    assert.throws(() => parseArgs(['--min-hold-ms', 'x']), /min-hold-ms/)
+  })
+
   // ── 3. 房间调度：哪些该跑、哪些该收 ────────────────────────────────────────
 
   const rooms = [
@@ -319,7 +440,7 @@ export async function runStartMultiSuite({ it, check, assert }) {
 
   // ── 8. 真跑一遍 --dry-run（走完整个启动前逻辑）──────────────────────────────
 
-  await it('--dry-run：按现有房间打印每场会的命令，且不留下任何副作用', async () => {
+  await it('--dry-run（缺省串行）：只起 1 套管线，另一场明确标"排队中"', async () => {
     const base = join(VAR_DIR, 'test', 'multi-suite-dryrun')
     rmSync(base, { recursive: true, force: true })
     mkdirSync(base, { recursive: true })
@@ -332,15 +453,36 @@ export async function runStartMultiSuite({ it, check, assert }) {
     check('退出码 0', code === 0, String(code))
     check('印了转发进程', output.includes('lan-relay.mjs'), output.slice(0, 400))
     check('说明 --bus 是目录', output.includes('目录'), output.slice(0, 800))
-    check('印了"会起 2 套管线"', output.includes('2 套管线'), output.slice(-1200))
+    check('横幅写明是串行', output.includes('串行'), output.slice(0, 800))
+    check('只起 1 套管线', output.includes('现在会起 1 套管线'), output.slice(-1200))
+    check('另一场标了排队中', output.includes('排队中') && output.includes(second.room.id), output.slice(-1200))
+    check('真起的那一套是**最早**建的那场（顺序稳定）',
+      output.includes(first.room.id), output.slice(-1200))
+    check('串行模式不再算"几份模型"的账（横幅里解释原因不算）',
+      output.includes('2 场会并行') === false, output.slice(-600))
+    check('说明了 dry-run 没真启动', output.includes('没有真的启动'), output.slice(-300))
+    check('没有建 buses 目录（dry-run 不留副作用）', existsSync(join(base, 'buses')) === false)
+    rmSync(base, { recursive: true, force: true })
+  })
+
+  await it('--dry-run --parallel-translate：两套管线都起，并给出显存账', async () => {
+    const base = join(VAR_DIR, 'test', 'multi-suite-dryrun-par')
+    rmSync(base, { recursive: true, force: true })
+    mkdirSync(base, { recursive: true })
+    const first = createRoom(base, { name: '甲会议', host: 'anqi' })
+    const second = createRoom(base, { name: '乙会议', host: 'bruno' })
+    joinRoom(base, { roomId: second.room.id, username: 'carla' })
+
+    const { code, output } = await captureStdout(() => main(['--dry-run', '--quiet-logs',
+      '--parallel-translate', '--port', '18796', '--data-dir', base]))
+    check('退出码 0', code === 0, String(code))
+    check('两套管线都起', output.includes('现在会起 2 套管线'), output.slice(-1200))
     check('两场会都在里面',
       output.includes(first.room.id) && output.includes(second.room.id), output.slice(-1200))
     check('每场会都有识别（--whisper-follow）与大脑（--bus）',
       (output.match(/--whisper-follow/g) ?? []).length >= 2
         && (output.match(/--bus /g) ?? []).length >= 2, output.slice(-1500))
     check('提醒了显存怎么算', output.includes('显存'), output.slice(-800))
-    check('说明了 dry-run 没真启动', output.includes('没有真的启动'), output.slice(-300))
-    check('没有建 buses 目录（dry-run 不留副作用）', existsSync(join(base, 'buses')) === false)
     rmSync(base, { recursive: true, force: true })
   })
 

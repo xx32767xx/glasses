@@ -64,7 +64,19 @@ const HELP = `start-multi —— 一条命令起「多场会并行」
   --cpu                  识别用 CPU（缺省 cuda + float16）
   --compute <类型>       GPU 精度：float16（缺省）/ int8_float16 / int8_float32 / int8 / float32
   --whisper-model <尺寸> tiny/base/small/medium/large-v3（缺省：GPU large-v3、CPU small）
-  --max-rooms <n>        最多同时几场（缺省 0 = 不限）。显存是按"每场一份模型"算的，紧的时候用它兜底
+
+  --parallel-translate   翻译管线**并行**（缺省是串行，见下）。每场会各占一份模型，
+                         显存够才开；配 --max-rooms 限流
+  --serial-translate     显式声明串行（缺省行为，写出来是为了让命令自解释）
+  --switch-idle-ms <n>   串行模式下，正在翻的那场安静多久才让位（缺省 15000）
+  --min-hold-ms <n>      至少待多久才允许切走（缺省 8000，防止两场来回抢、一直重载模型）
+  --max-rooms <n>        并行模式下最多几场（缺省 0 = 不限）；串行模式下只能 1
+
+  串行 vs 并行（缺省串行，2026-10-30 定）：每场会一套识别 = 一份 whisper 模型
+  （large-v3 float16 约 5GB）。显存不够会 OOM，而现象是"识别挂了"，比报"显存不足"难查。
+  所以缺省**同一刻只翻一场**：谁在说话就翻谁，另一场排队（它的音频照常按房间落盘，
+  轮到它时从"现在"往后翻）。**其他并行一件没少**：音频按房间分流、每场一个字幕总线、
+  房间级 WS 帧、历史与转写全文。显存够了加 --parallel-translate 就恢复并行。
   --only <id,id>         只跑这几场（调试用）
   --poll-ms <n>          房间轮询间隔（缺省 3000）
   --grace-ms <n>         房间没人了之后等多久才收管线（缺省 60000）
@@ -143,7 +155,20 @@ export function parseArgs(argv = []) {
     graceMs: 60000,
     cols: 40,
     lines: 3,
-    maxRooms: 0,                 // 0 = 不限
+    maxRooms: 0,                 // 0 = 不限（只在 --parallel-translate 下有意义）
+    // ── 翻译管线是串行还是并行 ─────────────────────────────────────────────
+    //
+    // 缺省**串行**：同一时刻只有一场会在跑「识别 + 翻译」。
+    // 为什么默认关掉并行（2026-10-30 用户拍板）：显存只够一份模型。
+    // 每场会一套识别 = 一份 whisper（large-v3 float16 约 5GB），两场就是 10GB，
+    // 显存不够会 OOM，而**现象是"识别挂了"**——比直接报"显存不足"难查得多。
+    // 所以先串行：谁在说话就翻译谁，另一场排到它安静下来再切过去。
+    //
+    // 注意"串行"只关掉了**翻译管线**的并行，其他并行一件没少：
+    //   音频按房间分流、每场会一个字幕总线文件、房间级 WS 帧、历史与转写全文 —— 全都照旧。
+    parallelTranslate: false,
+    switchIdleMs: 15000,         // 正在跑的那场安静这么久 → 让位给别的场
+    minHoldMs: 8000,             // 至少待这么久才允许切走（防止两场会来回抢，一直重载模型）
     only: [],
     includeEmpty: false,
     offline: false,
@@ -159,7 +184,7 @@ export function parseArgs(argv = []) {
     dryRun: false,
   }
   const takesValue = new Set(['data-dir', 'buses', 'port', 'poll-ms', 'grace-ms', 'cols', 'lines',
-    'max-rooms', 'only', 'whisper-model', 'compute'])
+    'max-rooms', 'only', 'whisper-model', 'compute', 'switch-idle-ms', 'min-hold-ms'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -174,6 +199,8 @@ export function parseArgs(argv = []) {
     if (key === 'public') { options.public = true; continue }
     if (key === 'quiet-logs') { options.writeLogs = false; continue }
     if (key === 'dry-run') { options.dryRun = true; continue }
+    if (key === 'parallel-translate') { options.parallelTranslate = true; continue }
+    if (key === 'serial-translate') { options.parallelTranslate = false; continue }
     if (!takesValue.has(key)) throw new Error(`未知选项 --${key}（用 --help 看用法）`)
     const value = argv[index + 1]
     if (value === undefined || value.startsWith('--')) throw new Error(`--${key} 需要一个值`)
@@ -188,6 +215,8 @@ export function parseArgs(argv = []) {
     else if (key === 'max-rooms') options.maxRooms = Number(value)
     else if (key === 'poll-ms') options.pollMs = Number(value)
     else if (key === 'grace-ms') options.graceMs = Number(value)
+    else if (key === 'switch-idle-ms') options.switchIdleMs = Number(value)
+    else if (key === 'min-hold-ms') options.minHoldMs = Number(value)
     else if (key === 'cols') options.cols = Number(value)
     else if (key === 'lines') options.lines = Number(value)
     else if (key === 'port') options.port = Number(value)
@@ -206,6 +235,17 @@ export function parseArgs(argv = []) {
   if (!Number.isInteger(options.maxRooms) || options.maxRooms < 0) {
     throw new Error(`--max-rooms 必须是非负整数，收到 ${JSON.stringify(options.maxRooms)}`)
   }
+  for (const key of ['switchIdleMs', 'minHoldMs']) {
+    if (!Number.isInteger(options[key]) || options[key] < 0) {
+      throw new Error(`--${key === 'switchIdleMs' ? 'switch-idle-ms' : 'min-hold-ms'} 必须是非负整数，收到 ${JSON.stringify(options[key])}`)
+    }
+  }
+  // 串行模式下"--max-rooms 大于 1"是自相矛盾的：串行的定义就是同一刻只有一场。
+  // 与其静默按 1 处理（人会以为自己开了并行），不如让他明确选一次。
+  if (options.parallelTranslate !== true && options.maxRooms > 1) {
+    throw new Error('串行模式（缺省）同一刻只跑一场，--max-rooms > 1 要配 --parallel-translate'
+      + '（显存够、想真并行时再加）')
+  }
   if (options.only.some(id => isSafeRoomId(id) === false)) {
     throw new Error(`--only 里的房间 id 只能是字母数字下划线连字符：${options.only.filter(id => !isSafeRoomId(id)).join(', ')}`)
   }
@@ -216,6 +256,18 @@ export function parseArgs(argv = []) {
   options.whisperModel = options.whisperModel
     ?? (options.device === 'cuda' ? 'large-v3' : 'small')
   return options
+}
+
+/** 串行模式切换时给人的一句人话（`chooseActiveRoom` 的 reason → 中文）。 */
+export function describeSwitchReason(reason) {
+  switch (reason) {
+    case 'floor-holder': return '另一场有人拿起麦克风'
+    case 'floor-holder-busiest': return '两场都有人说话，先译声音更新的那场'
+    case 'recent-audio': return '另一场刚有声音'
+    case 'round-robin': return '都没在说话，轮换着译（避免某一场一直排不到）'
+    case 'no-room': return '没有房间了'
+    default: return String(reason ?? '')
+  }
 }
 
 /** 一场会的三个文件：收件箱、字幕总线、分流音频。路径全部落在数据目录下。 */
@@ -282,6 +334,100 @@ export function pipelineSteps(options, room) {
     script: join(ROOT, 'scripts', 'harness-side.mjs'), args: brainArgs,
   })
   return steps
+}
+
+/**
+ * 串行模式：同一时刻**只跑一场会**的管线，决定"这一轮该翻译哪一场"。
+ *
+ * <p><b>为什么要这个函数</b>：显存只够一份模型时就只能串行，而"轮到谁"不能写死成
+ * "最早开的那场"—— 那会让另一场会**永远排不到**。真实情况也不对称：
+ * 两场会里通常只有一场在说话。所以规则是「**谁在说话就先翻译谁**」，
+ * 而已经安静下来的那场让位。三条约束按此优先：
+ *
+ * <ol>
+ *   <li><b>正在持麦的房间优先</b> —— 持麦 = 有人正在说，这就是当下在产生内容的那一场；</li>
+ *   <li>其次是「最近有音频增长」的房间（`activity` 是 Web 端观察到的 pcm 增长时间）；</li>
+ *   <li>都不活跃时**轮流**（`lastServedAt` 最小的先上）—— 防止某一场永远饿着。</li>
+ * </ol>
+ *
+ * <p>两条防抖动约束（不然两场会会来回抢，每次切换都要**重载模型**）：
+ * 正在跑的那场没安静够 `switchIdleMs` 就不切；刚切过去不满 `minHoldMs` 也不切
+ * （除非它已经不在候选里了 —— 那说明它散会了，必须马上让位）。
+ *
+ * @returns {{roomId: string|null, reason: string, switch: boolean}}
+ */
+export function chooseActiveRoom({
+  rooms = [], running = null, activity = new Map(), lastServedAt = new Map(),
+  now = Date.now(), idleMs = 15000, minHoldMs = 8000, runningSince = 0,
+} = {}) {
+  const candidates = (Array.isArray(rooms) ? rooms : []).filter(room => room && typeof room.id === 'string')
+  if (candidates.length === 0) return { roomId: null, reason: 'no-room', switch: running !== null && running !== undefined }
+  const activeAt = roomId => {
+    const entry = activity.get(roomId)
+    return entry === undefined ? -Infinity : Number(entry.at ?? -Infinity)
+  }
+  const isBusy = room => room.holder !== null && room.holder !== undefined && String(room.holder) !== ''
+  const fresh = roomId => now - activeAt(roomId) <= idleMs
+
+  // ① 正在跑的那场还在、而且还在说话 → 不切换
+  if (running !== null && running !== undefined) {
+    const current = candidates.find(room => room.id === running)
+    if (current !== undefined) {
+      const heldLongEnough = now - runningSince >= minHoldMs
+      const stillTalking = isBusy(current) || fresh(current.id)
+      // 有人正在另一场说话、而这一场已经安静 → 让位（这才是串行该做的事）
+      const someoneElseTalking = candidates.some(room => room.id !== running && (isBusy(room) || fresh(room.id)))
+      if (!(heldLongEnough && someoneElseTalking && !stillTalking)) {
+        return { roomId: running, reason: stillTalking ? 'still-talking' : 'holding', switch: false }
+      }
+    }
+    // 正在跑的那场已经不在候选里（散会 / 没人了）→ 必须换
+  }
+
+  // ② 持麦的房间
+  const busy = candidates.filter(isBusy)
+  if (busy.length === 1) return { roomId: busy[0].id, reason: 'floor-holder', switch: true }
+  if (busy.length > 1) {
+    // 两场会同时有人说话 —— 串行必然只能服务一场。挑"最近有音频"的那一场更接近真相。
+    const scored = [...busy].sort((left, right) => activeAt(right.id) - activeAt(left.id))
+    return { roomId: scored[0].id, reason: 'floor-holder-busiest', switch: true }
+  }
+
+  // ③ 最近有音频增长的房间
+  const talking = candidates.filter(room => fresh(room.id))
+  if (talking.length > 0) {
+    const scored = [...talking].sort((left, right) => activeAt(right.id) - activeAt(left.id))
+    return { roomId: scored[0].id, reason: 'recent-audio', switch: true }
+  }
+
+  // ④ 都不活跃：轮流（最久没被服务过的先上，从没服务过的排最前）
+  const ordered = [...candidates].sort((left, right) => {
+    const leftAt = Number(lastServedAt.get(left.id) ?? 0)
+    const rightAt = Number(lastServedAt.get(right.id) ?? 0)
+    if (leftAt !== rightAt) return leftAt - rightAt
+    return String(left.createdAt ?? '').localeCompare(String(right.createdAt ?? ''))
+  })
+  return { roomId: ordered[0].id, reason: 'round-robin', switch: true }
+}
+
+/**
+ * 读每场会的音频活跃度（只看大小与修改时间，不读内容）。
+ *
+ * <p>用文件大小判断"这一场是不是在说"，而不是读音频：读内容要占 IO 与 CPU，
+ * 而这里只需要一个**粗粒度**的信号 —— 谁最近在长。拿不到（还没有这个房间的 pcm）就当没声。
+ */
+export function readRoomActivity(options, roomIds, statFile = (path) => statSync(path)) {
+  const activity = new Map()
+  for (const roomId of roomIds) {
+    const file = roomAudioPath(options.dataDir, roomId)
+    try {
+      const info = statFile(file)
+      activity.set(roomId, { bytes: Number(info.size ?? 0), at: Number(info.mtimeMs ?? 0) })
+    } catch {
+      activity.set(roomId, { bytes: 0, at: -Infinity })
+    }
+  }
+  return activity
 }
 
 /**
@@ -444,14 +590,20 @@ export async function main(argv = process.argv.slice(2)) {
 
   console.log('')
   console.log('─'.repeat(72))
-  console.log('  亮亮眼镜 · 多场会并行（一条命令）')
+  console.log(`  亮亮眼镜 · 多场会（一条命令，${options.parallelTranslate ? '翻译管线并行' : '翻译管线串行'}）`)
   console.log('─'.repeat(72))
   console.log(`  ${relay.color}${relay.label}${RESET}  ${relay.script.replace(ROOT, '.').replace(/\\/g, '/')} ${relay.args.join(' ')}`)
   console.log('')
-  console.log(`  识别/大脑  每场会各一套（房间是手机决定的，脚本每 ${options.pollMs}ms 看一眼，缺就补、散了就收）`)
+  if (options.parallelTranslate) {
+    console.log(`  识别/大脑  每场会各一套同时跑（房间是手机决定的，脚本每 ${options.pollMs}ms 看一眼）`)
+  } else {
+    console.log(`  识别/大脑  同一刻**只跑一场**（谁在说话就翻译谁；其余排队，${options.switchIdleMs}ms 没声才换）`)
+    console.log(`  ${DIM}           为什么串行：每场会一套识别 = 一份模型（large-v3 约 5GB）。显存不够会 OOM，`)
+    console.log(`             而现象是"识别挂了"，比报"显存不足"难查得多。显存够了加 --parallel-translate。${RESET}`)
+  }
   console.log(`  字幕总线   ${options.busesDir.replace(/\\/g, '/')}/  ← **目录**：每场会一个 <房间id>.json，互不覆盖`)
   console.log(`  收件箱     ${options.dataDir.replace(/\\/g, '/')}/asr-inbox-<房间id>.jsonl`)
-  console.log(`  分流音频   ${options.dataDir.replace(/\\/g, '/')}/audio/<房间id>.pcm`)
+  console.log(`  分流音频   ${options.dataDir.replace(/\\/g, '/')}/audio/<房间id>.pcm  ← 每场都分流，与串行无关`)
   console.log(`  翻译后端   ${options.offline ? '离线例句表（只认得剧本 14 句）' : '真实模型（deepseek-official）'}`)
   console.log(`  校对       ${options.proofread ? '开启（每句多一次模型调用）' : '关闭（加 --proofread 打开）'}`)
   if (options.transcriber) {
@@ -459,8 +611,9 @@ export async function main(argv = process.argv.slice(2)) {
   } else {
     console.log('  识别模型   未启动（--no-transcriber：只跑转发 + 大脑，手输文字那条路）')
   }
-  console.log(`  并发上限   ${options.maxRooms > 0 ? `${options.maxRooms} 场` : '不限（--max-rooms 可限流）'}；`
-    + `房间没人后 ${options.graceMs}ms 才收管线`)
+  console.log(`  并发上限   ${options.parallelTranslate
+    ? (options.maxRooms > 0 ? `${options.maxRooms} 场` : '不限（--max-rooms 可限流）')
+    : '1 场（串行；--parallel-translate 才并行）'}；房间没人后 ${options.graceMs}ms 才收管线`)
   console.log(`  术语来源   ${termSummary ?? '旧的全局表（<data-dir>/terms.json；手机上"开始同传"后会发布会议术语）'}`)
   console.log(`  数据目录   ${options.dataDir}`)
   for (const note of envNotes) console.log(`  ${note}`)
@@ -477,8 +630,12 @@ export async function main(argv = process.argv.slice(2)) {
     } else if (plannedRooms.length === 0) {
       console.log('  现在没有"开着且有人"的房间 —— 真的跑起来后会一直等，有人进会就补一套管线。')
     } else {
-      console.log(`  现在会起 ${plannedRooms.length} 套管线：`)
-      for (const room of plannedRooms) {
+      // 串行模式只会有**一场**真的跑起来；其余排在那儿等（谁说话就换谁）
+      const planned = options.parallelTranslate ? plannedRooms : plannedRooms.slice(0, 1)
+      const queued = options.parallelTranslate ? [] : plannedRooms.slice(1)
+      console.log(`  现在会起 ${planned.length} 套管线`
+        + `${queued.length > 0 ? `（另有 ${queued.length} 场排队，谁说话就换谁）` : ''}：`)
+      for (const room of planned) {
         const files = roomFiles(options, room.id)
         console.log(`    房间 ${room.id}「${room.name || '未命名'}」邀请码 ${room.code} 人 ${room.members}`)
         for (const step of pipelineSteps(options, room)) {
@@ -486,8 +643,11 @@ export async function main(argv = process.argv.slice(2)) {
         }
         console.log(`      ${DIM}总线 ${files.busFile}${RESET}`)
       }
+      for (const room of queued) {
+        console.log(`    ${DIM}… 排队中：${room.id}「${room.name || '未命名'}」邀请码 ${room.code}，${room.members} 人${RESET}`)
+      }
     }
-    const hint = memoryHint(options, Math.max(1, plannedRooms.length))
+    const hint = memoryHint(options, options.parallelTranslate ? Math.max(1, plannedRooms.length) : 1)
     if (hint) console.log(`\n  ${hint}`)
     console.log('')
     console.log('（--dry-run：只检查并显示将要做什么，没有真的启动任何进程）')
@@ -501,6 +661,7 @@ export async function main(argv = process.argv.slice(2)) {
   const children = new Set()         // 所有子进程（含转发），收尾时按树杀
   const failures = new Map()         // roomId → { count, at }
   const logStreams = new Map()       // key → WriteStream
+  const lastServedAt = new Map()     // roomId → 上一次"轮到它翻译"的时间（串行模式防饿死）
   let absentSince = new Map()
   let stopping = false
   let timer = null
@@ -679,7 +840,7 @@ export async function main(argv = process.argv.slice(2)) {
 
     const desired = pickRooms(snapshot.rooms, options)
     // 上限被吃掉时**说一次**，别让人以为脚本漏了房间
-    if (options.maxRooms > 0 && !maxRoomsWarned) {
+    if (options.parallelTranslate && options.maxRooms > 0 && !maxRoomsWarned) {
       const uncapped = pickRooms(snapshot.rooms, { ...options, maxRooms: 0 })
       if (uncapped.length > desired.length) {
         maxRoomsWarned = true
@@ -697,14 +858,62 @@ export async function main(argv = process.argv.slice(2)) {
     absentSince = plan.absentSince
     for (const roomId of plan.stops) stopRoom(roomId, '房间已关闭或没人了')
 
-    for (const room of desired) {
-      if (running.has(room.id)) continue
-      const failure = failures.get(room.id)
-      if (failure !== undefined) {
-        if (failure.count >= MAX_RETRIES) continue
-        if (Date.now() - failure.at < RETRY_COOLDOWN_MS) continue
+    if (options.parallelTranslate) {
+      for (const room of desired) {
+        if (running.has(room.id)) continue
+        const failure = failures.get(room.id)
+        if (failure !== undefined) {
+          if (failure.count >= MAX_RETRIES) continue
+          if (Date.now() - failure.at < RETRY_COOLDOWN_MS) continue
+        }
+        startRoom(room)
       }
-      startRoom(room)
+    } else {
+      // ── 串行模式：同一刻只跑一场，谁在说话就翻译谁 ────────────────────────
+      //
+      // 关键取舍：**另一场会排队时不是"没有字幕"，而是"还没有它的字幕"** ——
+      // 它的音频照样按房间分流落盘，轮到它时从**当前位置**开始翻译（见 PcmFollower
+      // 从文件末尾开始跟），所以不会把之前几分钟的录音重新识别一遍冒出旧句子。
+      // 也就是说：显存不够时，牺牲的是"同时两场都有字幕"，不是"音频丢了"。
+      const nowMs = Date.now()
+      const runningIds = [...running.keys()]
+      const activity = readRoomActivity(options, desired.map(room => room.id))
+      const currentRunning = runningIds.length > 0 ? runningIds[0] : null
+      const currentEntry = currentRunning === null ? null : running.get(currentRunning)
+      const choice = chooseActiveRoom({
+        rooms: desired,
+        running: currentRunning,
+        activity,
+        lastServedAt,
+        now: nowMs,
+        idleMs: options.switchIdleMs,
+        minHoldMs: options.minHoldMs,
+        runningSince: currentEntry === undefined || currentEntry === null ? 0 : currentEntry.startedAt,
+      })
+      // 兜底：串行模式下不该同时存在两套管线（除了刚切换的那一瞬间）
+      for (const roomId of runningIds) {
+        if (roomId !== choice.roomId) stopRoom(roomId, '让位给正在说话的那一场')
+      }
+      if (choice.roomId !== null && running.has(choice.roomId) !== true) {
+        const target = desired.find(room => room.id === choice.roomId)
+        const failure = failures.get(choice.roomId)
+        const cooling = failure !== undefined
+          && (failure.count >= MAX_RETRIES || nowMs - failure.at < RETRY_COOLDOWN_MS)
+        if (target !== undefined && !cooling) {
+          if (choice.switch && currentRunning !== null) {
+            console.log(`  ${DIM}⇄ 换到 ${shortRoomId(choice.roomId)}（${describeSwitchReason(choice.reason)}）`
+              + ` —— 串行模式每次切换都要重新加载模型，几秒钟${RESET}`)
+          }
+          startRoom(target)
+          lastServedAt.set(choice.roomId, nowMs)
+        }
+      }
+      // 排队中的房间说清楚"为什么没有它的字幕"
+      const waiting = desired.filter(room => room.id !== choice.roomId)
+      if (waiting.length > 0 && tickCount % 10 === 0) {
+        console.log(`  ${DIM}… 排队中（串行，显存只够一份模型）：${waiting.map(room => shortRoomId(room.id)).join(' / ')}`
+          + `（它们的音频照常落盘，轮到时会从"现在"开始翻译）${RESET}`)
+      }
     }
 
     // 跑满两分钟就**把失败计数清零**：故障额度是给"起不来"的，不是给"跑了一小时才挂一次"的
