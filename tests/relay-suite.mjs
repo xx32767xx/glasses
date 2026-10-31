@@ -323,6 +323,69 @@ export async function runRelaySuite({ it, check, assert }) {
     }
   })
 
+  await it('5.13：新人加入 → "这一场读哪些语言"当场更新（不用等他说话）', async () => {
+    // 用户问的正是这个：「如果一个其他语言的人加入，会实时更新此策略吗？」
+    // 原来侧车只在"有人上传音频 / 发布字幕帧"时重算，所以新人加入后**下一句话**
+    // 才会被大脑看到 —— 那之前的一句仍按旧集合处理（该出英语的只出了葡语）。
+    // 现在成员一变（加入 / 退出 / 被移出）就当场重算并写盘。
+    const dir = mkdtempSync(join(tmpdir(), 'roomlangs-'))
+    await mkdir(join(dir, 'room-langs'), { recursive: true })
+    const room = createRoom(dir, { name: '语种会', host: 'alice' })
+    joinRoom(dir, { roomId: room.room.id, username: 'alice', lang: 'zh-CN' })
+    // 加入接口要**登录身份**（token）：人建的账号 + 用户名/密码登录
+    const { createAccountWithPassword, loadAccounts, saveAccounts } = await import('../lib/accounts.mjs')
+    const accounts = await loadAccounts(dir)
+    const made = createAccountWithPassword(accounts, { username: 'bruno', password: 'secret12', role: 'user' })
+    await saveAccounts(dir, made.doc)
+    const relay = await startRelay({
+      dataDir: dir, port: 0, host: '127.0.0.1', secret: 's3cret-0123456789abcdef', quiet: true,
+    })
+    try {
+      const base = `http://127.0.0.1:${relay.port}`
+      const headers = { 'X-Leion-Secret': 's3cret-0123456789abcdef', 'content-type': 'application/json' }
+      const login = await fetch(`${base}/auth/login`, {
+        method: 'POST', headers, body: JSON.stringify({ username: 'bruno', password: 'secret12' }),
+      }).then((r) => r.json())
+      check('新成员拿到 token', typeof login.token === 'string', JSON.stringify(login))
+      const authed = { ...headers, 'x-leion-token': login.token }
+      const sidecar = join(dir, 'room-langs', `${room.room.id}.json`)
+      const readLangs = async () => {
+        try { return JSON.parse(await readFile(sidecar, 'utf-8')).langs ?? [] } catch { return [] }
+      }
+      // 先让 relay 算一次（模拟"这一场已经在说话"）：只有中文
+      await fetch(`${base}/audio?rate=16000&lang=zh-CN&room=${encodeURIComponent(room.room.id)}&speaker=alice`,
+        { method: 'POST', headers, body: Buffer.alloc(160) })
+      await sleep(200)
+      check('一开始只有中文', JSON.stringify(await readLangs()) === '["zh-CN"]', JSON.stringify(await readLangs()))
+
+      // ★ 关键：**只加入，不说话**。语言集合必须当场变成两种。
+      const joined = await fetch(`${base}/org/rooms/join`, {
+        method: 'POST', headers: authed,
+        body: JSON.stringify({ code: room.room.code, lang: 'en-US' }),
+      }).then((r) => r.json())
+      check('加入成功', joined.ok === true, JSON.stringify(joined))
+      await sleep(200)
+      const langs = await readLangs()
+      check('新人一进会，语言集合立刻带上英语（不用等他说话）',
+        langs.includes('en-US'), JSON.stringify(langs))
+      check('原来的中文还在', langs.includes('zh-CN'), JSON.stringify(langs))
+
+      // 反向：那个人**走了**，集合要回到只有中文（于是又变成"同语言不翻译"）
+      const left = await fetch(`${base}/org/rooms/leave`, {
+        method: 'POST', headers: authed,
+        body: JSON.stringify({ roomId: room.room.id }),
+      }).then((r) => r.json())
+      check('退出成功', left.ok === true, JSON.stringify(left))
+      await sleep(200)
+      const after = await readLangs()
+      check('他走后集合回到只有中文（下一句起就不再翻译）',
+        JSON.stringify(after) === '["zh-CN"]', JSON.stringify(after))
+    } finally {
+      relay.close?.()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   await it('4.84 / 5.08：音频按房间、按说话人分流 —— 声音不串，语种也不会互相覆盖', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'roomaudio-'))
     const secret = 's3cret-0123456789abcdef'

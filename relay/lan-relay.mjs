@@ -2331,6 +2331,8 @@ export async function startRelay(rawOptions = {}) {
             if (removedMatch !== null) {
               const removedRoom = decodeURIComponent(removedMatch[1])
               wsHub.broadcastFloor(removedRoom)
+              // 5.13：成员一变就重算"这一场读哪些语言"（被移出的人不该继续算进目标集合）
+              publishRoomLangs(removedRoom)
               // 被移出的人**立刻**离开：推一条 removed 再断连接，别让他自己在屋里再待十几秒
               if (result.json !== null && typeof result.json.removed === 'string') {
                 wsHub.removeUserFromRoom(removedRoom, result.json.removed, 'removed-by-host')
@@ -2340,12 +2342,24 @@ export async function startRelay(rawOptions = {}) {
             const leftRoomId = decodeURIComponent(String(body.roomId ?? body.code ?? ''))
             // 持麦者退出时服务端会把麦清空（lib/rooms.mjs）→ 留下的人也要立刻看到
             wsHub.broadcastFloor(leftRoomId)
+            // 5.13：有人走了也要重算（他自己的语言不该再影响"译成几种"）
+            publishRoomLangs(leftRoomId)
             // 发起者退出 = 整场结束：立刻把还连着的人赶出去（4.44）。
             // 只广播状态不够 —— 他们会留在"已结束的会议"里继续点按钮。
             if (result.json !== null && result.json.closed === true) {
               const kicked = wsHub.closeRoom(leftRoomId, 'host-left')
               if (kicked > 0) debug(`🚪 会议已结束（发起者退出），已断开 ${kicked} 个在线连接`)
             }
+          } else if (url.pathname === '/org/rooms/join') {
+            // 5.13：**有新人加入就当场重算"这一场读哪些语言"**。
+            //
+            // 侧车（`room-langs/<房间>.json`）原来只在"有人上传音频 / 发布字幕帧"时才重算，
+            // 于是"新来一个读英语的人"这件事要等到下一句话才会被大脑看到 ——
+            // 那之前说的一句仍按旧集合处理（该出英语的只出了葡语），
+            // 表现就像"新人加入了，但翻译策略没跟上"。
+            // 现在成员变化的那一刻就重算并写盘（只在内容真的变了才写）。
+            const joinedRoomId = String(result.json?.room?.id ?? '')
+            if (joinedRoomId !== '') publishRoomLangs(joinedRoomId)
           }
         }
         return
