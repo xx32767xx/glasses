@@ -21,7 +21,7 @@ import {
   chooseActiveRoom, describeSwitchReason, readRoomActivity,
 } from '../scripts/start-multi.mjs'
 import { createRoom, joinRoom } from '../lib/rooms.mjs'
-import { roomAudioPath } from '../relay/lan-relay.mjs'
+import { roomAudioPath, roomTrackDir } from '../relay/lan-relay.mjs'
 import { VAR_DIR } from '../lib/paths.mjs'
 
 const argsOf = step => step.args.join(' ')
@@ -73,14 +73,18 @@ export async function runStartMultiSuite({ it, check, assert }) {
 
   // ── 2. 每场会一套管线，而且**不共享任何可写文件** ───────────────────────────
 
-  await it('一场会一套管线：切句跟自己的 pcm、大脑写自己的总线', async () => {
+  await it('一场会一套管线：切句跟自己的**分轨目录**、大脑写自己的总线', async () => {
     const options = parseArgs(['--data-dir', 'var/x'])
     const steps = pipelineSteps(options, { id: ROOM_A })
     assert.deepEqual(steps.map(step => step.role), ['cut', 'brain'])
     const cut = steps.find(step => step.role === 'cut')
     const brain = steps.find(step => step.role === 'brain')
-    check('切句尾随这一场自己的 pcm',
-      cut.args[cut.args.indexOf('--follow') + 1] === roomFiles(options, ROOM_A).audio, cut.args.join(' '))
+    // 5.08：切句端尾随的是**这个房间的分轨目录**（每个说话人一个 pcm，各带自己的语种）
+    check('切句尾随这一场自己的分轨目录',
+      cut.args[cut.args.indexOf('--follow-dir') + 1] === roomFiles(options, ROOM_A).audioDir,
+      cut.args.join(' '))
+    check('不再尾随单个 pcm（那会让两个说话人共用一份语种）',
+      cut.args.includes('--follow') === false, cut.args.join(' '))
     check('大脑的 --bus 是**这一场**的 json 文件', argsOf(brain).includes(`${ROOM_A}.json`), argsOf(brain))
     check('大脑用 --keep-inbox（清空由本脚本统一做，见 prepareRoomFiles）',
       argsOf(brain).includes('--keep-inbox'), argsOf(brain))
@@ -101,9 +105,10 @@ export async function runStartMultiSuite({ it, check, assert }) {
     const options = parseArgs(['--data-dir', 'var/x'])
     const a = roomFiles(options, ROOM_A)
     const b = roomFiles(options, ROOM_B)
-    const pairs = [['inbox', a.inbox, b.inbox], ['bus', a.busFile, b.busFile], ['audio', a.audio, b.audio]]
+    const pairs = [['inbox', a.inbox, b.inbox], ['bus', a.busFile, b.busFile],
+      ['audioDir', a.audioDir, b.audioDir], ['audio(旧单文件)', a.audio, b.audio]]
     for (const [what, left, right] of pairs) {
-      check(`${what} 不是同一个文件`, left !== right, `${left} vs ${right}`)
+      check(`${what} 不是同一个`, left !== right, `${left} vs ${right}`)
     }
     check('收件箱在数据目录下、按房间名分文件',
       a.inbox.replace(/\\/g, '/').endsWith(`/asr-inbox-${ROOM_A}.jsonl`), a.inbox)
@@ -111,11 +116,18 @@ export async function runStartMultiSuite({ it, check, assert }) {
       a.busFile.replace(/\\/g, '/').endsWith(`/buses/${ROOM_A}.json`), a.busFile)
   })
 
-  await it('分流音频路径与 relay 的 roomAudioPath() 完全一致（唯一来源，不另写一份规则）', async () => {
+  await it('分流音频路径与 relay 的 roomAudioPath()/roomTrackDir() 完全一致（唯一来源）', async () => {
     const options = parseArgs(['--data-dir', 'var/x'])
-    check('同一个函数算出来的',
+    check('旧单文件路径是同一个函数算出来的',
       roomFiles(options, ROOM_A).audio === roomAudioPath(options.dataDir, ROOM_A),
       roomFiles(options, ROOM_A).audio)
+    // 5.08：切句端用的是分轨目录，同样只能从 relay 那边的函数取，不许自己拼
+    check('分轨目录是同一个函数算出来的',
+      roomFiles(options, ROOM_A).audioDir === roomTrackDir(options.dataDir, ROOM_A),
+      roomFiles(options, ROOM_A).audioDir)
+    check('分轨目录是 <data-dir>/audio/<房间>',
+      roomFiles(options, ROOM_A).audioDir.replace(/\\/g, '/').endsWith(`/audio/${ROOM_A}`),
+      roomFiles(options, ROOM_A).audioDir)
   })
 
   // 这一条是被 harness-side 的缺省值坑过的：它的 proofread 缺省是**开**的，
@@ -325,8 +337,8 @@ export async function runStartMultiSuite({ it, check, assert }) {
     check('带 --segment-dir 指向队列', cut.args.includes('--segment-dir'), cut.args.join(' '))
     check('带 --tag 房间号（消费者靠它送回正确的房间）',
       cut.args[cut.args.indexOf('--tag') + 1] === ROOM_A, cut.args.join(' '))
-    check('尾随这一场自己的 pcm',
-      cut.args[cut.args.indexOf('--follow') + 1] === roomFiles(options, ROOM_A).audio,
+    check('尾随这一场自己的分轨目录（每个说话人一路）',
+      cut.args[cut.args.indexOf('--follow-dir') + 1] === roomFiles(options, ROOM_A).audioDir,
       cut.args.join(' '))
     check('命令行里**没有 --model**（切句不加载模型 = 不占显存）',
       cut.args.includes('--model') === false, cut.args.join(' '))
@@ -418,9 +430,14 @@ export async function runStartMultiSuite({ it, check, assert }) {
     mkdirSync(base, { recursive: true })
     appendInboxLine(base, ROOM_A, '这句话', 'zh')
     appendInboxLine(base, ROOM_A, 'outra frase', 'pt-BR')
+    // 5.08：说话人跟着这一行走（来自分轨文件名），下游据此落名字
+    appendInboxLine(base, ROOM_A, 'who said it', 'en', { speaker: 'bob' })
     const lines = readFileSync(join(base, `asr-inbox-${ROOM_A}.jsonl`), 'utf-8').trim().split('\n')
     check('落盘时已经把 zh 换成 zh-CN', JSON.parse(lines[0]).from === 'zh-CN', lines[0])
     check('葡语保持不变', JSON.parse(lines[1]).from === 'pt-BR', lines[1])
+    check('带 speaker 的行把它写进去', JSON.parse(lines[2]).speaker === 'bob', lines[2])
+    check('不说话人时不写这个字段（老链路格式不变）',
+      JSON.parse(lines[0]).speaker === undefined, lines[0])
     rmSync(base, { recursive: true, force: true })
   })
 

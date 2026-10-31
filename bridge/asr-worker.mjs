@@ -162,9 +162,15 @@ export function normalizeLangTag(from) {
  * 用 `openSync(..., 'a')` + `writeSync` 而不是追一个常开的句柄：房间可能很多，
  * 常开句柄会让"某一场会关掉后文件还被占着"（Windows 上改不了名、删不掉）。
  */
-export function appendInboxLine(inboxDir, roomId, text, from, { fs = null } = {}) {
+export function appendInboxLine(inboxDir, roomId, text, from, { fs = null, speaker = '' } = {}) {
   const tag = normalizeLangTag(from)
-  const line = JSON.stringify(tag === null ? { text } : { text, from: tag })
+  // 5.08：段是从**某个人的分轨文件**切出来的，所以"这句话是谁说的"是数据自带的。
+  // 这一行多带一个 `speaker`（老链路没有这个字段，大脑与插件对此不敏感，纯增量）。
+  const who = typeof speaker === 'string' ? speaker.trim() : ''
+  const body = { text }
+  if (tag !== null) body.from = tag
+  if (who !== '') body.speaker = who
+  const line = JSON.stringify(body)
   const file = inboxPathFor(inboxDir, roomId)
   if (fs !== null) {                     // 测试注入：不必真写盘
     fs.append(file, line + '\n')
@@ -322,7 +328,10 @@ export async function main(argv = process.argv.slice(2)) {
     } else if (tag !== raw && tag !== null) {
       process.stderr.write(`${TAG} 语种码归一化：${JSON.stringify(raw)} → ${tag}（房间 ${room}）\n`)
     }
-    appendInboxLine(options.inboxDir, room, spoken, raw)
+    // 5.08：说话人跟着这一行走（来自分轨文件名）。下游能据此给字幕落名字，
+    // 不必再用"这个房间最近一次上传的人"去猜 —— 那个在两人交替说话时会记错人。
+    const who = typeof payload.speaker === 'string' ? payload.speaker.trim() : ''
+    appendInboxLine(options.inboxDir, room, spoken, raw, { speaker: who })
     if (process.env.LEION_DEBUG === '1') {
       process.stdout.write(`${TAG} ${room} → ${spoken}\n`)
     }

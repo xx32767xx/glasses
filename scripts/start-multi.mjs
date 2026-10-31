@@ -48,7 +48,7 @@ import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, st
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { LOGS_DIR, ROOT } from '../lib/paths.mjs'
-import { DEFAULT_DATA_DIR, roomAudioPath } from '../relay/lan-relay.mjs'
+import { DEFAULT_DATA_DIR, roomAudioPath, roomTrackDir } from '../relay/lan-relay.mjs'
 import { listRooms } from '../lib/rooms.mjs'
 import { dbPath } from '../lib/db.mjs'
 import { currentTermsPaths, readCurrentMeeting } from '../lib/meeting-terms.mjs'
@@ -304,13 +304,16 @@ export function describeSwitchReason(reason) {
   }
 }
 
-/** 一场会的三个文件：收件箱、字幕总线、分流音频。路径全部落在数据目录下。 */
+/** 一场会的三个文件：收件箱、字幕总线、分轨音频目录。路径全部落在数据目录下。 */
 export function roomFiles(options, roomId) {
   return {
     roomId,
     inbox: join(options.dataDir, `asr-inbox-${roomId}.jsonl`),
     busFile: join(options.busesDir, `${roomId}.json`),
+    // 5.08：音频按**说话人**分文件，所以给切句端的是一个**目录**（`audio/<房间>/`），
+    // 不是单个 pcm。房号这条老路径还留着，只给"单文件尾随"的老模式与非队列模式兜底。
     audio: roomAudioPath(options.dataDir, roomId),
+    audioDir: roomTrackDir(options.dataDir, roomId),
   }
 }
 
@@ -356,8 +359,11 @@ export function pipelineSteps(options, room) {
         args: [
           '--segment-dir', options.queueDir,
           '--tag', roomId,
-          '--follow', files.audio,
-          // 语种跟着手机走：旁文件 <pcm>.lang 由 relay 写（切出的段自带语种）
+          // 5.08：尾随**分轨目录**（每个说话人一个 pcm，各带自己的 .rate / .lang）。
+          // 为什么不再尾随单个 `audio/<房间>.pcm`：那个文件的语种旁文件是"最后写入者获胜"，
+          // 两个人交替用不同语言说话时，切出来的段会带着上一个人的语种 ——
+          // 语言从源头就错了，下游再怎么修都是补丁。
+          '--follow-dir', files.audioDir,
           '--follow-poll-ms', '80',
         ],
       })

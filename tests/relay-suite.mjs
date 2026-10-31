@@ -15,8 +15,8 @@ import { sep } from 'node:path'
 import { join } from 'node:path'
 import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { startRelay, formatBanner, pcmLevel, describeLevel, roomAudioPath,
-  createRateLimiter, clientIp, resolveSecret, formatPublicChecklist,
+import { startRelay, formatBanner, pcmLevel, describeLevel, roomAudioPath, roomSpeakerAudioPath,
+  roomTrackDir, createRateLimiter, clientIp, resolveSecret, formatPublicChecklist,
   PUBLIC_LIMITS } from '../relay/lan-relay.mjs'
 import { VAR_DIR } from '../lib/paths.mjs'
 import { takeFloor } from '../lib/floor.mjs'
@@ -303,38 +303,56 @@ export async function runRelaySuite({ it, check, assert }) {
     }
   })
 
-  await it('4.84：音频按房间分流 —— 两场会同时开麦，声音不再串成一条', async () => {
+  await it('4.84 / 5.08：音频按房间、按说话人分流 —— 声音不串，语种也不会互相覆盖', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'roomaudio-'))
     const secret = 's3cret-0123456789abcdef'
     const relay = await startRelay({ dataDir: dir, port: 0, host: '127.0.0.1', secret, quiet: true })
     try {
       const base = `http://127.0.0.1:${relay.port}`
-      const post = (room, bytes) => fetch(
-        `${base}/audio?rate=16000&lang=zh-CN${room === '' ? '' : `&room=${encodeURIComponent(room)}`}`,
+      const post = (room, bytes, { speaker = '', lang = 'zh-CN' } = {}) => fetch(
+        `${base}/audio?rate=16000&lang=${encodeURIComponent(lang)}`
+        + `${room === '' ? '' : `&room=${encodeURIComponent(room)}`}`
+        + `${speaker === '' ? '' : `&speaker=${encodeURIComponent(speaker)}`}`,
         { method: 'POST', headers: { 'X-Leion-Secret': secret }, body: Buffer.alloc(bytes, 7) })
 
-      await post('room-A', 2048)
-      await post('room-B', 4096)
-      await post('room-A', 1024)
+      await post('room-A', 2048, { speaker: 'alice' })
+      await post('room-B', 4096, { speaker: 'carol' })
+      await post('room-A', 1024, { speaker: 'alice' })
+      // 同一个房间里第二个人，用另一种语言 —— 这正是 5.08 要分开的情形
+      await post('room-A', 512, { speaker: 'bob', lang: 'en-US' })
       await new Promise((resolve) => setTimeout(resolve, 300))
 
-      const a = roomAudioPath(dir, 'room-A')
-      const b = roomAudioPath(dir, 'room-B')
-      check('A 房间的文件按自己的块长大', existsSync(a) && readFileSync(a).length === 3072,
-        existsSync(a) ? String(readFileSync(a).length) : 'missing')
-      check('B 房间只收自己的 4096', existsSync(b) && readFileSync(b).length === 4096,
-        existsSync(b) ? String(readFileSync(b).length) : 'missing')
-      check('两个房间互不混合（长度不同即可证明）', readFileSync(a).length !== readFileSync(b).length)
+      const aAlice = roomSpeakerAudioPath(dir, 'room-A', 'alice')
+      const aBob = roomSpeakerAudioPath(dir, 'room-A', 'bob')
+      const bCarol = roomSpeakerAudioPath(dir, 'room-B', 'carol')
+      check('A 房间 alice 的文件按自己的块长大', existsSync(aAlice) && readFileSync(aAlice).length === 3072,
+        existsSync(aAlice) ? String(readFileSync(aAlice).length) : 'missing')
+      check('A 房间 bob 只收自己的 512', existsSync(aBob) && readFileSync(aBob).length === 512,
+        existsSync(aBob) ? String(readFileSync(aBob).length) : 'missing')
+      check('B 房间只收自己的 4096', existsSync(bCarol) && readFileSync(bCarol).length === 4096,
+        existsSync(bCarol) ? String(readFileSync(bCarol).length) : 'missing')
+      // 5.08 的核心：**每个人一条语种旁文件**，两个人的语种不会互相覆盖
+      check('alice 的语种是 zh-CN', readFileSync(aAlice + '.lang', 'utf-8').trim() === 'zh-CN',
+        readFileSync(aAlice + '.lang', 'utf-8').trim())
+      check('bob 的语种是 en-US（没有被 alice 覆盖）',
+        readFileSync(aBob + '.lang', 'utf-8').trim() === 'en-US',
+        readFileSync(aBob + '.lang', 'utf-8').trim())
       check('全局文件仍在（单房间/老链路兼容）', existsSync(join(dir, 'audio-in.pcm')))
 
       const listed = await (await fetch(`${base}/audio/rooms`, { headers: { 'X-Leion-Secret': secret } })).json()
       check('/audio/rooms 列出两个房间', listed.ok === true && listed.rooms.length === 2,
         JSON.stringify(listed.rooms?.map((one) => one.room)))
+      const roomA = listed.rooms.find((one) => one.room === 'room-A')
+      check('A 房间报出两路分轨', roomA !== undefined && roomA.tracks === 2, JSON.stringify(roomA))
 
-      // 文件名必须消毒：房间 id 里塞 .. 不能穿越出 audio/ 目录
+      // 文件名必须消毒：房间 id / 说话人里塞 .. 不能穿越出 audio/ 目录
       check('房间 id 被消毒（防目录穿越）',
         roomAudioPath(dir, '../../etc/passwd').startsWith(join(dir, 'audio') + sep),
         roomAudioPath(dir, '../../etc/passwd'))
+      check('说话人名也被消毒',
+        roomSpeakerAudioPath(dir, 'room-A', '../../etc/passwd')
+          .startsWith(roomTrackDir(dir, 'room-A') + sep),
+        roomSpeakerAudioPath(dir, 'room-A', '../../etc/passwd'))
     } finally {
       relay.close?.()
       rmSync(dir, { recursive: true, force: true })

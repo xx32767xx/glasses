@@ -211,6 +211,15 @@ def parse_args(argv=None):
     parser.add_argument("--follow", default=None,
                         help="尾随一个**不断追加**的裸 PCM 文件（16-bit 小端、单声道）。"
                              "手机端「录音上传」走的就是这条：relay 往文件追加，这里跟着读")
+    # 5.08：按说话人分轨（多语言房间必需）
+    #
+    # 为什么不能只有 --follow 那一条：一个房间一条音频流时，`.lang` 旁文件是"最后写入者获胜"。
+    # 两个人交替用不同语言说话，切出来的段会带着**上一个人**的语种 ——
+    # 表现就是"英语被当成中文识别"，而语言这件事下游无论怎么修都是补丁。
+    # relay 现在按 (房间, 说话人) 各写一条 `audio/<房间>/<说话人>.pcm`，这里尾随那个目录。
+    parser.add_argument("--follow-dir", default=None,
+                        help="尾随一个目录里的**所有** <说话人>.pcm（每个说话人一路，"
+                             "各带自己的 .rate / .lang；切出的段带 speaker）")
     parser.add_argument("--follow-rate", default=None,
                         help="尾随文件的采样率旁文件（缺省 <--follow>.rate）。"
                              "手机可能降级到 44.1 kHz 录音，读它才知道要不要重采样")
@@ -360,7 +369,7 @@ def parse_args(argv=None):
 QUEUE_META_SUFFIX = ".json"
 
 
-def _write_segment(queue_dir, tag, samplerate, audio, np, language=None):
+def _write_segment(queue_dir, tag, samplerate, audio, np, language=None, speaker=None):
     """把一段话落进队列：裸 PCM + 一份 meta。返回写出的文件名（供日志/测试）。"""
     os.makedirs(queue_dir, exist_ok=True)
     # 文件名按**时间戳**排：消费者直接按名字排序就是"到达顺序"（FIFO），
@@ -381,6 +390,8 @@ def _write_segment(queue_dir, tag, samplerate, audio, np, language=None):
         "rate": int(samplerate),
         "ms": int(round(len(data) * 1000.0 / float(samplerate))),
         "lang": None if language is None else str(language),
+        # 5.08：这段话是谁说的。分轨之后这是**数据自带的**，不用下游再猜"最近的说话人"。
+        "speaker": None if speaker is None else str(speaker),
         "queuedAt": int(time.time() * 1000),
     }
     # ⚠️ **先写 pcm、最后写 meta**：消费者只认 meta 存在的段。
@@ -398,18 +409,158 @@ def _write_segment(queue_dir, tag, samplerate, audio, np, language=None):
     return base
 
 
-def run_segment_producer(args, np):
-    """只切句、不加载模型（每场会一个进程，几乎不占资源）。"""
-    if not args.follow:
-        print("[whisper_stream] --segment-dir 需要配 --follow（尾随那场会的 pcm）", file=sys.stderr)
-        return 2
-    segmenter = UtteranceSegmenter(
+def _new_segmenter(args, np):
+    """按当前参数造一个切句器（一路音频一个：各自的能量统计必须独立）。"""
+    return UtteranceSegmenter(
         args.samplerate, args.block_ms, args.silence_ms,
         args.min_speech_ms, args.max_speech_ms, args.rms_threshold, args.preroll_ms, np,
         adaptive=args.adaptive, rms_floor=args.rms_floor, noise_multiplier=args.noise_multiplier,
         short_utterance_ms=args.short_utterance_ms, short_silence_ms=args.short_silence_ms,
         cut_pause_ms=args.cut_pause_ms,
     )
+
+
+def run_segment_producer_dir(args, np):
+    """**按说话人分轨**的切句端（5.08，每场会一个进程）。
+
+    为什么要有这个模式：原来一场会只有一条音频流 `audio/<房间>.pcm`，而语种旁文件
+    `.lang` 是"最后写入者获胜"。两个人交替用不同语言说话时，切出来的段会带着
+    **上一个人**的语种 —— 表现就是"英语被当成中文识别""我说中文，字幕却按英语出"。
+    语言从源头上就分不清，下游怎么修都是补丁。
+
+    现在 relay 按 `(房间, 说话人)` 分文件：`audio/<房间>/<说话人>.pcm`（+ `.rate` / `.lang`），
+    这里尾随那个**目录**：
+      · 每个文件一套 `PcmFollower` + `UtteranceSegmenter`（各自的能量底、各自的语种）；
+      · 切出的段带上 `speaker`，一路传到收件箱行（下游可以按人落名字）；
+      · 新说话人出现就自动开跟（不用重启进程），文件消失就丢掉那一路。
+
+    <p><b>为什么不用"每个说话人一个进程"</b>：进程数会随人数线性长，而这里是纯 CPU 的
+    能量判定 —— 一个进程里多跟几路几乎不要钱，但进程数、日志、退出管理全都要翻倍。
+    """
+    if not args.follow_dir:
+        print("[whisper_stream] --segment-dir 需要配 --follow-dir（按说话人分轨的目录）",
+              file=sys.stderr)
+        return 2
+    root = Path(args.follow_dir)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        print(f"[whisper_stream] 建不了分轨目录 {root}：{error}", file=sys.stderr)
+        return 2
+    print(f"[切句] {args.tag or '?'} 尾随分轨目录 {root} → 队列 {args.segment_dir}"
+          f"（**不加载模型**；每个说话人一路，各带自己的语种）", file=sys.stderr, flush=True)
+
+    idle = IdleTracker(args.idle_flush_ms, args.follow_poll_ms)
+    idle_stop_ms = (None if args.stop_after_idle is None
+                    else max(1, int(args.stop_after_idle * 1000)))
+    # speaker → {follower, segmenter, language, reported, unknown_noticed}
+    tracks = {}
+    produced = 0
+    announced = set()
+
+    def track_of(name):
+        """该说话人的那一路（第一次见到就开跟）。"""
+        state = tracks.get(name)
+        if state is not None:
+            return state
+        path = root / f"{name}.pcm"
+        segmenter = _new_segmenter(args, np)
+        follower = PcmFollower(path, args.samplerate, np, segmenter.block,
+                              from_start=args.follow_from_start)
+        language = None if args.no_sidecar_lang else follower.read_language(default=args.language)
+        if language is None:
+            language = args.language
+        follower.lang_notice = None
+        state = {"follower": follower, "segmenter": segmenter, "language": language,
+                 "reported": None, "unknown": False}
+        tracks[name] = state
+        return state
+
+    def flush(name, state, utterance):
+        nonlocal produced
+        if utterance is None or len(utterance) == 0:
+            return
+        base = _write_segment(args.segment_dir, args.tag, args.samplerate, utterance, np,
+                              state["language"], speaker=name)
+        produced += 1
+        print(f"[切句] {args.tag or '?'} {name} → {base}"
+              f"（{len(utterance) / args.samplerate:.1f}s，累计 {produced} 段）",
+              file=sys.stderr, flush=True)
+
+    def report(name, state):
+        """这一路现在带什么语种（只在变化时报一次）。"""
+        language = state["language"]
+        if language is not None:
+            state["unknown"] = False
+            if language != state["reported"]:
+                state["reported"] = language
+                notice = state["follower"].lang_notice
+                state["follower"].lang_notice = None
+                tag = notice[0] if notice is not None else language
+                print(f"[切句] {args.tag or '?'} {name} 语种 = {tag}（Whisper 码 {language}）"
+                      f"→ 之后他的每段都带它", file=sys.stderr, flush=True)
+            return
+        if not state["unknown"]:
+            state["unknown"] = True
+            lang_path = root / f"{name}.lang"
+            print(f"[切句] {args.tag or '?'} {name} 没有语种可带（{lang_path} 读不到或为空）"
+                  f"→ 他的段不带语种，识别时在 {tuple(args.lang_candidates or ())} 里按模型判定",
+                  file=sys.stderr, flush=True)
+
+    try:
+        while True:
+            any_data = False
+            try:
+                names = sorted(p.stem for p in root.glob("*.pcm"))
+            except OSError:
+                names = []
+            for name in names:
+                state = track_of(name)
+                if name not in announced:
+                    announced.add(name)
+                    print(f"[切句] {args.tag or '?'} 新的一路：{name}（{root / (name + '.pcm')}）",
+                          file=sys.stderr, flush=True)
+                blocks = state["follower"].read()
+                if not args.no_sidecar_lang:
+                    state["language"] = state["follower"].read_language(default=state["language"])
+                    report(name, state)
+                if blocks:
+                    any_data = True
+                    idle.saw_data()
+                    for block in blocks:
+                        for utterance in state["segmenter"].push(block):
+                            flush(name, state, utterance)
+                elif idle.saw_nothing() and state["segmenter"].speaking:
+                    flush(name, state, state["segmenter"].flush())
+            # 文件消失（换人 / 清理）：那一路的缓冲也别丢
+            for name in list(tracks.keys()):
+                if name in names:
+                    continue
+                state = tracks.pop(name)
+                flush(name, state, state["segmenter"].flush())
+                print(f"[切句] {args.tag or '?'} 这一路没了：{name}", file=sys.stderr, flush=True)
+            if any_data is False:
+                if idle_stop_ms is not None and idle.idle_ms >= idle_stop_ms:
+                    print(f"[切句] 连续 {args.stop_after_idle}s 没有新音频，收尾退出",
+                          file=sys.stderr, flush=True)
+                    break
+                time.sleep(max(0.01, args.follow_poll_ms / 1000.0))
+    except KeyboardInterrupt:
+        print("\n[切句] 收到 Ctrl-C", file=sys.stderr)
+    for name, state in list(tracks.items()):
+        flush(name, state, state["segmenter"].flush())
+    print(f"[切句] 退出：共切出 {produced} 段（{len(announced)} 路）", file=sys.stderr, flush=True)
+    return 0
+
+
+def run_segment_producer(args, np):
+    """只切句、不加载模型（每场会一个进程，几乎不占资源）。"""
+    if args.follow_dir:
+        return run_segment_producer_dir(args, np)
+    if not args.follow:
+        print("[whisper_stream] --segment-dir 需要配 --follow（尾随那场会的 pcm）", file=sys.stderr)
+        return 2
+    segmenter = _new_segmenter(args, np)
     follower = PcmFollower(
         args.follow, args.samplerate, np, segmenter.block,
         follow_rate_path=args.follow_rate,
@@ -574,6 +725,11 @@ def run_queue_consumer(args, np, model):
                 tag = language_tag(resolved_language)
                 if tag is not None:
                     payload["from"] = tag
+                # 5.08：段是从谁的分轨文件切出来的，就把那个人带下去（下游给字幕落名字时
+                # 不用再猜"这个房间最近谁上传过" —— 两人交替说话时那个会记错人）。
+                who = meta.get("speaker")
+                if isinstance(who, str) and who.strip() != "":
+                    payload["speaker"] = who.strip()
                 print(json.dumps(payload, ensure_ascii=False), flush=True)
             processed += 1
             # ⚠️ 处理完就删：队列目录同时是"待处理清单"，删掉才算消费完。
@@ -1807,7 +1963,8 @@ def main():
     # 注意 follow 模式也算"不是麦克风" —— 早先这里只判了 --file，于是
     # `--follow` 会因为没有 sounddevice 直接退出（而退出前那句错误信息又被管道
     # 下游的桥当成"识别结果"写进了收件箱，见文件末尾的警告）。
-    need_audio = args.file is None and args.follow is None
+    # 只要有"从文件读"的来源就不要麦克风依赖（--follow / --follow-dir 都算）
+    need_audio = args.file is None and args.follow is None and args.follow_dir is None
     np, WhisperModel, sounddevice = load_dependencies(need_audio)
 
     # ── 生产者模式（--segment-dir）：只切句，不加载模型 ────────────────────────

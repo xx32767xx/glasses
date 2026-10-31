@@ -33,7 +33,7 @@
 import { createServer } from 'node:http'
 import { createHash, randomBytes } from 'node:crypto'
 import { mkdir, appendFile, readFile, rename, stat, writeFile } from 'node:fs/promises'
-import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, unlinkSync } from 'node:fs'
 import { readdir } from 'node:fs/promises'
 import { networkInterfaces } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -492,6 +492,25 @@ export function roomAudioPath(dataDir, roomId) {
 }
 
 /**
+ * 一场会的**分轨目录**（5.08）：`audio/<房间>/`，里面每个说话人一个 `<说话人>.pcm`。
+ *
+ * <p>为什么必须按人分：一个房间一条音频流时，语种旁文件 `<pcm>.lang` 是**最后写入者获胜**。
+ * 两个人交替用不同语言说话（这个产品的常态），切出来的段就会带着**上一个人**的语种 ——
+ * 于是"英语被当成中文识别""中文被当成英语识别"，而语言这件事下游怎么修都是补丁。
+ * 分轨之后，每一路都有自己的 `.rate` / `.lang` 与自己的切句器。
+ */
+export function roomTrackDir(dataDir, roomId) {
+  const safe = String(roomId ?? '').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64)
+  return join(String(dataDir), 'audio', safe === '' ? 'unknown' : safe)
+}
+
+/** 某个人在这场会里的音频文件（`audio/<房间>/<说话人>.pcm`）。 */
+export function roomSpeakerAudioPath(dataDir, roomId, speaker) {
+  const safe = String(speaker ?? '').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64)
+  return join(roomTrackDir(dataDir, roomId), (safe === '' ? 'unknown' : safe) + '.pcm')
+}
+
+/**
  * 删掉一场会议**留在磁盘上的东西**（4.99，管理员清理历史时用）。
  *
  * <p>这些文件的路径规则只有这个进程知道，所以清理也放在这里 —— 让 org-api 那边
@@ -525,6 +544,15 @@ export function removeRoomDataFiles(dataDir, roomIds, busPath = '') {
   for (const roomId of Array.isArray(roomIds) ? roomIds : []) {
     const id = String(roomId ?? '').trim()
     if (id === '') continue
+    // 5.08：分轨目录 `audio/<房间>/`（每人一个文件 + 旁文件）整棵删
+    try {
+      const dir = roomTrackDir(dataDir, id)
+      for (const entry of readdirSync(dir)) {
+        try { freed += Number(statSync(join(dir, entry)).size ?? 0) } catch { /* 已在别处删掉 */ }
+      }
+      rmSync(dir, { recursive: true, force: true })
+    } catch { /* 没有这个目录 */ }
+    // 旧数据（4.84 时代）是单文件 + 旁文件，仍然要删，否则升级前的库永远清不干净
     const audio = roomAudioPath(dataDir, id)
     kill(audio)
     kill(audio + '.rate')
@@ -1614,11 +1642,13 @@ export async function startRelay(rawOptions = {}) {
         // （token 是认证过的身份，query 参数只是老客户端的兜底）。
         // 记成"这个房间最近的说话人"，发布字幕时按它落名字 —— 中间要经过
         // 切句 → 队列 → 识别 → 大脑 四个进程，身份只能靠**边车信息**传下去。
+        let audioSpeaker = ''
         if (audioRoom !== '') {
           const asUser = await resolveUploadUser(request, url)
           const claimed = String(url.searchParams.get('speaker') ?? '').trim()
           const speaker = asUser !== null && asUser !== '' ? asUser : sanitizeSpeaker(claimed)
           if (speaker !== '') {
+            audioSpeaker = speaker
             state.roomSpeaker.set(audioRoom, { name: speaker, at: Date.now() })
             // 5.06：**"这个人读哪种语言"以他实际上报的为准**。
             //
@@ -1687,29 +1717,45 @@ export async function startRelay(rawOptions = {}) {
             }
             await appendFile(options.audio, body)
             state.audioBytes += body.length
-            // 4.84：音频**按房间分流**——两场会同时开麦时，声音不再串成一条。
-            // 全局文件仍然写（老链路/单房间场景照旧能用），分流文件是新加的旁路。
+            // 4.84 → 5.08：音频**按房间 + 按说话人**分流。
+            // 全局文件仍然写（老链路/单房间场景照旧能用）；分轨文件是识别端真正跟的那一份。
+            //
+            // 为什么必须按人分（不是按房间）：语种旁文件 `.lang` 是"最后写入者获胜"，
+            // 两个人交替用不同语言说话时，切出来的段会带着上一个人的语种 ——
+            // 于是"英语被当成中文识别"。这是**语言正确性**问题，不是整洁度问题。
             if (audioRoom !== '') {
-              const target = roomAudioPath(options.dataDir, audioRoom)
+              // 5.08：房间级的"混流"仍然写一份 —— 老模式（`--translate-mode serial|parallel`
+              // 里 asr-bridge 的 `--whisper-follow`）跟的就是它，停写会让那两种模式**静默失效**。
+              // 代价是每个房间多一份磁盘（32KB/s），换来的是"老模式还能用"。
+              const mixed = roomAudioPath(options.dataDir, audioRoom)
+              await mkdir(dirname(mixed), { recursive: true })
+              await appendFile(mixed, body)
+              const target = roomSpeakerAudioPath(options.dataDir, audioRoom,
+                audioSpeaker === '' ? 'unknown' : audioSpeaker)
               await mkdir(dirname(target), { recursive: true })
               await appendFile(target, body)
               state.roomAudioBytes.set(audioRoom, (state.roomAudioBytes.get(audioRoom) ?? 0) + body.length)
               if (state.audioRoomFiles.has(audioRoom) !== true) {
                 state.audioRoomFiles.add(audioRoom)
-                debug(`🎙 音频分流：房间 ${audioRoom} → ${target}`)
+                debug(`🎙 音频分流：房间 ${audioRoom} → ${roomTrackDir(options.dataDir, audioRoom)}/（每个说话人一个文件）`)
               }
-              // 采样率/语种也按房间各写一份（识别进程每路跟读时要看自己那份）
+              // 采样率/语种也**按人**各写一份（识别端每路跟读时要看自己那份）。
+              // ⚠️ 混流那一份的 `.lang` **不写**：它没有唯一的语种，写了就是"最后写入者获胜"
+              //    那个坑（老模式确实有这个限制，但不再扩大它）。
               try {
+                await writeFile(`${mixed}.rate`, String(rate) + '\n', 'utf-8')
                 await writeFile(`${target}.rate`, String(rate) + '\n', 'utf-8')
                 await writeFile(`${target}.lang`, String(lang) + '\n', 'utf-8')
                 // 5.05：语种只在**变化时**报一行 —— 旁文件写的是识别端唯一看得到的东西，
                 // "手机到底有没有上报语种"必须能在转发日志里查到（否则只能猜）。
-                if (state.roomLangWritten.get(audioRoom) !== lang) {
-                  state.roomLangWritten.set(audioRoom, lang)
-                  debug(`🗣 房间语种：${audioRoom} → ${lang}（已写 ${target}.lang，识别端按它解码）`)
+                // 5.08：按 (房间, 人) 记 —— 两个说话人各有一条旁文件，混在一起记会互相掩盖。
+                const track = `${audioRoom}/${audioSpeaker === '' ? 'unknown' : audioSpeaker}`
+                if (state.roomLangWritten.get(track) !== lang) {
+                  state.roomLangWritten.set(track, lang)
+                  debug(`🗣 分轨语种：${track} → ${lang}（已写 ${target}.lang，识别端按它解码）`)
                 }
               } catch (error) {
-                debug(`🎙 写房间旁文件失败（不影响音频）：${error && error.message ? error.message : error}`)
+                debug(`🎙 写分轨旁文件失败（不影响音频）：${error && error.message ? error.message : error}`)
               }
             }
           }
@@ -1779,18 +1825,26 @@ export async function startRelay(rawOptions = {}) {
 
       // ── GET /frame（长轮询）───────────────────────────────────────────────
       // 4.84：各房间的音频分流情况（给识别/排障用：哪几场在说话、各收了多少）
+      // 5.08：一场会现在是**一个目录、每个说话人一个文件**，所以这里报目录与总大小
       if (request.method === 'GET' && url.pathname === '/audio/rooms') {
         const rooms = []
         for (const [roomId, bytes] of state.roomAudioBytes.entries()) {
-          const file = roomAudioPath(options.dataDir, roomId)
+          const dir = roomTrackDir(options.dataDir, roomId)
           let size = 0
           let updatedAt = null
+          let tracks = 0
           try {
-            const info2 = await stat(file)
-            size = Number(info2.size)
-            updatedAt = info2.mtime.toISOString()
+            for (const name of readdirSync(dir)) {
+              const info2 = await stat(join(dir, name))
+              if (info2.isFile() === false) continue
+              size += Number(info2.size)
+              if (name.endsWith('.pcm')) tracks += 1
+              if (updatedAt === null || info2.mtime > new Date(updatedAt)) {
+                updatedAt = info2.mtime.toISOString()
+              }
+            }
           } catch { /* 还没落盘（或刚被清掉） */ }
-          rooms.push({ room: roomId, file, bytes, size, updatedAt })
+          rooms.push({ room: roomId, dir, tracks, bytes, size, updatedAt })
         }
         send(response, 200, { ok: true, rooms, audioDir: join(String(options.dataDir), 'audio') })
         return
@@ -2178,18 +2232,33 @@ export async function startRelay(rawOptions = {}) {
           // 路径规则只有这个文件知道（roomAudioPath / 总线目录 / 收件箱按房间分文件），
           // 所以由这里交给 org-api 回调，而不是让那边重新拼一遍路径（拼错就是删错文件）。
           audioBytesOf: (roomId) => {
+            // 5.08：一场会的音频是**一个目录、每人一个文件**（另兼容旧的单文件）
+            let total = 0
             try {
-              return statSync(roomAudioPath(options.dataDir, roomId)).size
-            } catch { return 0 }
-          },
-          audioDirBytes: () => {
-            try {
-              const dir = join(options.dataDir, 'audio')
-              let total = 0
+              const dir = roomTrackDir(options.dataDir, roomId)
               for (const name of readdirSync(dir)) {
                 try { total += statSync(join(dir, name)).size } catch { /* 正在写 */ }
               }
+            } catch { /* 没有分轨目录 */ }
+            try { total += statSync(roomAudioPath(options.dataDir, roomId)).size } catch { /* 旧数据没有就没有 */ }
+            return total
+          },
+          audioDirBytes: () => {
+            // 目录里现在有子目录（一场会一个），所以必须递归：原来只 stat 顶层文件，
+            // 分轨之后会算成 0 —— 而"清了多少空间"报 0 是最容易让人误判的那种错。
+            const dir = join(options.dataDir, 'audio')
+            const sum = (target) => {
+              let total = 0
+              for (const entry of readdirSync(target, { withFileTypes: true })) {
+                const full = join(target, entry.name)
+                try {
+                  total += entry.isDirectory() ? sum(full) : statSync(full).size
+                } catch { /* 正在写 / 刚被删 */ }
+              }
               return total
+            }
+            try {
+              return sum(dir)
             } catch { return 0 }
           },
           purgeHistoryFiles: (roomIds) => removeRoomDataFiles(options.dataDir, roomIds, options.busesDir ?? options.bus),

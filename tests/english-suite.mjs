@@ -236,7 +236,7 @@ export async function runEnglishSuite({ it, check, assert }) {
     // 转发端：旁文件写的是什么语种，必须在日志里查得到
     const relay = readFileSync(join(process.cwd(), 'relay', 'lan-relay.mjs'), 'utf-8')
     check('relay 在语种变化时打一行（旁文件写的内容可见）',
-      /roomLangWritten/.test(relay) && /房间语种：\$\{audioRoom\} → \$\{lang\}/.test(relay))
+      /roomLangWritten/.test(relay) && /分轨语种：\$\{track\} → \$\{lang\}/.test(relay))
   })
 
   await it('会中换语言要当场生效（5.06：本地 hearLang + 服务端重新登记）', async () => {

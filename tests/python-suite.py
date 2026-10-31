@@ -2213,6 +2213,42 @@ def main():
     finally:
         shutil.rmtree(queue_dir, ignore_errors=True)
 
+    heading("队列契约 · 分轨切句（5.08：每个说话人一路，语种不会互相覆盖）")
+    # 现场：一个房间一条音频流时，语种旁文件是"最后写入者获胜"。两个人交替用不同语言说话，
+    # 切出来的段会带着**上一个人**的语种 —— 于是"英语被当成中文识别"。
+    # 这里钉的是：段带着自己的 speaker，且每一路的语种来自**它自己的**旁文件。
+    track_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                              "var", "test", "track-contract")
+    track_queue = os.path.join(track_root, "queue")
+    shutil.rmtree(track_root, ignore_errors=True)
+    os.makedirs(track_root, exist_ok=True)
+    try:
+        # ① 段 meta 必须能带 speaker（下游靠它给字幕落名字）
+        talk = np.zeros(16000, dtype=np.float32)
+        talk[1000:15000] = 0.3
+        named = whisper_stream._write_segment(track_queue, "room-T", 16000, talk, np, "en", speaker="bob")
+        meta_t = json.load(open(os.path.join(track_queue, named + ".json"), encoding="utf-8"))
+        check("meta 里有 speaker（分轨之后这是数据自带的）", meta_t.get("speaker") == "bob",
+              json.dumps(meta_t, ensure_ascii=False))
+        check("meta 里的语种也是这一路自己的", meta_t.get("lang") == "en", str(meta_t.get("lang")))
+        unnamed = whisper_stream._write_segment(track_queue, "room-T", 16000, talk, np, "zh")
+        meta_u = json.load(open(os.path.join(track_queue, unnamed + ".json"), encoding="utf-8"))
+        check("没有说话人时写 None（不编一个名字）", meta_u.get("speaker") is None, str(meta_u.get("speaker")))
+
+        # ② 分轨模式真的在（参数 + 实现），而且不加载麦克风依赖
+        check("有 --follow-dir 参数",
+              whisper_stream.parse_args(["--follow-dir", "x"]).follow_dir == "x")
+        check("有分轨切句实现", hasattr(whisper_stream, "run_segment_producer_dir"))
+        dir_src = inspect.getsource(whisper_stream.run_segment_producer_dir)
+        check("分轨模式按文件各起一个切句器（能量统计不能混）", "track_of" in dir_src and "_new_segmenter" in dir_src)
+        check("分轨模式给段带上 speaker", "speaker=name" in dir_src)
+        check("分轨模式不加载模型", "WhisperModel(" not in dir_src)
+        main_src = inspect.getsource(whisper_stream.main)
+        check("给了 --follow-dir 就不需要麦克风依赖（否则 CI 里跑不起来）",
+              "args.follow_dir is None" in main_src)
+    finally:
+        shutil.rmtree(track_root, ignore_errors=True)
+
     heading("队列契约 · 切句端真的不加载模型")
     producer_src = inspect.getsource(whisper_stream.run_segment_producer)
     check("生产者里没有构造 WhisperModel", "WhisperModel(" not in producer_src)
