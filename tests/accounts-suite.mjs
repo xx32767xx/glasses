@@ -16,8 +16,8 @@ import { startRelay } from '../relay/lan-relay.mjs'
 import { VAR_DIR } from '../lib/paths.mjs'
 import { ensureTestAccount, resetTestAccount } from '../scripts/test-account.mjs'
 import {
-  checkPassword, createAccountWithPassword, emptyAccounts, hashPassword, issueToken, loadAccounts, login,
-  loginWithEmail, normalizeUsername, register, registerWithEmail, revokeToken, saveAccounts, tokenKey,
+  availability, checkPassword, createAccountWithPassword, emptyAccounts, hashPassword, issueToken, loadAccounts,
+  login, loginWithEmail, normalizeUsername, register, registerWithEmail, revokeToken, saveAccounts, tokenKey,
   userForToken, verifyPassword,
 } from '../lib/accounts.mjs'
 import { writeAccountsDoc } from '../lib/accounts-store.mjs'
@@ -232,6 +232,68 @@ export async function runAccountsSuite({ it, check, assert }) {
       const other = await call('/auth/code', { method: 'POST', body: { email: 'ratelimit2@example.com' } })
       check('换个邮箱照常发', other.status === 200 && other.json.ok === true, other.text)
     })
+
+  await it('5.20：即时校验的纯函数（free / taken / invalid / empty，只回答"有没有人用"）', () => {
+    const doc = registerWithEmail(emptyAccounts(), {
+      email: 'mix@example.com', username: 'Zhang', password: 'secret12', codePreVerified: true,
+    }).doc
+    const taken = availability(doc, { username: 'zhang', email: 'MIX@example.com' })
+    check('用户名被占用（大小写不敏感）', taken.username.state === 'taken', JSON.stringify(taken.username))
+    check('邮箱被占用（大小写不敏感）', taken.email.state === 'taken', JSON.stringify(taken.email))
+    check('**不**告诉占用者是谁（那是验过码之后才该知道的）',
+      JSON.stringify(taken).includes('Zhang') === false, JSON.stringify(taken))
+    const free = availability(doc, { username: 'newuser', email: 'new@example.com' })
+    check('没人用的名字/邮箱 = free',
+      free.username.state === 'free' && free.email.state === 'free', JSON.stringify(free))
+    const invalid = availability(doc, { username: 'a', email: 'not-an-email' })
+    check('格式不对 = invalid（并且带上原因）',
+      invalid.username.state === 'invalid' && typeof invalid.username.reason === 'string'
+      && invalid.email.state === 'invalid', JSON.stringify(invalid))
+    const empty = availability(doc, {})
+    check('没填 = empty（不猜）', empty.username.state === 'empty' && empty.email.state === 'empty',
+      JSON.stringify(empty))
+  })
+
+  await it('5.20：用户名重复只可能出现在**大小写变体**上（现在也不允许了）', () => {
+    const first = registerWithEmail(emptyAccounts(), {
+      email: 'one@example.com', username: 'LiGong', password: 'secret12', codePreVerified: true,
+    })
+    check('第一次注册成功', first.ok === true, first.error)
+    const sameName = registerWithEmail(first.doc, {
+      email: 'two@example.com', username: 'ligong', password: 'secret12', codePreVerified: true,
+    })
+    check('只有大小写不同也算重名', sameName.ok === false && sameName.code === 'username-taken',
+      JSON.stringify(sameName))
+    check('提示里点名库里已有的写法（LiGong）', /LiGong/.test(String(sameName.error)), sameName.error)
+    // 老的 username+password 注册口也要一致
+    const legacy = register(emptyAccounts(), 'Wu', 'secret12')
+    const legacyDup = register(legacy.doc, 'wu', 'secret12')
+    check('旧注册口同样按小写判重',
+      legacyDup.ok === false && legacyDup.code === 'username-taken', JSON.stringify(legacyDup))
+    // 登录不区分大小写：注册用 Zhang，登录可以用 zhang
+    const loginLower = login(first.doc, 'ligong', 'secret12')
+    check('登录能接受大小写不同（别让人以为密码错了）',
+      loginLower.ok === true && loginLower.username === 'LiGong',
+      JSON.stringify({ ok: loginLower.ok, user: loginLower.username }))
+    check('登录后 token 绑的还是库里的真实用户名',
+      userForToken(loginLower.doc, loginLower.token) === 'LiGong')
+  })
+
+  await it('5.20：真实 HTTP —— /auth/available 字段名还没占、字段状态如实', async () => {
+    clearCodes()
+    const taken = await call('/auth/available?username=alice&email=alice%40example.com')
+    check('200', taken.status === 200, taken.text)
+    check('alice 已被占用（前面的用例注册过）',
+      taken.json?.username?.state === 'taken', taken.text)
+    check('alice@example.com 已被占用', taken.json?.email?.state === 'taken', taken.text)
+    const free = await call('/auth/available?username=nobody-yet&email=free%40example.com')
+    check('没人用的名字 free', free.json?.username?.state === 'free', free.text)
+    check('没人用的邮箱 free', free.json?.email?.state === 'free', free.text)
+    const unautorized = await call('/auth/available?username=x', { secret: null })
+    check('没有共享密钥 → 401（别把它变成公开的探测接口）',
+      unautorized.status === 401, unautorized.text)
+  })
+
 
     await it('5.19：注册的纯函数 —— 邮箱已注册就 email-taken，且先于用户名判断', () => {
       const first = registerWithEmail(emptyAccounts(), {

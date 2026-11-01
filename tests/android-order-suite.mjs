@@ -625,6 +625,37 @@ export async function runAndroidOrderSuite({ it, check }) {
     }
   })
 
+  await it('5.20：注册表单即时校验（填完就提示，不用等四个字段填完再被拒）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const home = readFileSync(join(javaDir, 'HomeActivity.java'), 'utf-8')
+    const lan = readFileSync(join(javaDir, 'LanClient.java'), 'utf-8')
+
+    check('客户端有 /auth/available 的调用', /authAvailable\(String username, String email\)/.test(lan)
+      && /"\/auth\/available\?"/.test(lan))
+    check('用户名与邮箱两个框都挂了监听', /userInput\.addTextChangedListener/.test(home)
+      && /emailInput\.addTextChangedListener/.test(home))
+    check('带防抖（不是每敲一个字就问一次）',
+      /postDelayed\(availabilityPending, 450\)/.test(home))
+    check('只在注册态问（登录态问没意义）', /private void scheduleAvailabilityCheck\(\) \{\s*if \(!registerMode\)/.test(home))
+    check('用户名被占用 → 用当前界面语言提示',
+      /"taken"\.equals\(name\)/.test(home) && /R\.string\.st_name_taken/.test(home))
+    check('邮箱被占用 → 也提示', /"taken"\.equals\(mail\)/.test(home) && /st_email_taken_hint/.test(home))
+    check('同一句不重复弹（否则用户每改一个字都被弹一次）',
+      /boolean fresh = !message\.equals\(availabilityShown\)/.test(home))
+    check('丢弃过期响应（用户又改了就按新的来）', /if \(seq != availabilitySeq\) return;/.test(home))
+    check('连不上/超限时**不报错**（辅助校验不该制造恐慌）',
+      /availability check skipped/.test(home))
+    check('切到注册态时主动查一次（也许名字早就填好了）',
+      /scheduleAvailabilityCheck\(\);/.test(home.slice(home.indexOf('private void setRegisterMode'))))
+    for (const dir of ['values', 'values-en', 'values-pt-rBR']) {
+      const xml = readFileSync(join(resDir, dir, 'strings.xml'), 'utf-8')
+      for (const key of ['st_name_taken', 'st_email_taken_hint']) {
+        check(`${key} 在 ${dir} 里有`, new RegExp(`name="${key}"`).test(xml))
+      }
+    }
+  })
+
   await it('authWhoAmI 返回拆过包的正文（外壳会让"打开就判成没登录"，单会话下还顺带踢掉另一台）', () => {
     const source = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay',
       'LanClient.java'), 'utf-8')

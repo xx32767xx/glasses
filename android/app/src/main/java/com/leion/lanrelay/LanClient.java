@@ -546,6 +546,31 @@ public class LanClient {
                 new JSONObject(), 10000));
     }
 
+    /**
+     * 5.20：注册表单的**即时校验** —— 这个名字 / 这个邮箱还能不能用。
+     *
+     * <p>返回 `{ ok, username:{state,reason?}, email:{state,reason?} }`，
+     * state 是 `free` / `taken` / `invalid` / `empty`。只回答"有没有被占用"，
+     * 不返回占用者是谁（服务端刻意不给）。
+     *
+     * <p>为什么不用 `request()` 而是 `unwrap(requestWithCode(...))`：这条请求会
+     * 频繁触发（用户每改一次名字），超限时服务端回 429，界面应该"安静地不提示"
+     * 而不是抛一堆异常到 logcat。
+     */
+    public JSONObject authAvailable(String username, String email) throws IOException, org.json.JSONException {
+        StringBuilder path = new StringBuilder("/auth/available?");
+        boolean first = true;
+        if (username != null && !username.isEmpty()) {
+            path.append("username=").append(java.net.URLEncoder.encode(username, "UTF-8"));
+            first = false;
+        }
+        if (email != null && !email.isEmpty()) {
+            if (!first) path.append('&');
+            path.append("email=").append(java.net.URLEncoder.encode(email, "UTF-8"));
+        }
+        return unwrap(requestWithCode(path.toString(), "GET", null, 6000));
+    }
+
     /** 邮箱验证码登录：先取码（码打印在电脑端 relay 控制台），再登录拿 token。 */
     public JSONObject authRequestCode(String email) throws IOException, org.json.JSONException {
         JSONObject body = new JSONObject();

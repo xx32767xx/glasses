@@ -55,7 +55,7 @@ import {
   TERMS_LIMITS, getTable, loadTerms, mergePending, normalizeUser, putTable, saveActiveUser, saveTerms, validateTerms,
 } from '../lib/terms.mjs'
 import {
-  ACCOUNT_LIMITS, hasAccounts, issueCode, loadAccounts, login, recordOf, registerWithEmail, revokeToken,
+  ACCOUNT_LIMITS, availability, hasAccounts, issueCode, loadAccounts, login, recordOf, registerWithEmail, revokeToken,
   roleOf, saveAccounts, userByEmail, userForToken, verifyCode,
 } from '../lib/accounts.mjs'
 import { describeMailConfig, sendMail, smtpConfigFromEnv } from '../lib/mail.mjs'
@@ -184,6 +184,19 @@ export const PUBLIC_LIMITS = {
   /** 音频文件总量上限；到顶就拒收，避免把服务器磁盘写满。 */
   maxAudioBytesTotal: 1024 * 1024 * 1024,
   /** 限流窗口。 */
+  windowMs: 60 * 1000,
+}
+
+/**
+ * 即时校验（`/auth/available`）的限流。
+ *
+ * <p>为什么单独一套而不是用 `PUBLIC_LIMITS`：那个只在 `--public` 模式生效，
+ * 而"用户名有没有人用"这条接口在局域网模式下也是**批量探测**的好目标
+ * （一个脚本能把所有短用户名扫一遍）。所以它自己带一个很紧的桶，
+ * 但额度要够手机端正常用：一次输入最多触发一两次（带防抖）。
+ */
+export const AVAILABLE_LIMITS = {
+  maxPerWindow: 20,
   windowMs: 60 * 1000,
 }
 
@@ -595,6 +608,15 @@ export async function startRelay(rawOptions = {}) {
    * （密码被暴力猜中的后果，与在不在公网无关）。
    */
   const authLimiter = createRateLimiter({ windowMs: 10 * 60_000, maxRequests: 10 })
+  /**
+   * 即时校验（`/auth/available`）的额度桶：20 次 / 分钟。
+   *
+   * <p>始终生效（与在不在公网无关）—— 这条接口本来就便宜，但它能被拿来
+   * **批量探测**用户名（一个脚本把常见名字扫一遍，就知道这台服务器上有哪些人）。
+   * 额度按"手机端正常用"给：用户改名/改邮箱时每次输入触发一两次。
+   */
+  const availableLimiter = createRateLimiter(
+    { windowMs: AVAILABLE_LIMITS.windowMs, maxRequests: AVAILABLE_LIMITS.maxPerWindow })
   /** 定期清过期窗口 —— 长期运行的服务不能让 Map 无限长。 */
   const sweepTimer = options.public === true
     ? setInterval(() => limiter.sweep(), PUBLIC_LIMITS.windowMs).unref()
@@ -2120,6 +2142,26 @@ export async function startRelay(rawOptions = {}) {
       //
       // 另外加了"同一邮箱 60 秒只能发一次"（`issueCode` 里判，靠库里的 issuedAt，
       // 重启不会绕过）。
+      // ── GET /auth/available ──────────────────────────────────────────────
+      // 5.20：注册表单的**即时校验**。用户填完用户名/邮箱就调一次，好当场说
+      // "这个名字有人用了"，而不是把四栏填完、点提交才被拒。
+      // 只回答"有没有被占用"，不返回占用者是谁（那是验过码之后才该知道的）。
+      if (request.method === 'GET' && url.pathname === '/auth/available') {
+        if (!availableLimiter.allow(clientIp(request))) {
+          send(response, 429, {
+            ok: false, error: 'too-many-requests',
+            hint: `这个检查每秒最多 ${AVAILABLE_LIMITS.maxPerWindow} 次，请稍后再试`,
+          })
+          return
+        }
+        const doc = await loadAccounts(options.dataDir)
+        const report = availability(doc, {
+          username: String(url.searchParams.get('username') ?? ''),
+          email: String(url.searchParams.get('email') ?? ''),
+        })
+        send(response, 200, { ok: true, ...report })
+        return
+      }
       if (request.method === 'POST' && url.pathname === '/auth/code') {
         const body = await readBody(request)
         const doc = await loadAccounts(options.dataDir)
@@ -2483,7 +2525,7 @@ export async function startRelay(rawOptions = {}) {
         return
       }
 
-      send(response, 404, { ok: false, error: 'not-found', routes: ['/hello', '/say', '/audio', '/frame', '/status', '/terms', '/settings', '/auth/register', '/auth/login', '/auth/logout', '/auth/whoami', '/org/libraries', '/org/meeting/<id>/libraries', '/org/requests', '/admin', '/ws'] })
+      send(response, 404, { ok: false, error: 'not-found', routes: ['/hello', '/say', '/audio', '/frame', '/status', '/terms', '/settings', '/auth/available', '/auth/code', '/auth/register', '/auth/login', '/auth/logout', '/auth/whoami', '/org/libraries', '/org/meeting/<id>/libraries', '/org/requests', '/admin', '/ws'] })
     })().catch(error => {
       if (!response.writableEnded) {
         send(response, 500, { ok: false, error: String(error && error.message ? error.message : error) })

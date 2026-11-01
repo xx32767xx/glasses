@@ -65,6 +65,20 @@ public class HomeActivity extends android.app.Activity {
     /** 服务端的发送间隔（与 lib/accounts.mjs 的 CODE_INTERVAL_MS 一致，仅用于提示）。 */
     private static final int CODE_COOLDOWN_SECONDS = 60;
 
+    /**
+     * 注册表单的**即时校验**（5.20）：用户填完用户名/邮箱就当场说"这个名字有人用了"，
+     * 而不是让他把四栏填完、点提交才被拒。
+     *
+     * <p>为什么用防抖而不是每个字符都问：一个 10 个字的名字会打出 10 次请求，
+     * 服务端那条接口带限流（20 次/分钟），连点两下就把自己的额度用光了。
+     * 停手 450ms 才问一次，正常打字只触发一两次。
+     */
+    private Runnable availabilityPending;
+    /** 用来丢弃过期响应：用户又改了输入时，旧的回答不许覆盖新的。 */
+    private int availabilitySeq;
+    /** 上一次已经提示过的内容（同一句不重复弹）。 */
+    private String availabilityShown = "";
+
     /** 首页顶部问候（「晚上好，张三」）。 */
     private TextView greetingView;
     /** 问候下面那行摘要：界面语言 · 设备 · 在线状态。 */
@@ -194,6 +208,23 @@ public class HomeActivity extends android.app.Activity {
 
         refreshUiLangPills();
         setRegisterMode(false);   // 默认是登录态：登录不需要邮箱与验证码
+        // 5.20：填完用户名/邮箱就即时校验（只在注册态有用）
+        android.text.TextWatcher availabilityWatcher = new android.text.TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+            }
+
+            @Override
+            public void afterTextChanged(android.text.Editable s) {
+                scheduleAvailabilityCheck();
+            }
+        };
+        userInput.addTextChangedListener(availabilityWatcher);
+        emailInput.addTextChangedListener(availabilityWatcher);
         restoreSession();
     }
 
@@ -281,6 +312,9 @@ public class HomeActivity extends android.app.Activity {
             emailInput.setText("");
             codeInput.setText("");
         }
+        // 5.20：切到注册态时，用户名框里可能已经有字（他先填了名字才点"注册"），
+        // 这时要主动查一次，不能等他再动一次键盘。
+        scheduleAvailabilityCheck();
     }
 
     /**
@@ -525,6 +559,90 @@ public class HomeActivity extends android.app.Activity {
                         ServerText.from(this, result, failure)));
             });
         }, "home-code").start();
+    }
+
+    /**
+     * 输入停下来 450ms 后再问服务端（防抖）。只在「注册」态问 ——
+     * 登录态问"用户名有没有人用"没有意义（那时候名字当然是有人用的）。
+     */
+    private void scheduleAvailabilityCheck() {
+        if (!registerMode) {
+            clearAvailabilityHint();
+            return;
+        }
+        if (availabilityPending == null) {
+            availabilityPending = this::checkAvailabilityNow;
+        }
+        ui.removeCallbacks(availabilityPending);
+        final String user = userInput.getText().toString().trim();
+        final String email = emailInput.getText().toString().trim();
+        // 太短的名字问也白问（服务端会回 invalid），省一次请求
+        if (user.length() < 2 && email.isEmpty()) return;
+        ui.postDelayed(availabilityPending, 450);
+    }
+
+    /**
+     * 真的去问一次。**两个字段一起问**：一次请求换回两个答案，
+     * 省一半额度（服务端那条接口是 20 次/分钟）。
+     */
+    private void checkAvailabilityNow() {
+        if (!registerMode) return;
+        final String user = userInput.getText().toString().trim();
+        final String email = emailInput.getText().toString().trim();
+        if (user.length() < 2 && email.isEmpty()) return;
+        final String host = normalizeHost(serverInput.getText().toString());
+        final String secret = secretInput.getText().toString().trim();
+        if (host.isEmpty()) return;
+        final int seq = ++availabilitySeq;
+        new Thread(() -> {
+            JSONObject result = null;
+            try {
+                result = new LanClient(host, secret, null).authAvailable(user, email);
+            } catch (Exception e) {
+                // 连不上 / 超限（429）时**安静地不提示**：这是辅助校验，
+                // 网络抖一下不该在屏幕上留下一条"检查失败"制造恐慌。
+                Log.i("LeionHome", "availability check skipped: " + e.getMessage());
+            }
+            final JSONObject got = result;
+            ui.post(() -> {
+                if (seq != availabilitySeq) return;          // 用户又改了输入
+                if (got == null || !got.optBoolean("ok", false)) return;
+                applyAvailability(user, email, got);
+            });
+        }, "home-available").start();
+    }
+
+    /** 把服务端的答案翻成一句界面语言的话；被占用就提示一次（同一句不重复弹）。 */
+    private void applyAvailability(String user, String email, JSONObject got) {
+        JSONObject nameState = got.optJSONObject("username");
+        JSONObject mailState = got.optJSONObject("email");
+        String name = nameState == null ? "" : nameState.optString("state", "");
+        String mail = mailState == null ? "" : mailState.optString("state", "");
+        String message = "";
+        if ("taken".equals(name)) {
+            message = getString(R.string.st_name_taken, user);
+        } else if ("taken".equals(mail)) {
+            // 邮箱被占用：顺带说清下一步（这个邮箱只能有一个账号，直接登录）
+            message = getString(R.string.st_email_taken_hint);
+        }
+        if (message.isEmpty()) {
+            // 又能用了（或者格式还不对）→ 把上一句提示收掉，别让旧提示留在屏幕上
+            if (!availabilityShown.isEmpty()) clearAvailabilityHint();
+            return;
+        }
+        boolean fresh = !message.equals(availabilityShown);
+        availabilityShown = message;
+        setStatus(message);
+        if (fresh) Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+    }
+
+    /** 收掉即时校验留下的提示（只收自己写的那句，不碰别人写的状态文字）。 */
+    private void clearAvailabilityHint() {
+        if (availabilityPending != null) ui.removeCallbacks(availabilityPending);
+        final String shown = availabilityShown;
+        availabilityShown = "";
+        if (shown.isEmpty() || status == null) return;
+        if (status.getText().toString().equals(shown)) setStatus("");
     }
 
     /**

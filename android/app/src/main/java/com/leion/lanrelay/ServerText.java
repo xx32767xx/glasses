@@ -82,8 +82,9 @@ public final class ServerText {
         CODES.put("username-taken", R.string.srv_user_taken);
         CODES.put("code-invalid", R.string.srv_code_wrong);
         put("验证码已打印在电脑端的 relay 控制台", R.string.srv_code_on_console);
-        put("这个用户名已经被注册了（换一个，或者用登录）", R.string.srv_user_taken);
-        put("这个用户名已经存在了", R.string.srv_user_taken);
+        // 5.20：重名按小写判，提示里会带上"库里已有 XXX"，所以按前缀认
+        prefix("这个用户名已经被注册了", R.string.srv_user_taken);
+        prefix("这个用户名已经存在了", R.string.srv_user_taken);
         put("用户名不能为空", R.string.srv_user_empty);
         put("这个账号已经过期（测试账号有有效期），请让管理员续期", R.string.srv_account_expired);
         put("这个测试账号已过期（请联系管理员续期）", R.string.srv_account_expired);
@@ -170,6 +171,8 @@ public final class ServerText {
         prefix("没有这个接口：", R.string.srv_no_route);
         prefix("HTTP ", R.string.srv_no_reason);
         prefix("每个 IP 每分钟最多", R.string.srv_too_many);
+        // 5.20：即时校验（/auth/available）自己的额度桶
+        prefix("这个检查每秒最多", R.string.srv_too_many);
         prefix("音频块过大", R.string.srv_audio_too_big);
         prefix("音频文件已达上限", R.string.srv_audio_full);
         prefix("这个邮箱已经绑过账号了（用户名：", R.string.srv_email_taken);
