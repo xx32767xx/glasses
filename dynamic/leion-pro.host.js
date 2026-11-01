@@ -2877,6 +2877,15 @@ function createInterpreter(ctx, rawConfig, deps) {
   let hearLangsWarned = false
   /** 上一次用过的"目标集合 + 依据"，用来只在变化时打一行解释（5.11）。 */
   let lastTargetKey = ''
+  /**
+   * 侧车里"每个人自己登记的语言"（`byUser`）。
+   *
+   * <p>5.24 用它兜一件事：收件箱那一行偶尔**不带语种**（切句进程没读到分轨的 `.lang` 旁文件、
+   * 或者走的是老混轨）。原来这种情况下只能拿 `detectLang(文本)` 去猜，
+   * 猜不出来就整句不译、也不进转写。但这个房间里**每个人在入会时就登记过语言**，
+   * 而说话人名字（`speakerName`）就在这一行上 —— 那才是应该优先用的依据。
+   */
+  let hearLangsByUser = {}
 
   async function readListenerLangs() {
     if (config.hearLangsPath === '') return []
@@ -2887,12 +2896,16 @@ function createInterpreter(ctx, rawConfig, deps) {
       const text = await fs.readText(hearLangsTarget)
       const parsed = JSON.parse(text)
       const langs = Array.isArray(parsed?.langs) ? parsed.langs.map(item => String(item)) : []
+      hearLangsByUser = parsed !== null && typeof parsed?.byUser === 'object' && parsed.byUser !== null
+        ? parsed.byUser
+        : {}
       if (langs.length > 0) hearLangsWarned = false
-      inbox.hearLangs = { path: config.hearLangsPath, langs, readable: true }
+      inbox.hearLangs = { path: config.hearLangsPath, langs, readable: true, speakers: Object.keys(hearLangsByUser).length }
       return langs
     } catch (error) {
       // 文件还不存在（第一句）或写了一半：都当"没有登记"，走老行为。
       // 但**第一次**要把它说出来 —— 静默降级正是这个 bug 藏了这么久的原因。
+      hearLangsByUser = {}
       inbox.hearLangs = { path: config.hearLangsPath, langs: [], readable: false }
       if (hearLangsWarned === false) {
         hearLangsWarned = true
@@ -2902,6 +2915,30 @@ function createInterpreter(ctx, rawConfig, deps) {
       }
       return []
     }
+  }
+
+  /**
+   * 这一行的**源语言**：首选行里带的（识别端声明/判定），其次"说话人自己登记的语言"，
+   * 最后才是按文字猜（`detectLang`）。
+   *
+   * <p>5.24：第二档是关键。会议里每个人入会时都登记了语言，手机上传音频时也一直在报语种，
+   * 所以"判不出语种"这件事本该有答案可查 —— 不该因为某一环的元数据丢了就整句不译。
+   * @returns {string} 语种码；真的一点线索都没有时返回 `'unknown'`
+   */
+  function resolveSourceLang(item) {
+    const declared = typeof item?.from === 'string' ? item.from.trim() : ''
+    if (declared !== '') return declared
+    const who = typeof item?.speakerName === 'string' ? item.speakerName.trim() : ''
+    if (who !== '' && typeof hearLangsByUser === 'object' && hearLangsByUser !== null) {
+      const registered = String(hearLangsByUser[who] ?? '').trim()
+      if (registered !== '') {
+        // 说出来：这是"某一环的语种元数据没传下来，用登记语种补上"，不是正常路径
+        console.log('[leion-pro] 这一行没带语种，按说话人登记的语言补：'
+          + who + ' → ' + registered)
+        return registered
+      }
+    }
+    return detectLang(item?.text)
   }
 
   /** 串行处理队列：同传不能并发，否则字幕会互相穿插。 */
@@ -2919,10 +2956,11 @@ function createInterpreter(ctx, rawConfig, deps) {
         // 两个听众同语言 → 只译一份；不同语言 → 译两份（最多两份：三种语言、源语言占一种）。
         // 显式给了 to（工具调用 / 会议覆盖值）就只译那一种，行为与 4.100 一致。
         const listeners = args.to !== undefined && args.to !== '' ? [] : await readListenerLangs()
+        // 5.24：源语言按"行里带的 → 说话人登记的语言 → 按文字猜"三档取（见 resolveSourceLang）
+        const resolvedSourceLang = resolveSourceLang(item)
         const resolvedTargets = args.to !== undefined && args.to !== ''
           ? { targets: [args.to], source: 'explicit' }
-          : resolveTargets(item.from === undefined ? detectLang(item.text) : item.from,
-            config.targetLang, listeners)
+          : resolveTargets(resolvedSourceLang, config.targetLang, listeners)
         const targets = resolvedTargets.targets
         // 目标集合**变化时**说一行：这是"为什么这句话译成了这种语言"的唯一解释来源。
         // 少了它，只能从"译文语言不对"倒推，而那种推断经常指向错误的地方（5.11 花了很久）。
@@ -2937,7 +2975,7 @@ function createInterpreter(ctx, rawConfig, deps) {
                   ? `听众 ${listeners.join('/')} 全都读源语言（不需要译文）`
                   : `听众登记的语言 ${listeners.join('/')}`)
                 : resolvedTargets.source === 'paired'
-                  ? `听众没登记，按 opposite(${item.from ?? '?'}) 兜底`
+                  ? `听众没登记，按 opposite(${resolvedSourceLang || '?'}) 兜底`
                   : '判不出方向'
           console.log('[leion-pro] 译文目标：' + (targets.length === 0 ? '（不需要译文）' : targets.join(' + '))
             + '（依据：' + why + '）')
@@ -2952,7 +2990,7 @@ function createInterpreter(ctx, rawConfig, deps) {
         //
         // 只在**房间管线**（配了收件箱）里发：单机/眼镜那条路（leion_translate）
         // 有自己的显示逻辑，凭空多一帧空译文会把它覆盖掉。
-        const sourceLang = item.from !== undefined && item.from !== '' ? item.from : detectLang(item.text)
+        const sourceLang = resolveSourceLang(item)
         if (config.inboxPath !== '' && config.translator !== 'none' && sourceLang !== 'unknown') {
           const echo = buildFrame({
             text: '', source: item.text, sourceLang,

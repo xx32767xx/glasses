@@ -473,6 +473,47 @@ export async function runRelaySuite({ it, check, assert }) {
     }
   })
 
+  await it('5.24：上传没带语种时用**本人登记的语言**（不再写死葡语）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'roomlang-'))
+    const secret = 's3cret-0123456789abcdef'
+    const relay = await startRelay({ dataDir: dir, port: 0, host: '127.0.0.1', secret, quiet: true })
+    try {
+      const base = `http://127.0.0.1:${relay.port}`
+      const headers = { 'X-Leion-Secret': secret }
+      // 一场会 + 发起者 alice 登记说中文（直接建库，不经过登录：这条测的是 /audio）
+      const created = createRoom(dir, { name: '语种兜底', host: 'alice' })
+      const roomId = created.room.id
+      joinRoom(dir, { roomId, username: 'alice', lang: 'zh-CN' })
+
+      // 上传**不带 lang**（老 APK / 第三方调用）：语种旁文件应该是登记的中文
+      await fetch(`${base}/audio?rate=16000&room=${encodeURIComponent(roomId)}&speaker=alice`, {
+        method: 'POST', headers, body: Buffer.alloc(320, 3),
+      })
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      const track = roomSpeakerAudioPath(dir, roomId, 'alice')
+      const written = existsSync(track + '.lang') ? readFileSync(track + '.lang', 'utf-8').trim() : ''
+      check('旁文件写的是登记的中文（不是缺省的 pt-BR）', written === 'zh-CN', written)
+
+      // 明带了语种就按明带的（说话人在会里换了语言）
+      await fetch(`${base}/audio?rate=16000&lang=pt-BR`
+        + `&room=${encodeURIComponent(roomId)}&speaker=alice`, {
+        method: 'POST', headers, body: Buffer.alloc(320, 3),
+      })
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      check('明带的语种优先', readFileSync(track + '.lang', 'utf-8').trim() === 'pt-BR',
+        readFileSync(track + '.lang', 'utf-8').trim())
+
+      // 认不出说话人时仍然照收（退回老缺省，不因为缺字段而 400）
+      const anon = await fetch(`${base}/audio?rate=16000&room=${encodeURIComponent(roomId)}`, {
+        method: 'POST', headers, body: Buffer.alloc(320, 3),
+      })
+      check('不带 lang、也没有说话人 → 照收（200）', anon.status === 200, String(anon.status))
+    } finally {
+      relay.close?.()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   await it('5.10：回执里的"第几块 / 累计几秒"按**这一场**算（不是开机以来的总和）', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'roomcount-'))
     const secret = 's3cret-0123456789abcdef'

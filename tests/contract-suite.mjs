@@ -717,6 +717,40 @@ export async function runContractSuite(adapter, { it, check, assert }) {
     await box.tools.get('leion_inbox').execute({ action: 'stop' })
   })
 
+  await it('5.24：这一行没带语种时，按**说话人登记的语言**补（不要整句不译）', async () => {
+    // 用户问："ASR 判不出语种 这个情况会发生吗？因为会议里边我显示传输了语种"。
+    // 答：正常路径不会（手机上传带 `?lang=` → 分轨 `.lang` 旁文件 → 切句进程**强制**解码），
+    // 但只要某一环的语种元数据丢了（老混轨、旁文件没读到、显式关掉候选集），
+    // 以前就只能拿 `detectLang(文本)` 猜 —— 猜不出来就整句不译、也不进转写。
+    // 现在第二档是"这个人入会时登记的语言"，它就在侧车 `byUser` 里。
+    const sidecar = inboxPathOf('room-langs/by-user.json')
+    const inboxFile = inboxPathOf('inbox-by-user.jsonl')
+    const store = new Map()
+    // 房间里 alice 登记说中文、bob 登记说葡语
+    store.set(sidecar, JSON.stringify({
+      langs: ['zh-CN', 'pt-BR'], byUser: { alice: 'zh-CN', bob: 'pt-BR' },
+    }))
+    const llm = makeFakeLlm()
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: { inboxPath: inboxFile, inboxPollMs: 120, hearLangsPath: sidecar },
+    })
+    // 这一行**故意不带 from**（模拟识别端没能把语种带下来），但带说话人名字
+    store.set(inboxFile, JSON.stringify({ text: '今天会议改到下午三点。', speakerName: 'alice' }) + '\n')
+    const done = await waitFor(async () =>
+      (await box.tools.get('leion_inbox').execute({ action: 'status' })).processed >= 1)
+    check('这一句被处理了', done)
+    check('**确实是靠登记语种补的**：真的调了翻译（没有被当成"判不出语种"跳过）',
+      llm.calls.length >= 1, String(llm.calls.length))
+    const history = await box.tools.get('leion_history').execute({ limit: 5 })
+    check('译文是葡语（方向取自 alice 登记的中文 → 另一个人的葡语）',
+      history.entries.length >= 1 && history.entries[0].lang === 'pt-BR',
+      JSON.stringify(history.entries.map(e => e.lang)))
+    check('译文帧的 sourceLang 是 zh-CN（补出来的源语种，转写落库才不会丢）',
+      history.entries[0]?.sourceLang === 'zh-CN', JSON.stringify(history.entries[0]?.sourceLang))
+    await box.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
   await it('5.11：听众语言侧车**真的被读进去**（读法错了 = 多语言分发静默不生效）', async () => {
     // 现场：房间成员登记的是 en-US + pt-BR，葡语说话却译成**中文**（中文说话又译成葡语）。
     // 根因：`readListenerLangs()` 把**字符串**传给 `fs.readText()`，而 fs 服务要的是

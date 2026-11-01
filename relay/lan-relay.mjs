@@ -1607,15 +1607,19 @@ export async function startRelay(rawOptions = {}) {
           })
           return
         }
-        // 手机当前在听哪种语言。缺省沿用 pt-BR（主用途：对方说葡语）。
-        const lang = url.searchParams.get('lang') ?? request.headers['x-leion-lang'] ?? 'pt-BR'
-        if (!LANGS.includes(lang)) {
+        // 手机当前在听哪种语言。5.24：**缺省不再是写死的 pt-BR** ——
+        // 老 APK / 某些调用方不带 `lang`，以前一律当成葡语去解码，说中文的人就被
+        // "强制按葡语识别"成一段乱码（语种不是"判不出来"，而是**被判错了**）。
+        // 现在先留空，等认出发送者之后用**他入会登记的语言**补（见下面的 resolveUploadLang）。
+        const langParam = String(url.searchParams.get('lang') ?? request.headers['x-leion-lang'] ?? '').trim()
+        if (langParam !== '' && !LANGS.includes(langParam)) {
           send(response, 400, {
             ok: false,
-            error: `lang 只能是 ${LANGS.join(' / ')}，收到 ${JSON.stringify(lang)}`,
+            error: `lang 只能是 ${LANGS.join(' / ')}，收到 ${JSON.stringify(langParam)}`,
           })
           return
         }
+        let lang = langParam
         const fresh = ['1', 'true', 'yes'].includes(String(url.searchParams.get('fresh') ?? '').toLowerCase())
 
         const chunks = []
@@ -1710,6 +1714,15 @@ export async function startRelay(rawOptions = {}) {
               debug(`[语言] 同步成员语言失败（不影响字幕）：${error?.message ?? error}`)
             }
           }
+        }
+        // 5.24：上传没带语种时（老 APK / 第三方调用），用**发送者入会登记的语言**补，
+        // 而不是写死葡语。写死葡语的后果不是"判不出语种"，而是**判错语种**：
+        // 说中文的人会被强制按葡语解码，整句变成乱码，然后拿这段乱码去翻——比空白更难查。
+        if (lang === '') {
+          const registered = audioSpeaker === '' ? '' : (roomLangsByUser(audioRoom).get(audioSpeaker) ?? '')
+          lang = registered !== '' ? registered : 'pt-BR'
+          debug(`[语言] 这次上传没带语种 → 用 ${audioSpeaker === '' ? '缺省' : audioSpeaker + ' 登记的语言'} ${lang}`
+            + `（房间 ${audioRoom === '' ? '未知' : audioRoom}）`)
         }
         // 5.00：**先**把听者语言同步给这场会的大脑 —— 它要在第一句就译成正确的几种语言；
         // 等到"第一帧出来"才写就晚了（那已经是在译完之后）。
