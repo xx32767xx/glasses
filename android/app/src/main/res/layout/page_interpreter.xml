@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  page_interpreter.xml —— 同传翻译官（独立场景，5.31 起是**真入口**）
+
+  与会议房间的区别（这也是为什么它单独一页）：
+    · 不进房间、没有邀请码/发言权/成员；
+    · 单向：对方说外语 → 我这里出译文（可选朗读）；
+    · 目前识别后端是「演示回放」（脚本出字），所以页面**明写**这一点，
+      任何截图都不会被误当成"识别功能已经做好了"。
+
+  id 一律 interp 前缀，避免与 page_room 撞名。
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/page"
+    android:orientation="vertical">
+
+    <!-- 标题栏 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:padding="@dimen/space_page">
+
+        <TextView
+            android:id="@+id/interpBack"
+            android:layout_width="@dimen/touch_min"
+            android:layout_height="@dimen/touch_min"
+            android:background="@drawable/tap_btn_secondary"
+            android:gravity="center"
+            android:text="@string/interp_back"
+            android:textColor="@color/ink_soft"
+            android:textSize="@dimen/text_secondary" />
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/space_gap"
+            android:layout_weight="1"
+            android:text="@string/card_interp_title"
+            android:textColor="@color/ink"
+            android:textSize="@dimen/text_page_title"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/interpBackend"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_chip"
+            android:paddingStart="@dimen/space_gap_small"
+            android:paddingTop="@dimen/space_gap_tiny"
+            android:paddingEnd="@dimen/space_gap_small"
+            android:paddingBottom="@dimen/space_gap_tiny"
+            android:text="@string/interp_backend_scripted"
+            android:textColor="@color/ink_soft"
+            android:textSize="@dimen/text_caption" />
+    </LinearLayout>
+
+    <!-- 状态行：现在在干什么（识别中 / 已就绪 / 出错原因） -->
+    <TextView
+        android:id="@+id/interpStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="@dimen/space_page"
+        android:layout_marginEnd="@dimen/space_page"
+        android:background="@drawable/bg_card"
+        android:padding="@dimen/space_gap_small"
+        android:text="@string/interp_status_hint"
+        android:textColor="@color/ink_soft"
+        android:textSize="@dimen/text_secondary" />
+
+    <!-- 我的语言 / 朗读开关的现状（只显示，改在设置页） -->
+    <TextView
+        android:id="@+id/interpMeta"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="@dimen/space_page"
+        android:layout_marginTop="@dimen/space_gap_small"
+        android:layout_marginEnd="@dimen/space_page"
+        android:textColor="@color/ink_faint"
+        android:textSize="@dimen/text_caption" />
+
+    <!-- 字幕流（新句从下往上推，与房间页一致） -->
+    <ScrollView
+        android:id="@+id/interpScroll"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="@dimen/space_gap_small"
+        android:layout_weight="1"
+        android:paddingStart="@dimen/space_page"
+        android:paddingEnd="@dimen/space_page">
+
+        <LinearLayout
+            android:id="@+id/interpSubtitles"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingBottom="@dimen/space_gap" />
+    </ScrollView>
+
+    <!-- 空态：一句话都还没有时显示 -->
+    <TextView
+        android:id="@+id/interpEmpty"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginStart="@dimen/space_page"
+        android:layout_marginEnd="@dimen/space_page"
+        android:layout_weight="1"
+        android:gravity="center"
+        android:text="@string/interp_empty"
+        android:textColor="@color/ink_faint"
+        android:textSize="@dimen/text_secondary" />
+
+    <!-- 底部：一个按钮，开了就演示回放（将来接真识别时也是这一个按钮） -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="@dimen/space_page">
+
+        <Button
+            android:id="@+id/interpToggle"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/touch_min"
+            android:background="@drawable/bg_pill_active"
+            android:text="@string/interp_start"
+            android:textAllCaps="false"
+            android:textColor="@color/on_brand"
+            android:textSize="@dimen/text_body" />
+    </LinearLayout>
+</LinearLayout>

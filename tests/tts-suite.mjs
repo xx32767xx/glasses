@@ -134,6 +134,46 @@ export async function runTtsSuite({ it, check }) {
       && /putBoolean\("ttsRead"/.test(settingsSource))
   })
 
+  await it('翻译官骨架：后端可换、明写"演示回放"、朗读复用同一套', async () => {
+    const { readFileSync } = await import('node:fs')
+    const backend = readFileSync(join(JAVA_SRC, 'InterpreterAsrBackend.java'), 'utf-8')
+    const scripted = readFileSync(join(JAVA_SRC, 'ScriptedAsrBackend.java'), 'utf-8')
+    const activity = readFileSync(join(JAVA_SRC, 'InterpreterActivity.java'), 'utf-8')
+    const home = readFileSync(join(JAVA_SRC, 'HomeActivity.java'), 'utf-8')
+    const manifest = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'AndroidManifest.xml'), 'utf-8')
+    const layout = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout',
+      'page_interpreter.xml'), 'utf-8')
+
+    // ① 接口就是"两种 ASR 都能接"的那层隔离
+    check('后端接口只暴露 ready/partial/final/error 四类事件',
+      /void onReady\(\)/.test(backend) && /void onPartial\(/.test(backend)
+      && /void onFinal\(/.test(backend) && /void onError\(/.test(backend))
+    check('接口说清"回调在后台线程、界面自己 post"', /回调都在后台线程/.test(backend))
+    check('接口说清"允许随时丢音频"（阻塞采集比丢一句更糟）', /允许随时丢/.test(backend))
+
+    // ② 回放后端：不假装识别
+    check('回放后端忽略 PCM（不假装识别）', /sendAudio[\s\S]{0,200}?什么都不做/.test(scripted))
+    check('回放后端有 partial 逐段生长（界面能真跑一次原位更新）',
+      /target\.onPartial\(id, sentence\.substring/.test(scripted))
+    check('三套剧本（中/葡/英）', /startsWith\("pt"\)/.test(scripted) && /startsWith\("en"\)/.test(scripted))
+
+    // ③ 页面：明写后端是什么，不许"看着能用其实没接"
+    check('页面有后端徽标', /interpBackend/.test(layout) && /interp_backend_scripted/.test(layout))
+    check('状态行说清"目前是演示回放"', /尚未接入真实识别/.test(readFileSync(join(ROOT,
+      'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml'), 'utf-8')))
+    check('页面同 id 原位更新（同一句只占一张卡）', /cardIds\.indexOf\(id\)/.test(activity))
+    check('退到后台就停（不偷偷占资源）', /protected void onStop\(\)[\s\S]{0,200}?stopInterpreting\(\)/.test(activity))
+
+    // ④ 朗读复用房间那套（策略一致）
+    check('用同一个 TtsQueue', /new TtsQueue\(new TtsSpeaker\(this\)\)/.test(activity))
+    check('只念**定稿**（partial 不念）', /onFinal[\s\S]{0,300}?ttsQueue\.offer/.test(activity))
+    check('开关同样来自设置页', /getBoolean\("ttsRead", false\)/.test(activity))
+
+    // ⑤ 入口接上了
+    check('首页卡片有真入口', /homeCardInterpreter\)\.setOnClickListener/.test(home))
+    check('Manifest 里注册了页面', /\.InterpreterActivity/.test(manifest))
+  })
+
   await it('三语文案齐全（朗读开关 + 正在朗读）', async () => {
     const { readFileSync } = await import('node:fs')
     const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')

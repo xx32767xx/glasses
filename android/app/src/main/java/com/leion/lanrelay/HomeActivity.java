@@ -193,9 +193,13 @@ public class HomeActivity extends android.app.Activity {
         langPtButton.setOnClickListener(v -> applyUiLang(UiLang.PT));
         registerToggle.setOnClickListener(v -> setRegisterMode(!registerMode));
         // 首页三张卡：创建 / 加入是同级入口（只是进到房间列表的对应一半），
-        // 同传翻译官那一张**故意没有点击监听** —— 它还没做，点了不该有任何反应。
+        // 同传翻译官是独立场景（不进房间）—— 5.31 起它也是真入口了。
         findViewById(R.id.homeCardCreate).setOnClickListener(v -> openRooms("create"));
         findViewById(R.id.homeCardJoin).setOnClickListener(v -> openRooms("join"));
+        // 5.31：同传翻译官是**真入口**了（独立场景，不进房间）。识别后端目前是"演示回放"，
+        // 页面上会明写这一点 —— 不做"看着能用其实没接"的假可用。
+        findViewById(R.id.homeCardInterpreter).setOnClickListener(v ->
+                startActivity(new Intent(this, InterpreterActivity.class)));
         langEntry.setOnClickListener(v -> showUiLangPicker());
         // 首页这颗已经在这儿了，点了什么都不做（导航项本身要可点，否则看着像坏了）
         findViewById(R.id.homeNavHome).setOnClickListener(v -> { });

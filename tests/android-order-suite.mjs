@@ -1839,7 +1839,14 @@ export async function runAndroidOrderSuite({ it, check }) {
       /ic_card_interpreter/.test(interpBlock) && /card_interp_title/.test(interpBlock)
       && /card_interp_desc/.test(interpBlock))
     check('它标了「即将上线」（不假装能用）', /card_interp_soon/.test(interpBlock))
-    check('它没有点击监听（点了就该没反应）', !/homeCardInterpreter\)\.setOnClickListener/.test(java))
+    // 5.31：翻译官变成**真入口**了（之前是"即将上线 + 点了没反应"）。
+    //      要求跟着反过来了：必须有入口，且入口那一页必须**写明后端是什么**
+    //      —— 从"不做假可用"变成"不做看着能用其实没接"。
+    check('它现在是真入口（不再是点了没反应）', /homeCardInterpreter\)\.setOnClickListener/.test(java))
+    check('入口指向翻译官页', /InterpreterActivity\.class/.test(java))
+    const interpLayout = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout',
+      'page_interpreter.xml'), 'utf-8')
+    check('翻译官页写明后端（演示回放）', /interp_backend_scripted/.test(interpLayout))
 
     // 已支持语言：中文 / 巴西葡萄牙语 / 扩展提示
     const supported = home.slice(home.indexOf('home_supported_title'), home.indexOf('@+id/homeLegacy'))

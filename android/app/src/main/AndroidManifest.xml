@@ -165,6 +165,13 @@
             android:name=".HistoryActivity"
             android:exported="false" />
 
+        <!-- 5.31：同传翻译官（独立场景，不进会议房间） -->
+        <activity
+            android:name=".InterpreterActivity"
+            android:exported="false"
+            android:label="@string/card_interp_title"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
+
         <activity
             android:name=".HistoryDetailActivity"
             android:exported="false" />
