@@ -241,6 +241,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         startedAtMs = System.currentTimeMillis();
         startTimer();
         updateMicButton();
+        // 5.26：进房间再查一次版本 —— 用户可能是从通知/最近任务直接进来的，
+        // 也可能在首页停留期间服务端升级了。版本不一致就拦在这里，别等说出第一句话才发现。
+        checkAppVersion();
         syncSourceVisibility();  // 把「原文」开关刷成与 showSource 一致
 
         statusLine.setText("");
@@ -1159,9 +1162,36 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         startDrawerRefresh();   // 打开期间实时刷新（4.55）
     }
 
+    /**
+     * 5.26：强制更新门禁（进房再查一次，见 {@link UpdateGuard}）。
+     *
+     * <p>被拦时就**停掉一切输入**：关麦、停上传、关倾听 —— 带着旧版本继续开会，
+     * 出问题的形态是"字幕莫名其妙不对"，而那时候没人会想到是版本。
+     */
+    private void checkAppVersion() {
+        final String mine = UpdateGuard.versionName(this);
+        new Thread(() -> {
+            org.json.JSONObject response = null;
+            try {
+                response = client.appVersion(mine);
+            } catch (Exception error) {
+                android.util.Log.i("LeionRoom", "版本检查跳过（连不上/旧服务端）：" + error);
+            }
+            final org.json.JSONObject got = response;
+            runOnUiThread(() -> {
+                if (UpdateGuard.check(this, got, this::checkAppVersion) == true) return;
+                // 停麦（mic.stop() 内部幂等；null 就是本来没在录）
+                if (mic != null) { mic.stop(); mic = null; }
+                if (audioPlayer != null) audioPlayer.stop();
+                if (hintLine != null) hintLine.setText(getString(R.string.update_title));
+                if (micButton != null) micButton.setEnabled(false);
+                if (micUploadButton != null) micUploadButton.setEnabled(false);
+            });
+        }, "room-version").start();
+    }
+
     /** 会议计时：进房开始走，退出即停。 */
-    private void startTimer() {
-        timerRunning = true;
+    private void startTimer() {        timerRunning = true;
         ui.post(new Runnable() {
             @Override
             public void run() {

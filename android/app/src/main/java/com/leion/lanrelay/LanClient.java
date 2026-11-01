@@ -287,6 +287,26 @@ public class LanClient {
     }
 
     /**
+     * 5.26：问服务端"你要求哪个客户端版本"（强制更新门禁用）。
+     *
+     * <p>返回 `{ ok, appVersion: { name, code, required } }`。这条接口只读、没有副作用
+     * （`/hello` 会合并待入表、写 terms-active，每次进页面都调它会打乱那一场的状态）。
+     *
+     * <p>`reportedVersion` 只是让服务端日志能看出"这台手机是哪个版本"，不参与判定。
+     */
+    public JSONObject appVersion(String reportedVersion) throws IOException, org.json.JSONException {
+        String path = "/version";
+        if (reportedVersion != null && !reportedVersion.isEmpty()) {
+            try {
+                path = "/version?app=" + java.net.URLEncoder.encode(reportedVersion, "UTF-8");
+            } catch (java.io.UnsupportedEncodingException ignored) {
+                path = "/version";
+            }
+        }
+        return request(path, "GET", null, 6000);
+    }
+
+    /**
      * 把一行"我这边实际做了什么"回传给电脑，打进同一份日志。
      *
      * <p><b>为什么需要它</b>：有些问题**只有把两边并排放才能定位**。

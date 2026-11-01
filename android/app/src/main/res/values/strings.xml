@@ -337,6 +337,12 @@
     <string name="st_name_taken">「%1$s」这个名字已经有人用了，换一个</string>
     <string name="st_email_taken_hint">这个邮箱已经被使用了，换一个邮箱</string>
     <string name="st_name_case_variant">这个名字可以用；注意「%1$s」是另一个账号（只有大小写不同）</string>
+    <!-- 5.26：强制更新门禁（服务端版本不一致就弹不可取消的对话框） -->
+    <string name="update_title">客户端版本不一致</string>
+    <string name="update_body_need">你的版本是 %1$s，服务器要求 %2$s。\n\n请安装最新版客户端后再使用（旧版本与服务器的数据格式对不上，继续用会出现字幕/转写异常）。</string>
+    <string name="update_body_server_old">你的版本是 %2$s，服务器上是 %1$s（服务器比客户端旧）。\n\n请联系管理员更新服务器；在此之前无法继续使用。</string>
+    <string name="update_retry">我已更新，重试</string>
+    <string name="update_retrying">正在重新检查版本…</string>
     <string name="st_code_failed">获取验证码失败：%1$s</string>
     <string name="st_need_agree_links">请先阅读并同意《用户协议》与《录音与隐私政策》</string>
     <string name="toast_need_agree">请先勾选同意用户协议与录音隐私政策</string>

@@ -59,6 +59,7 @@ import {
   roleOf, saveAccounts, updateAccounts, userByEmail, userForToken, verifyCode,
 } from '../lib/accounts.mjs'
 import { describeMailConfig, sendMail, smtpConfigFromEnv } from '../lib/mail.mjs'
+import { APP_VERSION } from '../lib/app-version.generated.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
 
@@ -750,6 +751,8 @@ export async function startRelay(rawOptions = {}) {
     /** 账户：成功次数 / 被拒次数（登录失败、token 无效都算）。 */
     authOk: 0,
     authRejected: 0,
+    /** 5.26：报过版本的客户端（`ip:版本`），只用来"每个版本只打一行日志"。 */
+    reportedVersions: new Set(),
     /** 迁移期那句"还没有账户"只提示一次，别刷屏。 */
     legacyIdentityNoted: false,
     writer: null,
@@ -1490,6 +1493,8 @@ export async function startRelay(rawOptions = {}) {
       seq: state.seq,
       bridge: 'lan-relay',
       features: RELAY_FEATURES,
+      // 5.26：手机侧强制更新门禁用这个值（`GET /version` 也回同一份）
+      appVersion: { ...APP_VERSION, required: true },
     }
   }
 
@@ -1532,6 +1537,35 @@ export async function startRelay(rawOptions = {}) {
           })
           return
         }
+      }
+
+      // ── GET /version ──────────────────────────────────────────────────────
+      // 5.26：**强制更新门禁**。手机每次进首页/房间都先问一句"你要求哪个版本"，
+      // 与自己的 versionCode 比大小；不一致就弹不可取消的对话框、不让继续用。
+      //
+      // 为什么单独一条而不是塞进 /hello：`/hello` 有**副作用**（合并待入表、写
+      // terms-active.json、算 seq），每次进页面都调它会打乱那一场的状态。
+      // 这条接口只读、便宜、随便调。
+      //
+      // 为什么比 versionCode 不比 versionName：`4.9` 与 `4.127` 按字符串比会得出
+      // "4.9 更大"。数值比较没有这个坑。
+      if (request.method === 'GET' && url.pathname === '/version') {
+        // 老手机可以把版本号报上来（只用于日志/排查，不参与判定）
+        const reported = String(url.searchParams.get('app') ?? request.headers['x-leion-app'] ?? '').trim()
+        if (reported !== '') {
+          const key = `v:${clientIp(request)}:${reported}`
+          if (state.reportedVersions.has(key) !== true) {
+            state.reportedVersions.add(key)
+            const same = reported === APP_VERSION.name
+            debug(`📱 客户端版本 ${reported}（${same ? '与要求一致' : `服务器要求 ${APP_VERSION.name}(${APP_VERSION.code})`}）`)
+          }
+        }
+        send(response, 200, {
+          ok: true,
+          appVersion: { ...APP_VERSION, required: true },
+          serverFeatures: RELAY_FEATURES,
+        })
+        return
       }
 
       // ── GET /hello ────────────────────────────────────────────────────────
@@ -2553,7 +2587,7 @@ export async function startRelay(rawOptions = {}) {
         return
       }
 
-      send(response, 404, { ok: false, error: 'not-found', routes: ['/hello', '/say', '/audio', '/frame', '/status', '/terms', '/settings', '/auth/available', '/auth/code', '/auth/register-email', '/auth/login', '/auth/logout', '/auth/whoami', '/org/libraries', '/org/meeting/<id>/libraries', '/org/requests', '/admin', '/ws'] })
+      send(response, 404, { ok: false, error: 'not-found', routes: ['/hello', '/version', '/say', '/audio', '/frame', '/status', '/terms', '/settings', '/auth/available', '/auth/code', '/auth/register-email', '/auth/login', '/auth/logout', '/auth/whoami', '/org/libraries', '/org/meeting/<id>/libraries', '/org/requests', '/admin', '/ws'] })
     })().catch(error => {
       if (!response.writableEnded) {
         send(response, 500, { ok: false, error: String(error && error.message ? error.message : error) })

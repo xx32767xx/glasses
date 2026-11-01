@@ -48,6 +48,11 @@
     <string name="st_name_taken">The name %1$s is already taken, pick another one</string>
     <string name="st_email_taken_hint">This email is already in use, please use another one</string>
     <string name="st_name_case_variant">That name is available; note that %1$s is a different account (differs only in letter case)</string>
+    <string name="update_title">Client version mismatch</string>
+    <string name="update_body_need">Your build is %1$s, the server requires %2$s.\n\nPlease install the latest client before continuing (an older build does not match the server data format and will produce wrong subtitles or transcripts).</string>
+    <string name="update_body_server_old">Your build is %2$s, the server is on %1$s (the server is older than the client).\n\nAsk your administrator to update the server; until then the app cannot be used.</string>
+    <string name="update_retry">I updated, check again</string>
+    <string name="update_retrying">Checking the version again…</string>
     <string name="st_code_failed">Could not get a code: %1$s</string>
     <string name="st_need_agree_links">Please accept the User Agreement and the Recording and Privacy Policy first</string>
     <string name="toast_need_agree">Please tick the agreement boxes first</string>

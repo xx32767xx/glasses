@@ -225,7 +225,37 @@ public class HomeActivity extends android.app.Activity {
         };
         userInput.addTextChangedListener(availabilityWatcher);
         emailInput.addTextChangedListener(availabilityWatcher);
+        // 5.26：**强制更新门禁**。进首页第一件事就是问服务端要哪个版本，
+        // 不一致就弹不可取消的对话框（用户要求：版本不一致就该要求更新客户端）。
+        checkAppVersion();
         restoreSession();
+    }
+
+    /**
+     * 问一次服务端"你要求哪个客户端版本"，不一致就拦下（见 {@link UpdateGuard}）。
+     *
+     * <p>失败（连不上 / 服务端没有这条接口）时**不拦**：那时用户什么也做不了，
+     * 再弹一个"版本不对"只会把人引到错的方向（真正的原因是连不上，登录页已经会说）。
+     */
+    private void checkAppVersion() {
+        final String mine = UpdateGuard.versionName(this);
+        new Thread(() -> {
+            JSONObject response = null;
+            try {
+                response = client.appVersion(mine);
+            } catch (Exception error) {
+                Log.i("LeionHome", "版本检查跳过（连不上/旧服务端）：" + error);
+            }
+            final JSONObject got = response;
+            ui.post(() -> {
+                if (UpdateGuard.check(this, got, this::checkAppVersion) != true) {
+                    // 被拦住了：把登录/首页入口压暗，让"不能继续"这件事在视觉上也成立
+                    loginButton.setEnabled(false);
+                    sendCodeButton.setEnabled(false);
+                    setStatus(getString(R.string.update_title));
+                }
+            });
+        }, "home-version").start();
     }
 
     /**

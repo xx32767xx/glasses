@@ -48,6 +48,11 @@
     <string name="st_name_taken">O nome %1$s já está em uso, escolha outro</string>
     <string name="st_email_taken_hint">Este e-mail já está em uso, use outro</string>
     <string name="st_name_case_variant">O nome está disponível; atenção: %1$s é outra conta (difere só em maiúsculas/minúsculas)</string>
+    <string name="update_title">Versão do aplicativo incompatível</string>
+    <string name="update_body_need">Sua versão é %1$s, o servidor exige %2$s.\n\nInstale o cliente mais recente para continuar (versões antigas não batem com o formato de dados do servidor e geram legendas ou transcrições erradas).</string>
+    <string name="update_body_server_old">Sua versão é %2$s, o servidor está na %1$s (o servidor é mais antigo que o aplicativo).\n\nPeça ao administrador para atualizar o servidor; até então não é possível usar.</string>
+    <string name="update_retry">Já atualizei, verificar</string>
+    <string name="update_retrying">Verificando a versão novamente…</string>
     <string name="st_code_failed">Falha ao obter o código: %1$s</string>
     <string name="st_need_agree_links">Aceite primeiro o Contrato do Usuário e a Política de Gravação e Privacidade</string>
     <string name="toast_need_agree">Marque primeiro as caixas de aceite</string>

@@ -682,6 +682,43 @@ export async function runAndroidOrderSuite({ it, check }) {
       /if \(!dst\.isEmpty\(\) && !src\.isEmpty\(\) && !dst\.equals\(src\)\)/.test(detail))
   })
 
+  await it('5.26：强制更新门禁（版本不一致就弹不可取消的框，不许继续用）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const guard = readFileSync(join(javaDir, 'UpdateGuard.java'), 'utf-8')
+    const home = readFileSync(join(javaDir, 'HomeActivity.java'), 'utf-8')
+    const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+    const lan = readFileSync(join(javaDir, 'LanClient.java'), 'utf-8')
+
+    check('有版本门禁类', /class UpdateGuard/.test(guard))
+    check('比 versionCode（数字），不比 versionName（字符串）',
+      /verdict\(int mine, int required\)/.test(guard) && /mine == required/.test(guard)
+      && /mine < required \? "need-update" : "server-old"/.test(guard),
+      '4.9 与 4.127 按字符串比会得出 4.9 更大')
+    check('对话框**不可取消**（setCancelable(false) + 点外部不关）',
+      /setCancelable\(false\)/.test(guard) && /setCanceledOnTouchOutside\(false\)/.test(guard))
+    check('按钮是"我已更新，重试"，不是"我知道了"',
+      /setPositiveButton\(R\.string\.update_retry/.test(guard) && /checkagain|checkAppVersion|retry/.test(guard))
+    check('拿不到版本信息时不拦（不冤枉用户）', /"unknown"\.equals\(verdict\)[\s\S]{0,120}return true/.test(guard))
+    check('老服务端没有这条接口时不拦',
+      /app == null[\s\S]{0,200}return true/.test(guard))
+    check('客户端比服务端新时，话术是"找管理员更新服务端"',
+      /update_body_server_old/.test(guard))
+    check('首页会查版本', /private void checkAppVersion\(\)/.test(home) && /UpdateGuard\.check/.test(home))
+    check('进房间也查一次（可能从最近任务直接进来）',
+      /checkAppVersion\(\)/.test(room) && /UpdateGuard\.check/.test(room))
+    check('被拦时房间页停麦、停倾听、禁用按钮',
+      /被拦[\s\S]{0,400}?mic\.stop\(\)/.test(room) || /UpdateGuard\.check[\s\S]{0,400}?mic\.stop\(\)/.test(room))
+    check('客户端有 /version 的调用', /public JSONObject appVersion\(String reportedVersion\)/.test(lan)
+      && /"\/version"/.test(lan))
+    for (const dir of ['values', 'values-en', 'values-pt-rBR']) {
+      const xml = readFileSync(join(resDir, dir, 'strings.xml'), 'utf-8')
+      for (const key of ['update_title', 'update_body_need', 'update_body_server_old', 'update_retry']) {
+        check(`${key} 在 ${dir} 里有`, new RegExp(`name="${key}"`).test(xml))
+      }
+    }
+  })
+
   await it('authWhoAmI 返回拆过包的正文（外壳会让"打开就判成没登录"，单会话下还顺带踢掉另一台）', () => {
     const source = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay',
       'LanClient.java'), 'utf-8')

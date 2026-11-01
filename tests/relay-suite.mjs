@@ -744,6 +744,25 @@ export async function runRelaySuite({ it, check, assert }) {
     check('/status 里能看到累计删除条数', status.json.utterancesPurged >= 1, String(status.json.utterancesPurged))
   })
 
+  await it('5.26：GET /version 回"要求哪个客户端版本"（强制更新门禁的依据）', async () => {
+    const response = await call('/version')
+    check('200', response.status === 200, response.text)
+    check('带 appVersion', response.json?.appVersion !== undefined, response.text)
+    const app = response.json?.appVersion ?? {}
+    // 与 gradle 里的版本号一致（生成物由 lib/artifacts.mjs 派生，--check 门禁也会验）
+    const gradle = await readFile(join(ROOT, 'android', 'app', 'build.gradle.kts'), 'utf-8')
+    const code = Number((gradle.match(/versionCode\s*=\s*(\d+)/) ?? [])[1])
+    const name = (gradle.match(/versionName\s*=\s*"([^"]+)"/) ?? [])[1]
+    check('code 等于 gradle 的 versionCode', app.code === code, `${app.code} vs ${code}`)
+    check('name 等于 gradle 的 versionName', app.name === name, `${app.name} vs ${name}`)
+    check('标了 required（客户端据此决定要不要拦）', app.required === true, JSON.stringify(app.required))
+    check('这条接口是只读的（不碰 seq）', typeof response.json?.serverFeatures !== 'undefined'
+      && response.json?.seq === undefined, Object.keys(response.json ?? {}).join(','))
+    // /hello 也带同一份（老界面路径能直接看到）
+    const hello = await call('/hello')
+    check('/hello 里也带 appVersion', hello.json?.appVersion?.code === code, JSON.stringify(hello.json?.appVersion))
+  })
+
   await it('未知路由 404，并列出可用路由', async () => {
     const result = await call('/nope')
     check('404', result.status === 404, String(result.status))
@@ -751,7 +770,7 @@ export async function runRelaySuite({ it, check, assert }) {
     // 5.20 起多了注册表单的即时校验 /auth/available；5.21 起列表里**不再**列
     // `/auth/register` —— 那条"用户名+密码、不要邮箱验证码"的注册口 2026-10-24 就删了
     // （留着等于留一个绕过验证的后门），列表一直没跟着改，等于告诉别人一个 404 的接口。
-    assert.deepEqual(result.json.routes, ['/hello', '/say', '/audio', '/frame', '/status', '/terms', '/settings', '/auth/available', '/auth/code', '/auth/register-email', '/auth/login', '/auth/logout', '/auth/whoami', '/org/libraries', '/org/meeting/<id>/libraries', '/org/requests', '/admin', '/ws'])
+    assert.deepEqual(result.json.routes, ['/hello', '/version', '/say', '/audio', '/frame', '/status', '/terms', '/settings', '/auth/available', '/auth/code', '/auth/register-email', '/auth/login', '/auth/logout', '/auth/whoami', '/org/libraries', '/org/meeting/<id>/libraries', '/org/requests', '/admin', '/ws'])
   })
 
   await it('手机侧设置：PUT /settings 落盘、GET 能读回、坏请求被拒、且写在数据目录里', async () => {
