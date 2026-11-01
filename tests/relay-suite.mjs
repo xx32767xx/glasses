@@ -671,8 +671,10 @@ export async function runRelaySuite({ it, check, assert }) {
     const result = await call('/nope')
     check('404', result.status === 404, String(result.status))
     // 2026-10-23 起多了组织接口与管理员页面（docs/19）；4.35 起多了发言权推送通道 /ws；
-    // 5.20 起多了注册表单的即时校验 /auth/available
-    assert.deepEqual(result.json.routes, ['/hello', '/say', '/audio', '/frame', '/status', '/terms', '/settings', '/auth/available', '/auth/code', '/auth/register', '/auth/login', '/auth/logout', '/auth/whoami', '/org/libraries', '/org/meeting/<id>/libraries', '/org/requests', '/admin', '/ws'])
+    // 5.20 起多了注册表单的即时校验 /auth/available；5.21 起列表里**不再**列
+    // `/auth/register` —— 那条"用户名+密码、不要邮箱验证码"的注册口 2026-10-24 就删了
+    // （留着等于留一个绕过验证的后门），列表一直没跟着改，等于告诉别人一个 404 的接口。
+    assert.deepEqual(result.json.routes, ['/hello', '/say', '/audio', '/frame', '/status', '/terms', '/settings', '/auth/available', '/auth/code', '/auth/register-email', '/auth/login', '/auth/logout', '/auth/whoami', '/org/libraries', '/org/meeting/<id>/libraries', '/org/requests', '/admin', '/ws'])
   })
 
   await it('手机侧设置：PUT /settings 落盘、GET 能读回、坏请求被拒、且写在数据目录里', async () => {

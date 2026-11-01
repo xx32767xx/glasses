@@ -56,7 +56,7 @@ import {
 } from '../lib/terms.mjs'
 import {
   ACCOUNT_LIMITS, availability, hasAccounts, issueCode, loadAccounts, login, recordOf, registerWithEmail, revokeToken,
-  roleOf, saveAccounts, userByEmail, userForToken, verifyCode,
+  roleOf, saveAccounts, updateAccounts, userByEmail, userForToken, verifyCode,
 } from '../lib/accounts.mjs'
 import { describeMailConfig, sendMail, smtpConfigFromEnv } from '../lib/mail.mjs'
 
@@ -2103,13 +2103,13 @@ export async function startRelay(rawOptions = {}) {
       // 密码用 scrypt + 每用户独立盐存哈希；token 也只存 sha256（库泄露不等于被登录）。
       if (request.method === 'POST' && url.pathname === '/auth/logout') {
         const token = request.headers['x-leion-token'] ?? url.searchParams.get('token')
-        const doc = await loadAccounts(options.dataDir)
-        const result = revokeToken(doc, typeof token === 'string' ? token : '')
+        // 5.21：读-改-写走串行队列（否则并发时整表重写会把别人刚建的东西抹掉）
+        const result = await updateAccounts(options.dataDir,
+          (doc) => revokeToken(doc, typeof token === 'string' ? token : ''))
         if (result.ok !== true) {
           send(response, 401, { ok: false, error: 'auth-required', hint: result.error })
           return
         }
-        await saveAccounts(options.dataDir, result.doc)
         debug('[账户] 已注销一个 token')
         send(response, 200, { ok: true })
         return
@@ -2164,8 +2164,16 @@ export async function startRelay(rawOptions = {}) {
       }
       if (request.method === 'POST' && url.pathname === '/auth/code') {
         const body = await readBody(request)
-        const doc = await loadAccounts(options.dataDir)
-        const issued = issueCode(doc, String(body.email ?? ''))
+        const to = String(body.email ?? '').trim()
+        // 5.21：发码也走串行队列 —— 它写的是 `auth_codes` **整表**，和注册/登录共用同一次
+        // 整表重写。不串行的话，一个并发注册的写入会把刚发出的码抹掉，
+        // 用户看到的是"验证码不对或已过期"（看起来像验证码的 bug，其实是并发）。
+        // 顺带在**同一个快照**里判断"这个邮箱是不是已经有账号了"，省一次读。
+        const issued = await updateAccounts(options.dataDir, (doc) => {
+          const attempt = issueCode(doc, to)
+          if (attempt.ok !== true) return attempt
+          return { ...attempt, emailOwner: userByEmail(doc, to) }
+        })
         if (issued.ok !== true) {
           if (issued.code === 'too-frequent') {
             const retryAfterSec = Math.max(1, Math.ceil(Number(issued.retryAfterMs ?? 0) / 1000))
@@ -2181,14 +2189,11 @@ export async function startRelay(rawOptions = {}) {
           send(response, 400, { ok: false, error: 'bad-email', hint: issued.error })
           return
         }
-        await saveAccounts(options.dataDir, issued.doc)
-        const to = String(body.email ?? '').trim()
         // 5.19：这个邮箱是不是已经有一个账号了？**照发**验证码（将来"验证码直登"要用同一封），
         // 但把这件事一并告诉客户端，让它当场说"你已经注册过了，直接登录" ——
         // 不然用户要把用户名、密码、验证码全填一遍，最后一步才被拒。
         // 只回"有没有账号"，**不回用户名**（这一步还没有证明邮箱是你的）。
-        const emailOwner = userByEmail(doc, to)
-        const registered = emailOwner === null ? {} : {
+        const registered = issued.emailOwner === null ? {} : {
           alreadyRegistered: true,
           hint: '这个邮箱已经注册过了，直接用已有账号登录即可',
         }
@@ -2230,12 +2235,26 @@ export async function startRelay(rawOptions = {}) {
       if (request.method === 'POST' && url.pathname === '/auth/register-email') {
         // 注册：邮箱 + 用户名 + 密码 + 验证码（docs/19）。登录仍走 /auth/login（用户名+密码）。
         const body = await readBody(request)
-        const doc = await loadAccounts(options.dataDir)
-        const result = registerWithEmail(doc, {
-          email: String(body.email ?? ''), username: String(body.username ?? ''),
-          password: String(body.password ?? ''), code: String(body.code ?? ''),
-          label: typeof body.label === 'string' ? body.label : '',
-        })
+        // 5.21：**读-改-写必须在同一次串行任务里**。之前是 `loadAccounts` 与
+        // `saveAccounts` 分开 await，两次并发注册都基于同一份旧快照，
+        // 后写的那次整表重写会把先写的账号（以及别人刚发的验证码）抹掉 ——
+        // 实测 20 个并发注册只活下来 1 个，而 20 个请求全都回了 200。
+        let result
+        try {
+          result = await updateAccounts(options.dataDir, (doc) => registerWithEmail(doc, {
+            email: String(body.email ?? ''), username: String(body.username ?? ''),
+            password: String(body.password ?? ''), code: String(body.code ?? ''),
+            label: typeof body.label === 'string' ? body.label : '',
+          }))
+        } catch (error) {
+          // 落盘层的唯一性兜底（lib/accounts-store.mjs）撞上了 —— 如实说，别假装注册成功
+          send(response, 409, {
+            ok: false,
+            error: 'email-taken',
+            hint: String(error?.message ?? error),
+          })
+          return
+        }
         if (result.ok !== true) {
           // 5.19：注册失败给**机器码**（`email-taken` / `username-taken` / `code-invalid`），
           // 让手机端能按界面语言说清楚。以前一律 `register-failed`，英文/葡文界面
@@ -2247,17 +2266,6 @@ export async function startRelay(rawOptions = {}) {
           })
           return
         }
-        try {
-          await saveAccounts(options.dataDir, result.doc)
-        } catch (error) {
-          // 落盘层的唯一性兜底（lib/accounts-store.mjs）撞上了 —— 如实说，别假装注册成功
-          send(response, 409, {
-            ok: false,
-            error: 'email-taken',
-            hint: String(error?.message ?? error),
-          })
-          return
-        }
         debug(`[账户] 邮箱注册成功：${result.username}（${result.email}）`)
         send(response, 200, { ok: true, user: result.username, role: result.role, token: result.token })
         notifyKickedIfReplaced(result.username, result.token)
@@ -2266,14 +2274,15 @@ export async function startRelay(rawOptions = {}) {
       if (request.method === 'POST' && url.pathname === '/auth/login') {
         // 登录：用户名 + 密码（不要求邮箱）。与 /auth/register-email 配套。
         const body = await readBody(request)
-        const doc = await loadAccounts(options.dataDir)
-        const result = login(doc, String(body.username ?? ''), String(body.password ?? ''),
-          typeof body.label === 'string' ? body.label : '')
+        // 5.21：同上 —— 登录也会写整表（新 token + 吊销旧 token）。不串行的话，
+        // 一个人登录能把别人刚刚注册成功的账号连同验证码一起抹掉。
+        const result = await updateAccounts(options.dataDir, (doc) =>
+          login(doc, String(body.username ?? ''), String(body.password ?? ''),
+            typeof body.label === 'string' ? body.label : ''))
         if (result.ok !== true) {
           send(response, 401, { ok: false, error: 'auth-failed', hint: result.error })
           return
         }
-        await saveAccounts(options.dataDir, result.doc)
         send(response, 200, { ok: true, user: result.username, role: roleOf(result.doc, result.username), token: result.token })
         notifyKickedIfReplaced(result.username, result.token)
         return
@@ -2525,7 +2534,7 @@ export async function startRelay(rawOptions = {}) {
         return
       }
 
-      send(response, 404, { ok: false, error: 'not-found', routes: ['/hello', '/say', '/audio', '/frame', '/status', '/terms', '/settings', '/auth/available', '/auth/code', '/auth/register', '/auth/login', '/auth/logout', '/auth/whoami', '/org/libraries', '/org/meeting/<id>/libraries', '/org/requests', '/admin', '/ws'] })
+      send(response, 404, { ok: false, error: 'not-found', routes: ['/hello', '/say', '/audio', '/frame', '/status', '/terms', '/settings', '/auth/available', '/auth/code', '/auth/register-email', '/auth/login', '/auth/logout', '/auth/whoami', '/org/libraries', '/org/meeting/<id>/libraries', '/org/requests', '/admin', '/ws'] })
     })().catch(error => {
       if (!response.writableEnded) {
         send(response, 500, { ok: false, error: String(error && error.message ? error.message : error) })

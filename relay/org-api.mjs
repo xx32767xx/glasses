@@ -24,7 +24,7 @@
  */
 
 import { join } from 'node:path'
-import { DEV_TTL_DAYS, allowed, createAccountWithPassword, listAccounts, loadAccounts, renewAccount, saveAccounts, setStatusByUsername } from '../lib/accounts.mjs'
+import { DEV_TTL_DAYS, allowed, createAccountWithPassword, listAccounts, loadAccounts, renewAccount, saveAccounts, setStatusByUsername, updateAccounts } from '../lib/accounts.mjs'
 import { readJson, writeJsonAtomic } from '../lib/store.mjs'
 import { listLibraries, loadLibrary, loadCategories, saveLibrary, importLibraries } from '../lib/libraries.mjs'
 import { createRequest, decideRequest, hideRequest, loadRequests, pendingOf, visibleOfMine, withdrawRequest } from '../lib/requests.mjs'
@@ -364,14 +364,19 @@ export async function handleOrg(input) {
       return { status: 200, json: { ok: true, accounts: listAccounts(doc) } }
     }
     if (method === 'POST') {
-      const doc = await loadAccounts(root)
-      const created = createAccountWithPassword(doc, {
-        username: body.username, password: body.password,
-        email: body.email, role: body.role === undefined ? 'dev' : body.role,
-        note: body.note, expiresInDays: body.expiresInDays,
-      })
+      // 5.21：读-改-写走串行队列（与手机端注册共用同一条队列），否则管理台建号
+      // 与手机注册同时发生时，后写的整表重写会抹掉先写的那个账号。
+      let created
+      try {
+        created = await updateAccounts(root, (doc) => createAccountWithPassword(doc, {
+          username: body.username, password: body.password,
+          email: body.email, role: body.role === undefined ? 'dev' : body.role,
+          note: body.note, expiresInDays: body.expiresInDays,
+        }))
+      } catch (error) {
+        return bad(409, String(error?.message ?? error))
+      }
       if (created.ok !== true) return bad(400, created.error)
-      await saveAccounts(root, created.doc)
       return {
         status: 200,
         json: { ok: true, username: String(body.username), role: created.role },
@@ -386,21 +391,19 @@ export async function handleOrg(input) {
   if (segments[1] === 'accounts' && segments.length === 4 && method === 'POST') {
     if (allowed(role, 'account.manage') !== true) return deny(role, 'account.manage')
     const username = decodeURIComponent(segments[2])
-    const doc = await loadAccounts(root)
 
     if (segments[3] === 'status') {
       const status = String(body.status ?? '')
-      const result = setStatusByUsername(doc, username, status)
+      // 5.21：串行（同一份队列），别把它和别的账号写操作交错
+      const result = await updateAccounts(root, (doc) => setStatusByUsername(doc, username, status))
       if (result.ok !== true) return bad(400, result.error)
-      await saveAccounts(root, result.doc)
       return { status: 200, json: { ok: true, username: result.username, status: result.status } }
     }
 
     if (segments[3] === 'renew') {
       const days = body.days === undefined ? DEV_TTL_DAYS : Number(body.days)
-      const result = renewAccount(doc, username, days)
+      const result = await updateAccounts(root, (doc) => renewAccount(doc, username, days))
       if (result.ok !== true) return bad(400, result.error)
-      await saveAccounts(root, result.doc)
       return { status: 200, json: { ok: true, username, expiresAt: result.expiresAt } }
     }
 

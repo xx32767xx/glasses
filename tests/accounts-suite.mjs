@@ -18,7 +18,7 @@ import { ensureTestAccount, resetTestAccount } from '../scripts/test-account.mjs
 import {
   availability, checkPassword, createAccountWithPassword, emptyAccounts, hashPassword, issueToken, loadAccounts,
   login, loginWithEmail, normalizeUsername, register, registerWithEmail, revokeToken, saveAccounts, tokenKey,
-  userForToken, verifyPassword,
+  updateAccounts, userForToken, verifyPassword,
 } from '../lib/accounts.mjs'
 import { writeAccountsDoc } from '../lib/accounts-store.mjs'
 import { dbPath, openDb } from '../lib/db.mjs'
@@ -277,6 +277,46 @@ export async function runAccountsSuite({ it, check, assert }) {
       JSON.stringify({ ok: loginLower.ok, user: loginLower.username }))
     check('登录后 token 绑的还是库里的真实用户名',
       userForToken(loginLower.doc, loginLower.token) === 'LiGong')
+  })
+
+  await it('5.21：updateAccounts 把"读-改-写"串起来（并发改动不互相覆盖）', async () => {
+    const dir = join(TMP, 'locked')
+    const add = (name) => (doc) => register(doc, name, 'secret12')
+    const results = await Promise.all([
+      updateAccounts(dir, add('alpha')),
+      updateAccounts(dir, add('beta')),
+      updateAccounts(dir, add('gamma')),
+    ])
+    check('三次都成功', results.every((r) => r.ok === true), JSON.stringify(results.map((r) => r.ok)))
+    const doc = await loadAccounts(dir)
+    check('三个账号都在（没有互相覆盖）',
+      ['alpha', 'beta', 'gamma'].every((name) => doc.users[name] !== undefined),
+      Object.keys(doc.users).join(','))
+    check('token 也在（每次写都基于上一份快照）',
+      Object.keys(doc.tokens).length === 3, String(Object.keys(doc.tokens).length))
+  })
+
+  await it('5.21：并发注册不丢账号（整表重写的读改写竞态，实测曾 20 个只活下来 1 个）', async () => {
+    const count = 8
+    const names = Array.from({ length: count }, (_, i) => `race${i}`)
+    const results = await Promise.all(names.map(async (name) => {
+      const email = `${name}@example.com`
+      const code = await call('/auth/code', { method: 'POST', body: { email } })
+      const registered = await call('/auth/register-email', {
+        method: 'POST',
+        body: { email, username: name, password: 'secret12', code: String(code.json?.code ?? '') },
+      })
+      return { name, registered }
+    }))
+    const statuses = results.map((r) => `${r.registered.status}/${r.registered.json?.error ?? 'ok'}`).join(' ')
+    check('8 个并发注册全部 200', results.every((r) => r.registered.status === 200), statuses)
+    const doc = await loadAccounts(TMP)
+    const missing = names.filter((name) => doc.users[name] === undefined)
+    check('8 个账号**都在库里**（不是"回了 200 但被后一次整体覆盖"）', missing.length === 0, missing.join(','))
+    // 同一轮里发出去的码也不许被顺手抹掉：上面每个注册都用到了自己那个码 ——
+    // 只要有人收到 code-invalid 就说明整表重写抹了别人的码
+    check('没有人收到 code-invalid（验证码表没被抹）',
+      results.every((r) => r.registered.json?.error !== 'code-invalid'), statuses)
   })
 
   await it('5.20：真实 HTTP —— /auth/available 字段名还没占、字段状态如实', async () => {
