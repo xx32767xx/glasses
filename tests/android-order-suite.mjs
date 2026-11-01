@@ -600,28 +600,36 @@ export async function runAndroidOrderSuite({ it, check }) {
     }
   })
 
-  await it('5.19：一个邮箱只能注册一次（客户端要当场说清并切到登录）', () => {
+  await it('5.21：邮箱重复时只说"换一个邮箱"（不切登录、不暗示已有账号）', () => {
     const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
     const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
     const home = readFileSync(join(javaDir, 'HomeActivity.java'), 'utf-8')
     const serverText = readFileSync(join(javaDir, 'ServerText.java'), 'utf-8')
 
-    check('发码接口说"已注册"时，客户端认这个字段',
-      /result\.optBoolean\("alreadyRegistered", false\)/.test(home))
-    check('认出来就切到登录（别再让用户把用户名密码验证码填一遍）',
-      /alreadyRegistered[\s\S]{0,600}?setRegisterMode\(false\)/.test(home))
-    check('并且把倒计时停掉（登录模式下没有发码按钮了）',
-      /alreadyRegistered[\s\S]{0,200}?stopCodeCooldown\(\)/.test(home))
+    check('发码接口报 email-taken 时客户端认这个机器码',
+      /"email-taken"\.equals\(ServerText\.codeOf\(result\)\)/.test(home))
+    check('认出来就显示"换一个邮箱"那条文案', /st_email_taken_hint/.test(home))
+    check('**不再**自动切到登录（用户 5.21 定的口径）',
+      /alreadyRegistered/.test(home) === false && /setRegisterMode\(false\);\s*setStatus/.test(home) === false)
     // 注册接口的机器码要能翻（以前一律 register-failed，英文界面只会显示中文原话）
     for (const code of ['email-taken', 'username-taken', 'code-invalid']) {
       check(`ServerText 认得机器码 ${code}`, new RegExp(`CODES\\.put\\("${code}"`).test(serverText))
     }
-    check('"这个邮箱已经注册过了（用户名：xxx）"这种带变量的句子按前缀认',
-      /prefix\("这个邮箱已经注册过了（用户名：", R\.string\.srv_email_taken\)/.test(serverText))
+    check('服务端那句"换一个邮箱"有映射',
+      /put\("这个邮箱已经被使用了，换一个邮箱"/.test(serverText))
+    check('服务端那句"这个用户名已经有人用了，换一个"有映射',
+      /put\("这个用户名已经有人用了，换一个"/.test(serverText))
     for (const dir of ['values', 'values-en', 'values-pt-rBR']) {
       const xml = readFileSync(join(resDir, dir, 'strings.xml'), 'utf-8')
-      check(`st_code_email_registered 在 ${dir} 里有`, /name="st_code_email_registered"/.test(xml))
-      check(`srv_email_taken 在 ${dir} 里有`, /name="srv_email_taken"/.test(xml))
+      check(`srv_email_taken 在 ${dir} 里说的是"换一个"`, (() => {
+        const m = xml.match(/<string name="srv_email_taken">([^<]*)<\/string>/)
+        return m !== null && /another|outro|换一个/.test(m[1])
+      })())
+      check(`st_email_taken_hint 在 ${dir} 里有`, /name="st_email_taken_hint"/.test(xml))
+      check(`st_name_case_variant 在 ${dir} 里有（大小写不同只是提醒）`,
+        /name="st_name_case_variant"/.test(xml))
+      check(`${dir} 里不再有"已切到登录"那条文案`,
+        /name="st_code_email_registered"/.test(xml) === false)
     }
   })
 

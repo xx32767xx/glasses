@@ -71,7 +71,7 @@ export async function runAccountsSuite({ it, check, assert }) {
     const first = register(emptyAccounts(), 'wu', 'secret12')
     check('首次注册成功', first.ok === true, first.error)
     const again = register(first.doc, 'wu', 'other12')
-    check('重复注册被拒（不许静默覆盖别人的密码）', again.ok === false && /已经被注册/.test(again.error), again.error)
+    check('重复注册被拒（不许静默覆盖别人的密码）', again.ok === false && /换一个/.test(again.error), again.error)
   })
 
   await it('登录：用户名不存在与密码错误返回同一句话（不泄露"这个用户存在"）', () => {
@@ -233,18 +233,25 @@ export async function runAccountsSuite({ it, check, assert }) {
       check('换个邮箱照常发', other.status === 200 && other.json.ok === true, other.text)
     })
 
-  await it('5.20：即时校验的纯函数（free / taken / invalid / empty，只回答"有没有人用"）', () => {
+  await it('5.21：即时校验的纯函数（free / taken / invalid / empty；大小写不同不算重名）', () => {
     const doc = registerWithEmail(emptyAccounts(), {
       email: 'mix@example.com', username: 'Zhang', password: 'secret12', codePreVerified: true,
     }).doc
-    const taken = availability(doc, { username: 'zhang', email: 'MIX@example.com' })
-    check('用户名被占用（大小写不敏感）', taken.username.state === 'taken', JSON.stringify(taken.username))
-    check('邮箱被占用（大小写不敏感）', taken.email.state === 'taken', JSON.stringify(taken.email))
-    check('**不**告诉占用者是谁（那是验过码之后才该知道的）',
-      JSON.stringify(taken).includes('Zhang') === false, JSON.stringify(taken))
+    const exact = availability(doc, { username: 'Zhang', email: 'MIX@example.com' })
+    check('一模一样的用户名 = taken', exact.username.state === 'taken', JSON.stringify(exact.username))
+    check('邮箱占用按**不区分大小写**算（邮件标准的通行做法）',
+      exact.email.state === 'taken', JSON.stringify(exact.email))
+    check('**不**告诉占用者是谁', JSON.stringify(exact).includes('Zhang') === false, JSON.stringify(exact))
+    // 用户 5.21 定的：只有大小写不同**不算**同一个人 → 可以注册，但要给个提醒
+    const variant = availability(doc, { username: 'zhang' })
+    check('只有大小写不同 → free（可以注册）', variant.username.state === 'free',
+      JSON.stringify(variant.username))
+    check('同时把那个"看起来一样"的已有名字带回来当提醒',
+      variant.username.similar === 'Zhang', JSON.stringify(variant.username))
     const free = availability(doc, { username: 'newuser', email: 'new@example.com' })
     check('没人用的名字/邮箱 = free',
       free.username.state === 'free' && free.email.state === 'free', JSON.stringify(free))
+    check('没人用的名字不带 similar', free.username.similar === undefined, JSON.stringify(free.username))
     const invalid = availability(doc, { username: 'a', email: 'not-an-email' })
     check('格式不对 = invalid（并且带上原因）',
       invalid.username.state === 'invalid' && typeof invalid.username.reason === 'string'
@@ -254,29 +261,39 @@ export async function runAccountsSuite({ it, check, assert }) {
       JSON.stringify(empty))
   })
 
-  await it('5.20：用户名重复只可能出现在**大小写变体**上（现在也不允许了）', () => {
+  await it('5.21：只有大小写不同的名字 = 两个人（可并存，登录严格按大小写）', () => {
     const first = registerWithEmail(emptyAccounts(), {
       email: 'one@example.com', username: 'LiGong', password: 'secret12', codePreVerified: true,
     })
     check('第一次注册成功', first.ok === true, first.error)
-    const sameName = registerWithEmail(first.doc, {
-      email: 'two@example.com', username: 'ligong', password: 'secret12', codePreVerified: true,
+    const variant = registerWithEmail(first.doc, {
+      email: 'two@example.com', username: 'ligong', password: 'other12', codePreVerified: true,
     })
-    check('只有大小写不同也算重名', sameName.ok === false && sameName.code === 'username-taken',
+    check('只有大小写不同 → **允许**注册成第二个账号', variant.ok === true, JSON.stringify(variant))
+    check('两个账号都在', variant.doc.users.LiGong !== undefined && variant.doc.users.ligong !== undefined,
+      Object.keys(variant.doc.users).join(','))
+    // 一模一样的名字才是重名
+    const sameName = registerWithEmail(variant.doc, {
+      email: 'three@example.com', username: 'LiGong', password: 'secret12', codePreVerified: true,
+    })
+    check('一模一样的名字 → username-taken', sameName.ok === false && sameName.code === 'username-taken',
       JSON.stringify(sameName))
-    check('提示里点名库里已有的写法（LiGong）', /LiGong/.test(String(sameName.error)), sameName.error)
-    // 老的 username+password 注册口也要一致
+    check('提示只说"换一个"（不讲"去登录"）', /换一个/.test(String(sameName.error)), sameName.error)
+    // 登录严格按大小写：各登各的账号
+    const asUpper = login(variant.doc, 'LiGong', 'secret12')
+    const asLower = login(variant.doc, 'ligong', 'other12')
+    check('大写登大写那个账号', asUpper.ok === true && asUpper.username === 'LiGong',
+      JSON.stringify({ ok: asUpper.ok, user: asUpper.username }))
+    check('小写登小写那个账号', asLower.ok === true && asLower.username === 'ligong',
+      JSON.stringify({ ok: asLower.ok, user: asLower.username }))
+    check('拿大写的密码去登小写 → 失败（确实是两个账号）',
+      login(variant.doc, 'ligong', 'secret12').ok === false)
+    // 旧的 username+password 注册口规则一致
     const legacy = register(emptyAccounts(), 'Wu', 'secret12')
-    const legacyDup = register(legacy.doc, 'wu', 'secret12')
-    check('旧注册口同样按小写判重',
-      legacyDup.ok === false && legacyDup.code === 'username-taken', JSON.stringify(legacyDup))
-    // 登录不区分大小写：注册用 Zhang，登录可以用 zhang
-    const loginLower = login(first.doc, 'ligong', 'secret12')
-    check('登录能接受大小写不同（别让人以为密码错了）',
-      loginLower.ok === true && loginLower.username === 'LiGong',
-      JSON.stringify({ ok: loginLower.ok, user: loginLower.username }))
-    check('登录后 token 绑的还是库里的真实用户名',
-      userForToken(loginLower.doc, loginLower.token) === 'LiGong')
+    check('旧注册口：大小写不同可以注册',
+      register(legacy.doc, 'wu', 'other12').ok === true)
+    check('旧注册口：一模一样是重名',
+      register(legacy.doc, 'Wu', 'other12').code === 'username-taken')
   })
 
   await it('5.21：updateAccounts 把"读-改-写"串起来（并发改动不互相覆盖）', async () => {
@@ -335,7 +352,7 @@ export async function runAccountsSuite({ it, check, assert }) {
   })
 
 
-    await it('5.19：注册的纯函数 —— 邮箱已注册就 email-taken，且先于用户名判断', () => {
+    await it('5.21：重复邮箱 → email-taken，话术是"换一个邮箱"（不引导去登录）', () => {
       const first = registerWithEmail(emptyAccounts(), {
         email: 'a@b.com', username: 'first', password: 'secret12', codePreVerified: true,
       })
@@ -345,13 +362,17 @@ export async function runAccountsSuite({ it, check, assert }) {
       })
       check('同一个邮箱换用户名也不行', sameEmail.ok === false && sameEmail.code === 'email-taken',
         JSON.stringify(sameEmail))
-      check('大小写/空格都算同一个邮箱', /已经注册过了/.test(String(sameEmail.error)), sameEmail.error)
-      check('点名已有用户名（此刻验证码已验过，不算泄露）', sameEmail.user === 'first', String(sameEmail.user))
+      check('大小写/空格都算同一个邮箱', /换一个邮箱/.test(String(sameEmail.error)), sameEmail.error)
+      check('**不**点名已有账号（也就不会泄露"这个邮箱归谁"）',
+        sameEmail.user === undefined && /first/.test(JSON.stringify(sameEmail)) === false,
+        JSON.stringify(sameEmail))
+      check('话术里没有"去登录"', /登录/.test(String(sameEmail.error)) === false, sameEmail.error)
       const sameName = registerWithEmail(first.doc, {
         email: 'c@d.com', username: 'first', password: 'secret12', codePreVerified: true,
       })
       check('换邮箱但用户名重复 → username-taken', sameName.ok === false && sameName.code === 'username-taken',
         JSON.stringify(sameName))
+      check('用户名重复也是"换一个"口径', /换一个/.test(String(sameName.error)), sameName.error)
     })
 
     await it('5.19：写入层兜底 —— 一份"两个账号绑同一邮箱"的 doc 会被整份拒绝', () => {
@@ -381,7 +402,7 @@ export async function runAccountsSuite({ it, check, assert }) {
         Object.keys(second.doc.users).join(','))
     })
 
-    await it('5.19：一个邮箱只能注册一次（走真实 HTTP：第二次 400 + email-taken）', async () => {
+    await it('5.21：一个邮箱只能注册一次（真实 HTTP：第二次被挡，口径是"换一个邮箱"）', async () => {
       const email = 'once@example.com'
       const firstCode = await call('/auth/code', { method: 'POST', body: { email } })
       const first = await call('/auth/register-email', {
@@ -389,22 +410,22 @@ export async function runAccountsSuite({ it, check, assert }) {
         body: { email, username: 'once-user', password: 'secret12', code: String(firstCode.json?.code ?? '') },
       })
       check('第一次注册成功', first.status === 200, first.text)
-      // 注册成功后那条验证码就被消费掉了，所以"再要一个码"不会被 60 秒间隔拦住 ——
-      // 正好用来验第二次注册。这里不 sleep，也不改代码，只是删掉残留的行（保险）。
-      clearCodes()
+      // 5.21 起，发码接口在**发信之前**就会挡掉已注册的邮箱（不发信、不占 60 秒额度）
       const secondCode = await call('/auth/code', { method: 'POST', body: { email } })
+      check('再要码：409', secondCode.status === 409, secondCode.text)
+      check('机器码 email-taken', secondCode.json?.error === 'email-taken', secondCode.text)
+      check('话术是"换一个邮箱"', /换一个邮箱/.test(String(secondCode.json?.hint ?? '')), secondCode.text)
+      check('**没有**把码发出去（响应里没有 code 字段）', secondCode.json?.code === undefined, secondCode.text)
+      // 客户端虽然拿不到码，也再走一遍注册：兜底的检查同样要说"换一个邮箱"
+      clearCodes()
       const second = await call('/auth/register-email', {
         method: 'POST',
-        body: {
-          email, username: 'another-user', password: 'secret12',
-          code: String(secondCode.json?.code ?? ''),
-        },
+        body: { email, username: 'another-user', password: 'secret12', code: '000000' },
       })
-      check('第二次被拒（400）', second.status === 400, second.text)
-      check('机器码是 email-taken（客户端据此显示"已注册过"）',
-        second.json?.error === 'email-taken', JSON.stringify(second.json))
-      check('人话里点名了已有用户名', String(second.json?.hint ?? '').includes('once-user'),
-        JSON.stringify(second.json?.hint))
+      check('注册被拒（email-taken 先于验证码校验）',
+        second.status === 400 && second.json?.error === 'email-taken', second.text)
+      check('话术仍然是"换一个邮箱"', /换一个邮箱/.test(String(second.json?.hint ?? '')), second.text)
+      check('**不**泄露已有账号的用户名', String(second.text).includes('once-user') === false, second.text)
 
       const doc = await loadAccounts(TMP)
       check('another-user 没有被建出来', doc.users['another-user'] === undefined,
@@ -414,16 +435,20 @@ export async function runAccountsSuite({ it, check, assert }) {
         JSON.stringify(Object.values(doc.users).map((r) => r?.email)))
     })
 
-    await it('5.19：发码时就说"这个邮箱已经注册过了"（并且不在这一步泄露用户名）', async () => {
+    await it('5.21：发码接口不再发"你已经有账号了"（也不消耗 60 秒额度）', async () => {
+      // once@example.com 已经被上一个用例注册过
       clearCodes()
-      const response = await call('/auth/code', { method: 'POST', body: { email: 'once@example.com' } })
-      check('200，码照发（将来"验证码直登"要用同一封）',
-        response.status === 200 && response.json?.ok === true, response.text)
-      check('标了 alreadyRegistered', response.json?.alreadyRegistered === true, response.text)
-      check('**不**回用户名（这一步还没证明邮箱是你的）',
-        response.text.includes('once-user') === false, response.text)
+      const blocked = await call('/auth/code', { method: 'POST', body: { email: 'once@example.com' } })
+      check('被挡（409 email-taken）', blocked.status === 409, blocked.text)
+      check('响应里没有 alreadyRegistered 这种"去登录"的暗示',
+        blocked.json?.alreadyRegistered === undefined, blocked.text)
+      // 被挡的那次不该占掉 60 秒额度：清空码表后再问一次仍然是 email-taken 而不是 too-frequent
+      clearCodes()
+      const again = await call('/auth/code', { method: 'POST', body: { email: 'once@example.com' } })
+      check('仍然是 email-taken（不是 too-frequent：没发信就不该占额度）',
+        again.json?.error === 'email-taken', again.text)
       const fresh = await call('/auth/code', { method: 'POST', body: { email: 'nobody@example.com' } })
-      check('没注册过的邮箱不带这个标记', fresh.json?.alreadyRegistered === undefined, fresh.text)
+      check('没注册过的邮箱照常发码', fresh.status === 200 && fresh.json?.ok === true, fresh.text)
     })
 
 

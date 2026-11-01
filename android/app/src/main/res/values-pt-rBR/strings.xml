@@ -45,9 +45,9 @@
     <string name="st_code_sent">Código enviado para o e-mail</string>
     <string name="st_code_mail_sent">Código enviado para %1$s, válido por 10 minutos</string>
     <string name="st_code_dev">Código: %1$s (retornado direto em ambiente de desenvolvimento)</string>
-    <string name="st_code_email_registered">Este e-mail já está cadastrado — mudei para o acesso (use seu usuário e senha)</string>
     <string name="st_name_taken">O nome %1$s já está em uso, escolha outro</string>
-    <string name="st_email_taken_hint">Este e-mail já está cadastrado, basta entrar</string>
+    <string name="st_email_taken_hint">Este e-mail já está em uso, use outro</string>
+    <string name="st_name_case_variant">O nome está disponível; atenção: %1$s é outra conta (difere só em maiúsculas/minúsculas)</string>
     <string name="st_code_failed">Falha ao obter o código: %1$s</string>
     <string name="st_need_agree_links">Aceite primeiro o Contrato do Usuário e a Política de Gravação e Privacidade</string>
     <string name="toast_need_agree">Marque primeiro as caixas de aceite</string>
@@ -283,7 +283,7 @@ Se não quiser ser gravado, não toque em Iniciar. Para apagar os registros do c
     <string name="srv_code_no_smtp">O servidor não tem serviço de e-mail configurado — peça a um administrador para configurar o SMTP</string>
     <string name="srv_code_wait">Tente novamente em %1$d s</string>
     <string name="srv_code_on_console">O código foi impresso no console do relay no computador</string>
-    <string name="srv_user_taken">Esse usuário já existe, escolha outro ou entre na conta</string>
+    <string name="srv_user_taken">Esse usuário já existe, escolha outro</string>
     <string name="srv_user_empty">O usuário não pode ficar vazio</string>
     <string name="srv_user_charset">O usuário só pode ter letras, números e _ . -</string>
     <string name="srv_user_too_long">O usuário está muito longo, encurte</string>
@@ -297,7 +297,7 @@ Se não quiser ser gravado, não toque em Iniciar. Para apagar os registros do c
     <string name="srv_email_empty">O e-mail não pode ficar vazio</string>
     <string name="srv_email_too_long">O e-mail está longo demais</string>
     <string name="srv_email_format">E-mail inválido, use o formato nome@exemplo.com</string>
-    <string name="srv_email_taken">Este e-mail já está ligado a uma conta</string>
+    <string name="srv_email_taken">Este e-mail já está em uso, use outro</string>
     <string name="srv_need_proofread_body">O pedido de revisão está em formato errado (esperado JSON)</string>
     <string name="srv_bad_request">A solicitação foi recusada; confira a versão do servidor e as configurações</string>
     <string name="srv_no_route">O servidor não tem esse endpoint (versões diferentes?)</string>

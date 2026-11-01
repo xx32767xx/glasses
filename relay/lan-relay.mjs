@@ -2165,14 +2165,15 @@ export async function startRelay(rawOptions = {}) {
       if (request.method === 'POST' && url.pathname === '/auth/code') {
         const body = await readBody(request)
         const to = String(body.email ?? '').trim()
-        // 5.21：发码也走串行队列 —— 它写的是 `auth_codes` **整表**，和注册/登录共用同一次
-        // 整表重写。不串行的话，一个并发注册的写入会把刚发出的码抹掉，
-        // 用户看到的是"验证码不对或已过期"（看起来像验证码的 bug，其实是并发）。
-        // 顺带在**同一个快照**里判断"这个邮箱是不是已经有账号了"，省一次读。
+        // 5.21（用户定的口径）：邮箱已经被占用时**直接让他换一个邮箱**，
+        // 不发信、不消耗 60 秒额度、也不说"你已经有账号了，去登录"。
+        // 所以先查重、后发码 —— 顺序反了的话，一个已注册的邮箱每次都会被白寄一封信。
+        // 整段仍在串行队列里（`auth_codes` 与账号共用同一次整表重写，见 §5.21）。
         const issued = await updateAccounts(options.dataDir, (doc) => {
-          const attempt = issueCode(doc, to)
-          if (attempt.ok !== true) return attempt
-          return { ...attempt, emailOwner: userByEmail(doc, to) }
+          if (userByEmail(doc, to) !== null) {
+            return { ok: false, code: 'email-taken', error: '这个邮箱已经被使用了，换一个邮箱' }
+          }
+          return issueCode(doc, to)
         })
         if (issued.ok !== true) {
           if (issued.code === 'too-frequent') {
@@ -2186,16 +2187,12 @@ export async function startRelay(rawOptions = {}) {
             })
             return
           }
+          if (issued.code === 'email-taken') {
+            send(response, 409, { ok: false, error: 'email-taken', hint: issued.error })
+            return
+          }
           send(response, 400, { ok: false, error: 'bad-email', hint: issued.error })
           return
-        }
-        // 5.19：这个邮箱是不是已经有一个账号了？**照发**验证码（将来"验证码直登"要用同一封），
-        // 但把这件事一并告诉客户端，让它当场说"你已经注册过了，直接登录" ——
-        // 不然用户要把用户名、密码、验证码全填一遍，最后一步才被拒。
-        // 只回"有没有账号"，**不回用户名**（这一步还没有证明邮箱是你的）。
-        const registered = issued.emailOwner === null ? {} : {
-          alreadyRegistered: true,
-          hint: '这个邮箱已经注册过了，直接用已有账号登录即可',
         }
         // 配了 SMTP 就发真邮件；没配就退回"打印到控制台"
         const mailConfig = options.mailConfig ?? smtpConfigFromEnv()
@@ -2215,7 +2212,7 @@ export async function startRelay(rawOptions = {}) {
             return
           }
           debug(`[账户] 验证码已发到 ${to}（${describeMailConfig(mailConfig)}）`)
-          send(response, 200, { ok: true, sent: true, hint: '验证码已发到邮箱，10 分钟内有效', ...registered })
+          send(response, 200, { ok: true, sent: true, hint: '验证码已发到邮箱，10 分钟内有效' })
           return
         }
         // 没配邮件：老行为（控制台打印；局域网模式把码回给调用方，公网模式不回）
@@ -2228,7 +2225,6 @@ export async function startRelay(rawOptions = {}) {
             ? '服务器没有配置邮件服务：请联系管理员配置 SMTP，或从电脑控制台取验证码'
             : '验证码已打印在电脑端的 relay 控制台',
           ...(options.public === true ? {} : { code: issued.code }),
-          ...registered,
         })
         return
       }

@@ -516,18 +516,6 @@ public class HomeActivity extends android.app.Activity {
             ui.post(() -> {
                 if (result != null && result.optBoolean("ok", false)) {
                     String code = result.optString("code", "");
-                    // 5.19：**这个邮箱已经注册过了** —— 服务端在发码时就会说这件事。
-                    // 直接切到「登录」（同一个邮箱只能有一个账号），别让用户把
-                    // 用户名、密码、验证码全填一遍，最后一步才被拒。
-                    if (result.optBoolean("alreadyRegistered", false)) {
-                        stopCodeCooldown();
-                        resetSendCodeButton();
-                        setRegisterMode(false);
-                        setStatus(getString(R.string.st_code_email_registered));
-                        Toast.makeText(this, getString(R.string.st_code_email_registered),
-                                Toast.LENGTH_LONG).show();
-                        return;
-                    }
                     // 5.17：服务器可能**真的发了邮件**（`sent:true`），也可能只是把码打到控制台
                     // （没配 SMTP）。两种都说清楚，别让用户对着一句含糊的"已发送"干等。
                     boolean sent = result.optBoolean("sent", false);
@@ -555,6 +543,14 @@ public class HomeActivity extends android.app.Activity {
                 // 其它失败：立刻放开按钮（别让用户白等 60 秒才知道没发出去）
                 stopCodeCooldown();
                 resetSendCodeButton();
+                // 5.21：邮箱已被占用时，服务端说的是"换一个邮箱"。
+                // **不**自动切到登录、也不暗示"你已经有账号了"（用户定的口径）。
+                if ("email-taken".equals(ServerText.codeOf(result))) {
+                    setStatus(getString(R.string.st_email_taken_hint));
+                    Toast.makeText(this, getString(R.string.st_email_taken_hint),
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
                 setStatus(getString(R.string.st_code_failed,
                         ServerText.from(this, result, failure)));
             });
@@ -622,8 +618,11 @@ public class HomeActivity extends android.app.Activity {
         if ("taken".equals(name)) {
             message = getString(R.string.st_name_taken, user);
         } else if ("taken".equals(mail)) {
-            // 邮箱被占用：顺带说清下一步（这个邮箱只能有一个账号，直接登录）
+            // 5.21：邮箱被占用 → 让他**换一个邮箱**（不引导去登录）
             message = getString(R.string.st_email_taken_hint);
+        } else if (nameState != null && !nameState.optString("similar", "").isEmpty()) {
+            // 只有大小写不同**不算**重名（用户可以注册），但要提醒：这是另一个账号
+            message = getString(R.string.st_name_case_variant, nameState.optString("similar", ""));
         }
         if (message.isEmpty()) {
             // 又能用了（或者格式还不对）→ 把上一句提示收掉，别让旧提示留在屏幕上

@@ -45,9 +45,9 @@
     <string name="st_code_sent">Code sent to your email</string>
     <string name="st_code_mail_sent">Code sent to %1$s, valid for 10 minutes</string>
     <string name="st_code_dev">Code: %1$s (returned directly in dev builds)</string>
-    <string name="st_code_email_registered">This email is already registered — switched to sign-in (use your username and password)</string>
     <string name="st_name_taken">The name %1$s is already taken, pick another one</string>
-    <string name="st_email_taken_hint">This email is already registered, just sign in</string>
+    <string name="st_email_taken_hint">This email is already in use, please use another one</string>
+    <string name="st_name_case_variant">That name is available; note that %1$s is a different account (differs only in letter case)</string>
     <string name="st_code_failed">Could not get a code: %1$s</string>
     <string name="st_need_agree_links">Please accept the User Agreement and the Recording and Privacy Policy first</string>
     <string name="toast_need_agree">Please tick the agreement boxes first</string>
@@ -283,7 +283,7 @@ If you do not want to be recorded, do not tap Start. To delete records on the ph
     <string name="srv_code_no_smtp">The server has no mail service configured — ask an administrator to set up SMTP</string>
     <string name="srv_code_wait">Please try again in %1$d s</string>
     <string name="srv_code_on_console">The code was printed on the relay console on the computer</string>
-    <string name="srv_user_taken">That username is taken, pick another one or sign in</string>
+    <string name="srv_user_taken">That username is taken, pick another one</string>
     <string name="srv_user_empty">The username cannot be empty</string>
     <string name="srv_user_charset">Usernames may only use letters, digits and _ . -</string>
     <string name="srv_user_too_long">The username is too long, shorten it</string>
@@ -297,7 +297,7 @@ If you do not want to be recorded, do not tap Start. To delete records on the ph
     <string name="srv_email_empty">The email cannot be empty</string>
     <string name="srv_email_too_long">The email is too long</string>
     <string name="srv_email_format">Invalid email, use the form name@example.com</string>
-    <string name="srv_email_taken">This email is already tied to an account</string>
+    <string name="srv_email_taken">This email is already in use, please use another one</string>
     <string name="srv_need_proofread_body">The proofreading request has the wrong shape (JSON expected)</string>
     <string name="srv_bad_request">The request was rejected; check the server version and your settings</string>
     <string name="srv_no_route">The server has no such endpoint (version mismatch?)</string>
