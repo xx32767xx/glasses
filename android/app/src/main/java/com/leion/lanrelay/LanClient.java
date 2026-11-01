@@ -240,6 +240,21 @@ public class LanClient {
     }
 
     /**
+     * 5.27：本机 versionCode（纯数字），由界面在创建客户端后立刻设进来。
+     *
+     * <p>为什么不在这里自己去读 `PackageManager`：`LanClient` 是纯网络层，
+     * 拿不到 Context 是常有的事（测试、后台线程）。界面有 Activity，读一次传进来最简单。
+     *
+     * <p>服务端用它做**版本门禁**：不带 / 报得比要求旧 → `/hello` 与 `/audio` 直接 426。
+     */
+    private String appVersionCode = "";
+
+    /** 设进来之后，每条 `/hello` 与 `/audio` 都会带上 `app=<versionCode>`。 */
+    public void setAppVersionCode(String code) {
+        this.appVersionCode = code == null ? "" : code.trim();
+    }
+
+    /**
      * 上传一块录音（**同步**，必须在后台线程里调）。
      *
      * @param pcm        裸 PCM，16-bit 小端、单声道
@@ -253,6 +268,8 @@ public class LanClient {
     public JSONObject sendAudio(byte[] pcm, int sampleRate, boolean fresh, String lang)
             throws IOException, org.json.JSONException {
         StringBuilder path = new StringBuilder("/audio?rate=").append(sampleRate);
+        // 5.27：服务端的版本门禁要看这个（不带就会被当成旧版本拒掉）
+        if (!appVersionCode.isEmpty()) path.append("&app=").append(appVersionCode);
         // 4.74：带上房间号 —— 归属最强的线索（字幕就是这段音频转出来的）
         if (!roomId.isEmpty()) {
             path.append("&room=").append(java.net.URLEncoder.encode(roomId, "UTF-8"));
@@ -713,6 +730,10 @@ public class LanClient {
                 } catch (java.io.UnsupportedEncodingException ignored) {
                     helloPath = "/hello";
                 }
+            }
+            // 5.27：把版本一起报上去 —— 服务端的版本门禁会拒掉不带它的请求
+            if (!appVersionCode.isEmpty()) {
+                helloPath += (helloPath.contains("?") ? "&" : "?") + "app=" + appVersionCode;
             }
             JSONObject hello = request(helloPath, "GET", null, 8000);
             int cols = hello.optInt("cols", 40);

@@ -763,6 +763,72 @@ export async function runRelaySuite({ it, check, assert }) {
     check('/hello 里也带 appVersion', hello.json?.appVersion?.code === code, JSON.stringify(hello.json?.appVersion))
   })
 
+  await it('5.27：版本门禁的协议层硬拒（老客户端连不进来，只能去更新）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'versiongate-'))
+    const secret = 's3cret-0123456789abcdef'
+    // 只在**这个**用例里开着门禁：别的用例故意不带版本头（它们不是老客户端，是测试）
+    const gated = await startRelay({
+      dataDir: dir, port: 0, host: '127.0.0.1', secret, quiet: true, enforceAppVersion: true,
+    })
+    const open = await startRelay({
+      dataDir: dir, port: 0, host: '127.0.0.1', secret: 'other-secret-0123456789', quiet: true,
+      enforceAppVersion: false,
+    })
+    try {
+      const call = async (port, path, app) => {
+        const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+          headers: { 'X-Leion-Secret': secret, ...(app === undefined ? {} : { 'X-Leion-App': app }) },
+        })
+        return { status: response.status, json: await response.json().catch(() => null) }
+      }
+      const base = gated.port
+      // 连 gradle 里的 versionCode 都不写死：拿生成物比
+      const { APP_VERSION } = await import('../lib/app-version.generated.mjs')
+      const missing = await call(base, '/hello')
+      check('没报版本 → 426（旧 APK 根本不会报）', missing.status === 426, missing.text ?? String(missing.status))
+      check('机器码 client-outdated', missing.json?.error === 'client-outdated', JSON.stringify(missing.json))
+      check('人话里说清了该装哪个版本',
+        String(missing.json?.hint ?? '').includes(APP_VERSION.name), JSON.stringify(missing.json?.hint))
+      check('响应里也带上要求的版本（客户端可据此提示）',
+        missing.json?.appVersion?.code === APP_VERSION.code, JSON.stringify(missing.json?.appVersion))
+
+      const ancient = await call(base, '/hello', '1')
+      check('报了很旧的版本 → 426', ancient.status === 426, String(ancient.status))
+      const current = await call(base, '/hello', String(APP_VERSION.code))
+      check('报对当前版本 → 200', current.status === 200, String(current.status))
+      const newer = await call(base, '/hello', String(APP_VERSION.code + 1))
+      check('客户端比服务器新 → 放行（那是服务器的错，不该锁人）', newer.status === 200, String(newer.status))
+      const tool = await call(base, '/hello', 'tool')
+      check('我们自己的脚本报 tool → 放行', tool.status === 200, String(tool.status))
+
+      // 不受门禁影响的端点：问版本本身永远能问、管理台/状态也照旧
+      const versionAsk = await call(base, '/version')
+      check('/version 永远能问（否则客户端没法知道该装哪个版本）', versionAsk.status === 200,
+        String(versionAsk.status))
+      const statusAsk = await call(base, '/status')
+      check('/status 不受影响（排查工具要用）', statusAsk.status === 200, String(statusAsk.status))
+      // 音频也在门禁里（不带版本 → 426）
+      const audio = await fetch(`http://127.0.0.1:${base}/audio?rate=16000`, {
+        method: 'POST', headers: { 'X-Leion-Secret': secret }, body: Buffer.alloc(320),
+      })
+      check('/audio 不带版本 → 426（一句都传不上去，被迫更新）', audio.status === 426, String(audio.status))
+      // 关掉门禁的实例：同样的请求照收
+      const loose = await fetch(`http://127.0.0.1:${open.port}/hello`, {
+        headers: { 'X-Leion-Secret': 'other-secret-0123456789' },
+      })
+      check('关掉开关（排查时）不带版本也放行', loose.status === 200, String(loose.status))
+      const status = await call(base, '/status')
+      check('/status 能看到被门禁拒了几次', Number(status.json?.versionRejects) >= 3,
+        String(status.json?.versionRejects))
+      check('/status 标明门禁是开着的', status.json?.enforceAppVersion === true,
+        JSON.stringify(status.json?.enforceAppVersion))
+    } finally {
+      gated.close?.()
+      open.close?.()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   await it('未知路由 404，并列出可用路由', async () => {
     const result = await call('/nope')
     check('404', result.status === 404, String(result.status))

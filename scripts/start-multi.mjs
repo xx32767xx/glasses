@@ -336,6 +336,15 @@ export function relayStep(options) {
     args.push('--public')
     args.push('--host', options.host ?? '0.0.0.0')
   }
+  // 5.27：**版本门禁默认开**（`LEION_ENFORCE_APP_VERSION=0` 可以关）。
+  // 门禁决定了"旧版本手机能不能连进来"：开着 = 连不上并被告知去更新。
+  // 关掉的唯一合理场景是排查"是不是门禁把某个客户端挡在外面"。
+  const enforce = String(process.env.LEION_ENFORCE_APP_VERSION ?? '1').trim().toLowerCase()
+  if (enforce === '0' || enforce === 'false' || enforce === 'off' || enforce === 'no') {
+    args.push('--no-enforce-app-version')
+  } else {
+    args.push('--enforce-app-version')
+  }
   return { key: 'relay', role: 'relay', tag: '转发', label: '转发', color: CYAN,
     script: join(ROOT, 'relay', 'lan-relay.mjs'), args }
 }

@@ -293,8 +293,9 @@ export function parseArgs(argv) {
 
 /** 当前帧（不看 changed，直接要 service 手里的那一帧）。 */
 async function currentFrame(url, secret) {
+  // 5.27：`X-Leion-App: tool` = 我们自己的脚本，请服务端的版本门禁放行（它不是老 APK）
   const response = await fetch(`${url}/frame?since=0&secret=${encodeURIComponent(secret)}`,
-    { signal: AbortSignal.timeout(5000) })
+    { headers: { 'X-Leion-App': 'tool' }, signal: AbortSignal.timeout(5000) })
   if (!response.ok) return null
   const body = await response.json()
   return body.frame ?? null
@@ -309,9 +310,10 @@ function readSecret() {
 }
 
 async function submit(url, secret, text) {
+  // 5.27：同上，`tool` 让版本门禁放行
   const response = await fetch(`${url}/say?secret=${encodeURIComponent(secret)}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', 'X-Leion-App': 'tool' },
     body: JSON.stringify({ text, from: 'zh-CN' }),
   })
   if (!response.ok) throw new Error(`POST /say 失败：HTTP ${response.status}`)

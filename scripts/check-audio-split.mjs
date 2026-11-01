@@ -42,7 +42,7 @@ const kb = (n) => `${(Number(n) / 1024).toFixed(1)} KB`
 
 async function fetchRooms(options) {
   const response = await fetch(`${options.host}/audio/rooms`, {
-    headers: { 'X-Leion-Secret': options.secret },
+    headers: { 'X-Leion-Secret': options.secret, 'X-Leion-App': 'tool' },
   })
   const body = await response.json()
   if (body.ok !== true) throw new Error(`/audio/rooms 失败：${JSON.stringify(body)}`)
@@ -58,7 +58,7 @@ function silentChunk(sampleRate = 16000, ms = 200) {
 async function postAudio(options, room, bytes) {
   const response = await fetch(`${options.host}/audio?rate=16000&lang=zh-CN&room=${encodeURIComponent(room)}`, {
     method: 'POST',
-    headers: { 'X-Leion-Secret': options.secret, 'Content-Type': 'application/octet-stream' },
+    headers: { 'X-Leion-Secret': options.secret, 'X-Leion-App': 'tool', 'Content-Type': 'application/octet-stream' },
     body: bytes,
   })
   return response.status

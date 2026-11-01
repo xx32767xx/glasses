@@ -53,6 +53,7 @@
     <string name="update_body_server_old">Sua versão é %2$s, o servidor está na %1$s (o servidor é mais antigo que o aplicativo).\n\nPeça ao administrador para atualizar o servidor; até então não é possível usar.</string>
     <string name="update_retry">Já atualizei, verificar</string>
     <string name="update_retrying">Verificando a versão novamente…</string>
+    <string name="srv_client_outdated">Versão do aplicativo muito antiga, instale a versão mais recente</string>
     <string name="st_code_failed">Falha ao obter o código: %1$s</string>
     <string name="st_need_agree_links">Aceite primeiro o Contrato do Usuário e a Política de Gravação e Privacidade</string>
     <string name="toast_need_agree">Marque primeiro as caixas de aceite</string>

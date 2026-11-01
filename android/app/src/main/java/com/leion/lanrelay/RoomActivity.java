@@ -261,6 +261,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         String token = prefs.getString("accountToken", "");
 
         client = new LanClient(host, secret, this);
+        // 5.27：把本机 versionCode 报给服务端（版本门禁用它；不带会被当成旧版本拒掉）
+        client.setAppVersionCode(String.valueOf(UpdateGuard.versionCode(this)));
         // 4.74：告诉轮询「我在哪个房间」。多场会并发时，
         // 字幕才不会把别的房间的句子画到这里来。
         client.setRoom(roomKey);

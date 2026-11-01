@@ -85,6 +85,28 @@ export const DEFAULT_DATA_DIR = LIVE_DIR
 const MAX_BODY_BYTES = 8 * 1024
 
 /**
+ * 5.27：**版本门禁要在协议层硬拒时**，哪些端点算"客户端真的在用 App"。
+ *
+ * <p>为什么是这几条：`/hello` 是房间页的握手（被拒 = 房间页立刻显示连不上）、
+ * `/audio` 是真正干活的那条（被拒 = 一句都传不上去）。两条一起拒，
+ * 老版本会**当场用不了**，而不是"看似正常、字幕莫名其妙不对"。
+ *
+ * <p>`/version` 自己当然不能拒 —— 它就是给客户端问"我该是哪个版本"的。
+ * `/status`、`/admin`、`/terms`、`/org/*` 也不拒：管理台网页与排查工具都在用它们，
+ * 且它们不涉及"这一场会议能不能用"。
+ */
+const GATED_ENDPOINTS = new Set(['/hello', '/audio', '/frame', '/say'])
+
+/** 请求里上报的客户端版本（`X-Leion-App` 头或 `?app=`）。`tool` = 我们自己的脚本，放行。 */
+function reportedAppVersion(request, url) {
+  const header = request.headers['x-leion-app']
+  const fromQuery = url.searchParams.get('app')
+  const raw = String(header ?? fromQuery ?? '').trim()
+  return raw
+}
+
+
+/**
  * 音频心跳的聚合间隔（毫秒）。见 `logAudioChunk` 的注释：
  * 一秒钟一块 = 一秒钟两行，会把日志淹掉；聚合到 5 秒一行，
  * 同时用"块 12–17（6 块）"的写法保证块号可核，不会造成"像丢了数据"的假象。
@@ -249,6 +271,10 @@ export function parseArgs(argv) {  const options = { port: 8788, host: '0.0.0.0'
     if (key === 'quiet') { options.quiet = true; continue }
     if (key === 'verbose') { options.verbose = true; continue }
     if (key === 'public') { options.public = true; continue }
+    // 5.27：版本门禁（协议层硬拒旧客户端）。**生产启动脚本默认开**；
+    // 手动排查时 `--no-enforce-app-version` 关掉它，免得自己也连不进去。
+    if (key === 'enforce-app-version') { options.enforceAppVersion = true; continue }
+    if (key === 'no-enforce-app-version') { options.enforceAppVersion = false; continue }
     if (key === 'help') { options.help = true; continue }
     // 译文质检**缺省开**：它只读不改、不拖慢字幕，而"现在到底错多少"还没有基线。
     // 不想看就 --no-lint。
@@ -753,6 +779,8 @@ export async function startRelay(rawOptions = {}) {
     authRejected: 0,
     /** 5.26：报过版本的客户端（`ip:版本`），只用来"每个版本只打一行日志"。 */
     reportedVersions: new Set(),
+    /** 5.27：因为版本过旧被协议层拒掉的请求数（`/status` 里能看到）。 */
+    versionRejects: 0,
     /** 迁移期那句"还没有账户"只提示一次，别刷屏。 */
     legacyIdentityNoted: false,
     writer: null,
@@ -1523,6 +1551,44 @@ export async function startRelay(rawOptions = {}) {
         return
       }
 
+      // ── 5.27：版本门禁的**协议层硬拒** ────────────────────────────────────
+      //
+      // 为什么需要它：`UpdateGuard`（5.26）只能拦住"已经装了门禁的那一版"。
+      // 而门禁上线**之前**发出去的 APK（比如 4.124）里没有这段代码 —— 它不会问、
+      // 也不会弹框，只能靠服务端把它挡住。这一层就是把"没有门禁的旧版本"逼出去的唯一办法。
+      //
+      // 判定（按顺序）：
+      //   ① 没开这个开关 → 放行（`LEION_ENFORCE_APP_VERSION=0` 可以关，排查时救命用）；
+      //   ② 不是"客户端在用 App"的端点（`/version`、`/status`、管理台、`/terms`…）→ 放行；
+      //   ③ 客户端报 `tool` → 放行（我们自己的脚本：check-live-audio / fake-phone / 探针）；
+      //   ④ **没报版本** → 当成旧版本拒（旧 APK 根本不会报）；
+      //   ⑤ 报的版本比要求旧 → 拒；比要求新 → 放行（那是服务器的错，客户端不该被锁）。
+      if (options.enforceAppVersion === true && GATED_ENDPOINTS.has(url.pathname)) {
+        const reported = reportedAppVersion(request, url)
+        const isTool = reported.toLowerCase() === 'tool'
+        const numeric = Number((reported.match(/^(\d+)$/) ?? [])[0] ?? NaN)
+        // 只认纯数字的 versionCode（手机就报这个）；报 versionName 的老客户端也算"没报"
+        const tooOld = !isTool && (numeric !== numeric || Number.isNaN(numeric) || numeric < APP_VERSION.code)
+        if (tooOld) {
+          state.versionRejects += 1
+          const who = clientIp(request)
+          const key = `reject:${who}:${reported}`
+          if (state.reportedVersions.has(key) !== true) {
+            state.reportedVersions.add(key)
+            debug(`🔒 拒绝版本过旧的客户端（${who}）：报了 ${reported === '' ? '（什么都没报）' : reported}，`
+              + `要求 ${APP_VERSION.code}(${APP_VERSION.name})`)
+          }
+          send(response, 426, {
+            ok: false,
+            error: 'client-outdated',
+            hint: `客户端版本过旧${reported === '' ? '' : `（${reported}）`}：`
+              + `请安装 ${APP_VERSION.name} 后再用（旧版本与服务器的数据格式对不上）`,
+            appVersion: { ...APP_VERSION, required: true },
+          })
+          return
+        }
+      }
+
       // ── 公网模式：每 IP 限流 ─────────────────────────────────────────────
       // 放在密钥校验**之后**：没密钥的请求连桶都不用占，免得别人用一个错的密钥
       // 就能把某个 IP 的额度耗掉（那是我们自己人）。
@@ -2107,6 +2173,10 @@ export async function startRelay(rawOptions = {}) {
           utteranceRetentionDays: options.utteranceRetentionDays,
           rejected: state.rejected,
           rateLimited: state.rateLimited,
+          // 5.27：被版本门禁拒掉的请求数（>0 就说明现场有手机没更新）
+          versionRejects: state.versionRejects,
+          enforceAppVersion: options.enforceAppVersion === true,
+          appVersion: { ...APP_VERSION, required: true },
           diagLines: state.diagLines,
           // 译文质检：定稿帧里判出多少条确定错 / 警告，以及**每类各几条**。
           // 放上来是为了不用 grep 日志就能看到"这一场到底错了多少、错在哪一类"。

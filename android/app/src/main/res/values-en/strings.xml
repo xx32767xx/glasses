@@ -53,6 +53,7 @@
     <string name="update_body_server_old">Your build is %2$s, the server is on %1$s (the server is older than the client).\n\nAsk your administrator to update the server; until then the app cannot be used.</string>
     <string name="update_retry">I updated, check again</string>
     <string name="update_retrying">Checking the version again…</string>
+    <string name="srv_client_outdated">This client build is too old, please install the latest version</string>
     <string name="st_code_failed">Could not get a code: %1$s</string>
     <string name="st_need_agree_links">Please accept the User Agreement and the Recording and Privacy Policy first</string>
     <string name="toast_need_agree">Please tick the agreement boxes first</string>

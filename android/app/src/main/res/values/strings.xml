@@ -343,6 +343,7 @@
     <string name="update_body_server_old">你的版本是 %2$s，服务器上是 %1$s（服务器比客户端旧）。\n\n请联系管理员更新服务器；在此之前无法继续使用。</string>
     <string name="update_retry">我已更新，重试</string>
     <string name="update_retrying">正在重新检查版本…</string>
+    <string name="srv_client_outdated">客户端版本过旧，请安装最新版后再用</string>
     <string name="st_code_failed">获取验证码失败：%1$s</string>
     <string name="st_need_agree_links">请先阅读并同意《用户协议》与《录音与隐私政策》</string>
     <string name="toast_need_agree">请先勾选同意用户协议与录音隐私政策</string>

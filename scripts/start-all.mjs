@@ -225,6 +225,13 @@ export function buildSteps(options) {
   const steps = []
 
   const relayArgs = ['--data-dir', options.dataDir, '--port', String(options.port)]
+  // 5.27：版本门禁默认开（`LEION_ENFORCE_APP_VERSION=0` 关掉；排查时救命用）
+  {
+    const enforce = String(process.env.LEION_ENFORCE_APP_VERSION ?? '1').trim().toLowerCase()
+    relayArgs.push(['0', 'false', 'off', 'no'].includes(enforce)
+      ? '--no-enforce-app-version'
+      : '--enforce-app-version')
+  }
   // 公网部署（服务器上）必须把加固一起带上 —— 否则文档说"服务器上跑 start-all"，
   // 而真正生效的强密钥/限流/音频上限**一个都没开**，是最坏的一种"以为配好了"。
   if (options.public === true) {

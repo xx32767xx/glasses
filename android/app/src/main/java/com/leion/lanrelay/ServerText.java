@@ -81,9 +81,13 @@ public final class ServerText {
         CODES.put("email-taken", R.string.srv_email_taken);
         CODES.put("username-taken", R.string.srv_user_taken);
         CODES.put("code-invalid", R.string.srv_code_wrong);
+        // 5.27：服务端在协议层拒掉旧客户端（426）
+        CODES.put("client-outdated", R.string.srv_client_outdated);
         put("验证码已打印在电脑端的 relay 控制台", R.string.srv_code_on_console);
         // 5.21：用户名/邮箱重复一律"换一个"口径（用户定的：不引导去登录）
         put("这个用户名已经有人用了，换一个", R.string.srv_user_taken);
+        // 5.27：版本门禁的硬拒（老客户端连 /hello、/audio 就会收到这句）
+        prefix("客户端版本过旧", R.string.srv_client_outdated);
         prefix("这个用户名已经被注册了", R.string.srv_user_taken);
         prefix("这个用户名已经存在了", R.string.srv_user_taken);
         put("用户名不能为空", R.string.srv_user_empty);

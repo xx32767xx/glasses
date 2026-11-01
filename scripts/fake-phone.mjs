@@ -98,6 +98,8 @@ function post(url, secret, body, timeoutMs) {
       method: 'POST',
       headers: {
         'X-Leion-Secret': secret,
+        // 5.27：`tool` = 我们自己的脚本（不是老 APK），请服务端的版本门禁放行
+        'X-Leion-App': 'tool',
         'content-type': 'application/octet-stream',
         'content-length': body.length,
         'cache-control': 'no-store',

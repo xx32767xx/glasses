@@ -150,7 +150,8 @@ export async function selfTest({ quiet = false } = {}) {
 
   const wsUrl = (token) => `${wsBase}/ws?room=${encodeURIComponent(room.room.id)}`
     + `&secret=${encodeURIComponent(secret)}&token=${encodeURIComponent(token)}`
-  const headers = { 'x-leion-secret': secret }
+  // 5.27：	ool = 我们自己的脚本，请服务端的版本门禁放行（它不是老客户端）
+    const headers = { 'x-leion-secret': secret, 'x-leion-app': 'tool' }
 
   const audio = Buffer.alloc(1600)          // 0.1 秒 16k 单声道
   for (let index = 0; index < audio.length; index += 2) {
