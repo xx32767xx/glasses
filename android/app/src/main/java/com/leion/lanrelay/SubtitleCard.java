@@ -55,7 +55,10 @@ public final class SubtitleCard {
         // 与会议室一致：原文是可选项（用户关掉「原文」时它不显示）
         original.setText(srcText);
         original.setVisibility(srcText.isEmpty() ? View.GONE : View.VISIBLE);
+        // 5.23：**没有译文的那一条**（整场同一门语言、或这句翻译失败了）只剩原文，
+        // 译文那一行必须收起来 —— 否则卡片里挂着一片空白，看起来像"转写丢了后半句"。
         target.setText(dstText);
+        target.setVisibility(dstText.isEmpty() ? View.GONE : View.VISIBLE);
         return card;
     }
 

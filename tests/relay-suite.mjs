@@ -298,25 +298,56 @@ export async function runRelaySuite({ it, check, assert }) {
         JSON.stringify(names))
       check('至少记下了 bob 那一句', names.includes('bob'), JSON.stringify(names))
 
-      // ⑦ 5.12：**原文帧（echo）不入库**。
-      //    它是"给读源语言的人看的自己那句话"，不是一次翻译；记进去会在转写全文里
-      //    凭空多出"中文→中文"，而且与真正的译文合并时会污染 dst_by_lang。
-      //    ⚠️ 这个测试块自己有局部 `frame()`（第二参是 at），所以这里必须显式写字段。
-      const before = stored.ok === true ? stored.lines.length : 0
-      await writeFile(busFile, JSON.stringify({
+      // ⑦ 5.23：**没有译文的句子也要进转写**。
+      //
+      // 用户的实测：整场同一门语言（或某句根本没触发翻译）时，转写里一句话都没有 ——
+      // 因为 5.12 起 relay 把原文帧（echo）挡在门外，而"不翻译"时**唯一的帧就是这个 echo**。
+      // 现在 echo 也入库（dst 留空），译文帧再合并进同一行。
+      // ⚠️ 这个测试块自己有局部 `frame()`（第二参是 at），所以这里必须显式写字段。
+      const beforeCount = stored.ok === true ? stored.lines.length : 0
+      const echoOnly = {
         speaker: 'them', lang: 'zh-CN', sourceLang: 'zh-CN',
-        text: '', source: '原文帧不该入库', lines: [], partial: false, echo: true,
+        text: '', source: '整场同一种语言的那一句', lines: [], partial: false, echo: true,
         at: new Date().toISOString(),
-      }), 'utf-8')
+      }
+      await writeFile(busFile, JSON.stringify(echoOnly), 'utf-8')
       await new Promise((resolve) => setTimeout(resolve, 400))
-      const after = await (await import('../lib/rooms.mjs')).listRoomTranscript(dir, {
+      const afterEcho = await (await import('../lib/rooms.mjs')).listRoomTranscript(dir, {
         roomId: room.room.id, user: 'alice',
       })
-      const afterLines = after.ok === true ? after.lines.length : 0
-      check('原文帧没有被写进转写全文', afterLines === before, `${before} → ${afterLines}`)
-      // 但它本身仍然**要发给客户端**（否则说话人又看不到自己那句了）
+      const echoLines = afterEcho.ok === true ? afterEcho.lines : []
+      check('原文帧（没有译文）**也要**进转写全文', echoLines.length === beforeCount + 1,
+        `${beforeCount} → ${echoLines.length}`)
+      const echoRow = echoLines.find(line => line.srcText === '整场同一种语言的那一句')
+      check('这一行存的是原文', echoRow !== undefined, JSON.stringify(echoLines.map(l => l.srcText)))
+      check('ds 两栏留空（不是"中文→中文"）',
+        echoRow !== undefined && echoRow.dstText === '' && echoRow.srcLang === 'zh-CN',
+        JSON.stringify(echoRow))
+      // 它本身仍然**要发给客户端**（否则说话人又看不到自己那句了）
       const echoSeen = await (await fetch(`${base}/frame?since=5&room=${room.room.id}`, { headers })).json()
       check('原文帧仍然被推送出去', echoSeen.frame?.echo === true, JSON.stringify(echoSeen.frame?.echo))
+
+      // 同一句再来一帧译文（模拟"这场需要翻译"）→ 合并进那一行，不许变成两条
+      const translated = {
+        speaker: 'them', lang: 'en-US', sourceLang: 'zh-CN',
+        text: 'The one sentence spoken in a single language',
+        source: '整场同一种语言的那一句', lines: [], partial: false,
+        at: new Date().toISOString(),
+      }
+      await writeFile(busFile, JSON.stringify(translated), 'utf-8')
+      await new Promise((resolve) => setTimeout(resolve, 400))
+      const afterMerge = await (await import('../lib/rooms.mjs')).listRoomTranscript(dir, {
+        roomId: room.room.id, user: 'alice',
+      })
+      const mergedLines = afterMerge.ok === true ? afterMerge.lines : []
+      const sameSource = mergedLines.filter(line => line.srcText === '整场同一种语言的那一句')
+      check('译文帧合并进同一行（不是多出一条）', sameSource.length === 1,
+        JSON.stringify(sameSource.map(l => l.id)))
+      check('主译文补上了（转写全文读 dst_text）',
+        sameSource[0]?.dstText === 'The one sentence spoken in a single language',
+        JSON.stringify(sameSource[0]))
+      check('这一行没有被再多记一条', mergedLines.length === beforeCount + 1,
+        `${beforeCount} → ${mergedLines.length}`)
     } finally {
       relay.close?.()
       rmSync(dir, { recursive: true, force: true })
@@ -503,9 +534,14 @@ export async function runRelaySuite({ it, check, assert }) {
   })
 
   await it('总线内容没变就不算新帧（避免手机反复重画同一句）', async () => {
-    const before = (await call('/status')).json.seq
-    // 刻意写入**完全相同的字节**：真实场景里插件推送"恢复上一帧"时会重写同一份 JSON
+    // 刻意写入**完全相同的字节**：真实场景里插件推送"恢复上一帧"时会重写同一份 JSON。
+    //
+    // ⚠️ 取基线之前先"喂"一次同样的内容并等一拍：否则上一条用例刚写进总线的那一帧
+    //    可能还没被轮询到，这里就会把"消费旧内容"误算成"新帧"——实测就是这么偶发红的。
     const identical = await readFile(bus, 'utf-8')
+    await writeFile(bus, identical, 'utf-8')
+    await sleep(150)
+    const before = (await call('/status')).json.seq
     await writeFile(bus, identical, 'utf-8')
     await sleep(150)
     const after = (await call('/status')).json.seq

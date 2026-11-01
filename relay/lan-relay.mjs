@@ -1040,13 +1040,21 @@ export async function startRelay(rawOptions = {}) {
    */
   function recordUtteranceIfFinal(frame, attribution) {
     if (frame.partial === true) return
-    // 5.12：**原文帧（echo）不入库**。它是给"读源语言的人"看的自己那句话，
-    // 不是一次翻译；记进去会在转写全文里多出"中文→中文"这种无意义记录，
-    // 而且和真正的译文合并（dst_by_lang）时会把原文当成某一门语言的译文。
-    if (frame.echo === true) return
+    // 5.23：**原文帧（echo）也要记**。
+    //
+    // 5.12 曾把它挡在门外，理由是"记进去会多出中文→中文这种无意义记录"。
+    // 那条理由只在"这句话还有译文帧"时成立 —— 而**整场同一门语言**时根本不会翻译，
+    // 唯一的帧就是这个 echo：于是转写是空的（用户实测："只看到触发了翻译的句子"）。
+    // 现在两种帧都进库，靠 `appendUtterance` 按 (房间/说话人/原文/源语言/60 秒) 合并成一行：
+    // echo 建行（没有译文），译文帧再补进来。翻译**失败**的那一句也因此保住了原文。
+    //
+    // ⚠️ 关键：echo 的 `lang` 等于**源语言**，绝不能当成译文语言写进 `dst_by_lang`
+    //    （那会把中文写成"中文→中文"）。所以 dst 只在非 echo 帧上取。
+    const isEcho = frame.echo === true
     const text = String(frame.text ?? '').trim()
     const source = String(frame.source ?? '').trim()
-    if (text === '' && source === '') return
+    // 原文是这条记录的**主体**：没有原文的帧不记（纯提示帧、清屏帧之类）
+    if (source === '') return
     // 帧里若带 roomId（未来协议）就不用推断；不带才走持麦者推断
     // 归属由 pollBus 统一解析（帧 roomId → 刚上传音频的房间 → 持麦者推断），这里直接用
     if (attribution.roomId === null) {
@@ -1062,10 +1070,11 @@ export async function startRelay(rawOptions = {}) {
       // 5.00：`frame.lang` 是**译文**语言（帧里的 text/lines 是译文），源语言在 `sourceLang`。
       // 之前这里把 frame.lang 当源语言存，是"翻译方向"那类错误的同一个来源 ——
       // 单语言时两者恰好总是相反，所以一直没暴露；变成三种语言后必须分清。
+      // 5.23：echo 帧没有译文，dst 两栏留空（不是等于源语言）。
       srcLang: String(frame.sourceLang ?? ''),
-      dstLang: String(frame.lang ?? ''),
+      dstLang: isEcho ? '' : String(frame.lang ?? ''),
       srcText: source,
-      dstText: text,
+      dstText: isEcho ? '' : text,
       startAt: Date.now(),
       isFinal: true,
     })
@@ -1073,7 +1082,8 @@ export async function startRelay(rawOptions = {}) {
       debug(`🗂 定稿帧没记：${saved.error}`)
       return
     }
-    debug(`🗂 定稿帧已记录（${attribution.reason} → ${attribution.roomId}，#${saved.id}）`)
+    debug(`🗂 定稿帧已记录（${attribution.reason} → ${attribution.roomId}，#${saved.id}`
+      + `${saved.merged === true ? ' 合并' : ''}${isEcho ? ' 原文（无译文）' : ''}）`)
   }
 
   /**

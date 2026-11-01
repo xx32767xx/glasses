@@ -664,6 +664,24 @@ export async function runAndroidOrderSuite({ it, check }) {
     }
   })
 
+  await it('5.23：没有译文的转写条目也要能正常显示/导出（只显示原文）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const card = readFileSync(join(javaDir, 'SubtitleCard.java'), 'utf-8')
+    const detail = readFileSync(join(javaDir, 'HistoryDetailActivity.java'), 'utf-8')
+
+    check('译文为空时把那一行收起来（别留一片空白）',
+      /target\.setVisibility\(dstText\.isEmpty\(\) \? View\.GONE : View\.VISIBLE\)/.test(card))
+    check('原文那一行本来就是空的才收',
+      /original\.setVisibility\(srcText\.isEmpty\(\) \? View\.GONE : View\.VISIBLE\)/.test(card))
+    // 导出 Word 必须真的写转写全文（以前只写一行"还没有转写内容"）
+    check('导出遍历转写行', /for \(int i = 0; i < allLines\.length\(\); i\+\+\)/.test(
+      detail.slice(detail.indexOf('private void exportWord'))))
+    check('没有任何一行时才写"还没有转写内容"',
+      /if \(exported == 0\) lines\.add\(getString\(R\.string\.transcript_empty\)\)/.test(detail))
+    check('没有译文的那条只写原文（不会写出一个空的箭头）',
+      /if \(!dst\.isEmpty\(\) && !src\.isEmpty\(\) && !dst\.equals\(src\)\)/.test(detail))
+  })
+
   await it('authWhoAmI 返回拆过包的正文（外壳会让"打开就判成没登录"，单会话下还顺带踢掉另一台）', () => {
     const source = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay',
       'LanClient.java'), 'utf-8')

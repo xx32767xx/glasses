@@ -263,8 +263,11 @@ export async function runEnglishSuite({ it, check, assert }) {
     const relaySource = readFileSync(join(process.cwd(), 'relay', 'lan-relay.mjs'), 'utf-8')
     check('relay 分清源语言与译文语言（frame.sourceLang / frame.lang）',
       /srcLang: String\(frame\.sourceLang \?\? ''\)/.test(relaySource)
-        && /dstLang: String\(frame\.lang \?\? ''\)/.test(relaySource),
+        && /dstLang:[^\n]{0,40}String\(frame\.lang \?\? ''\)/.test(relaySource),
       '单语言时看不出错，三种语言时必须分清')
+    // 5.23：原文帧没有译文 —— 它的 lang 等于源语言，绝不能当成译文语言写进去
+    check('原文帧（echo）不写 dst（否则转写里出现"中文→中文"）',
+      /isEcho \? '' : String\(frame\.lang/.test(relaySource), 'echo 的 lang 是源语言')
   })
 
   await it('历史/转写里的语种也显示成人话（en-US → 英语）', async () => {

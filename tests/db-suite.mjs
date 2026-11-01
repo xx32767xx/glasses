@@ -11,7 +11,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { COLUMN_PATCHES, dbPath, importFromDataDir, openDb, purgeOldUtterances, purgeUtterancesIn, reconcileColumns, SCHEMA_VERSION } from '../lib/db.mjs'
+import { COLUMN_PATCHES, appendUtterance, dbPath, importFromDataDir, openDb, purgeOldUtterances, purgeUtterancesIn, reconcileColumns, SCHEMA_VERSION } from '../lib/db.mjs'
 import { readAccountsDoc, writeAccountsDoc } from '../lib/accounts-store.mjs'
 import { hashPassword, verifyPassword } from '../lib/accounts.mjs'
 
@@ -230,6 +230,79 @@ export async function runDbSuite({ it, check }) {
     const left = verify.prepare('SELECT src_text FROM utterances').all().map(row => row.src_text)
     verify.close()
     check('留下的是新那条', left.length === 1 && left[0] === '新', left.join(','))
+  })
+
+  // ── 5.23：一句话先落库、译文后补（用户报的"只看到触发翻译的句子"）──────────
+  await it('原文帧（没有译文）也要落库：整场同一种语言时转写不能是空的', () => {
+    const dataDir = join(dir, 'echo-only')
+    // 这就是"整场同一门语言"时大脑发出的**唯一**一帧：echo，text 为空、source 有内容
+    const saved = appendUtterance(dataDir, {
+      roomId: 'room-1', username: 'alice', srcLang: 'zh-CN', srcText: '整场同一种语言的那句',
+      dstLang: '', dstText: '', startAt: Date.now(), isFinal: true,
+    })
+    check('写进去了', saved.ok === true, JSON.stringify(saved))
+    const db = openDb(dbPath(dataDir))
+    const rows = db.prepare('SELECT username, src_lang, src_text, dst_text, dst_by_lang FROM utterances').all()
+    db.close()
+    check('库里有一行', rows.length === 1, String(rows.length))
+    check('存的是原文', rows[0]?.src_text === '整场同一种语言的那句', JSON.stringify(rows[0]))
+    check('译文两栏都是空（不是"中文→中文"）',
+      rows[0]?.dst_text === '' && rows[0]?.dst_by_lang === '{}', JSON.stringify(rows[0]))
+  })
+
+  await it('译文帧并进同一行（先原文、后译文，不能变成两条）', () => {
+    const dataDir = join(dir, 'merge-echo-first')
+    const at = Date.now()
+    const base = {
+      roomId: 'room-1', username: 'alice', srcLang: 'zh-CN', srcText: '这句需要翻译', isFinal: true, startAt: at,
+    }
+    const first = appendUtterance(dataDir, { ...base, dstLang: '', dstText: '' })
+    check('原文帧建了一行', first.ok === true && first.merged !== true, JSON.stringify(first))
+    const second = appendUtterance(dataDir, { ...base, dstLang: 'en-US', dstText: 'This needs translating' })
+    check('译文帧是**合并**进去的', second.ok === true && second.merged === true, JSON.stringify(second))
+    check('合并到同一行（id 相同）', second.id === first.id, `${first.id} vs ${second.id}`)
+    // 第二种目标语言也合进同一行
+    const third = appendUtterance(dataDir, { ...base, dstLang: 'pt-BR', dstText: 'Isto precisa de tradução' })
+    check('三语也还是一行', third.id === first.id && third.merged === true, JSON.stringify(third))
+
+    const db = openDb(dbPath(dataDir))
+    const rows = db.prepare('SELECT dst_text, dst_by_lang FROM utterances').all()
+    db.close()
+    check('只有一行', rows.length === 1, String(rows.length))
+    check('主译文（转写全文读它）补上了', rows[0]?.dst_text === 'This needs translating',
+      JSON.stringify(rows[0]?.dst_text))
+    const map = JSON.parse(String(rows[0]?.dst_by_lang ?? '{}'))
+    check('两种目标语言都在 dst_by_lang 里',
+      map['en-US'] === 'This needs translating' && map['pt-BR'] === 'Isto precisa de tradução',
+      JSON.stringify(map))
+  })
+
+  await it('两个不同的人说了同一句话 → 两行（不许并成一条）', () => {
+    const dataDir = join(dir, 'two-speakers')
+    const at = Date.now()
+    const line = { roomId: 'room-2', srcLang: 'zh-CN', srcText: '好的', dstText: 'OK', dstLang: 'en-US', startAt: at }
+    appendUtterance(dataDir, { ...line, username: 'alice' })
+    appendUtterance(dataDir, { ...line, username: 'bob' })
+    const db = openDb(dbPath(dataDir))
+    const rows = db.prepare('SELECT username FROM utterances ORDER BY id').all()
+    db.close()
+    check('两行，两个发言人', rows.length === 2 && rows[0].username === 'alice' && rows[1].username === 'bob',
+      JSON.stringify(rows))
+  })
+
+  await it('原文帧先到、后来才认出说话人 → 补上名字，仍是一行', () => {
+    const dataDir = join(dir, 'adopt-speaker')
+    const at = Date.now()
+    const base = { roomId: 'room-3', srcLang: 'zh-CN', srcText: '先无名后有名字', isFinal: true, startAt: at }
+    const anon = appendUtterance(dataDir, { ...base, username: '', dstLang: '', dstText: '' })
+    const named = appendUtterance(dataDir, { ...base, username: 'alice', dstLang: 'en-US', dstText: 'now named' })
+    check('合并到同一行', named.id === anon.id && named.merged === true, `${anon.id} vs ${named.id}`)
+    const db = openDb(dbPath(dataDir))
+    const rows = db.prepare('SELECT username, dst_text FROM utterances').all()
+    db.close()
+    check('只有一行', rows.length === 1, String(rows.length))
+    check('名字补上了', rows[0]?.username === 'alice', JSON.stringify(rows[0]))
+    check('译文也在', rows[0]?.dst_text === 'now named', JSON.stringify(rows[0]))
   })
 
   rmSync(dir, { recursive: true, force: true })

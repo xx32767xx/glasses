@@ -399,7 +399,30 @@ public class HistoryDetailActivity extends android.app.Activity {
             lines.add(langsLabel(record.optJSONArray("langs")));
             lines.add("");
             lines.add(getString(R.string.transcript_title));
-            lines.add(getString(R.string.transcript_empty));
+            // 5.23：把**转写全文**真的写进 Word。
+            // 以前这里只写了一行「这场会议还没有转写内容」（哪怕转写区里明明有内容）——
+            // 导出的是"会议记录"，没有正文的 Word 等于交了个空壳。
+            int exported = 0;
+            if (allLines != null) {
+                for (int i = 0; i < allLines.length(); i++) {
+                    org.json.JSONObject one = allLines.optJSONObject(i);
+                    if (one == null) continue;
+                    String src = one.optString("srcText", "");
+                    String dst = one.optString("dstText", "");
+                    if (src.isEmpty() && dst.isEmpty()) continue;
+                    String who = one.optString("username", "");
+                    StringBuilder row = new StringBuilder();
+                    if (!who.isEmpty()) row.append(who).append("：");
+                    row.append(src.isEmpty() ? dst : src);
+                    // 没有译文的那一条（整场同一种语言、或这句翻译失败）只写原文一行
+                    if (!dst.isEmpty() && !src.isEmpty() && !dst.equals(src)) {
+                        row.append(" → ").append(dst);
+                    }
+                    lines.add(row.toString());
+                    exported += 1;
+                }
+            }
+            if (exported == 0) lines.add(getString(R.string.transcript_empty));
 
             java.io.File dir = new java.io.File(getCacheDir(), "exports");
             //noinspection ResultOfMethodCallIgnored
