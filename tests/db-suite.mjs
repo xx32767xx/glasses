@@ -60,6 +60,20 @@ export async function runDbSuite({ it, check }) {
     }
   })
 
+  // ── 5.17：漏传数据目录 → 立刻炸，别在 cwd 里建 `undefined/leion.db` ─────────
+  await it('dbPath 拒绝没有数据目录的调用（这就是那个误提交空库的根）', () => {
+    for (const bad of [undefined, null, '', '   ', 'undefined', 'null']) {
+      let message = ''
+      try {
+        dbPath(bad)
+      } catch (error) {
+        message = String(error?.message ?? error)
+      }
+      check(`dbPath(${JSON.stringify(bad)}) 抛错`, message.includes('数据目录'), message || '没抛错')
+    }
+    check('正常目录照旧', dbPath(join(dir, 'x')).endsWith('leion.db'))
+  })
+
   await it('建表幂等、版本可查、WAL 已开', () => {
     const file = join(dir, 'a.db')
     const db = openDb(file)

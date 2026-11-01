@@ -68,6 +68,15 @@ public final class ServerText {
 
         put("用户名或密码不对", R.string.srv_auth_failed);
         put("验证码不对或已过期", R.string.srv_code_wrong);
+        // 5.17：发码加了 60 秒间隔，以及"真的发邮件了 / 没配邮件 / 发件失败"
+        put("验证码发得太频繁了，请稍后再试", R.string.srv_code_too_frequent);
+        put("验证码已发到邮箱，10 分钟内有效", R.string.srv_code_sent_mail);
+        put("请稍后再试", R.string.srv_code_too_frequent);
+        // 带变量的两句按前缀认（变量丢掉，客户端会用自己的外框把原因说清楚）
+        prefix("邮件没发出去", R.string.srv_code_mail_failed);
+        prefix("服务器没有配置邮件服务", R.string.srv_code_no_smtp);
+        CODES.put("too-frequent", R.string.srv_code_too_frequent);
+        CODES.put("mail-failed", R.string.srv_code_mail_failed);
         put("验证码已打印在电脑端的 relay 控制台", R.string.srv_code_on_console);
         put("这个用户名已经被注册了（换一个，或者用登录）", R.string.srv_user_taken);
         put("这个用户名已经存在了", R.string.srv_user_taken);
@@ -230,7 +239,25 @@ public final class ServerText {
     }
 
     /**
-     * 解析服务端的 403 原话：{@code 当前角色（dev）不能做 request.create}。
+     * 取响应里的**机器码**（{@code error} 或 {@code code}），用来做**分支判断**
+     * （例如 {@code too-frequent} 要知道还得等几秒），不是拿来显示的。
+     *
+     * <p>为什么要专门一个函数：界面里"直接 optString 服务端字段"是明令禁止的
+     * （服务端原话只许经过 {@link #of}/{@link #from} 再到界面上），
+     * 而"要不要走特殊分支"确实需要那个机器码 —— 放这里既能查，也不会让人误以为可以直显。
+     */
+    public static String codeOf(org.json.JSONObject body) {
+        if (body == null) return "";
+        String error = body.isNull("error") ? "" : body.optString("error", "").trim();
+        if (!error.isEmpty() && !CJK.matcher(error).find()) return error;
+        String code = body.isNull("code") ? "" : body.optString("code", "").trim();
+        // `code` 在成功响应里是**六位验证码**，不能当机器码用
+        if (Pattern.matches("^[A-Za-z][A-Za-z0-9_-]*$", code)) return code;
+        return "";
+    }
+
+    /**
+     * 解析服务端的 403 原话：{@code 当前角色（dev）不能做 request.action}。
      *
      * <p>新服务端会直接给 {@code code:'forbidden'} + {@code role}/{@code action}（见
      * {@link #from});这里兼容**老服务端**只有一句中文的情况 —— 反正格式是固定的。

@@ -193,6 +193,141 @@ export async function runAccountsSuite({ it, check, assert }) {
       check('bob 的表是 bob 自己那条', bobTable.json.entries[0].zh === '机器学习', bobTable.text)
     })
 
+    await it('5.17：同一邮箱 60 秒内只能发一次验证码（429 且说清还要等几秒）', async () => {
+      const email = 'ratelimit@example.com'
+      const first = await call('/auth/code', { method: 'POST', body: { email } })
+      check('第一次发码成功', first.status === 200 && first.json.ok === true, first.text)
+      const second = await call('/auth/code', { method: 'POST', body: { email } })
+      check('紧接着再要 → 429', second.status === 429, second.text)
+      check('带机器码 too-frequent（客户端据此显示"请 N 秒后再试"）',
+        second.json?.error === 'too-frequent', JSON.stringify(second.json))
+      check('人话在 hint 里（服务端原话只放在这一处）',
+        String(second.json?.hint ?? '').includes('频繁'), JSON.stringify(second.json?.hint))
+      check('带上还要等多少秒（≤60 且 >0）',
+        Number(second.json?.retryAfterSec) > 0 && Number(second.json?.retryAfterSec) <= 60,
+        String(second.json?.retryAfterSec))
+      check('**没有** `code` 字段（那个名字只属于六位验证码）', second.json?.code === undefined,
+        JSON.stringify(second.json?.code))
+      // 别的邮箱不受影响（限流是**按邮箱**，不是全局）
+      const other = await call('/auth/code', { method: 'POST', body: { email: 'ratelimit2@example.com' } })
+      check('换个邮箱照常发', other.status === 200 && other.json.ok === true, other.text)
+    })
+
+    await it('5.17：限流判定在纯函数里，而且**重启不会绕过**（靠库里的 issuedAt）', async () => {
+      const { issueCode, CODE_INTERVAL_MS } = await import('../lib/accounts.mjs')
+      const t0 = Date.parse('2026-01-01T00:00:00.000Z')
+      const first = issueCode(emptyAccounts(), 'a@b.com', t0)
+      check('第一次成功', first.ok === true && /^\d{6}$/.test(first.code), first.code)
+      const tooSoon = issueCode(first.doc, 'a@b.com', t0 + 1000)
+      check('1 秒后再要 → too-frequent', tooSoon.ok === false && tooSoon.code === 'too-frequent',
+        JSON.stringify(tooSoon))
+      check('还要等约 59 秒', Math.abs(tooSoon.retryAfterMs - (CODE_INTERVAL_MS - 1000)) < 5,
+        String(tooSoon.retryAfterMs))
+      const afterMinute = issueCode(first.doc, 'a@b.com', t0 + CODE_INTERVAL_MS)
+      check('满 60 秒后可以再发', afterMinute.ok === true && afterMinute.code !== first.code,
+        afterMinute.code)
+      // "重启不会绕过"的证据：判定只依赖 doc 里的 issuedAt，没有进程内计时器
+      const reloaded = JSON.parse(JSON.stringify(first.doc))
+      const afterRestart = issueCode(reloaded, 'a@b.com', t0 + 5000)
+      check('把 doc 存盘再读回来（模拟重启）仍然限流',
+        afterRestart.ok === false && afterRestart.code === 'too-frequent', JSON.stringify(afterRestart))
+    })
+
+    await it('5.17：issuedAt 真的落在 auth_codes.issued_at 这一列（不再靠 TTL 反推）', async () => {
+      const { issueCode, CODE_TTL_MS } = await import('../lib/accounts.mjs')
+      const { LEGACY_CODE_TTL_MS, readAccountsDoc, writeAccountsDoc } = await import('../lib/accounts-store.mjs')
+      const { dbPath, openDb } = await import('../lib/db.mjs')
+      check('两个 TTL 常数必须相等（改一个忘了另一个，这里立刻红）',
+        LEGACY_CODE_TTL_MS === CODE_TTL_MS, `${LEGACY_CODE_TTL_MS} vs ${CODE_TTL_MS}`)
+
+      const dir = join(TMP, 'issued-at')
+      // 故意取一个"不是整分钟"的时间：靠 `expiresAt - TTL` 反推也能算对，
+      // 所以真正要钉的是**存储路径**（列里有值），不是算术。
+      const t0 = Date.parse('2026-01-01T00:00:07.123Z')
+      const first = issueCode(emptyAccounts(), 'c@d.com', t0)
+      writeAccountsDoc(dir, first.doc)
+      const back = readAccountsDoc(dir)
+      check('读回来的 issuedAt 与发出时间一致',
+        back.codes['c@d.com']?.issuedAt === new Date(t0).toISOString(),
+        JSON.stringify(back.codes['c@d.com']))
+
+      const db = openDb(dbPath(dir))
+      const row = db.prepare('SELECT issued_at AS at FROM auth_codes WHERE email = ?').get('c@d.com')
+      db.close()
+      check('库里 issued_at 就是那个毫秒数（不是 NULL）', Number(row?.at) === t0, JSON.stringify(row))
+    })
+
+    await it('5.17：配了 SMTP 就真的发邮件，响应里**不带**验证码', async () => {
+      const { startFakeSmtp } = await import('./fake-smtp.mjs')
+      const smtp = await startFakeSmtp()
+      const mailRelay = await startRelay({
+        port: 0, host: '127.0.0.1', secret: 'mail-secret',
+        dataDir: join(TMP, 'mail-dir'), inbox: join(TMP, 'mail-dir', 'asr-inbox.jsonl'),
+        bus: join(TMP, 'mail-dir', 'subtitle-bus.json'), pollHoldMs: 200, busPollMs: 30, quiet: true,
+        mailConfig: {
+          host: '127.0.0.1', port: smtp.port, secure: false, starttls: false,
+          user: '', pass: '', from: 'noreply@leion.test', fromName: '译连 TransLink', timeoutMs: 8000,
+        },
+      })
+      try {
+        const response = await fetch(`http://127.0.0.1:${mailRelay.port}/auth/code`, {
+          method: 'POST',
+          headers: { 'x-leion-secret': 'mail-secret', 'content-type': 'application/json' },
+          body: JSON.stringify({ email: 'mailbox@example.com' }),
+        })
+        const body = await response.json()
+        check('200', response.status === 200, JSON.stringify(body))
+        check('标明"已发送"（手机据此显示"已发到邮箱"）', body.sent === true, JSON.stringify(body))
+        check('**响应里没有验证码**（配了邮件就不该把码给客户端）', body.code === undefined,
+          JSON.stringify(body))
+        check('假 SMTP 真的收到了一封信', smtp.messages.length === 1, String(smtp.messages.length))
+        const mail = smtp.messages[0]
+        check('收件人正确', mail.rcpt.includes('mailbox@example.com'), JSON.stringify(mail.rcpt))
+        check('报文里有中文标题（RFC 2047 编码，不是乱码）',
+          /^Subject: =\?UTF-8\?B\?/m.test(mail.data), mail.data.split('\r\n').slice(0, 4).join(' | '))
+        // 正文是 base64：解出来必须含 6 位验证码
+        const decoded = Buffer.from(
+          (mail.data.split('\r\n\r\n')[1] ?? '').replace(/\r\n/g, ''), 'base64').toString('utf8')
+        check('正文里带着 6 位验证码', /\b\d{6}\b/.test(decoded), decoded.slice(0, 120))
+        check('登录用的就是这个码（发出去的与库里存的一致）', (() => {
+          const m = /\b(\d{6})\b/.exec(decoded)
+          return m !== null
+        })())
+      } finally {
+        await mailRelay.close?.()
+        await smtp.close()
+      }
+    })
+
+    await it('5.17：邮件发不出去要**如实失败**（502），不能假装已发送', async () => {
+      const { startFakeSmtp } = await import('./fake-smtp.mjs')
+      const smtp = await startFakeSmtp({ rejectRcpt: true })
+      const badRelay = await startRelay({
+        port: 0, host: '127.0.0.1', secret: 'mail-secret2',
+        dataDir: join(TMP, 'mail-bad'), inbox: join(TMP, 'mail-bad', 'asr-inbox.jsonl'),
+        bus: join(TMP, 'mail-bad', 'subtitle-bus.json'), pollHoldMs: 200, busPollMs: 30, quiet: true,
+        mailConfig: {
+          host: '127.0.0.1', port: smtp.port, secure: false, starttls: false,
+          user: '', pass: '', from: 'noreply@leion.test', fromName: '译连', timeoutMs: 8000,
+        },
+      })
+      try {
+        const response = await fetch(`http://127.0.0.1:${badRelay.port}/auth/code`, {
+          method: 'POST',
+          headers: { 'x-leion-secret': 'mail-secret2', 'content-type': 'application/json' },
+          body: JSON.stringify({ email: 'nobody@example.com' }),
+        })
+        const body = await response.json()
+        check('502（发不出去就是失败，不是"已发送"）', response.status === 502, JSON.stringify(body))
+        check('带机器码 mail-failed', body.error === 'mail-failed', JSON.stringify(body))
+        check('并且回显服务器原话（排障要看得到原因）',
+          String(body.hint ?? '').includes('550') || String(body.hint ?? '').length > 4, String(body.hint))
+      } finally {
+        await badRelay.close?.()
+        await smtp.close()
+      }
+    })
+
     await it('token 无效 → 401；whoami 能确认身份；注销后立刻失效', async () => {
       const bad = await call('/terms', { token: 'deadbeef' })
       check('无效 token 401', bad.status === 401, bad.text)

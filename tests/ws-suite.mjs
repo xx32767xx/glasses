@@ -12,7 +12,7 @@
  */
 
 import { mkdir, rm, writeFile } from 'node:fs/promises'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { VAR_DIR } from '../lib/paths.mjs'
@@ -148,6 +148,12 @@ export async function runWsSuite({ it, check }) {
     check('没人时返回 0', hub.broadcastRoomAudio('room-x', Buffer.from([1, 2, 3])) === 0)
     check('空块不发', hub.broadcastRoomAudio('room-x', Buffer.alloc(0)) === 0)
     check('非 Buffer 不发', hub.broadcastRoomAudio('room-x', 'not-a-buffer') === 0)
+    // 5.17：没人连的时候不该为了"这是哪个房间"去查库 —— 之前那条路会在
+    // 当前工作目录里凭空建出 `undefined/leion.db`（仓库里真的躺着这么一个空库）。
+    check('没配 dataDir、又没人连时也不炸（不该走到查库）',
+      hub.broadcastRoomAudio('room-x', Buffer.from([1, 2, 3])) === 0)
+    check('工作目录里没有被凭空建出 undefined/',
+      existsSync(join(process.cwd(), 'undefined')) === false)
     void writes
   })
 

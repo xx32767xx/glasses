@@ -547,6 +547,30 @@ export async function runAndroidOrderSuite({ it, check }) {
     }
   })
 
+  await it('5.17：注册验证码真发邮件 + 60 秒间隔（客户端要能分辨这几种结果）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const home = readFileSync(join(javaDir, 'HomeActivity.java'), 'utf-8')
+    const serverText = readFileSync(join(javaDir, 'ServerText.java'), 'utf-8')
+
+    check('"已发到邮箱"用专门的文案（带上邮箱地址）', /st_code_mail_sent/.test(home))
+    check('发太频繁时说清还要等几秒（读服务端的 retryAfterSec）',
+      /"too-frequent"\.equals\(ServerText\.codeOf\(result\)\)/.test(home)
+      && /optInt\("retryAfterSec"/.test(home) && /srv_code_wait/.test(home))
+    // 机器码只能经由 ServerText 取（界面里不许直接 optString 服务端字段）
+    check('机器码走 ServerText.codeOf，不是直接 optString',
+      /public static String codeOf\(org\.json\.JSONObject body\)/.test(serverText)
+      && /optString\("error"/.test(home) === false)
+    check('codeOf 认得出机器码、也认得出 error 里是中文人话的情况',
+      /CJK\.matcher\(error\)\.find\(\)/.test(serverText))
+    for (const dir of ['values', 'values-en', 'values-pt-rBR']) {
+      const xml = readFileSync(join(resDir, dir, 'strings.xml'), 'utf-8')
+      for (const key of ['st_code_mail_sent', 'srv_code_wait', 'srv_code_too_frequent', 'srv_code_mail_failed']) {
+        check(`${key} 在 ${dir} 里有`, new RegExp(`name="${key}"`).test(xml))
+      }
+    }
+  })
+
   await it('authWhoAmI 返回拆过包的正文（外壳会让"打开就判成没登录"，单会话下还顺带踢掉另一台）', () => {
     const source = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay',
       'LanClient.java'), 'utf-8')

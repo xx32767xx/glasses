@@ -466,12 +466,26 @@ public class HomeActivity extends android.app.Activity {
                 sendCodeButton.setEnabled(true);
                 if (result != null && result.optBoolean("ok", false)) {
                     String code = result.optString("code", "");
-                    setStatus(code.isEmpty() ? getString(R.string.st_code_sent)
-                            : getString(R.string.st_code_dev, code));
-                } else {
-                    setStatus(getString(R.string.st_code_failed,
-                            ServerText.from(this, result, failure)));
+                    // 5.17：服务器可能**真的发了邮件**（`sent:true`），也可能只是把码打到控制台
+                    // （没配 SMTP）。两种都说清楚，别让用户对着一句含糊的"已发送"干等。
+                    boolean sent = result.optBoolean("sent", false);
+                    if (!code.isEmpty()) {
+                        setStatus(getString(R.string.st_code_dev, code));
+                    } else if (sent) {
+                        setStatus(getString(R.string.st_code_mail_sent, email));
+                    } else {
+                        setStatus(getString(R.string.st_code_sent));
+                    }
+                    return;
                 }
+                // 429：发得太频繁 —— 直接把"还要等几秒"说出来（服务端给了 retryAfterSec）
+                if ("too-frequent".equals(ServerText.codeOf(result))) {
+                    int wait = result.optInt("retryAfterSec", 60);
+                    setStatus(getString(R.string.srv_code_wait, Math.max(1, wait)));
+                    return;
+                }
+                setStatus(getString(R.string.st_code_failed,
+                        ServerText.from(this, result, failure)));
             });
         }, "home-code").start();
     }

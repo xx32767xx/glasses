@@ -53,5 +53,10 @@ docs/**/*.pdf
 # 脚本 scripts/build-apk.mjs 会在它缺失时明确报错并给出上面这行命令。
 LeionProDemo_SDK/
 
-# ����װ�Ĵʶ���ʵ��ֿ⣨awesome-align Դ�룬�Ǳ���Ŀ���
+# 本地装的词对齐实验仓库（awesome-align 源码，非本项目产物）
 awesome-align-master/
+
+# 漏传数据目录时凭空建出来的库（4.118 修掉的真 bug：`dbPath(undefined)` →
+# `<cwd>/undefined/leion.db`，所有读写都"成功"但查不到任何数据）。
+# lib/db.mjs 现在会直接抛错，这条只是兜底：万一老版本脚本还这么干，也别把它提交进来。
+undefined/

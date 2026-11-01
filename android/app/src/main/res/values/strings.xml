@@ -329,6 +329,7 @@
     <string name="st_kicked_relogin">账号已在别处登录，请重新登录</string>
     <string name="toast_need_email">先填邮箱</string>
     <string name="st_code_sent">验证码已发送到邮箱</string>
+    <string name="st_code_mail_sent">验证码已发到 %1$s，10 分钟内有效</string>
     <string name="st_code_dev">验证码：%1$s（开发环境直接返回）</string>
     <string name="st_code_failed">获取验证码失败：%1$s</string>
     <string name="st_need_agree_links">请先阅读并同意《用户协议》与《录音与隐私政策》</string>
@@ -568,6 +569,12 @@
     <string name="srv_unauthorized">共享密钥不对，检查「服务器设置」里那串</string>
     <string name="srv_too_many">操作太频繁，稍等一下再试</string>
     <string name="srv_code_wrong">验证码不对或已过期，重新获取一个</string>
+    <!-- 5.17：发码加了 60 秒间隔；配了 SMTP 时验证码会真的发到邮箱 -->
+    <string name="srv_code_too_frequent">验证码发得太频繁了，请稍后再试</string>
+    <string name="srv_code_sent_mail">验证码已发到邮箱，10 分钟内有效</string>
+    <string name="srv_code_mail_failed">邮件没发出去（服务器发件配置可能有问题），请联系管理员</string>
+    <string name="srv_code_no_smtp">服务器没有配置邮件服务：请联系管理员配置 SMTP</string>
+    <string name="srv_code_wait">请 %1$d 秒后再试</string>
     <string name="srv_code_on_console">验证码已经打印在电脑端的 relay 控制台上</string>
     <string name="srv_user_taken">这个用户名已经被注册了，换一个或者直接去登录</string>
     <string name="srv_user_empty">用户名不能为空</string>

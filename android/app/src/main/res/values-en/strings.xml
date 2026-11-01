@@ -42,6 +42,7 @@
     <string name="st_kicked_relogin">This account signed in elsewhere, please sign in again</string>
     <string name="toast_need_email">Enter your email first</string>
     <string name="st_code_sent">Code sent to your email</string>
+    <string name="st_code_mail_sent">Code sent to %1$s, valid for 10 minutes</string>
     <string name="st_code_dev">Code: %1$s (returned directly in dev builds)</string>
     <string name="st_code_failed">Could not get a code: %1$s</string>
     <string name="st_need_agree_links">Please accept the User Agreement and the Recording and Privacy Policy first</string>
@@ -272,6 +273,11 @@ If you do not want to be recorded, do not tap Start. To delete records on the ph
     <string name="srv_unauthorized">Wrong shared key, check the one in Server settings</string>
     <string name="srv_too_many">Too many attempts, wait a moment</string>
     <string name="srv_code_wrong">The code is wrong or expired, request a new one</string>
+    <string name="srv_code_too_frequent">Too many code requests, please wait a bit</string>
+    <string name="srv_code_sent_mail">Code sent to your email, valid for 10 minutes</string>
+    <string name="srv_code_mail_failed">The email could not be sent (the server mail settings may be wrong) — ask an administrator</string>
+    <string name="srv_code_no_smtp">The server has no mail service configured — ask an administrator to set up SMTP</string>
+    <string name="srv_code_wait">Please try again in %1$d s</string>
     <string name="srv_code_on_console">The code was printed on the relay console on the computer</string>
     <string name="srv_user_taken">That username is taken, pick another one or sign in</string>
     <string name="srv_user_empty">The username cannot be empty</string>

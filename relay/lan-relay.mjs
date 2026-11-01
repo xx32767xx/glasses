@@ -58,6 +58,7 @@ import {
   ACCOUNT_LIMITS, hasAccounts, issueCode, loadAccounts, login, recordOf, registerWithEmail, revokeToken,
   roleOf, saveAccounts, userForToken, verifyCode,
 } from '../lib/accounts.mjs'
+import { describeMailConfig, sendMail, smtpConfigFromEnv } from '../lib/mail.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
 
@@ -2110,24 +2111,66 @@ export async function startRelay(rawOptions = {}) {
         return
       }
 
-      // ── 邮箱 + 验证码（docs/19）：管理员/用户都用这一条路 ─────────────────────
+      // ── 邮箱 + 验证码（docs/19）：注册/登录用这一条路 ────────────────────────
       //
-      // 本地工具，不接邮件服务：验证码**打印在 relay 的控制台**上。
-      // 局域网模式下也把码回给调用方（否则没有邮件通道就没法登录），
-      // 但 --public 模式**不回**（公网绝不能在响应里带码）。
+      // 5.17：**真的要发邮件**。以前这里只把验证码打印在电脑控制台，
+      // 而公网模式（`--public`）响应里又不带码 —— 于是手机上永远是"发不出去"。
+      // 现在：配了 SMTP 就发邮件（码只发给邮箱，响应里绝不带）；
+      // 没配 SMTP 就退回老行为（控制台打印 + 局域网模式把码回给调用方），并**说清楚没配**。
+      //
+      // 另外加了"同一邮箱 60 秒只能发一次"（`issueCode` 里判，靠库里的 issuedAt，
+      // 重启不会绕过）。
       if (request.method === 'POST' && url.pathname === '/auth/code') {
         const body = await readBody(request)
         const doc = await loadAccounts(options.dataDir)
         const issued = issueCode(doc, String(body.email ?? ''))
         if (issued.ok !== true) {
+          if (issued.code === 'too-frequent') {
+            const retryAfterSec = Math.max(1, Math.ceil(Number(issued.retryAfterMs ?? 0) / 1000))
+            // `error` 放**机器码**（与本文件其它接口一致：`error` 是码、`hint` 是人话），
+            // 秒数单独给 `retryAfterSec`，手机自己拼成"请 N 秒后再试"。
+            // ⚠️ 这里**不能**再放一个叫 `code` 的字段：成功响应里 `code` 是六位验证码，
+            //    两个含义挤在一个名字里，客户端迟早读错（5.10 的 `speaker` 就是这么翻车的）。
+            send(response, 429, {
+              ok: false, error: 'too-frequent', hint: issued.error, retryAfterSec,
+            })
+            return
+          }
           send(response, 400, { ok: false, error: 'bad-email', hint: issued.error })
           return
         }
         await saveAccounts(options.dataDir, issued.doc)
-        console.log(`[账户] 给 ${body.email} 的验证码：${issued.code}（10 分钟有效）`)
+        const to = String(body.email ?? '').trim()
+        // 配了 SMTP 就发真邮件；没配就退回"打印到控制台"
+        const mailConfig = options.mailConfig ?? smtpConfigFromEnv()
+        if (mailConfig !== null) {
+          const sent = await sendMail({
+            to,
+            subject: '你的验证码 · 译连 TransLink',
+            text: `你的验证码是 ${issued.code}\n\n10 分钟内有效，只用于这一次注册/登录。\n如果不是你本人操作，忽略这封邮件即可。`,
+          }, { config: mailConfig })
+          if (sent.ok !== true) {
+            // 发不出去要**如实失败**，别让用户对着"已发送"干等
+            debug(`[账户] 发验证码邮件失败（${describeMailConfig(mailConfig)}）：${sent.error}`)
+            send(response, 502, {
+              ok: false, error: 'mail-failed',
+              hint: `邮件没发出去：${sent.error}`,
+            })
+            return
+          }
+          debug(`[账户] 验证码已发到 ${to}（${describeMailConfig(mailConfig)}）`)
+          send(response, 200, { ok: true, sent: true, hint: '验证码已发到邮箱，10 分钟内有效' })
+          return
+        }
+        // 没配邮件：老行为（控制台打印；局域网模式把码回给调用方，公网模式不回）
+        console.log(`[账户] 给 ${to} 的验证码：${issued.code}（10 分钟有效）`
+          + `  ⚠️ 没配 SMTP（LEION_SMTP_HOST/USER/PASS），所以只能打印在这里`)
         send(response, 200, {
           ok: true,
-          hint: '验证码已打印在电脑端的 relay 控制台',
+          sent: false,
+          hint: options.public === true
+            ? '服务器没有配置邮件服务：请联系管理员配置 SMTP，或从电脑控制台取验证码'
+            : '验证码已打印在电脑端的 relay 控制台',
           ...(options.public === true ? {} : { code: issued.code }),
         })
         return

@@ -43,6 +43,9 @@ node scripts/start-multi.mjs           # 一个转发 + 每场一个「切句」
                                        # --depth-report-s 10 更勤地报队列深度 / --dry-run 先看会起什么
 node scripts/build-apk.mjs             # 构建安卓 App → android/README.md 有完整步骤
 node scripts/test-account.mjs          # 备好测试账户 + 预置热词表（验证热词表/账户时用）
+node scripts/check-mail.mjs --to you@example.com   # **注册验证码的邮件通道冒烟**
+                                       # 先看配置、再真连真发；失败时打印脱敏后的 SMTP 对话
+                                       # 服务器上"验证码发不出去"时第一步就查它
 node scripts/terms-admin.mjs --help    # 术语库 / 申请审批 / 会议快照（管理员建库→用户申请→审批→快照）
                                        # 先 --env test 跑一遍：生产与测试两套数据，永不互串
 node scripts/terms-ui.mjs --env test   # 术语库演示台（本机网页 http://127.0.0.1:8789）
@@ -67,6 +70,31 @@ node scripts/fake-phone.mjs --wav var/audio/zh/short-16k.wav --url http://127.0.
 
 想立刻在 harness 里看到 7 个眼镜工具 → 看 [`docs/02-创造模式加载指南.md`](docs/02-创造模式加载指南.md)。
 **要点：必须新建一个「创造模式」会话**（已产出内容的会话不能切 preset）。
+
+---
+
+## 邮件（注册/登录的验证码）
+
+注册要"邮箱 + 用户名 + 密码 + 验证码"，验证码靠**邮件**送到用户手上。
+服务器必须配好 SMTP，否则验证码只会打印在 relay 控制台（公网模式下手机拿不到 → **"发不出去"**）。
+
+```bash
+export LEION_SMTP_HOST=smtp.qq.com      # 任意 SMTP 服务
+export LEION_SMTP_PORT=465              # 465=隐式 TLS；587=STARTTLS
+export LEION_SMTP_USER=you@qq.com       # 登录用户名
+export LEION_SMTP_PASS=授权码            # ⚠️ QQ/163 是"授权码"，不是登录密码
+export LEION_SMTP_FROM=you@qq.com       # 发件人（缺省 = 用户名；必须与登录名同域）
+# 可选：LEION_SMTP_SECURE=1 / LEION_SMTP_STARTTLS=1 / LEION_SMTP_FROM_NAME='译连 TransLink'
+
+node scripts/check-mail.mjs --to you@example.com   # 先冒烟：配置对不对、能不能真发
+```
+
+这些变量要写进 **relay 的启动环境**（`systemd` 的 `Environment=` 或启动脚本里的 `export`），
+只在一个终端里 export 是不够的 —— 重开就没了。
+
+- 同一邮箱 **60 秒只能发一次**（`issueCode()` 里判，靠库里那条 `issuedAt`，**重启不会绕过**）；
+- 配了 SMTP 时响应里**不带验证码**（码只发给邮箱）；没配 SMTP 时退回"打印到控制台 + 局域网模式回码"；
+- 邮件发不出去 → `/auth/code` 回 **502 mail-failed**（不假装已发送），手机上显示"邮件没发出去"。
 
 ---
 
