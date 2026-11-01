@@ -1163,42 +1163,57 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('标注说清了它是参考实现', /参考实现/.test(main))
   })
 
-  await it('集成契约文档：翻译官只需接入入口与登录态（2026-10-29 重写 v2）', () => {
+  await it('集成契约 v3：能力并入主 App（采集→ASR 后端→翻译+播报），两种 ASR 同形状', () => {
     const doc = readFileSync(join(ROOT, 'docs', '23-集成契约.md'), 'utf-8')
 
-    // ① 前提必须写清：对面已有完整流程，接入不改他们的管线
-    check('写明了对面已有完整流程', /已经是一个完整流程/.test(doc))
-    check('写明了不改他们的阿里云管线', /阿里云/.test(doc) && /不改/.test(doc))
+    // ① 前提必须写清：v2 那套"他们独立成 App、我们只交入口"已经作废
+    check('写明了旧前提作废', /前提已经作废|前提已变|v2（2026-10-29）/.test(doc), '没交代前提变更')
+    check('写明了能力并入我们的 App、UI 用纯 Java 重做',
+      /能力并入我们的 App/.test(doc) && /纯 Java/.test(doc))
+    check('写明了密钥一律在服务器', /密钥一律在服务器/.test(doc))
+    check('写明了音色克隆要删、播报保留', /音色克隆要删掉|音色克隆删除/.test(doc) && /播报保留/.test(doc))
 
-    // ② 接入形态与入口约定（三种形态 + extras 字段表）
-    check('给了三种接入形态', /形态 A: /.test(doc.replace('**形态 A:', '**形态 A: '))
-      || (/三种接入形态/.test(doc) && /A\. 同一 App 内模块/.test(doc)
-        && /B\. 独立 App/.test(doc) && /C\. 独立 App/.test(doc)))
-    for (const key of ['host', 'secret', 'token', 'user', 'role', 'uiLang', 'speakLang']) {
-      check(`交接的 extras 里有 ${key}`, doc.includes(key), key)
+    // ② 三段式：谁也不许跨段猜
+    for (const layer of ['AudioCaptureArbiter', 'ASR 后端', '播报']) {
+      check(`三段式里写了 ${layer}`, doc.includes(layer), layer)
     }
-    check('说清了为什么不让他们读我们的 prefs',
-      doc.includes('SharedPreferences'), 'SharedPreferences')
+    check('采集侧引用了已实现的仲裁器与"抢不到说人话"',
+      /request\(OWNER_INTERPRETER\)/.test(doc) && /正在录音，请稍后再试/.test(doc))
+    check('采集侧要求退到后台也释放（不偷偷录音）', /onStop/.test(doc) && /release/.test(doc))
 
-    // ③ 历史记录默认不写（选项增强）—— 这是这一版最重要的变化
-    check('历史记录降级为可选', /可选增强/.test(doc))
-    check('写明了“不做这条也算接入完成”', /接入照样算完成/.test(doc))
-    check('可选方案是一次提交整场（不逐句上报）',
-      doc.includes('POST /org/history/interpreter') && /一次提交整场/.test(doc))
-
-    // ④ 不许碰的端点清单
-    check('写了不要碰的端点', /不要碰/.test(doc)
-      && doc.includes('POST /audio') && doc.includes('GET /frame'))
-    check('写了不参与发言权', /floor/.test(doc))
-
-    // ⑤ 联调清单里必须有“没装/没接上不崩”与“返回后登录态还在”
-    check('强调了拉不起来要兜住', /不是崩溃/.test(doc))
-    check('强调了返回后登录态不变', /登录态还在/.test(doc))
-
-    // ⑥ 待拍板与演进规则
-    for (const needed of ['per-label', '待拍板', '只做加法']) {
-      check(`契约里写了 ${needed}`, doc.includes(needed), needed)
+    // ③ 两种 ASR 后端：事件形状固定、实现可换
+    for (const event of ["type: 'ready'", "type: 'partial'", "type: 'final'", "type: 'error'"]) {
+      check(`事件里有 ${event}`, doc.includes(event), event)
     }
+    check('两种后端都写了（本地 whisper / 云端 fun-asr）',
+      /本地 whisper/.test(doc) && /fun-asr/.test(doc))
+    check('说清了本地那条**没有** partial（说完才出整句）', /没有.*partial|partial.*没有/.test(doc))
+    check('云端那条要服务器配 Key（不进 APK）',
+      /DASHSCOPE_API_KEY/.test(doc) && /ASR_WORKSPACE_ID/.test(doc))
+    check('说清了切换只换后端、UI/翻译/播报/采集复用', /只换后端|只换.*后端/.test(doc))
+
+    // ④ 翻译契约：建议走我们自己的链路（术语一致性是硬理由）
+    check('翻译建议走 DeepSeek + 术语注入', /DeepSeek/.test(doc) && /术语/.test(doc))
+    check('给了一致性理由（两个页面译名不能不同）', /两种译名|译名不同/.test(doc))
+
+    // ⑤ 播报规则（他们踩过坑的产品经验，照抄）
+    for (const rule of ['禁手机外放', '过期不播', '积压丢弃', '暂停采集', '切块']) {
+      check(`播报规则里有 ${rule}`, doc.includes(rule) || doc.includes(rule.replace('禁手机外放', '只听耳机')), rule)
+    }
+    check('写了和实时传声二选一', /二选一/.test(doc))
+
+    // ⑥ 待拍板与对比口径（拍板要看数据，不看意见）
+    check('列了待拍板的 ASR 后端选择', /ASR 走\*\*本地 whisper\*\*/.test(doc))
+    check('列了历史记录进不进的问题', /记录进不进/.test(doc))
+    for (const metric of ['首字延迟', '错字率', '成本']) {
+      check(`对比口径里有 ${metric}`, doc.includes(metric), metric)
+    }
+
+    // ⑦ 版本门禁与仍然成立的老约定
+    check('写了版本门禁 426', doc.includes('426'))
+    check('写了我们自己的脚本报 tool 放行', /X-Leion-App: tool/.test(doc))
+    check('保留了"不碰房间/发言权"', /发言权/.test(doc))
+    check('保留了"术语库只读"', /只读/.test(doc))
   })
 
   await it('注册/登录页按原型：居中单列 + 品牌图标 + 语言胶囊 + 协议勾选（4.49）', () => {
