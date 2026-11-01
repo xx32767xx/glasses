@@ -2291,7 +2291,9 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('缺省就想听（会议里听得到别人是预期行为，不该每次手点）',
       /private boolean listenWanted = true;/.test(room))
     check('有一个统一的决定函数', /private void applyListenState\(\)/.test(room))
-    check('它按"想听而且此刻没在说话"决定', /boolean shouldPlay = listenWanted && !holding;/.test(room))
+    // 5.30 起多了一个让路条件：正在朗读译文时不放对方原声（方案 1 二选一）
+    check('它按"想听 + 没在说话 + 没在朗读"决定',
+      /boolean shouldPlay = listenWanted && !holding && !speakingTranslation;/.test(room))
     check('幂等（状态没变就不重启播放器、不重发消息）', /if \(shouldPlay == listening\)/.test(room))
     check('旧写法（一开口就永久关掉倾听）必须消失',
       // ⚠️ 必须**先剥注释**再查：那条旧写法在修完的代码里还出现在一段"为什么改"的注释里，

@@ -119,6 +119,17 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     private MicUploader mic;
     /** 4.76：实时传声——播放别人的声音。 */
     private RoomAudioPlayer audioPlayer;
+
+    /**
+     * 5.30：译文朗读。`ttsQueue` 是队列+策略（积压丢弃/过期不播），
+     * `TtsSpeaker` 负责合成与播放（耳机/眼镜优先、禁外放）。
+     *
+     * <p>开关在设置页（`ttsRead`，默认关）：默认开会让人以为"这功能自己会说话"，
+     * 而开会时耳机没戴好就会**拒绝朗读**并提示——第一次遇到没法预期。
+     */
+    private TtsQueue ttsQueue;
+    /** 此刻是否正在朗读（实时传声据此让路，见 applyListenState）。 */
+    private boolean speakingTranslation = false;
     // 4.97：「正在听」胶囊按钮已删除（倾听全自动），所以不再需要这个引用
     /** 我是不是正在听（与服务端的 listen 开关保持一致）。 */
     private boolean listening = false;
@@ -289,6 +300,27 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // 4.76 的实时传声播放器；4.97 起**没有**手动开关（那颗胶囊已从底部删掉）——
         // 倾听全自动：进房间就听、自己说话时暂停防回声、说完恢复、重连重新订阅（见 applyListenState）。
         audioPlayer = new RoomAudioPlayer();
+        // 5.30：译文朗读（默认关，设置页开）。朗读时**暂停实时传声**（见 applyListenState）。
+        ttsQueue = new TtsQueue(new TtsSpeaker(this));
+        ttsQueue.setListener(new TtsQueue.Listener() {
+            @Override
+            public void onSpeaking(String text, boolean speaking) {
+                ui.post(() -> {
+                    speakingTranslation = speaking;
+                    if (hintLine != null && speaking) hintLine.setText(getString(R.string.st_tts_speaking));
+                    applyListenState();
+                });
+            }
+
+            @Override
+            public void onProblem(String message) {
+                ui.post(() -> {
+                    if (hintLine != null) hintLine.setText(message);
+                });
+            }
+        });
+        ttsQueue.setEnabled(getSharedPreferences("leion", MODE_PRIVATE)
+                .getBoolean("ttsRead", false));
         // 隐藏的「开始同传」：原型里没有它，开麦即开始上传；这里只留一个落点备用
         micUploadButton.setOnClickListener(v -> toggleMic());
         updateUploadButton();
@@ -318,6 +350,11 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     protected void onDestroy() {
         // 5.28：退出房间的**唯一**音频收口（见 releaseAudio 的说明）
         releaseAudio();
+        // 5.30：朗读引擎也要放掉（否则 TTS 服务会跟着进程活很久）
+        if (ttsQueue != null) {
+            ttsQueue.shutdown();
+            ttsQueue = null;
+        }
         timerRunning = false;
         stopDrawerRefresh();
         if (floorSocket != null) {
@@ -373,7 +410,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         if (getWindow() != null) {
             getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         }
-        // ④ 输出侧：实时传声也属于"音频资源"，一起放掉
+        // ④ 输出侧：实时传声与播报都属于"音频资源"，一起放掉
+        if (ttsQueue != null) ttsQueue.stop();
         if (audioPlayer != null) {
             audioPlayer.stop();
         }
@@ -752,7 +790,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
      * 只剩"放还是不放"这一个决定。要临时静音直接把系统音量按下去即可。
      */
     private void applyListenState() {
-        boolean shouldPlay = listenWanted && !holding;
+        // 5.30：正在朗读译文时**不放对方原声**（方案 1 二选一）。
+        // 两条一起放，听到的是"葡语原声 + 中文朗读"叠在一起，谁说的话都听不清。
+        boolean shouldPlay = listenWanted && !holding && !speakingTranslation;
         if (shouldPlay == listening) return;
         listening = shouldPlay;
         if (floorSocket != null) floorSocket.sendListen(shouldPlay);
@@ -891,6 +931,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     }
 
     private void startUpload(MicUploader.Listener listener) {
+        // 5.30：**要说话就别再念译文**。否则自己的 TTS 被自己的麦克风录进去，
+        // 识别出"译文的中文"，再翻译一遍 —— 一个自激循环（他们用 asrSuspendedForTts 处理同一件事）。
+        if (ttsQueue != null) ttsQueue.stop();
         // 5.28：**先向仲裁器申请麦克风**。手机上录音会话是整机一份的资源，
         // 翻译官/眼镜那边可能正占着；抢不到就当场说清楚，绝不"看着开了麦、其实一句没录"。
         String denied = AudioCaptureArbiter.request(AudioCaptureArbiter.OWNER_ROOM);
@@ -1438,6 +1481,13 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         }
         renderSegment(target == null ? "" : target, source == null ? "" : source, partial,
                 speakerName == null ? "" : speakerName.trim(), frameLang);
+        // 5.30：**定稿译文**才朗读（增量帧是半句话，念出来很怪）。
+        // 只念"我读的那一门语言"的译文 —— 上面已经过滤过帧语言，这里再要求有内容。
+        // echo 帧（原文）不会走到这里：它按源语言分发，而 hearLang 是我的语言；
+        // 万一同语言房间收到 echo，它的 text 也是空的，两句条件都挡住。
+        if (!partial && ttsQueue != null && !target.isEmpty()) {
+            ttsQueue.offer(target, frameLang.isEmpty() ? hearLang : frameLang);
+        }
         if (partial) {
             hintLine.setText(getString(R.string.st_generating));
         } else if (termsMissing != null && termsMissing.length > 0) {

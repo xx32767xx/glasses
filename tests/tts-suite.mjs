@@ -1,0 +1,147 @@
+/**
+ * tts-suite.mjs —— 译文朗读（TTS）这一层的门禁（5.30）
+ * ============================================================================
+ * 这一层的风险不在"能不能出声"，而在**出声的时机与场合**：
+ *   · 会议里外放 = 隐私 + 自己回收自己的译文（自激循环）；
+ *   · 攒了十几句还逐句念 = 用户听到的是半分钟前的话；
+ *   · 关掉开关却还在念最后一句 = "我明明关了"。
+ * 所以这里钉的是**策略**，不是音质。
+ *
+ * `TtsChunker` 是纯函数，直接编译执行（本仓库第一个可执行 Java 测试）；
+ * 没有 JDK 的机器上那条用例会**明确打印跳过**，不静默算过。
+ */
+
+import { execFileSync } from 'node:child_process'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { VAR_DIR } from '../lib/paths.mjs'
+
+const ROOT = join(import.meta.dirname, '..')
+const JAVA_SRC = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+
+export async function runTtsSuite({ it, check }) {
+  const chunker = join(JAVA_SRC, 'TtsChunker.java')
+  const checkSrc = join(ROOT, 'tests', 'java', 'TtsChunkerCheck.java')
+  const speaker = join(JAVA_SRC, 'TtsSpeaker.java')
+  const queue = join(JAVA_SRC, 'TtsQueue.java')
+  const room = join(JAVA_SRC, 'RoomActivity.java')
+  const settings = join(JAVA_SRC, 'SettingsActivity.java')
+
+  await it('TtsChunker 是纯逻辑，规则靠**跑起来**验证（不是靠看）', async () => {
+    const { readFileSync } = await import('node:fs')
+    const source = readFileSync(chunker, 'utf-8')
+    // 纯函数：不许依赖 Android（否则没法在 CI 上跑）
+    check('不 import android.*', /import\s+android\./.test(source) === false,
+      'TtsChunker 必须能在没有 Android SDK 的机器上编译执行')
+    // 静态兜底：阈值与规则必须在（执行用例跑不了时，至少形状是钉住的）
+    check('中文上限 80 字 / 西文 100 字', /MAX_CHARS_CJK = 80/.test(source)
+      && /MAX_CHARS_OTHER = 100/.test(source))
+    check('碎片合并阈值（中文 6 / 西文 14）', /MIN_CHARS_CJK = 6/.test(source)
+      && /MIN_CHARS_OTHER = 14/.test(source))
+    check('硬上限 8 块', /MAX_CHUNKS = 8/.test(source))
+    check('认句末标点（中英文）', /\\u3002/.test(source) && /isLatinPeriod/.test(source))
+    check('半角句点有小数/缩写的守卫', /Character\.isDigit\(text\.charAt\(next\)\)/.test(source))
+
+    // 找 JDK：没有就明确跳过（不算通过）
+    let javacOk = true
+    try {
+      execFileSync('javac', ['-version'], { stdio: 'ignore' })
+    } catch (error) {
+      javacOk = false
+      if (error && error.code === 'EPERM') {
+        console.log('  ⏭ 这个沙箱不允许 Node 起子进程（javac EPERM），跳过可执行用例。')
+        console.log('    在普通终端里跑一次即可验证：node tests/tts-suite.mjs')
+        return
+      }
+    }
+    if (!javacOk) {
+      console.log('  ⏭ 这台机器没有 javac，跳过可执行的 Java 用例（TtsChunkerCheck）')
+      return
+    }
+    const out = join(VAR_DIR, 'test', 'tts-chunker')
+    rmSync(out, { recursive: true, force: true })
+    mkdirSync(out, { recursive: true })
+    execFileSync('javac', ['-encoding', 'UTF-8', '-d', out, chunker, checkSrc], { stdio: 'ignore' })
+    // ⚠️ 不能用管道接输出：受限沙箱里 `spawn` + 管道会 EPERM。
+    //    改成把 stdout/stderr 重定向到文件再读 —— 这条在普通终端与沙箱里都能跑。
+    const logPath = join(out, 'check.log')
+    const fd = openSync(logPath, 'w')
+    try {
+      execFileSync('java', ['-Dstdout.encoding=UTF-8', '-Dstderr.encoding=UTF-8',
+        '-cp', out, 'TtsChunkerCheck'], { stdio: ['ignore', fd, fd] })
+    } catch {
+      // 断言失败会以非零退出：报告已经写进文件，底下按内容判
+    } finally {
+      closeSync(fd)
+    }
+    const report = readFileSync(logPath, 'utf-8')
+    check('切块规则全部通过（空输入/切句/装箱/合并/硬上限/小数点不切）',
+      /passed=\d+ failed=0/.test(report) && /passed=17/.test(report), report.trim().slice(-200))
+  })
+
+  await it('TtsSpeaker：耳机/眼镜优先、禁外放、借了焦点要还', async () => {
+    const { readFileSync } = await import('node:fs')
+    const source = readFileSync(speaker, 'utf-8')
+    // 只看代码，不看注释（注释里会提到"刻意不返回 TYPE_BUILTIN_SPEAKER"）
+    const code = source.split('\n').filter((line) => {
+      const t = line.trim()
+      return t.startsWith('*') === false && t.startsWith('//') === false && t.startsWith('/*') === false
+    }).join('\n')
+    check('先合成到文件再播（否则设不了输出设备）',
+      /synthesizeToFile\(/.test(code) && /setPreferredDevice\(/.test(code))
+    check('只挑近耳输出：USB/有线/蓝牙', /TYPE_USB_HEADSET/.test(code)
+      && /TYPE_WIRED_HEADPHONES/.test(code) && /TYPE_BLUETOOTH_A2DP/.test(code))
+    check('**不返回**内置扬声器（会议里禁止外放）',
+      /TYPE_BUILTIN_SPEAKER/.test(code) === false, '出现内置扬声器 = 可能外放')
+    check('没有耳机时如实拒绝，并说清原因',
+      /没有耳机或眼镜/.test(source))
+    check('申请音频焦点后一定还回去（借了不还是幽灵 bug 的来源）',
+      /abandonAudioFocusRequest/.test(code))
+    check('stop() 幂等且能打断在播的那块', /public void stop\(\)/.test(code)
+      && /playbackLatch/.test(code))
+  })
+
+  await it('TtsQueue：积压丢弃、过期不播、关掉立刻闭嘴', async () => {
+    const { readFileSync } = await import('node:fs')
+    const source = readFileSync(queue, 'utf-8')
+    check('队列上限 3 句', /MAX_PENDING = 3/.test(source))
+    check('超过 12 秒的译文不再念', /MAX_AGE_MS = 12_000L/.test(source))
+    check('积压时丢**最旧**的（不是丢新的）', /while \(pending\.size\(\) >= MAX_PENDING\)/.test(source))
+    check('过时判断在**出队时**做（排队时还算新，轮到时可能已经过时）',
+      /long age = System\.currentTimeMillis\(\) - item\.at/.test(source))
+    check('关掉开关立刻停并清空', /public void setEnabled\(boolean value\)[\s\S]{0,200}?stop\(\)/.test(source))
+    check('用代次作废在途任务（否则"关了还在念最后一句"）',
+      /generation \+= 1/.test(source) && /generation != recordedGeneration/.test(source))
+  })
+
+  await it('接线：只念定稿译文，说话时闭嘴，朗读时让出实时传声', async () => {
+    const { readFileSync } = await import('node:fs')
+    const source = readFileSync(room, 'utf-8')
+    check('只对**定稿**帧入队（增量帧是半句，念出来很怪）',
+      /if \(!partial && ttsQueue != null && !target\.isEmpty\(\)\)/.test(source))
+    check('入队带语言（按目标语言选发音）', /ttsQueue\.offer\(target, frameLang/.test(source))
+    check('要说话就先停朗读（否则自己的译文被自己录回去）',
+      /private void startUpload\(MicrophoneListener|private void startUpload\(MicUploader\.Listener listener\) \{\s*\/\/[^\n]*\n(\s*\/\/[^\n]*\n)*\s*if \(ttsQueue != null\) ttsQueue\.stop\(\);/.test(source))
+    check('朗读时**暂停对方原声**（方案 1 二选一）',
+      /boolean shouldPlay = listenWanted && !holding && !speakingTranslation/.test(source))
+    check('releaseAudio 也把朗读停掉', /releaseAudio[\s\S]{0,700}?ttsQueue\.stop\(\)/.test(source))
+    check('离开房间释放朗读引擎', /onDestroy[\s\S]{0,400}?ttsQueue\?\.?|ttsQueue\.shutdown\(\)/.test(source)
+      || /ttsQueue\.shutdown\(\)/.test(source))
+    check('开关来自设置页（默认关）',
+      /getBoolean\("ttsRead", false\)/.test(source))
+    const settingsSource = readFileSync(settings, 'utf-8')
+    check('设置页能改这个开关', /setAppTtsRead/.test(settingsSource)
+      && /putBoolean\("ttsRead"/.test(settingsSource))
+  })
+
+  await it('三语文案齐全（朗读开关 + 正在朗读）', async () => {
+    const { readFileSync } = await import('node:fs')
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    for (const dir of ['values', 'values-en', 'values-pt-rBR']) {
+      const xml = readFileSync(join(resDir, dir, 'strings.xml'), 'utf-8')
+      for (const key of ['set_tts_read', 'set_tts_read_hint', 'st_tts_on', 'st_tts_off', 'st_tts_speaking']) {
+        check(`${key} 在 ${dir} 里有`, new RegExp(`name="${key}"`).test(xml))
+      }
+    }
+  })
+}

@@ -41,6 +41,14 @@ public class SettingsActivity extends android.app.Activity {
     /** 5.00：英语也能当说话语言（中/英/葡任意两种互译）。 */
     private Button langEnButton;
     private Button proofreadButton;
+    /** 5.30：朗读译文开关（存 prefs 的 `ttsRead`，房间页读它）。 */
+    private Button ttsReadButton;
+
+    /** 开关按钮的外观：文字直说"现在是什么状态"，别只靠颜色。 */
+    private void applyTtsReadButton(boolean enabled) {
+        if (ttsReadButton == null) return;
+        ttsReadButton.setText(getString(enabled ? R.string.st_tts_on : R.string.st_tts_off));
+    }
     /** 界面语言（4.56）：只换界面文字，与上面那两颗「我说话用什么语言」无关。 */
     private Button uiLangZhButton;
     private Button uiLangPtButton;
@@ -98,6 +106,17 @@ public class SettingsActivity extends android.app.Activity {
         langPtButton.setOnClickListener(v -> setSpeakLanguage("pt-BR"));
         langEnButton.setOnClickListener(v -> setSpeakLanguage("en-US"));
         proofreadButton.setOnClickListener(v -> toggleProofread());
+        // 5.30：朗读译文（默认关；房间页据此决定要不要念）
+        ttsReadButton = findViewById(R.id.setAppTtsRead);
+        applyTtsReadButton(prefs.getBoolean("ttsRead", false));
+        ttsReadButton.setOnClickListener(v -> {
+            boolean next = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("ttsRead", false) == false;
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean("ttsRead", next).apply();
+            applyTtsReadButton(next);
+            String message = getString(next ? R.string.st_tts_on : R.string.st_tts_off);
+            status.setText(message);
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+        });
         findViewById(R.id.setAppPrivacy).setOnClickListener(v ->
                 startActivity(new android.content.Intent(this, PrivacyActivity.class)));
         findViewById(R.id.setAppClearRecords).setOnClickListener(v -> clearRecords());

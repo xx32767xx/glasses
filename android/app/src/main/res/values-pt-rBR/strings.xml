@@ -55,6 +55,11 @@
     <string name="update_retrying">Verificando a versão novamente…</string>
     <string name="srv_client_outdated">Versão do aplicativo muito antiga, instale a versão mais recente</string>
     <string name="st_audio_released">Saiu do primeiro plano — microfone liberado (toque no microfone para retomar)</string>
+    <string name="st_tts_speaking">Lendo a tradução em voz alta…</string>
+    <string name="set_tts_read">Ler a tradução em voz alta</string>
+    <string name="set_tts_read_hint">Com fone ou óculos, a tradução é falada para você. Sem fone nada sai pelo alto-falante. Enquanto lê, a voz do outro lado pausa.</string>
+    <string name="st_tts_on">Leitura da tradução ativada (precisa de fone ou óculos)</string>
+    <string name="st_tts_off">Leitura da tradução desativada</string>
     <string name="st_code_failed">Falha ao obter o código: %1$s</string>
     <string name="st_need_agree_links">Aceite primeiro o Contrato do Usuário e a Política de Gravação e Privacidade</string>
     <string name="toast_need_agree">Marque primeiro as caixas de aceite</string>

@@ -48,6 +48,7 @@ import { runPurgeHistorySuite } from './purge-history-suite.mjs'
 import { runEnglishSuite } from './english-suite.mjs'
 import { runDiscoverSuite } from './discover-suite.mjs'
 import { runAndroidOrderSuite } from './android-order-suite.mjs'
+import { runTtsSuite } from './tts-suite.mjs'
 import { runAsrPackSuite } from './asr-pack-suite.mjs'
 import { runLive } from './live/run.mjs'
 
@@ -174,6 +175,12 @@ await runBridgeSuite(helpers)
 
 heading('安卓侧静态检查（顺序：先构造、再使用）')
 await runAndroidOrderSuite(helpers)
+
+// ── 4c. 译文朗读（TTS）：策略比音质重要 ────────────────────────────────────
+// 风险不在"能不能出声"，而在"出声的时机与场合"：外放、念半分钟前的话、
+// 关掉了还在念、自己的译文被自己录回去。切块器是纯函数，直接编译执行。
+heading('译文朗读（切块 / 耳机优先 / 过期不播 / 关掉立刻闭嘴）')
+await runTtsSuite(helpers)
 
 // ── 5. 局域网转发（手机 ↔ 电脑） ────────────────────────────────────────────
 

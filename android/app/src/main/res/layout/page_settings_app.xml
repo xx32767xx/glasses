@@ -224,6 +224,32 @@
             android:textColor="@color/ink"
             android:background="@drawable/tap_btn_secondary" />
 
+        <!-- ── 朗读（5.30）────────────────────────────────────────────── -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_section"
+            android:text="@string/set_tts_read"
+            android:textColor="@color/ink"
+            android:textSize="@dimen/text_title"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/set_tts_read_hint"
+            android:textColor="@color/ink_soft"
+            android:textSize="@dimen/text_secondary" />
+
+        <Button
+            android:id="@+id/setAppTtsRead"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/height_field"
+            android:layout_marginTop="@dimen/space_gap_tiny"
+            android:text="@string/st_tts_off"
+            android:textColor="@color/ink"
+            android:background="@drawable/tap_btn_secondary" />
+
         <!-- ── 隐私 ──────────────────────────────────────────────────── -->
         <TextView
             android:layout_width="match_parent"
