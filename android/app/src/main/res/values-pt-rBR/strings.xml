@@ -15,6 +15,7 @@
     <string name="home_hint_user">Usuário</string>
     <string name="home_hint_email">E-mail (primeira vez: cadastro com código)</string>
     <string name="home_send_code">Enviar código</string>
+    <string name="home_send_code_wait">Reenviar (%1$d)</string>
     <string name="home_hint_code">Código do e-mail</string>
     <string name="home_hint_pass">Senha</string>
     <string name="home_hint_pass_set">Definir uma senha</string>

@@ -571,6 +571,35 @@ export async function runAndroidOrderSuite({ it, check }) {
     }
   })
 
+  await it('5.18：60 秒冷却要**看得见**（按钮上倒计时，不是一个点不动的灰按钮）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const home = readFileSync(join(javaDir, 'HomeActivity.java'), 'utf-8')
+
+    check('用 CountDownTimer 而不是自己拿 Handler 拼（后者每条都要记得 cancel）',
+      /new CountDownTimer\(/.test(home) && /codeCooldown\.cancel\(\)/.test(home))
+    check('倒计时写在**按钮文字**上（顺带禁用）',
+      /sendCodeButton\.setText\(getString\(R\.string\.home_send_code_wait/.test(home)
+      && /sendCodeButton\.setEnabled\(false\);/.test(home))
+    check('发出成功后就开始冷却', /startCodeCooldown\(CODE_COOLDOWN_SECONDS\)/.test(home))
+    check('429 时按**服务端给的** retryAfterSec 重建冷却（不是本地掐表）',
+      /startCodeCooldown\(seconds\)/.test(home)
+      && /optInt\("retryAfterSec", CODE_COOLDOWN_SECONDS\)/.test(home))
+    check('其它失败立刻放开按钮（别让人白等 60 秒才知道没发出去）',
+      /stopCodeCooldown\(\);\s*resetSendCodeButton\(\);/.test(home))
+    check('页面销毁时停掉计时器（否则往已销毁的 View 上写字）',
+      /protected void onDestroy\(\) \{[\s\S]{0,300}?stopCodeCooldown\(\);/.test(home))
+    check('冷却文案与"获取验证码"是两条（一个是动作、一个是等待）',
+      /name="home_send_code_wait"/.test(readFileSync(join(resDir, 'values', 'strings.xml'), 'utf-8')))
+    for (const dir of ['values', 'values-en', 'values-pt-rBR']) {
+      check(`home_send_code_wait 在 ${dir} 里有（%1$d 占位）`, (() => {
+        const xml = readFileSync(join(resDir, dir, 'strings.xml'), 'utf-8')
+        const m = xml.match(/<string name="home_send_code_wait">([^<]*)<\/string>/)
+        return m !== null && m[1].includes('%1$d')
+      })())
+    }
+  })
+
   await it('authWhoAmI 返回拆过包的正文（外壳会让"打开就判成没登录"，单会话下还顺带踢掉另一台）', () => {
     const source = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay',
       'LanClient.java'), 'utf-8')

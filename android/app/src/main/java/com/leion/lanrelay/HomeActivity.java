@@ -3,6 +3,7 @@ package com.leion.lanrelay;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
+import android.os.CountDownTimer;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
@@ -51,6 +52,19 @@ public class HomeActivity extends android.app.Activity {
     private TextView status;
     private Button loginButton;
     private Button sendCodeButton;
+
+    /**
+     * 验证码冷却（5.18）。服务端同一邮箱 60 秒只发一封，这个倒计时把那条规则**显示在按钮上** ——
+     * 用户点一下以后看到的是「重新发送 (52)」而不是一个点不动、也不说话的灰按钮。
+     *
+     * <p>为什么不由本地掐表决定能不能发：本地表只是"提示"，真正的判据在服务端。
+     * 所以 429 里带的 `retryAfterSec` 才是权威值（从服务端那次的 `issuedAt` 算出来的剩余秒数），
+     * 收到它就按它重建倒计时 —— 换设备、杀进程、断网重连都不会把冷却骗过去。
+     */
+    private CountDownTimer codeCooldown;
+    /** 服务端的发送间隔（与 lib/accounts.mjs 的 CODE_INTERVAL_MS 一致，仅用于提示）。 */
+    private static final int CODE_COOLDOWN_SECONDS = 60;
+
     /** 首页顶部问候（「晚上好，张三」）。 */
     private TextView greetingView;
     /** 问候下面那行摘要：界面语言 · 设备 · 在线状态。 */
@@ -434,6 +448,9 @@ public class HomeActivity extends android.app.Activity {
 
     @Override
     protected void onDestroy() {
+        // 5.18：冷却计时器必须跟着页面一起停 —— 它每秒都在改按钮文字，
+        // 页面没了还在改就是往已销毁的 View 上写。
+        stopCodeCooldown();
         if (sessionWatch != null) {
             sessionWatch.stop();
             sessionWatch = null;
@@ -463,7 +480,6 @@ public class HomeActivity extends android.app.Activity {
             final JSONObject result = unwrapLogin(body);
             final String failure = error;
             ui.post(() -> {
-                sendCodeButton.setEnabled(true);
                 if (result != null && result.optBoolean("ok", false)) {
                     String code = result.optString("code", "");
                     // 5.17：服务器可能**真的发了邮件**（`sent:true`），也可能只是把码打到控制台
@@ -476,18 +492,72 @@ public class HomeActivity extends android.app.Activity {
                     } else {
                         setStatus(getString(R.string.st_code_sent));
                     }
+                    // 5.18：发出去了就**在按钮上**显示冷却（「重新发送 (59)」），
+                    // 否则按钮立刻又能点，用户会连点三次然后撞上 429，还以为坏了。
+                    startCodeCooldown(CODE_COOLDOWN_SECONDS);
                     return;
                 }
-                // 429：发得太频繁 —— 直接把"还要等几秒"说出来（服务端给了 retryAfterSec）
+                // 429：发得太频繁 —— 直接把"还要等几秒"说出来（服务端给了 retryAfterSec），
+                // 并按服务端那个真实剩余时间重建倒计时（比本地掐表准，跨设备也一致）。
                 if ("too-frequent".equals(ServerText.codeOf(result))) {
-                    int wait = result.optInt("retryAfterSec", 60);
-                    setStatus(getString(R.string.srv_code_wait, Math.max(1, wait)));
+                    int wait = result.optInt("retryAfterSec", CODE_COOLDOWN_SECONDS);
+                    int seconds = Math.max(1, wait);
+                    setStatus(getString(R.string.srv_code_wait, seconds));
+                    startCodeCooldown(seconds);
                     return;
                 }
+                // 其它失败：立刻放开按钮（别让用户白等 60 秒才知道没发出去）
+                stopCodeCooldown();
+                resetSendCodeButton();
                 setStatus(getString(R.string.st_code_failed,
                         ServerText.from(this, result, failure)));
             });
         }, "home-code").start();
+    }
+
+    /**
+     * 开始冷却：按钮禁用，文字变成「重新发送 (59)」「重新发送 (58)」…
+     *
+     * <p>用 `CountDownTimer` 而不是 `Handler.postDelayed` 循环：后者每 1 秒要新建一个
+     * Runnable，页面销毁时漏掉一个就会往已销毁的 View 上写字（`NullPointerException`
+     * 或更糟的 `CalledFromWrongThread`）。Timer 一条 `cancel()` 全停。
+     */
+    private void startCodeCooldown(int seconds) {
+        stopCodeCooldown();
+        final int total = Math.max(1, seconds);
+        sendCodeButton.setEnabled(false);
+        sendCodeButton.setText(getString(R.string.home_send_code_wait, total));
+        codeCooldown = new CountDownTimer(total * 1000L, 1000L) {
+            @Override
+            public void onTick(long millisLeft) {
+                if (sendCodeButton == null) return;
+                // 往上取整：还剩 0.4 秒时显示 1（显示 0 会让人以为已经可以点了）
+                int left = (int) Math.ceil(millisLeft / 1000.0);
+                sendCodeButton.setText(getString(R.string.home_send_code_wait, Math.max(1, left)));
+            }
+
+            @Override
+            public void onFinish() {
+                codeCooldown = null;
+                resetSendCodeButton();
+            }
+        };
+        codeCooldown.start();
+    }
+
+    /** 停掉冷却（不发新码、也没在等的时候调用；可重复调用）。 */
+    private void stopCodeCooldown() {
+        if (codeCooldown != null) {
+            codeCooldown.cancel();
+            codeCooldown = null;
+        }
+    }
+
+    /** 按钮回到可点的「获取验证码」。 */
+    private void resetSendCodeButton() {
+        if (sendCodeButton == null) return;
+        sendCodeButton.setEnabled(true);
+        sendCodeButton.setText(R.string.home_send_code);
     }
 
     /** 规整服务器地址：没写协议就补 http://（`no protocol: /auth/login` 就是这么来的）。 */
