@@ -708,7 +708,8 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('进房间也查一次（可能从最近任务直接进来）',
       /checkAppVersion\(\)/.test(room) && /UpdateGuard\.check/.test(room))
     check('被拦时房间页停麦、停倾听、禁用按钮',
-      /被拦[\s\S]{0,400}?mic\.stop\(\)/.test(room) || /UpdateGuard\.check[\s\S]{0,400}?mic\.stop\(\)/.test(room))
+      /UpdateGuard\.check[\s\S]{0,400}?releaseAudio\(\)/.test(room)
+      || /releaseAudio\(\)[\s\S]{0,400}?micButton\.setEnabled\(false\)/.test(room))
     check('客户端有 /version 的调用', /public JSONObject appVersion\(String reportedVersion\)/.test(lan)
       && /"\/version"/.test(lan))
     for (const dir of ['values', 'values-en', 'values-pt-rBR']) {
@@ -716,6 +717,73 @@ export async function runAndroidOrderSuite({ it, check }) {
       for (const key of ['update_title', 'update_body_need', 'update_body_server_old', 'update_retry']) {
         check(`${key} 在 ${dir} 里有`, new RegExp(`name="${key}"`).test(xml))
       }
+    }
+  })
+
+  await it('5.28：麦克风只有一个出口（退出/后台都要释放，且不许两处同时录）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+    const arbiter = readFileSync(join(javaDir, 'AudioCaptureArbiter.java'), 'utf-8')
+    const uploader = readFileSync(join(javaDir, 'MicUploader.java'), 'utf-8')
+    const source = readFileSync(join(javaDir, 'AudioSource.java'), 'utf-8')
+    const legacy = readFileSync(join(javaDir, 'MainActivity.java'), 'utf-8')
+
+    // ① 房间页只有一个 releaseAudio() 出口
+    check('有 releaseAudio()（唯一的音频出口）', /private void releaseAudio\(\)/.test(room))
+    // 只数**代码行**：注释里提到 `mic.stop()`（解释旧写法）不算
+    const codeLines = room.split('\n').filter((line) => {
+      const t = line.trim()
+      return t.startsWith('*') === false && t.startsWith('//') === false && t.startsWith('/*') === false
+    })
+    const stopCalls = codeLines.join('\n').match(/mic\.stop\(\)/g)?.length ?? 0
+    check('房间页里 mic.stop() 只出现在那一个出口（不许散落在各处）',
+      stopCalls <= 1, `出现了 ${stopCalls} 次`)
+    // ② 所有退出路径都走它
+    check('onStop 也释放（按 Home / 锁屏不再偷偷录音）',
+      /protected void onStop\(\)[\s\S]{0,400}?releaseAudio\(\)/.test(room))
+    check('onDestroy 释放', /protected void onDestroy\(\)[\s\S]{0,300}?releaseAudio\(\)/.test(room))
+    for (const fn of ['leaveBecauseClosed', 'leaveBecauseRemoved', 'showKicked']) {
+      const at = room.indexOf(`private void ${fn}(`)
+      check(`${fn} 释放音频`, at > 0 && /releaseAudio\(\)/.test(room.slice(at, at + 1200)),
+        `${fn} 里没找到 releaseAudio()`)
+    }
+    check('上传出错也释放（不留幽灵录音）',
+      /onUploadError[\s\S]{0,400}?releaseAudio\(\)/.test(room))
+    check('stopUpload 内部也走它', /private void stopUpload\(String hint\) \{\s*releaseAudio\(\)/.test(room))
+    // ③ 开麦前必须先申请租约；起不来要还回去
+    check('开麦前向仲裁器申请', /AudioCaptureArbiter\.request\(AudioCaptureArbiter\.OWNER_ROOM\)/.test(room))
+    check('抢不到就把原因显示出来，不静默失败',
+      /if \(!denied\.isEmpty\(\)\)[\s\S]{0,160}?hintLine\.setText\(denied\)/.test(room))
+    check('采集器登记进仲裁器（释放时才停得掉）',
+      /AudioCaptureArbiter\.attach\(AudioCaptureArbiter\.OWNER_ROOM, mic\)/.test(room))
+    check('启动失败要把租约还回去（否则一条幽灵录音挡住别人）',
+      /mic = null;[\s\S]{0,200}?AudioCaptureArbiter\.release\(AudioCaptureArbiter\.OWNER_ROOM\)/.test(room))
+    // ④ 旧版界面也不能绕过
+    check('旧版界面同样申请/交还', /OWNER_LEGACY\)/.test(legacy)
+      && /AudioCaptureArbiter\.release\(AudioCaptureArbiter\.OWNER_LEGACY\)/.test(legacy))
+    // ⑤ 仲裁器本身的规则
+    check('同一时刻只有一个持有者',
+      /if \(holder != null\) \{[\s\S]{0,400}?return describeDenied/.test(arbiter),
+      'holder 非空时没有拒绝新申请')
+    check('收尾期间也拒绝（stop 是"叫它停"，不是"等它停"）',
+      /windingDown[\s\S]{0,200}?isWindingDown\(\)/.test(arbiter))
+    check('只允许持有者交还（不会误停别人的采集）',
+      /if \(holder == null \|\| !holder\.equals\(who\)\) return false/.test(arbiter))
+    check('拒绝原因说人话（用户看到"会议房间"，不是 "room"）',
+      /OWNER_ROOM\.equals\(owner\) \? "会议房间"/.test(arbiter))
+    check('能自述状态（日志/状态行用）', /public static synchronized String describe\(\)/.test(arbiter))
+    // ⑥ AudioSource 要给"还在收尾吗"的钩子
+    check('AudioSource 有 isWindingDown()', /default boolean isWindingDown\(\)/.test(source))
+    check('MicUploader 真的实现了它（看线程活不活）',
+      /public boolean isWindingDown\(\)[\s\S]{0,200}?isAlive\(\)/.test(uploader))
+    check('开麦时保持屏幕常亮（否则超时锁屏 = 悄悄停麦）',
+      /FLAG_KEEP_SCREEN_ON/.test(room) && /mic\.start\(\)[\s\S]{0,400}?addFlags/.test(room))
+    check('关麦/释放时撤掉常亮', /releaseAudio[\s\S]{0,600}?clearFlags\(android\.view\.WindowManager\.LayoutParams\.FLAG_KEEP_SCREEN_ON\)/.test(room))
+    // ⑦ 不许在别处直接开录音
+    for (const f of ['RoomActivity.java', 'MainActivity.java', 'HomeActivity.java', 'HistoryActivity.java']) {
+      const text = readFileSync(join(javaDir, f), 'utf-8')
+      check(`${f} 里没有裸 new AudioRecord（都得经 MicUploader/GlassesMic）`,
+        /new AudioRecord\(/.test(text) === false)
     }
   })
 
@@ -744,7 +812,9 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('onFloorLost 会真的停上传（不是只改按钮文字）', lost.includes('stopUpload('), lost.slice(0, 80))
 
     const stop = methodBody('stopUpload')
-    check('stopUpload 调用了 mic.stop()', stop.includes('mic.stop()'), '否则麦克风还在往识别流里灌音频')
+    // 5.28：停麦收口到 releaseAudio()（里面既交还仲裁器租约、也兜底停采集器）
+    check('stopUpload 会真的停麦', /releaseAudio\(\)/.test(stop) || /mic\.stop\(\)/.test(stop),
+      '否则麦克风还在往识别流里灌音频')
     check('停完把按钮刷回空闲态', stop.includes('updateUploadButton()'))
 
     // 轮询里必须走到 onFloorLost：只刷 takingChanged 就是 4.33 那个故障
@@ -1369,7 +1439,7 @@ export async function runAndroidOrderSuite({ it, check }) {
       /<scale/.test(pulse) && /<alpha/.test(pulse) && /repeatCount="infinite"/.test(pulse))
     check('脉冲幅度克制（1.06 以内，别做心跳）', /toXScale="1\.0[0-6]"/.test(pulse), pulse.slice(0, 120))
     check('开麦同时管上传（原型只有一个开麦按钮）',
-      /private void toggleMic\(\)[\s\S]{0,600}mic\.stop\(\)/.test(activity),
+      /private void toggleMic\(\)[\s\S]{0,700}(releaseAudio\(\)|mic\.stop\(\))/.test(activity),
       '分开两个按钮会出现"开了麦却没上传"')
 
     // 抽屉：人员与设备

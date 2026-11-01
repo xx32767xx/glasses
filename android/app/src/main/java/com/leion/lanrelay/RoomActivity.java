@@ -4,6 +4,7 @@ import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
@@ -315,24 +316,70 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
 
     @Override
     protected void onDestroy() {
-        if (audioPlayer != null) {
-            audioPlayer.stop();
-            audioPlayer = null;
-        }
-        listening = false;
+        // 5.28：退出房间的**唯一**音频收口（见 releaseAudio 的说明）
+        releaseAudio();
         timerRunning = false;
         stopDrawerRefresh();
         if (floorSocket != null) {
             floorSocket.stop();
             floorSocket = null;
         }
-        if (mic != null) {
-            mic.stop();
-            mic = null;
-        }
         if (client != null) client.stop();
         ui.removeCallbacksAndMessages(null);
         super.onDestroy();
+    }
+
+    /**
+     * 5.28：**退到后台就交还麦克风**（用户要求"退出房间时自动释放音频资源"的完整版）。
+     *
+     * <p>为什么放在 `onStop` 而不是只有 `onDestroy`：按 Home 键、锁屏、跳到别的页面时
+     * Activity **不会销毁**，原来那种写法会让 `AudioRecord` 一直挂着。Android 12+
+     * 会把后台录音静音，于是"界面看着正常、其实一句都没录进去"，而且麦克风会话被占着——
+     * 翻译官之类的第二个功能再也开不了麦。
+     *
+     * <p>回来的语义是**停就是停**：不自动续传。用户回来看到的是"关麦"状态，
+     * 要说得重新点一下——这比"悄悄继续录"诚实。
+     */
+    @Override
+    protected void onStop() {
+        boolean wasRecording = mic != null || AudioCaptureArbiter.isRecording();
+        releaseAudio();
+        if (wasRecording && hintLine != null) {
+            hintLine.setText(getString(R.string.st_audio_released));
+        }
+        super.onStop();
+    }
+
+    /**
+     * 5.28：**音频资源的唯一出口**。
+     *
+     * <p>这里以前是六处各自写的 `if (mic != null) { mic.stop(); mic = null; }`
+     * （退出房间、散会、被顶下线、上传出错、关麦、onDestroy）。那种"每一处都记得停"
+     * 的约定，漏一处就是"退出了还在录音"，而且下一个功能（翻译官）还要再记一遍。
+     * 现在全部走这一个方法，静态测试也钉着"别处不许直接停麦"。
+     *
+     * <p>它做三件事：交还仲裁器的租约（真的把采集停掉）→ 停实时传声 → 刷新按钮。
+     * 幂等：重复调用、没开麦时调用都安全。
+     */
+    private void releaseAudio() {
+        // ① 仲裁器：只在自己持有租约时才真的停（不会误停别人的采集）
+        boolean released = AudioCaptureArbiter.release(AudioCaptureArbiter.OWNER_ROOM);
+        // ② 兜底：万一某条老路径没经过仲裁器就开了麦（例如权限回调中途失败）
+        if (!released && mic != null) {
+            mic.stop();
+        }
+        mic = null;
+        // ③ 说话时加的"保持屏幕常亮"要撤掉（听而不说时不额外耗电）
+        if (getWindow() != null) {
+            getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
+        // ④ 输出侧：实时传声也属于"音频资源"，一起放掉
+        if (audioPlayer != null) {
+            audioPlayer.stop();
+        }
+        listening = false;
+        if (micButton != null) updateMicButton();
+        Log.i("LeionRoom", "🔇 音频已释放（" + AudioCaptureArbiter.describe() + "）");
     }
 
     /**
@@ -451,11 +498,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     private void toggleMic() {
         if (mic != null || holding) {
             // 关麦：停上传 + 放发言权（顺序反过来会让服务端把人顶掉再收到释放）
-            if (mic != null) {
-                mic.stop();
-                mic = null;
-            }
-            updateMicButton();
+            // 5.28：停麦走 releaseAudio（唯一出口），见它的说明
+            releaseAudio();
             hintLine.setText(getString(R.string.st_speaking_done));
             new Thread(() -> {
                 try {
@@ -639,8 +683,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         if (isFinishing()) return;
         Toast.makeText(this, getString(R.string.st_removed), Toast.LENGTH_LONG).show();
         hintLine.setText(getString(R.string.st_removed));
-        stopUpload(null);
-        if (mic != null) { mic.stop(); mic = null; }
+        releaseAudio();
         ui.postDelayed(this::finish, 1200);
     }
 
@@ -676,8 +719,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 + getString(R.string.st_left_room_tail);
         Toast.makeText(this, message, Toast.LENGTH_LONG).show();
         hintLine.setText(message);
-        stopUpload(null);
-        if (mic != null) { mic.stop(); mic = null; }
+        releaseAudio();
         ui.postDelayed(this::finish, 1200);
     }
 
@@ -694,6 +736,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         Toast.makeText(this, message, Toast.LENGTH_LONG).show();
         hintLine.setText(message);
         statusLine.setText(message);
+        // 5.28：身份失效了就别再占着麦克风（以前要等 1.5 秒后的 finish 才停）
+        releaseAudio();
         getSharedPreferences("leion", MODE_PRIVATE).edit()
                 .remove("accountToken").remove("termsUser").remove("roomHost").apply();
         ui.postDelayed(this::finish, 1500);
@@ -772,11 +816,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 ui.post(() -> {
                     // 4.59：MicUploader 给的就是完整句子（已按界面语言），这里不再套「上传出错：」
                     hintLine.setText(message);
-                    if (mic != null) {
-                        mic.stop();
-                        mic = null;
-                    }
-                    updateMicButton();
+                    // 5.28：出错也别占着麦克风 —— 走唯一出口
+                    releaseAudio();
                 });
             }
 
@@ -850,7 +891,16 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     }
 
     private void startUpload(MicUploader.Listener listener) {
+        // 5.28：**先向仲裁器申请麦克风**。手机上录音会话是整机一份的资源，
+        // 翻译官/眼镜那边可能正占着；抢不到就当场说清楚，绝不"看着开了麦、其实一句没录"。
+        String denied = AudioCaptureArbiter.request(AudioCaptureArbiter.OWNER_ROOM);
+        if (!denied.isEmpty()) {
+            hintLine.setText(denied);
+            updateUploadButton();
+            return;
+        }
         mic = new MicUploader(this, client, listener);
+        AudioCaptureArbiter.attach(AudioCaptureArbiter.OWNER_ROOM, mic);
         // 我在会里说的语言（建房/加入时选的）决定识别方向，别再用默认值
         String speak = getSharedPreferences("leion", MODE_PRIVATE).getString("speakLang", "zh-CN");
         if (speak != null && !speak.isEmpty()) {
@@ -860,10 +910,16 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         }
         String error = mic.start();
         if (error == null) {
+            // 5.28：说话时**保持屏幕常亮**。否则"屏幕超时自动锁屏"会走 onStop →
+            // 现在会释放麦克风 → 用户还在说话却突然没人听得见，而且界面上看不出原因。
+            // 只在开麦期间加这个 flag，关麦立刻去掉（听而不说时不额外耗电）。
+            getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             updateUploadButton();
             hintLine.setText(getString(R.string.st_uploading_mic));
         } else {
             mic = null;
+            // 起不来就把租约还回去，否则别人（翻译官）会被一条"幽灵录音"挡住
+            AudioCaptureArbiter.release(AudioCaptureArbiter.OWNER_ROOM);
             updateUploadButton();
             hintLine.setText(error);
         }
@@ -1182,9 +1238,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             final org.json.JSONObject got = response;
             runOnUiThread(() -> {
                 if (UpdateGuard.check(this, got, this::checkAppVersion) == true) return;
-                // 停麦（mic.stop() 内部幂等；null 就是本来没在录）
-                if (mic != null) { mic.stop(); mic = null; }
-                if (audioPlayer != null) audioPlayer.stop();
+                // 5.28：版本不一致时整条音频链都要停（唯一的音频出口）
+                releaseAudio();
                 if (hintLine != null) hintLine.setText(getString(R.string.update_title));
                 if (micButton != null) micButton.setEnabled(false);
                 if (micUploadButton != null) micUploadButton.setEnabled(false);
@@ -1267,13 +1322,15 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         modeTag.setText(modeText.isEmpty() ? langText : langText + " · " + modeText);
     }
 
-    /** 停止上传并刷新按钮；`hint` 为空则保留当前提示。 */
+    /**
+     * 停止上传并刷新按钮；`hint` 为空则保留当前提示。
+     *
+     * <p>5.28：内部改成走 {@link #releaseAudio()}（唯一的音频出口），
+     * 保留这个方法只是因为很多路径还要"顺带说一句人话"。
+     */
     private void stopUpload(String hint) {
-        if (mic != null) {
-            mic.stop();
-            mic = null;
-            lastHeartbeat = 0L;
-        }
+        releaseAudio();
+        lastHeartbeat = 0L;
         updateUploadButton();
         if (hint != null && !hint.isEmpty()) {
             hintLine.setText(hint);

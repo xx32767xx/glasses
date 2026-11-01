@@ -130,6 +130,18 @@ public class MicUploader implements AudioSource {
     }
 
     /**
+     * 5.28：录音线程还在收尾吗（见 {@link AudioSource#isWindingDown()}）。
+     *
+     * <p>注意 `running` 在 `stop()` 里是**立刻**变 false 的（那是"用户意图"），
+     * 而线程真正退干净可能还要等最多 2 秒（要把最后半句发出去）。仲裁器要看的是后者。
+     */
+    @Override
+    public boolean isWindingDown() {
+        Thread current = thread;
+        return current != null && current.isAlive();
+    }
+
+    /**
      * 开始录音上传。
      * @return null 表示成功；否则是一条人类可读的失败原因
      */

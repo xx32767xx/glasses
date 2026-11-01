@@ -1103,7 +1103,13 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             uploader.stop();
             Log.i("MainActivity", "起新音源前先停掉：" + uploader.name());
         }
+        // 5.28：换音源也要先交还（`startBestSource()` 里会重新申请）
+        AudioCaptureArbiter.release(AudioCaptureArbiter.OWNER_LEGACY);
         uploader = startBestSource();
+        if (uploader == null) {
+            // 被别的页面占着麦克风：不清空 UI 状态会让人以为"在录"
+            showNote("没有拿到麦克风（" + AudioCaptureArbiter.describe() + "），请先在别处关麦");
+        }
     }
 
     /**
@@ -1119,24 +1125,45 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
      * 所以退回手机麦克风，并在界面上说清"退回的原因"。
      */
     private AudioSource startBestSource() {
+        // 5.28：旧版界面也走仲裁器 —— 否则它能在房间页录音时再开一个麦克风，
+        // 而那正是"看着在录、其实一句没进去"的来源（见 AudioCaptureArbiter 的说明）。
+        String denied = AudioCaptureArbiter.request(AudioCaptureArbiter.OWNER_LEGACY);
+        if (!denied.isEmpty()) {
+            showNote(denied);
+            return null;
+        }
+        AudioSource chosen = null;
         if (preferGlassesMic() && glasses != null && glasses.isConnected()) {
             GlassesMic candidate = new GlassesMic(this, client, this);
             candidate.setLanguage(sourceLang);
             String problem = candidate.start();
-            if (problem == null) return candidate;
-            candidate.stop();
-            Log.w("MainActivity", "眼镜取音失败，改用手机麦克风：" + problem);
-            showNote("眼镜取音失败，已切换为手机麦克风：" + problem);
+            if (problem == null) {
+                chosen = candidate;
+            } else {
+                candidate.stop();
+                Log.w("MainActivity", "眼镜取音失败，改用手机麦克风：" + problem);
+                showNote("眼镜取音失败，已切换为手机麦克风：" + problem);
+            }
         }
-        MicUploader phone = new MicUploader(this, client, this);
-        phone.setLanguage(sourceLang);
-        String problem = phone.start();
-        if (problem != null) showNote(problem);
-        return phone;
+        if (chosen == null) {
+            MicUploader phone = new MicUploader(this, client, this);
+            phone.setLanguage(sourceLang);
+            String problem = phone.start();
+            if (problem != null) {
+                showNote(problem);
+                AudioCaptureArbiter.release(AudioCaptureArbiter.OWNER_LEGACY);
+                return null;
+            }
+            chosen = phone;
+        }
+        AudioCaptureArbiter.attach(AudioCaptureArbiter.OWNER_LEGACY, chosen);
+        return chosen;
     }
 
     private void stopCapture() {
         if (uploader != null && uploader.isRunning()) uploader.stop();
+        // 5.28：交还麦克风（幂等）
+        AudioCaptureArbiter.release(AudioCaptureArbiter.OWNER_LEGACY);
     }
 
     /**

@@ -40,4 +40,18 @@ public interface AudioSource {
 
     /** 给界面显示的短名字，例如"眼镜麦克风"/"手机麦克风"。 */
     String name();
+
+    /**
+     * 5.28：是不是**还在收尾**（已经叫它停，但线程/设备还没退干净）。
+     *
+     * <p>为什么需要它：`stop()` 是"叫它停"，不是"等它停" —— `MicUploader` 会先给
+     * 录音线程最多 2 秒把最后半句发出去。在这段时间里开第二个采集器，
+     * 底层 `AudioRecord` 还占着，新的一定失败。
+     * 仲裁器据此**明确拒绝**新申请（"上一段录音还在收尾"），而不是放行后让别人撞墙。
+     *
+     * <p>默认 false：眼镜那条路（SDK 的 `stopAudioRecord`）是同步的，不需要特殊处理。
+     */
+    default boolean isWindingDown() {
+        return false;
+    }
 }
