@@ -333,6 +333,8 @@
     <string name="st_code_sent">验证码已发送到邮箱</string>
     <string name="st_code_mail_sent">验证码已发到 %1$s，10 分钟内有效</string>
     <string name="st_code_dev">验证码：%1$s（开发环境直接返回）</string>
+    <!-- 5.19：一个邮箱只能注册一次 —— 发码时就发现这个邮箱已经有账号了，切到登录 -->
+    <string name="st_code_email_registered">这个邮箱已经注册过了，已切到登录（用你的用户名 + 密码）</string>
     <string name="st_code_failed">获取验证码失败：%1$s</string>
     <string name="st_need_agree_links">请先阅读并同意《用户协议》与《录音与隐私政策》</string>
     <string name="toast_need_agree">请先勾选同意用户协议与录音隐私政策</string>

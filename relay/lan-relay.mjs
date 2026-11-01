@@ -56,7 +56,7 @@ import {
 } from '../lib/terms.mjs'
 import {
   ACCOUNT_LIMITS, hasAccounts, issueCode, loadAccounts, login, recordOf, registerWithEmail, revokeToken,
-  roleOf, saveAccounts, userForToken, verifyCode,
+  roleOf, saveAccounts, userByEmail, userForToken, verifyCode,
 } from '../lib/accounts.mjs'
 import { describeMailConfig, sendMail, smtpConfigFromEnv } from '../lib/mail.mjs'
 
@@ -2141,6 +2141,15 @@ export async function startRelay(rawOptions = {}) {
         }
         await saveAccounts(options.dataDir, issued.doc)
         const to = String(body.email ?? '').trim()
+        // 5.19：这个邮箱是不是已经有一个账号了？**照发**验证码（将来"验证码直登"要用同一封），
+        // 但把这件事一并告诉客户端，让它当场说"你已经注册过了，直接登录" ——
+        // 不然用户要把用户名、密码、验证码全填一遍，最后一步才被拒。
+        // 只回"有没有账号"，**不回用户名**（这一步还没有证明邮箱是你的）。
+        const emailOwner = userByEmail(doc, to)
+        const registered = emailOwner === null ? {} : {
+          alreadyRegistered: true,
+          hint: '这个邮箱已经注册过了，直接用已有账号登录即可',
+        }
         // 配了 SMTP 就发真邮件；没配就退回"打印到控制台"
         const mailConfig = options.mailConfig ?? smtpConfigFromEnv()
         if (mailConfig !== null) {
@@ -2159,7 +2168,7 @@ export async function startRelay(rawOptions = {}) {
             return
           }
           debug(`[账户] 验证码已发到 ${to}（${describeMailConfig(mailConfig)}）`)
-          send(response, 200, { ok: true, sent: true, hint: '验证码已发到邮箱，10 分钟内有效' })
+          send(response, 200, { ok: true, sent: true, hint: '验证码已发到邮箱，10 分钟内有效', ...registered })
           return
         }
         // 没配邮件：老行为（控制台打印；局域网模式把码回给调用方，公网模式不回）
@@ -2172,6 +2181,7 @@ export async function startRelay(rawOptions = {}) {
             ? '服务器没有配置邮件服务：请联系管理员配置 SMTP，或从电脑控制台取验证码'
             : '验证码已打印在电脑端的 relay 控制台',
           ...(options.public === true ? {} : { code: issued.code }),
+          ...registered,
         })
         return
       }
@@ -2185,10 +2195,27 @@ export async function startRelay(rawOptions = {}) {
           label: typeof body.label === 'string' ? body.label : '',
         })
         if (result.ok !== true) {
-          send(response, 400, { ok: false, error: 'register-failed', hint: result.error })
+          // 5.19：注册失败给**机器码**（`email-taken` / `username-taken` / `code-invalid`），
+          // 让手机端能按界面语言说清楚。以前一律 `register-failed`，英文/葡文界面
+          // 只能显示一句中文原话。
+          send(response, 400, {
+            ok: false,
+            error: result.code ?? 'register-failed',
+            hint: result.error,
+          })
           return
         }
-        await saveAccounts(options.dataDir, result.doc)
+        try {
+          await saveAccounts(options.dataDir, result.doc)
+        } catch (error) {
+          // 落盘层的唯一性兜底（lib/accounts-store.mjs）撞上了 —— 如实说，别假装注册成功
+          send(response, 409, {
+            ok: false,
+            error: 'email-taken',
+            hint: String(error?.message ?? error),
+          })
+          return
+        }
         debug(`[账户] 邮箱注册成功：${result.username}（${result.email}）`)
         send(response, 200, { ok: true, user: result.username, role: result.role, token: result.token })
         notifyKickedIfReplaced(result.username, result.token)

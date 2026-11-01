@@ -17,8 +17,11 @@ import { VAR_DIR } from '../lib/paths.mjs'
 import { ensureTestAccount, resetTestAccount } from '../scripts/test-account.mjs'
 import {
   checkPassword, createAccountWithPassword, emptyAccounts, hashPassword, issueToken, loadAccounts, login,
-  normalizeUsername, register, revokeToken, saveAccounts, tokenKey, userForToken, verifyPassword,
+  loginWithEmail, normalizeUsername, register, registerWithEmail, revokeToken, saveAccounts, tokenKey,
+  userForToken, verifyPassword,
 } from '../lib/accounts.mjs'
+import { writeAccountsDoc } from '../lib/accounts-store.mjs'
+import { dbPath, openDb } from '../lib/db.mjs'
 
 const TMP = join(VAR_DIR, 'test', 'accounts-suite')
 
@@ -144,6 +147,23 @@ export async function runAccountsSuite({ it, check, assert }) {
 
   const GOOD = [{ zh: '亮亮视野', pt: 'LLVision' }]
 
+  /**
+   * 清掉残留的验证码行。
+   *
+   * <p>用途只有一个：注册成功那条路会把验证码消费掉，而**60 秒间隔**是按库里
+   * `issued_at` 判的。要连着验"同一个邮箱第二次注册"就必须再要一个码，
+   * 与其 sleep 60 秒，不如直接把码行删掉 —— 那条行不存在，限流自然就不生效。
+   * 这不是绕过被测逻辑：被测的是"注册时邮箱唯一"，不是发码间隔（后者另有测试）。
+   */
+  const clearCodes = () => {
+    const db = openDb(dbPath(TMP))
+    try {
+      db.prepare('DELETE FROM auth_codes').run()
+    } finally {
+      db.close()
+    }
+  }
+
   try {
     await it('还没有账户时：热词表仍可用（迁移期，按自报用户名）', async () => {
       const put = await call('/terms', { method: 'PUT', body: { user: 'legacy', entries: GOOD } })
@@ -212,6 +232,98 @@ export async function runAccountsSuite({ it, check, assert }) {
       const other = await call('/auth/code', { method: 'POST', body: { email: 'ratelimit2@example.com' } })
       check('换个邮箱照常发', other.status === 200 && other.json.ok === true, other.text)
     })
+
+    await it('5.19：注册的纯函数 —— 邮箱已注册就 email-taken，且先于用户名判断', () => {
+      const first = registerWithEmail(emptyAccounts(), {
+        email: 'a@b.com', username: 'first', password: 'secret12', codePreVerified: true,
+      })
+      check('第一次注册成功', first.ok === true, first.error)
+      const sameEmail = registerWithEmail(first.doc, {
+        email: '  A@B.com ', username: 'second', password: 'secret12', codePreVerified: true,
+      })
+      check('同一个邮箱换用户名也不行', sameEmail.ok === false && sameEmail.code === 'email-taken',
+        JSON.stringify(sameEmail))
+      check('大小写/空格都算同一个邮箱', /已经注册过了/.test(String(sameEmail.error)), sameEmail.error)
+      check('点名已有用户名（此刻验证码已验过，不算泄露）', sameEmail.user === 'first', String(sameEmail.user))
+      const sameName = registerWithEmail(first.doc, {
+        email: 'c@d.com', username: 'first', password: 'secret12', codePreVerified: true,
+      })
+      check('换邮箱但用户名重复 → username-taken', sameName.ok === false && sameName.code === 'username-taken',
+        JSON.stringify(sameName))
+    })
+
+    await it('5.19：写入层兜底 —— 一份"两个账号绑同一邮箱"的 doc 会被整份拒绝', () => {
+      const doc = {
+        version: 1,
+        users: {
+          alice: { role: 'user', email: 'x@y.com' },
+          bob: { role: 'user', email: 'X@Y.com' },
+        },
+        tokens: {}, codes: {},
+      }
+      const result = writeAccountsDoc(join(TMP, 'dup-email'), doc)
+      check('拒绝写入', result.ok === false, JSON.stringify(result))
+      check('原因说清是哪个邮箱、哪两个账号',
+        /一个邮箱只能有一个账号/.test(String(result.error)) && /alice/.test(String(result.error))
+        && /bob/.test(String(result.error)), String(result.error))
+    })
+
+    await it('5.19：邮箱验证码登录不会给同一个邮箱再开一个账号', () => {
+      const first = registerWithEmail(emptyAccounts(), {
+        email: 'e@f.com', username: 'owner', password: 'secret12', codePreVerified: true,
+      })
+      const second = loginWithEmail(first.doc, 'E@F.com', '', { codePreVerified: true })
+      check('登进的是已有账号，不是新建', second.ok === true && second.user === 'owner' && second.created === false,
+        JSON.stringify({ user: second.user, created: second.created }))
+      check('库里没有多出"用户名=邮箱"的第二个账号', second.doc.users['e@f.com'] === undefined,
+        Object.keys(second.doc.users).join(','))
+    })
+
+    await it('5.19：一个邮箱只能注册一次（走真实 HTTP：第二次 400 + email-taken）', async () => {
+      const email = 'once@example.com'
+      const firstCode = await call('/auth/code', { method: 'POST', body: { email } })
+      const first = await call('/auth/register-email', {
+        method: 'POST',
+        body: { email, username: 'once-user', password: 'secret12', code: String(firstCode.json?.code ?? '') },
+      })
+      check('第一次注册成功', first.status === 200, first.text)
+      // 注册成功后那条验证码就被消费掉了，所以"再要一个码"不会被 60 秒间隔拦住 ——
+      // 正好用来验第二次注册。这里不 sleep，也不改代码，只是删掉残留的行（保险）。
+      clearCodes()
+      const secondCode = await call('/auth/code', { method: 'POST', body: { email } })
+      const second = await call('/auth/register-email', {
+        method: 'POST',
+        body: {
+          email, username: 'another-user', password: 'secret12',
+          code: String(secondCode.json?.code ?? ''),
+        },
+      })
+      check('第二次被拒（400）', second.status === 400, second.text)
+      check('机器码是 email-taken（客户端据此显示"已注册过"）',
+        second.json?.error === 'email-taken', JSON.stringify(second.json))
+      check('人话里点名了已有用户名', String(second.json?.hint ?? '').includes('once-user'),
+        JSON.stringify(second.json?.hint))
+
+      const doc = await loadAccounts(TMP)
+      check('another-user 没有被建出来', doc.users['another-user'] === undefined,
+        Object.keys(doc.users).join(','))
+      check('这个邮箱在库里只对应一个账号',
+        Object.values(doc.users).filter((r) => String(r?.email ?? '').toLowerCase() === email).length === 1,
+        JSON.stringify(Object.values(doc.users).map((r) => r?.email)))
+    })
+
+    await it('5.19：发码时就说"这个邮箱已经注册过了"（并且不在这一步泄露用户名）', async () => {
+      clearCodes()
+      const response = await call('/auth/code', { method: 'POST', body: { email: 'once@example.com' } })
+      check('200，码照发（将来"验证码直登"要用同一封）',
+        response.status === 200 && response.json?.ok === true, response.text)
+      check('标了 alreadyRegistered', response.json?.alreadyRegistered === true, response.text)
+      check('**不**回用户名（这一步还没证明邮箱是你的）',
+        response.text.includes('once-user') === false, response.text)
+      const fresh = await call('/auth/code', { method: 'POST', body: { email: 'nobody@example.com' } })
+      check('没注册过的邮箱不带这个标记', fresh.json?.alreadyRegistered === undefined, fresh.text)
+    })
+
 
     await it('5.17：限流判定在纯函数里，而且**重启不会绕过**（靠库里的 issuedAt）', async () => {
       const { issueCode, CODE_INTERVAL_MS } = await import('../lib/accounts.mjs')

@@ -45,6 +45,7 @@
     <string name="st_code_sent">Code sent to your email</string>
     <string name="st_code_mail_sent">Code sent to %1$s, valid for 10 minutes</string>
     <string name="st_code_dev">Code: %1$s (returned directly in dev builds)</string>
+    <string name="st_code_email_registered">This email is already registered — switched to sign-in (use your username and password)</string>
     <string name="st_code_failed">Could not get a code: %1$s</string>
     <string name="st_need_agree_links">Please accept the User Agreement and the Recording and Privacy Policy first</string>
     <string name="toast_need_agree">Please tick the agreement boxes first</string>

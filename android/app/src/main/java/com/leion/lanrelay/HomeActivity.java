@@ -482,6 +482,18 @@ public class HomeActivity extends android.app.Activity {
             ui.post(() -> {
                 if (result != null && result.optBoolean("ok", false)) {
                     String code = result.optString("code", "");
+                    // 5.19：**这个邮箱已经注册过了** —— 服务端在发码时就会说这件事。
+                    // 直接切到「登录」（同一个邮箱只能有一个账号），别让用户把
+                    // 用户名、密码、验证码全填一遍，最后一步才被拒。
+                    if (result.optBoolean("alreadyRegistered", false)) {
+                        stopCodeCooldown();
+                        resetSendCodeButton();
+                        setRegisterMode(false);
+                        setStatus(getString(R.string.st_code_email_registered));
+                        Toast.makeText(this, getString(R.string.st_code_email_registered),
+                                Toast.LENGTH_LONG).show();
+                        return;
+                    }
                     // 5.17：服务器可能**真的发了邮件**（`sent:true`），也可能只是把码打到控制台
                     // （没配 SMTP）。两种都说清楚，别让用户对着一句含糊的"已发送"干等。
                     boolean sent = result.optBoolean("sent", false);

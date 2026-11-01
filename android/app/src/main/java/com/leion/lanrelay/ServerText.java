@@ -77,6 +77,10 @@ public final class ServerText {
         prefix("服务器没有配置邮件服务", R.string.srv_code_no_smtp);
         CODES.put("too-frequent", R.string.srv_code_too_frequent);
         CODES.put("mail-failed", R.string.srv_code_mail_failed);
+        // 5.19：一个邮箱只能注册一次
+        CODES.put("email-taken", R.string.srv_email_taken);
+        CODES.put("username-taken", R.string.srv_user_taken);
+        CODES.put("code-invalid", R.string.srv_code_wrong);
         put("验证码已打印在电脑端的 relay 控制台", R.string.srv_code_on_console);
         put("这个用户名已经被注册了（换一个，或者用登录）", R.string.srv_user_taken);
         put("这个用户名已经存在了", R.string.srv_user_taken);
@@ -95,6 +99,9 @@ public final class ServerText {
         put("邮箱格式不对（需要形如 name@example.com）", R.string.srv_email_format);
         put("这个邮箱已经建过账户了", R.string.srv_email_taken);
         put("这个邮箱已经绑过账号了", R.string.srv_email_taken);
+        // 5.19：同一个邮箱只能注册一次（注册接口与发码接口都会说这句）
+        put("这个邮箱已经注册过了，直接用已有账号登录即可", R.string.srv_email_taken);
+        prefix("这个邮箱已经注册过了（用户名：", R.string.srv_email_taken);
         put("需要 { \"proofread\": true/false }", R.string.srv_need_proofread_body);
         put("请求体过大", R.string.srv_bad_request);
         put("请求体不是合法 JSON", R.string.srv_bad_request);

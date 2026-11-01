@@ -600,6 +600,31 @@ export async function runAndroidOrderSuite({ it, check }) {
     }
   })
 
+  await it('5.19：一个邮箱只能注册一次（客户端要当场说清并切到登录）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const home = readFileSync(join(javaDir, 'HomeActivity.java'), 'utf-8')
+    const serverText = readFileSync(join(javaDir, 'ServerText.java'), 'utf-8')
+
+    check('发码接口说"已注册"时，客户端认这个字段',
+      /result\.optBoolean\("alreadyRegistered", false\)/.test(home))
+    check('认出来就切到登录（别再让用户把用户名密码验证码填一遍）',
+      /alreadyRegistered[\s\S]{0,600}?setRegisterMode\(false\)/.test(home))
+    check('并且把倒计时停掉（登录模式下没有发码按钮了）',
+      /alreadyRegistered[\s\S]{0,200}?stopCodeCooldown\(\)/.test(home))
+    // 注册接口的机器码要能翻（以前一律 register-failed，英文界面只会显示中文原话）
+    for (const code of ['email-taken', 'username-taken', 'code-invalid']) {
+      check(`ServerText 认得机器码 ${code}`, new RegExp(`CODES\\.put\\("${code}"`).test(serverText))
+    }
+    check('"这个邮箱已经注册过了（用户名：xxx）"这种带变量的句子按前缀认',
+      /prefix\("这个邮箱已经注册过了（用户名：", R\.string\.srv_email_taken\)/.test(serverText))
+    for (const dir of ['values', 'values-en', 'values-pt-rBR']) {
+      const xml = readFileSync(join(resDir, dir, 'strings.xml'), 'utf-8')
+      check(`st_code_email_registered 在 ${dir} 里有`, /name="st_code_email_registered"/.test(xml))
+      check(`srv_email_taken 在 ${dir} 里有`, /name="srv_email_taken"/.test(xml))
+    }
+  })
+
   await it('authWhoAmI 返回拆过包的正文（外壳会让"打开就判成没登录"，单会话下还顺带踢掉另一台）', () => {
     const source = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay',
       'LanClient.java'), 'utf-8')

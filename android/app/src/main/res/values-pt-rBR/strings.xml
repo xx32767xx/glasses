@@ -45,6 +45,7 @@
     <string name="st_code_sent">Código enviado para o e-mail</string>
     <string name="st_code_mail_sent">Código enviado para %1$s, válido por 10 minutos</string>
     <string name="st_code_dev">Código: %1$s (retornado direto em ambiente de desenvolvimento)</string>
+    <string name="st_code_email_registered">Este e-mail já está cadastrado — mudei para o acesso (use seu usuário e senha)</string>
     <string name="st_code_failed">Falha ao obter o código: %1$s</string>
     <string name="st_need_agree_links">Aceite primeiro o Contrato do Usuário e a Política de Gravação e Privacidade</string>
     <string name="toast_need_agree">Marque primeiro as caixas de aceite</string>
