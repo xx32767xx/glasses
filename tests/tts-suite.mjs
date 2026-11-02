@@ -134,6 +134,57 @@ export async function runTtsSuite({ it, check }) {
       && /putBoolean\("ttsRead"/.test(settingsSource))
   })
 
+  await it('按语言挑引擎（AsrRouter）：跑起来验，不靠看代码', async () => {
+    const { readFileSync } = await import('node:fs')
+    const backend = readFileSync(join(JAVA_SRC, 'InterpreterAsrBackend.java'), 'utf-8')
+    const routerPath = join(JAVA_SRC, 'AsrRouter.java')
+    const routerSrc = readFileSync(routerPath, 'utf-8')
+    // 纯逻辑：不许依赖 Android（否则没法在 CI 上跑）
+    check('AsrRouter 不 import android.*', /import\s+android\./.test(routerSrc) === false)
+    check('接口里"语言"是一等公民：languages() / supports() / start(lang, …)',
+      /String\[\] languages\(\)/.test(backend) && /default boolean supports\(String lang\)/.test(backend)
+      && /void start\(String lang, Listener listener\)/.test(backend))
+    check('通用后端（自判语种）只能兜底、不能抢专用后端的活',
+      /if \(backend\.isUniversal\(\)\) continue;/.test(routerSrc))
+    check('语言未知时也交给通用后端', /语言未知，交给通用后端自行判定/.test(routerSrc))
+    check('找不到就**如实失败**（绝不拿别的语言硬顶）',
+      /没有能识别 \" \+ lang \+ \" 的引擎/.test(routerSrc))
+
+    let javacOk = true
+    try {
+      execFileSync('javac', ['-version'], { stdio: 'ignore' })
+    } catch (error) {
+      javacOk = false
+      if (error && error.code === 'EPERM') {
+        console.log('  ⏭ 这个沙箱不允许 Node 起子进程（javac EPERM），跳过可执行用例。')
+        return
+      }
+    }
+    if (!javacOk) {
+      console.log('  ⏭ 这台机器没有 javac，跳过 AsrRouterCheck')
+      return
+    }
+    const out = join(VAR_DIR, 'test', 'asr-router')
+    rmSync(out, { recursive: true, force: true })
+    mkdirSync(out, { recursive: true })
+    const src = join(ROOT, 'tests', 'java', 'AsrRouterCheck.java')
+    execFileSync('javac', ['-encoding', 'UTF-8', '-d', out,
+      join(JAVA_SRC, 'InterpreterAsrBackend.java'), routerPath, src], { stdio: 'ignore' })
+    const logPath = join(out, 'check.log')
+    const fd = openSync(logPath, 'w')
+    try {
+      execFileSync('java', ['-Dstdout.encoding=UTF-8', '-cp', out, 'AsrRouterCheck'],
+        { stdio: ['ignore', fd, fd] })
+    } catch {
+      // 断言失败会非零退出：报告已写进文件
+    } finally {
+      closeSync(fd)
+    }
+    const report = readFileSync(logPath, 'utf-8')
+    check('23 条路由规则全通过（精确/简写/兜底/未知/无引擎/describe/语言下传）',
+      /passed=23 failed=0/.test(report), report.trim().slice(-200))
+  })
+
   await it('翻译官骨架：后端可换、明写"演示回放"、朗读复用同一套', async () => {
     const { readFileSync } = await import('node:fs')
     const backend = readFileSync(join(JAVA_SRC, 'InterpreterAsrBackend.java'), 'utf-8')
@@ -150,7 +201,6 @@ export async function runTtsSuite({ it, check }) {
       && /void onFinal\(/.test(backend) && /void onError\(/.test(backend))
     check('接口说清"回调在后台线程、界面自己 post"', /回调都在后台线程/.test(backend))
     check('接口说清"允许随时丢音频"（阻塞采集比丢一句更糟）', /允许随时丢/.test(backend))
-
     // ② 回放后端：不假装识别
     check('回放后端忽略 PCM（不假装识别）', /sendAudio[\s\S]{0,200}?什么都不做/.test(scripted))
     check('回放后端有 partial 逐段生长（界面能真跑一次原位更新）',

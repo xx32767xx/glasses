@@ -72,6 +72,7 @@
     <string name="interp_finished">A demonstração terminou</string>
     <string name="interp_failed">Algo deu errado (%1$s)</string>
     <string name="interp_meta">Eu falo %1$s · %2$s</string>
+    <string name="interp_no_backend">Sem mecanismo de reconhecimento</string>
     <string name="st_code_failed">Falha ao obter o código: %1$s</string>
     <string name="st_need_agree_links">Aceite primeiro o Contrato do Usuário e a Política de Gravação e Privacidade</string>
     <string name="toast_need_agree">Marque primeiro as caixas de aceite</string>

@@ -32,8 +32,62 @@ public interface InterpreterAsrBackend {
      */
     boolean requiresNetwork();
 
-    /** 开始一场识别。 */
-    void start(Listener listener);
+    /**
+     * 这个后端**能识别哪些语言**（BCP-47，如 `zh-CN`）。
+     *
+     * @return 空数组 = **通用**（自己会判定语种，什么语言都能交；见 {@link #isUniversal()}）。
+     *         非空 = 只接这几种，路由据此挑选（5.32「按语言选模型」）。
+     */
+    String[] languages();
+
+    /** 是不是"通用后端"（`languages()` 为空）。通用后端只在没有语言匹配时兜底。 */
+    default boolean isUniversal() {
+        return languages().length == 0;
+    }
+
+    /**
+     * 能不能识别这门语言。
+     *
+     * <p>匹配规则刻意**宽松**：先精确匹配（`zh-CN`），再按主语言匹配（`zh`）——
+     * 因为各家的语种码并不统一（`zh` / `zh-CN` / `zh_cn`），要求逐字相同会让路由莫名其妙地失败。
+     * 通用后端对任何语言都说"能"。
+     */
+    default boolean supports(String lang) {
+        String[] owned = languages();
+        if (owned.length == 0) return true;
+        String wanted = normalizeLang(lang);
+        if (wanted.isEmpty()) return false;
+        for (String one : owned) {
+            String mine = normalizeLang(one);
+            if (mine.isEmpty()) continue;
+            if (mine.equals(wanted)) return true;
+            // 主语言相同就算（zh-CN 与 zh-TW 都算 zh）
+            if (primary(mine).equals(primary(wanted))) return true;
+        }
+        return false;
+    }
+
+    /** 语种码归一：小写、下划线换横线、取前后空白。`ZH_cn ` → `zh-cn`。 */
+    static String normalizeLang(String lang) {
+        return lang == null ? "" : lang.trim().toLowerCase(java.util.Locale.ROOT).replace('_', '-');
+    }
+
+    /** 取主语言：`zh-cn` → `zh`。 */
+    static String primary(String normalized) {
+        int dash = normalized.indexOf('-');
+        return dash <= 0 ? normalized : normalized.substring(0, dash);
+    }
+
+    /**
+     * 开始一场识别。
+     *
+     * @param lang     **这一场要识别的语言**。5.32 起必须传：后端就是按语言挑出来的，
+     *                 它需要这个参数去给识别器设语种（强制语种比自动判定又快又准）。
+     *                 语义为 `""` 或 `"auto"` 时表示"你来判定"—— 只有通用后端该接这种情况，
+     *                 专用后端应当回 {@code onError("asr-lang-mismatch", …)} 而不是硬猜。
+     * @param listener 事件回调
+     */
+    void start(String lang, Listener listener);
 
     /**
      * 送一块 16k 单声道 PCM。

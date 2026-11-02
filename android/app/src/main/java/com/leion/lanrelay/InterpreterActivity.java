@@ -50,6 +50,8 @@ public class InterpreterActivity extends android.app.Activity {
     private Button toggleButton;
 
     private InterpreterAsrBackend backend;
+    /** 5.32：按语言挑后端 —— 页面只跟它要"这一场用谁"，不认识具体引擎。 */
+    private AsrRouter router;
     private TtsQueue ttsQueue;
     private boolean running = false;
     /** 读哪种语言（= 入会/设置里选的说话语言；翻译官里它同时也是"朗读哪种译文"）。 */
@@ -90,8 +92,13 @@ public class InterpreterActivity extends android.app.Activity {
         });
         ttsQueue.setEnabled(getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("ttsRead", false));
 
-        backend = new ScriptedAsrBackend(lang);
-        ((TextView) findViewById(R.id.interpBackend)).setText(getString(R.string.interp_backend_scripted));
+        // 5.32：识别后端**按语言**注册。现在只有一个"通用演示回放"；
+        // 将来是「中文→本地 whisper」「葡语→云端 fun-asr」这样一门语言一条。
+        // 页面不认识任何具体引擎，只向 router 要"这一场用谁"。
+        router = new AsrRouter();
+        router.register("scripted", new ScriptedAsrBackend(lang));
+        Log.i("LeionInterp", "🧭 识别后端：" + router.describe());
+
         refreshMeta();
 
         findViewById(R.id.interpBack).setOnClickListener(v -> finish());
@@ -126,11 +133,21 @@ public class InterpreterActivity extends android.app.Activity {
     // ── 开始 / 停止 ────────────────────────────────────────────────────────
 
     private void startInterpreting() {
+        // 5.32：先问路由"这门语言用谁"；问不到就**如实报错并停下**，
+        // 绝不"随便找个引擎硬顶"（中文音频塞给葡语模型 = 整段乱码，比没识别更难查）。
+        AsrRouter.Resolution picked = router.resolve(lang);
+        if (!picked.ok()) {
+            statusView.setText(picked.problem);
+            Log.w("LeionInterp", "🧭 没有可用后端：" + picked.problem);
+            return;
+        }
+        backend = picked.backend;
+        Log.i("LeionInterp", "🧭 这一场用 " + backend.label() + "（" + picked.reason + "）");
         running = true;
         toggleButton.setText(getString(R.string.interp_stop));
-        statusView.setText(getString(R.string.interp_starting));
+        statusView.setText(getString(R.string.interp_starting) + " · " + backend.label());
         clearCards();
-        backend.start(new Callbacks());
+        backend.start(lang, new Callbacks());
     }
 
     private void stopInterpreting() {
@@ -148,6 +165,18 @@ public class InterpreterActivity extends android.app.Activity {
         boolean ttsOn = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("ttsRead", false);
         metaView.setText(getString(R.string.interp_meta, langText,
                 getString(ttsOn ? R.string.st_tts_on : R.string.st_tts_off)));
+        // 5.32：把"这门语言会被谁识别"直接摊在界面上（找不到时也要说清）
+        AsrRouter.Resolution picked = router == null ? null : router.resolve(lang);
+        TextView badge = findViewById(R.id.interpBackend);
+        if (badge != null) {
+            if (picked != null && picked.ok()) {
+                badge.setText(picked.backend.label());
+                badge.setVisibility(View.VISIBLE);
+            } else {
+                badge.setText(getString(R.string.interp_no_backend));
+                badge.setVisibility(View.VISIBLE);
+            }
+        }
     }
 
     // ── 后端回调（后台线程）──────────────────────────────────────────────

@@ -365,6 +365,7 @@
     <string name="interp_finished">演示回放已播放完毕</string>
     <string name="interp_failed">出错了（%1$s）</string>
     <string name="interp_meta">我说%1$s · %2$s</string>
+    <string name="interp_no_backend">无可用识别引擎</string>
     <string name="st_code_failed">获取验证码失败：%1$s</string>
     <string name="st_need_agree_links">请先阅读并同意《用户协议》与《录音与隐私政策》</string>
     <string name="toast_need_agree">请先勾选同意用户协议与录音隐私政策</string>

@@ -52,9 +52,23 @@ public final class ScriptedAsrBackend implements InterpreterAsrBackend {
         return false;
     }
 
+    /**
+     * 通用后端：剧本本身按语言分三套，所以它什么语言都能接（5.32）。
+     *
+     * <p>这也让它成为路由里"没有专用引擎时的兜底"——演示阶段正好扮演这个角色。
+     */
     @Override
-    public void start(Listener target) {
+    public String[] languages() {
+        return new String[0];
+    }
+
+    /** 这一场剧本用哪种语言。 */
+    private volatile String sessionLang = "";
+
+    @Override
+    public void start(String lang, Listener target) {
         if (running) return;
+        this.sessionLang = lang == null || lang.isEmpty() ? this.lang : lang;
         this.listener = target;
         running = true;
         worker = new Thread(this::runScript, "asr-script");
@@ -81,7 +95,7 @@ public final class ScriptedAsrBackend implements InterpreterAsrBackend {
         Listener target = listener;
         if (target == null) return;
         target.onReady();
-        List<String> lines = scriptFor(lang);
+        List<String> lines = scriptFor(sessionLang);
         try {
             Thread.sleep(600);          // 假装"后端刚起来"
             for (int index = 0; index < lines.size(); index += 1) {

@@ -577,16 +577,25 @@ export async function runRelaySuite({ it, check, assert }) {
   await it('总线内容没变就不算新帧（避免手机反复重画同一句）', async () => {
     // 刻意写入**完全相同的字节**：真实场景里插件推送"恢复上一帧"时会重写同一份 JSON。
     //
-    // ⚠️ 取基线之前先"喂"一次同样的内容并等一拍：否则上一条用例刚写进总线的那一帧
-    //    可能还没被轮询到，这里就会把"消费旧内容"误算成"新帧"——实测就是这么偶发红的。
+    // ⚠️ 不要用"sleep 一下再取基线"这种写法：轮询周期、上一用例留下的写入、
+    //    以及测试之间的时间差都会让它偶发变红（实测红过两次）。
+    //    改成**等 seq 稳定**再取基线 —— 与轮询节奏无关。
+    const settle = async () => {
+      let last = -1
+      for (let i = 0; i < 40; i += 1) {
+        const now = (await call('/status')).json.seq
+        if (now === last) return now
+        last = now
+        await sleep(60)
+      }
+      return last
+    }
     const identical = await readFile(bus, 'utf-8')
     await writeFile(bus, identical, 'utf-8')
-    await sleep(150)
-    const before = (await call('/status')).json.seq
+    const before = await settle()          // 等"写进去被消费"这件事彻底平静
     await writeFile(bus, identical, 'utf-8')
-    await sleep(150)
-    const after = (await call('/status')).json.seq
-    check('seq 没变', after === before, `${before} → ${after}`)
+    const after = await settle()
+    check('seq 没变（同样的字节不算新帧）', after === before, `${before} → ${after}`)
   })
 
   await it('总线里是坏 JSON 时不影响服务（跳过，不崩）', async () => {

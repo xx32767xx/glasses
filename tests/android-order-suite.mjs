@@ -1190,7 +1190,8 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('说清了本地那条**没有** partial（说完才出整句）', /没有.*partial|partial.*没有/.test(doc))
     check('云端那条要服务器配 Key（不进 APK）',
       /DASHSCOPE_API_KEY/.test(doc) && /ASR_WORKSPACE_ID/.test(doc))
-    check('说清了切换只换后端、UI/翻译/播报/采集复用', /只换后端|只换.*后端/.test(doc))
+    check('说清了切换只换后端、UI/翻译/播报/采集复用',
+      /只换实现类|只换后端|UI\/翻译\/播报\/采集/.test(doc))
 
     // ④ 翻译契约：建议走我们自己的链路（术语一致性是硬理由）
     check('翻译建议走 DeepSeek + 术语注入', /DeepSeek/.test(doc) && /术语/.test(doc))
@@ -1203,7 +1204,10 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('写了和实时传声二选一', /二选一/.test(doc))
 
     // ⑥ 待拍板与对比口径（拍板要看数据，不看意见）
-    check('列了待拍板的 ASR 后端选择', /ASR 走\*\*本地 whisper\*\*/.test(doc))
+    // 5.32：拍板粒度从"整个 App 一个引擎"变成"每门语言各选一个"，且不再阻塞开发
+    check('列了待拍板的 ASR 后端选择（按语言）',
+      /每门语言.*各用哪个引擎|\*\*每门语言\*\*/.test(doc))
+    check('写明了没定的语言由通用引擎兜底', /通用引擎兜底/.test(doc))
     check('列了历史记录进不进的问题', /记录进不进/.test(doc))
     for (const metric of ['首字延迟', '错字率', '成本']) {
       check(`对比口径里有 ${metric}`, doc.includes(metric), metric)
