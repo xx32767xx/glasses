@@ -250,6 +250,14 @@ export function buildSteps(options) {
   })
 
   if (options.transcriber) {
+    // 5.40：这个脚本是**单套管线**（识别进程跟着一条音频流跑），而"按语言选模型"要的是
+    // 队列模式（每段话自带语种，识别进程按段选模型）。所以这里如果发现了模型表，
+    // 必须**明说它不生效** —— 否则用户改了表、盯着字幕，却完全看不出有没有起作用。
+    let modelMapPath = join(options.dataDir, 'asr-models.json')
+    if (existsSync(modelMapPath)) {
+      notes.push(`发现 ${modelMapPath}，但 --start-all 是单套管线，**不会**按语言切模型`
+        + '（要用它请改用 start-multi 的队列模式，见 docs/06 §8 / docs/21 §5.40）')
+    }
     const asrArgs = [
       '--inbox', options.inbox,
       '--whisper-follow', options.audio,

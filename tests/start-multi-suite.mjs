@@ -382,8 +382,13 @@ export async function runStartMultiSuite({ it, check, assert }) {
       /def run_segment_producer/.test(source)
         && /return run_segment_producer\(args, np\)/.test(source), '缺生产者分支')
     check('消费者在模型加载**之后**才进入（首段不再付预热的十几秒）',
-      source.indexOf('return run_queue_consumer(args, np, model)') > source.indexOf('WhisperModel(args.model'),
+      source.indexOf('return run_queue_consumer(args, np, pool)') > source.indexOf('model = WhisperModel('),
       '顺序不对')
+    // 5.40：启动时加载的那份模型要**先问模型表**（表说 default 是 medium 就先加载 medium），
+    // 否则会白加载一份用不上的大模型、白占几个 GB 显存。
+    check('启动加载哪份模型由模型表决定（不是先按命令行加载再说）',
+      source.indexOf('startup = resolve_asr_profile(') < source.indexOf('model = WhisperModel('),
+      '顺序不对：先加载后查表会白占一份显存')
   })
 
   await it('启动时清掉上次留下的总线/队列（否则 relay 把旧字幕当新帧重播）', async () => {
@@ -547,6 +552,37 @@ export async function runStartMultiSuite({ it, check, assert }) {
   })
 
   // ── 6. 读房间表：读不到就当"还没房间"，不能让看门人整个退出 ─────────────────
+
+  await it('5.40：按语言选模型 —— 数据目录里有 asr-models.json 就自动传给识别进程', async () => {
+    // 为什么要这条：这张表是"改一个 JSON 就能 A/B 模型"的插拔接口。
+    // 如果启动脚本忘了往下传，用户改了表、盯着字幕，却永远看不出有没有生效 ——
+    // 这类"参数解析了但没传下去"的 bug，这个仓库里已经有过一次（4.86 的 --bus）。
+    const base = join(VAR_DIR, 'test', 'multi-suite-modelmap')
+    rmSync(base, { recursive: true, force: true })
+    mkdirSync(base, { recursive: true })
+    writeFileSync(join(base, 'asr-models.json'), JSON.stringify({ version: 1 }), 'utf-8')
+
+    const auto = parseArgs(['--data-dir', base])
+    check('数据目录里有表 → 自动启用', auto.modelMap === join(base, 'asr-models.json'), String(auto.modelMap))
+    const worker = workerStep(auto)
+    check('识别进程收到 --model-map', worker.args.includes('--model-map')
+      && worker.args[worker.args.indexOf('--model-map') + 1] === auto.modelMap, worker.args.join(' '))
+    check('同时带上模型池上限（缺省 2）',
+      worker.args.includes('--max-models') && worker.args[worker.args.indexOf('--max-models') + 1] === '2',
+      worker.args.join(' '))
+
+    const explicit = parseArgs(['--data-dir', base, '--model-map', 'config/asr-models.json', '--max-models', '3'])
+    check('显式 --model-map 优先于自动发现', explicit.modelMap.endsWith(join('config', 'asr-models.json')),
+      String(explicit.modelMap))
+    check('--max-models 生效', workerStep(explicit).args.includes('3'), workerStep(explicit).args.join(' '))
+    rmSync(join(base, 'asr-models.json'), { force: true })
+    check('没有表就不传（老行为不变：一个模型服务所有语种）',
+      parseArgs(['--data-dir', base]).modelMap === null)
+    let rejected = ''
+    try { parseArgs(['--data-dir', base, '--max-models', '0']) } catch (error) { rejected = String(error.message) }
+    check('--max-models 必须是正整数', rejected.includes('正整数'), rejected)
+    rmSync(base, { recursive: true, force: true })
+  })
 
   await it('库还不存在 → 当"没有房间"，不抛异常', async () => {
     const base = join(VAR_DIR, 'test', 'multi-suite-nodb')

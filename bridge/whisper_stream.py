@@ -353,6 +353,13 @@ def parse_args(argv=None):
                         help="消费者模式：每隔多少秒报一次队列深度（缺省 30；0 = 不报）。"
                              "**不丢数据**，只是把「落后多少」变成看得见的数字 —— "
                              "要不要开始丢弃，等看到真实数字再定")
+    parser.add_argument("--model-map", default=None,
+                        help="按语言选模型的表（JSON，5.40）。给了它，每段话就按自己的语种"
+                             "查表决定用哪个模型/解码参数；改了文件会自动重新读，不用重启。"
+                             "优先级：房间覆盖 > languages[语种] > default > 命令行")
+    parser.add_argument("--max-models", type=int, default=2,
+                        help="模型池最多同时留在显存里的份数（缺省 2；超了淘汰最久没用的）。"
+                             "⚠️ 调大就是多吃显存，不够时表现是 OOM 崩溃而不是变慢")
     args = parser.parse_args(argv)
     # 把 `--lang-candidates zh,pt` 解析成元组；空串 = 不限定（回到全域挑最大）。
     # 顺带做校验：写错了就**明确报错**，而不是静默变成一个空集（空集会让限定悄悄失效，
@@ -663,6 +670,192 @@ def _pending_segments(queue_dir):
             if os.path.exists(os.path.join(queue_dir, base + ".pcm"))]
 
 
+# ── 按语言选模型（5.40）─────────────────────────────────────────────────────
+#
+# 用户要的能力：**不同的语言可以用不同的模型/解码参数**，而且换模型这件事
+# "像插拔一样" —— 改一个 JSON 就换，不用重编译、不用改代码、最好也不用重启。
+#
+# 为什么这件事只能在识别进程里做（不能在手机/重启脚本里做）：
+#   · 模型在服务器上，谁加载谁说话；手机只能"请求"，不能决定；
+#   · 队列里**每一段都自带语种**（切句时从 `.lang` 旁文件读的），所以"这一段该用
+#     哪个模型"是这一段的属性，天然属于消费它的进程。
+#
+# 代价必须说清楚：一个进程里并存几份模型 = 几份显存。所以有 `--max-models`（缺省 2），
+# 超了就按"最久没用"淘汰。真要同时跑 3 种模型，先看显存够不够 —— 不够时的表现是
+# OOM 崩溃，而不是"慢一点"，这条不藏着。
+#
+# 优先级（从高到低），每一级都会在日志里写明是**哪一级**决定的：
+#   ① 房间覆盖（`<data-dir>/asr-profiles/<房间>.json`，由 relay 按手机上报写下来）
+#   ② `asr-models.json` 的 `languages[<语种>]`
+#   ③ `asr-models.json` 的 `default`
+#   ④ 命令行 `--model / --compute-type / --beam-size`（老行为，一个模型服务所有语种）
+
+ASR_MODELS_FILE = "asr-models.json"
+
+
+def load_asr_models(path):
+    """读模型表。返回 `(table, problem)`；读不到/坏了都**不抛**，让调用方决定怎么报。
+
+    <p>`problem` 非空时**保留上一次成功读到的表**（`previous`）—— 热改表时写坏一个逗号，
+    不该让正在跑的识别瞬间退回一个"没人预期"的模型。
+    """
+    if not path:
+        return {}, ""
+    import json as _json
+    try:
+        with open(path, encoding="utf-8") as handle:
+            raw = _json.load(handle)
+    except FileNotFoundError:
+        return {}, ""                      # 没配这张表是正常情况，不是错误
+    except Exception as error:             # noqa: BLE001
+        return {}, f"模型表 {path} 读不了：{type(error).__name__}: {error}"
+    if not isinstance(raw, dict):
+        return {}, f"模型表 {path} 顶层必须是一个对象（现在读到 {type(raw).__name__}）"
+    return raw, ""
+
+
+def _profile_of(entry, base):
+    """把表里的一条（或命令行那组缺省）整理成统一的档案字典。"""
+    profile = dict(base)
+    if isinstance(entry, dict):
+        for key in ("model", "compute_type", "beam_size"):
+            value = entry.get(key)
+            if value is None or value == "":
+                continue
+            if key == "beam_size":
+                try:
+                    profile[key] = max(1, int(value))
+                except (TypeError, ValueError):
+                    continue
+            else:
+                profile[key] = str(value)
+    elif isinstance(entry, str) and entry.strip():
+        # 允许 `"zh-CN": "large-v3"` 这种简写
+        profile["model"] = entry.strip()
+    return profile
+
+
+def resolve_asr_profile(language, cli, table=None, room_profile=None):
+    """决定这一段用哪个模型/解码参数。**纯函数**（好测，也不依赖模型）。
+
+    返回 `{"model", "compute_type", "beam_size", "source"}`，`source` 写清是
+    房间覆盖 / languages / default / 命令行 哪一级决定的（日志与排障都靠它）。
+    """
+    base = {
+        "model": (cli or {}).get("model"),
+        "compute_type": (cli or {}).get("compute_type"),
+        "beam_size": (cli or {}).get("beam_size"),
+    }
+    table = table if isinstance(table, dict) else {}
+
+    by_lang = (room_profile or {}).get("byLang") if isinstance(room_profile, dict) else None
+    if isinstance(by_lang, dict):
+        tag = language_tag(language) or (language if isinstance(language, str) else "")
+        for key in (tag, language):
+            if key and key in by_lang:
+                profile = _profile_of(by_lang[key], base)
+                profile["source"] = f"房间覆盖 {key}"
+                return profile
+
+    languages = table.get("languages")
+    if isinstance(languages, dict):
+        tag = language_tag(language) or (language if isinstance(language, str) else "")
+        for key in (tag, language):
+            if key and key in languages:
+                profile = _profile_of(languages[key], base)
+                profile["source"] = f"模型表 languages.{key}"
+                return profile
+
+    if "default" in table:
+        profile = _profile_of(table.get("default"), base)
+        profile["source"] = "模型表 default"
+        return profile
+
+    profile = dict(base)
+    profile["source"] = "命令行"
+    return profile
+
+
+def read_room_asr_profile(data_dir, room, cache=None):
+    """读"这个房间想用哪些模型"的侧车（relay 按手机上报写的）。
+
+    <p>按 mtime 缓存：每段都读文件是没必要的开销，而"改了立刻生效"又很重要
+    （用户正拿着手机 A/B 换模型）。
+    """
+    if not data_dir or not room:
+        return None
+    path = os.path.join(str(data_dir), "asr-profiles", f"{str(room)}.json")
+    try:
+        stamp = os.stat(path).st_mtime_ns
+    except OSError:
+        return None
+    if cache is not None and cache.get("path") == path and cache.get("stamp") == stamp:
+        return cache.get("value")
+    try:
+        import json as _json
+        with open(path, encoding="utf-8") as handle:
+            value = _json.load(handle)
+    except Exception as error:            # noqa: BLE001
+        print(f"[识别] 房间模型侧车读不了（按模型表处理）：{path}：{error}",
+              file=sys.stderr, flush=True)
+        value = None
+    if cache is not None:
+        cache.clear()
+        cache.update({"path": path, "stamp": stamp, "value": value})
+    return value
+
+
+class ModelPool:
+    """模型池：按档案取模型，缺就加载，超过上限按"最久没用"淘汰。
+
+    <p>单独成类是为了让"到底加载了几份模型"这件事只有一个出口 ——
+    显存事故几乎都来自"以为只有一份，其实悄悄加了一份"。
+    """
+
+    def __init__(self, make_model, max_models=2, log=print):
+        self.make_model = make_model
+        self.max_models = max(1, int(max_models))
+        self.log = log
+        self.models = {}        # key -> model
+        self.order = []         # 最近使用顺序（末尾最新）
+        self.loads = []         # [{"key", "seconds"}] 加载耗时记录（--stats 用）
+        self.counts = {}        # profile 的 source/model → 处理段数
+
+    @staticmethod
+    def key_of(profile):
+        return (profile.get("model"), profile.get("compute_type"))
+
+    def get(self, profile, np=None, device="cuda"):
+        key = self.key_of(profile)
+        if key in self.models:
+            self.order.remove(key)
+            self.order.append(key)
+            return self.models[key]
+        while len(self.models) >= self.max_models and self.order:
+            drop = self.order.pop(0)
+            self.models.pop(drop, None)
+            self.log(f"[识别] 模型池已满（--max-models {self.max_models}），"
+                     f"淘汰 {drop[0]} / {drop[1]}（要同时留更多份就调大它，代价是显存）")
+        self.log(f"[识别] 加载模型 {key[0]}（compute_type={key[1]}）…")
+        started = time.perf_counter()
+        model = self.make_model(key[0], device, key[1])
+        took = time.perf_counter() - started
+        self.models[key] = model
+        self.order.append(key)
+        self.loads.append({"key": key, "seconds": round(took, 2)})
+        self.log(f"[识别] 模型就绪 {key[0]} / {key[1]}（{took:.1f}s）")
+        return model
+
+    def note(self, profile):
+        tag = f"{profile.get('source')} → {profile.get('model')}"
+        self.counts[tag] = self.counts.get(tag, 0) + 1
+
+    def report(self):
+        if not self.counts:
+            return "（还没有按档案分过的段）"
+        return "；".join(f"{tag} ×{count}" for tag, count in sorted(self.counts.items()))
+
+
 def _read_segment(queue_dir, base, np):
     """读出一段；读不到返回 None（可能刚被别的进程消费掉了）。"""
     try:
@@ -676,20 +869,39 @@ def _read_segment(queue_dir, base, np):
     return meta, audio
 
 
-def run_queue_consumer(args, np, model):
-    """消费者：模型只加载一次，按到达顺序取队列最前面的一段转写。
+def run_queue_consumer(args, np, pool):
+    """消费者：按到达顺序取队列最前面的一段转写；**每段按自己的语种选模型**。
 
     <p><b>为什么"一个进程"而不是每场一个</b>：显存。而为什么用队列而不是"切到那一场去跟"：
-    切场要重载模型（几秒），队列只是"换一段音频喂给同一个模型"，代价接近 0。
+    切场要重载模型（几秒），队列只是"换一段音频喂给同一个模型"，代价接近 0
+    —— 除非这一段要求的模型和当前加载的不一样（5.40 起会按需加载第二份，见 ModelPool）。
     <p><b>不丢数据</b>（2026-10-30 用户拍板）：积压时只**报队列深度与最长等待**，
     让人看到"落后多少"，再决定要不要引入丢弃策略。
     """
-    print(f"[识别] 队列模式：{args.queue_dir}（模型只加载一次；"
-          f"按到达顺序取，不丢数据）", file=sys.stderr, flush=True)
+    print(f"[识别] 队列模式：{args.queue_dir}（按段自带的语种选模型；"
+          f"模型池上限 {pool.max_models} 份；按到达顺序取，不丢数据）",
+          file=sys.stderr, flush=True)
+    if args.model_map:
+        print(f"[识别] 模型表 {args.model_map}（改了会自动重新读，不用重启）",
+              file=sys.stderr, flush=True)
     processed = 0
     last_report = time.monotonic()
     waited_ms_max = 0
+    map_stamp = _stamp_of(args.model_map)
+    room_cache = {}
     while True:
+        # 模型表热加载：每轮看一眼 mtime，变了就重读 —— "插拔接口"要真的是插拔
+        if args.model_map:
+            new_stamp = _stamp_of(args.model_map)
+            if new_stamp != map_stamp:
+                map_stamp = new_stamp
+                table, problem = load_asr_models(args.model_map)
+                if problem:
+                    print(f"[识别] 模型表更新失败，继续用上一份：{problem}", file=sys.stderr, flush=True)
+                else:
+                    args.asr_table = table
+                    print(f"[识别] 模型表已重新加载：{describe_asr_table(table)}",
+                          file=sys.stderr, flush=True)
         bases = _pending_segments(args.queue_dir)
         if not bases:
             time.sleep(max(0.01, args.queue_poll_ms / 1000.0))
@@ -700,10 +912,41 @@ def run_queue_consumer(args, np, model):
             meta, audio = got
             waited_ms_max = max(waited_ms_max, int(time.time() * 1000) - int(meta.get("queuedAt") or 0))
             language = meta.get("lang") or args.language
+            # 5.40：这一段用哪个模型 —— 房间覆盖 → languages → default → 命令行（见 resolve_asr_profile）
+            room_profile = read_room_asr_profile(args.data_dir, meta.get("room"), room_cache)
+            profile = resolve_asr_profile(language, {
+                # 命令行的"缺省档案"用**启动时真正加载的那一份**（可能来自表的 default），
+                # 否则 A/B 时会拿旧命令行值把表的结论盖掉
+                "model": getattr(args, "startup_model", None) or args.model,
+                "compute_type": getattr(args, "resolved_compute", None) or args.compute_type,
+                "beam_size": args.beam_size,
+            }, getattr(args, "asr_table", None), room_profile)
+            pool.note(profile)
+            try:
+                model = pool.get(profile, device=args.device)
+            except Exception as error:      # noqa: BLE001
+                # 不能静默退回别的模型：那会让"我在测模型 A"变成"其实一直在测 B"。
+                # 这一段也**不能留在队列里**（会一直堵住后面所有段），但更不能直接删：
+                # 内容是用户的语音，删了就是无声丢失。所以挪进 `failed/` 子目录 ——
+                # 队列（只看本层的 .json）不再取它，但音频还在，事后能查能重放。
+                print(f"[识别] 这一段要求的模型 {profile.get('model')} 加载失败"
+                      f"（{profile.get('source')}），已挪到 failed/ 留证："
+                      f"{type(error).__name__}: {error}", file=sys.stderr, flush=True)
+                failed_dir = os.path.join(args.queue_dir, "failed")
+                try:
+                    os.makedirs(failed_dir, exist_ok=True)
+                    for suffix in (".pcm", QUEUE_META_SUFFIX):
+                        if os.path.exists(os.path.join(args.queue_dir, base + suffix)):
+                            os.rename(os.path.join(args.queue_dir, base + suffix),
+                                      os.path.join(failed_dir, base + suffix))
+                except OSError as move_error:
+                    print(f"[识别] 连挪动都失败了（这段会一直重试）：{move_error}",
+                          file=sys.stderr, flush=True)
+                continue
             text, empty, reason, overrode, kind, resolved_language = transcribe(
                 model, audio, language,
                 args.min_logprob, args.no_speech_prob,
-                beam_size=args.beam_size,
+                beam_size=profile.get("beam_size") or args.beam_size,
                 silence_floor=args.silence_skip_level,
                 hint_text=None if args.no_prompt else prompt_for(language, args.initial_prompt),
                 context_text=None,
@@ -746,7 +989,36 @@ def run_queue_consumer(args, np, model):
             if pending > 0 or processed > 0:
                 print(f"[识别] 队列深度 {pending} 段，最长已等 {waited_ms_max / 1000.0:.1f}s，"
                       f"累计转写 {processed} 段", file=sys.stderr, flush=True)
+                # 5.40：把"哪一级决定了哪个模型、各处理了多少段"摊开 ——
+                # 没有这一行，A/B 时根本说不清"这些字幕到底是哪个模型出的"
+                print(f"[识别] 按档案分流：{pool.report()}", file=sys.stderr, flush=True)
             waited_ms_max = 0
+
+
+def _stamp_of(path):
+    """文件的 mtime（用来判断模型表有没有被改过）。读不到返回 None。"""
+    if not path:
+        return None
+    try:
+        return os.stat(path).st_mtime_ns
+    except OSError:
+        return None
+
+
+def describe_asr_table(table):
+    """把模型表摊成一行（启动日志与热加载日志都用它）。"""
+    if not isinstance(table, dict) or not table:
+        return "（没有模型表，所有语种都用命令行那一个模型）"
+    parts = []
+    default = _profile_of(table.get("default"), {})
+    if default.get("model"):
+        parts.append(f"default={default['model']}")
+    languages = table.get("languages")
+    if isinstance(languages, dict):
+        for key in sorted(languages):
+            one = _profile_of(languages[key], {})
+            parts.append(f"{key}={one.get('model') or '（沿用 default）'}")
+    return "；".join(parts) if parts else "（表是空的）"
 
 
 # ── 依赖 ─────────────────────────────────────────────────────────────────────
@@ -1992,8 +2264,26 @@ def main():
     if compute_note:
         print(f"[whisper_stream] {compute_note}", file=sys.stderr)
 
-    print(f"[whisper_stream] 加载模型 {args.model}"
-          f"（device={args.device}, compute_type={compute_type}）…", file=sys.stderr)
+    # 5.40：先读模型表，再决定启动时加载**哪一份**。
+    # 为什么要这么排：如果先按命令行模型加载、再按表说"其实该用另一个"，
+    # 那第一份就白占一整份显存（large-v3 就是几个 GB）—— 显存事故几乎都从这种"顺手多一份"来。
+    args.asr_table, map_problem = load_asr_models(args.model_map)
+    if map_problem:
+        print(f"[whisper_stream] ⚠️ 模型表有问题，先按命令行模型跑：{map_problem}", file=sys.stderr)
+    startup = resolve_asr_profile(args.language, {
+        "model": args.model, "compute_type": compute_type, "beam_size": args.beam_size,
+    }, args.asr_table)
+    startup_model = startup.get("model") or args.model
+    startup_compute = startup.get("compute_type") or compute_type
+    # 队列消费者要用同一组值当"命令行档案"，否则表里的 default 会被命令行旧值盖住
+    args.startup_model = startup_model
+    args.resolved_compute = startup_compute
+    if args.model_map and args.asr_table:
+        print(f"[whisper_stream] 模型表：{describe_asr_table(args.asr_table)}"
+              f"（启动先加载 {startup_model}，来源：{startup.get('source')}）", file=sys.stderr)
+
+    print(f"[whisper_stream] 加载模型 {startup_model}"
+          f"（device={args.device}, compute_type={startup_compute}）…", file=sys.stderr)
     # 把"模型从哪儿来"打出来。这一行是被一次真实事故逼出来的：
     # 用户自己跑的时候没设 HF_HOME，于是模型从零开始下载到默认缓存 ——
     # 直连 HuggingFace 三分钟只下了 2.5MB，识别进程 4 分钟都没开始听，
@@ -2004,17 +2294,17 @@ def main():
     print("[whisper_stream] 若这里显示的是默认缓存，而模型仓库里已经有了，"
           "说明 HF_HOME 没设 —— 它会重新下一个几百 MB 的模型，慢得像是卡住了",
           file=sys.stderr)
-    if not model_is_local(args.model):
-        missing = missing_model_advice(args.model)
+    if not model_is_local(startup_model):
+        missing = missing_model_advice(startup_model)
         print(missing, file=sys.stderr)
         return 2
     try:
-        model = WhisperModel(args.model, device=args.device, compute_type=compute_type)
+        model = WhisperModel(startup_model, device=args.device, compute_type=startup_compute)
     except Exception as error:  # noqa: BLE001
         # 真事故（搬迁服务器后）：模型不在本地缓存，于是 faster-whisper 去 HuggingFace 拉，
         # 而新机器出网被掐 -> httpcore.RemoteProtocolError: Server disconnected without sending
         # a response，一屏 traceback，看不出"其实是模型没搬过来"。
-        print(model_load_failure(args.model, error), file=sys.stderr)
+        print(model_load_failure(startup_model, error), file=sys.stderr)
         if os.environ.get("LEION_DEBUG") == "1":
             raise
         return 2
@@ -2024,10 +2314,20 @@ def main():
         print("[whisper_stream] --self-check 通过：依赖与模型都能加载", file=sys.stderr)
         return 0
 
-    # ── 消费者模式（--queue-dir）：模型只加载一次，从队列取段 ─────────────────
+    # ── 消费者模式（--queue-dir）：按段自带的语种选模型（5.40）────────────────
     # 放在预热**之后**：队列里可能已经堆着几段，第一段不该再付那十几秒的固定开销。
     if args.queue_dir is not None:
-        return run_queue_consumer(args, np, model)
+        pool = ModelPool(
+            lambda name, device, compute: WhisperModel(name, device=device, compute_type=compute),
+            max_models=args.max_models,
+            log=lambda line: print(line, file=sys.stderr, flush=True),
+        )
+        # 把已经加载好的那份塞进池子：命令行模型的加载与失败提示仍走原来那条路
+        seeded = {"model": startup_model, "compute_type": startup_compute,
+                  "beam_size": args.beam_size, "source": startup.get("source")}
+        pool.models[ModelPool.key_of(seeded)] = model
+        pool.order.append(ModelPool.key_of(seeded))
+        return run_queue_consumer(args, np, pool)
 
     segmenter = UtteranceSegmenter(
         args.samplerate, args.block_ms, args.silence_ms,

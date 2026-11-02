@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "按语言选模型的表（5.40）。放到数据目录里（<data-dir>/asr-models.json）就会自动生效，",
+    "改完保存即可 —— 识别进程每轮都会看一眼 mtime，不用重启。",
+    "优先级：房间覆盖（手机上报） > languages[语种] > default > 命令行 --whisper-model。",
+    "字段：model（faster-whisper 能识别的尺寸名，如 large-v3 / medium / small，或本地目录绝对路径）、",
+    "      compute_type（float16 / int8_float16 / int8_float32 / int8 / float32）、",
+    "      beam_size（整数，越大越准越慢）。都可以只写一项。",
+    "⚠️ 同时留几份模型就吃几份显存：--max-models（缺省 2）超了会淘汰最久没用的那份。",
+    "下面这份是**当前产线的等价配置**：照抄过来不会改变任何行为，只作为改写的起点。"
+  ],
+  "version": 1,
+  "default": {
+    "model": "large-v3",
+    "compute_type": "float16",
+    "beam_size": 5
+  },
+  "languages": {
+    "zh-CN": {
+      "model": "large-v3",
+      "note": "中文：产线用的就是它（CER 4.0% 左右，见 docs/04）"
+    },
+    "pt-BR": {
+      "model": "large-v3",
+      "note": "巴葡：同上"
+    },
+    "en-US": {
+      "model": "large-v3",
+      "note": "英语：还没量过别的模型；要 A/B 就把它改成 medium 或 small 再说话，看字幕差别"
+    }
+  }
+}

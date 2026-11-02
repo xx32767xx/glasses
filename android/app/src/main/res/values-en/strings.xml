@@ -86,7 +86,7 @@
     <string name="interp_tts_hint">Played only through earphones or glasses, never through the phone speaker; without earphones you get subtitles only.</string>
     <string name="interp_open_settings">Open settings (server and key)</string>
     <string name="interp_where">Recognition and translation run on the server: %1$s (%2$s)</string>
-    <string name="interp_where_engine">Server %1$s · %2$s · engine preference \"%3$s\" (the server cannot switch engines per language yet, so it is not in effect)</string>
+    <string name="interp_where_engine">Server %1$s · %2$s · model request \"%3$s\" (the server picks by room request, then its own model table, then its default; check the recognition log for what was actually loaded)</string>
     <string name="interp_where_unavailable">\"Partner speaks %1$s\" is not available now: %2$s</string>
     <string name="interp_route_no_client">This route needs backend \"%1$s\" but no server address or key is set (fill them in Settings, or change that entry in asr-routes.json to scripted for the demo)</string>
     <string name="interp_where_demo">No server address yet, so this is the scripted demo (not real translation).</string>

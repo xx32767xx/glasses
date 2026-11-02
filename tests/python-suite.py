@@ -2347,6 +2347,68 @@ def main():
           tight["segments"] != loose["segments"],
           f"{tight['segments']} vs {loose['segments']}")
 
+    heading("按语言选模型（5.40）：优先级、模型池上限、表被改坏时不乱切")
+    # 这一节钉的是"插拔接口"的安全边界：改错了表，宁可**不用**新模型，也不能悄悄换一个
+    # 用户没预期的模型 —— 那会让 A/B 的结论整个失真。
+    cli = {"model": "large-v3", "compute_type": "float16", "beam_size": 5}
+    table = {
+        "default": {"model": "large-v3"},
+        "languages": {
+            "en-US": {"model": "medium", "beam_size": 3},
+            "zh-CN": "small",                      # 简写：只写一个模型名也要认
+        },
+    }
+    profile = whisper_stream.resolve_asr_profile("en-US", cli, table)
+    check("languages 里有的语种用它自己那一行", profile["model"] == "medium", str(profile))
+    check("表里的解码参数会覆盖命令行", profile["beam_size"] == 3, str(profile))
+    check("来源写清是 languages（日志/排障靠它）", "languages.en-US" in profile["source"], profile["source"])
+    check("没写的字段回落到命令行（compute_type）", profile["compute_type"] == "float16", str(profile))
+    check("简写 `\"zh-CN\": \"small\"` 也认", whisper_stream.resolve_asr_profile("zh-CN", cli, table)["model"] == "small")
+    check("表里没有的语种走 default", whisper_stream.resolve_asr_profile("pt-BR", cli, table)["model"] == "large-v3")
+    check("没有 languages 也没有 default → 命令行（老行为不变）",
+          whisper_stream.resolve_asr_profile("pt-BR", cli, {})["model"] == "large-v3")
+
+    room = {"byLang": {"en-US": {"model": "small"}}}
+    overridden = whisper_stream.resolve_asr_profile("en-US", cli, table, room)
+    check("房间覆盖优先于服务器表（手机 A/B 只影响这一场）", overridden["model"] == "small", str(overridden))
+    check("房间覆盖的理由写清是房间", "房间覆盖" in overridden["source"], overridden["source"])
+    check("房间没提这个语种就回落到表",
+          whisper_stream.resolve_asr_profile("pt-BR", cli, table, room)["model"] == "large-v3")
+
+    # 模型池：超过上限要淘汰最久没用的（而不是无限加载，也不是一直重载同一个）
+    loaded = []
+
+    def fake_model(name, device, compute):
+        loaded.append((name, compute))
+        return f"model:{name}"
+
+    pool = whisper_stream.ModelPool(fake_model, max_models=2, log=lambda _line: None)
+    pool.get({"model": "a", "compute_type": "float16"})
+    pool.get({"model": "b", "compute_type": "float16"})
+    pool.get({"model": "a", "compute_type": "float16"})     # 再摸一次 a（此时 a 最新）
+    pool.get({"model": "c", "compute_type": "float16"})     # 触发淘汰：应淘汰 b
+    check("三份都真加载过（c 先触发一次淘汰，再加载一次）",
+          [name for name, _c in loaded] == ["a", "b", "c"], str(loaded))
+    check("淘汰后留在池子里的是 a 和 c", set(pool.models) == {("a", "float16"), ("c", "float16")},
+          str(set(pool.models)))
+    check("同一个模型不会被重复加载",
+          len([n for n, _c in loaded if n == "a"]) == 1, str(loaded))
+
+    # 表坏了：保留旧表，绝不能"读到半张表就当没有"
+    broken_dir = Path(ROOT / "var" / "test" / "asr-model-map")
+    broken_dir.mkdir(parents=True, exist_ok=True)
+    good = broken_dir / "good.json"
+    good.write_text(json.dumps(table), encoding="utf-8")
+    bad = broken_dir / "bad.json"
+    bad.write_text("{ this is not json", encoding="utf-8")
+    loaded_table, problem = whisper_stream.load_asr_models(str(good))
+    check("好表能读", problem == "" and "languages" in loaded_table, problem)
+    _bad_table, bad_problem = whisper_stream.load_asr_models(str(bad))
+    check("坏表返回问题（不抛异常）", bad_problem != "", bad_problem)
+    _missing_table, missing_problem = whisper_stream.load_asr_models(str(broken_dir / "nope.json"))
+    check("没配表是正常情况（问题串为空）", missing_problem == "", missing_problem)
+    shutil.rmtree(broken_dir, ignore_errors=True)
+
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
     if failures:
         print("")

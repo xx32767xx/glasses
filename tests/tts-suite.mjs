@@ -325,9 +325,18 @@ export async function runTtsSuite({ it, check }) {
     check('页面用的是表判出来的结果（不是自己猜一个后端）',
       /AsrRouteTable\.resolve\(/.test(activity) && /routeProblems/.test(activity))
     check('不可用时把原因显示出来', /interp_where_unavailable/.test(activity))
-    check('引擎偏好只记录、写明未生效（不假装生效）',
-      /interp_where_engine/.test(activity) && /未生效/.test(
-        readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml'), 'utf-8')))
+    // 5.40：engine 现在**真的发给服务器**了（5.39 时还只是记录），所以这里验两件事：
+    // ① 手机把"这一路想用哪个模型"塞进会话创建请求；② 界面说的是"模型请求"，不是"已生效"
+    const lanClient = readFileSync(join(JAVA_SRC, 'LanClient.java'), 'utf-8')
+    check('会话创建时把语种→模型报给服务器（asrModels）',
+      /body\.put\("asrModels"/.test(lanClient) && /server-default/.test(lanClient))
+    check('服务器没指定模型时不乱发（空 / server-default 一律不发）',
+      /!"server-default"\.equals\(wanted\)/.test(lanClient))
+    check('界面写的是「模型请求」（不是保证生效）',
+      /interp_where_engine/.test(activity))
+    const relaySrc = readFileSync(join(JAVA_SRC, 'RelayPipelineBackend.java'), 'utf-8')
+    check('把服务器**实际收到**的模型请求打进日志（A/B 时唯一可信的依据）',
+      /optJSONObject\("asrModels"\)/.test(relaySrc))
   })
 
   await it('错误码注册表：加码只改三处，漏一处自动红（不用改测试）', async () => {

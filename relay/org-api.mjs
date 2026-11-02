@@ -24,6 +24,7 @@
  */
 
 import { join } from 'node:path'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { DEV_TTL_DAYS, allowed, createAccountWithPassword, listAccounts, loadAccounts, renewAccount, saveAccounts, setStatusByUsername, updateAccounts } from '../lib/accounts.mjs'
 import { readJson, writeJsonAtomic } from '../lib/store.mjs'
 import { listLibraries, loadLibrary, loadCategories, saveLibrary, importLibraries } from '../lib/libraries.mjs'
@@ -33,6 +34,56 @@ import { closeRoomByAdmin, createInterpreterSession, createRoom, hideHistoryForU
 import { FLOOR_LOCKED_LEASE_MS, FLOOR_LEASE_MS, floorState, forceReleaseFloor, heartbeatFloor, releaseFloor, setFloorLock, sweepExpiredFloor, takeFloor } from '../lib/floor.mjs'
 import { publishMeetingTerms } from '../lib/meeting-terms.mjs'
 import { appendUtterance } from '../lib/db.mjs'
+
+/** 允许出现在"模型名"里的字符：尺寸名（large-v3）或本地目录路径都能表达，但不含空格/引号。 */
+const ASR_MODEL_NAME = /^[A-Za-z0-9._/-]{1,120}$/
+
+/**
+ * 把手机上报的「哪门语言用哪个模型」落成房间侧车（5.40）。
+ *
+ * <p>侧车放在 `<数据目录>/asr-profiles/<房间>.json`，识别进程按 mtime 热读，
+ * 所以**改完立刻生效**，而且只影响这一场 —— 这正是"拿着手机 A/B 换模型"要的性质。
+ *
+ * <p>三件刻意的克制：
+ * <ul>
+ *   <li>只接受 `zh-CN / pt-BR / en-US` 这几个语种标签，别的一律忽略并记录下来；</li>
+ *   <li>模型名字符集收紧（{@link ASR_MODEL_NAME}）——它最终会被当成"模型尺寸名或目录"用；</li>
+ *   <li>写失败**不拦开会话**：侧车只是"希望用什么"，识别进程读不到就按服务器模型表走。
+ *       但返回值里要说清收到了什么，让手机能把"服务器实际收到的模型请求"显示出来。</li>
+ * </ul>
+ *
+ * @returns {{applied: Object<string,string>, ignored: string[], error?: string}}
+ */
+export function writeAsrProfileSidecar(root, roomId, requested, now = Date.now()) {
+  const applied = {}
+  const ignored = []
+  if (requested === undefined || requested === null) return { applied, ignored }
+  if (typeof requested !== 'object' || Array.isArray(requested)) {
+    return { applied, ignored, error: 'asrModels 必须是一个对象：{ "en-US": "large-v3" }' }
+  }
+  for (const [rawLang, rawModel] of Object.entries(requested)) {
+    const lang = String(rawLang).trim()
+    const model = String(rawModel ?? '').trim()
+    if (!['zh-CN', 'pt-BR', 'en-US'].includes(lang) || !ASR_MODEL_NAME.test(model)) {
+      ignored.push(`${lang}=${model}`)
+      continue
+    }
+    applied[lang] = model
+  }
+  if (Object.keys(applied).length === 0) return { applied, ignored }
+  try {
+    const dir = join(root, 'asr-profiles')
+    mkdirSync(dir, { recursive: true })
+    // 侧车结构：byLang（识别进程读这个）+ 谁在什么时候要求的（排障用）
+    writeFileSync(join(dir, `${String(roomId).replace(/[^A-Za-z0-9_-]/g, '_')}.json`),
+      JSON.stringify({ roomId, byLang: Object.fromEntries(Object.entries(applied)
+        .map(([lang, model]) => [lang, { model }])), at: now }, null, 2),
+      'utf-8')
+    return { applied, ignored }
+  } catch (error) {
+    return { applied: {}, ignored, error: String(error?.message ?? error) }
+  }
+}
 
 export function selectionPath(root, meetingId) {
   // 会议 id 会被拼进路径，所以只允许安全字符（防目录穿越）
@@ -204,7 +255,17 @@ export async function handleOrg(input) {
       now,
     })
     if (created.ok !== true) return bad(400, created.error)
-    return { status: 200, json: { ok: true, session: created.session } }
+    // 5.40：手机可以在开会话时**指定某几门语言用哪个模型**（它自己那张 asr-routes.json 里写的）。
+    // 落成房间里的一份侧车，识别进程按"房间覆盖 > 服务器模型表 > default"的顺序读它 ——
+    // 这样"改 App 里的表 → 只影响这一场"和"改服务器上的表 → 影响全部"两种实验方式都能用。
+    //
+    // ⚠️ 只接受**语种标签 + 模型名**，模型名字符集收紧（写坏了只会在识别那边报"加载失败"，
+    // 不会变成改文件路径之类的意外）。写不进去也**不拦开会话**：识别不上就不写侧车。
+    const requested = writeAsrProfileSidecar(root, created.session.id, body.asrModels)
+    return {
+      status: 200,
+      json: { ok: true, session: created.session, asrModels: requested },
+    }
   }
   if (method === 'POST' && segments[1] === 'interpreter' && segments[3] === 'utterance'
     && segments.length === 5) {

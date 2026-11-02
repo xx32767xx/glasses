@@ -191,6 +191,8 @@ export function parseArgs(argv = []) {
     termsRescue: false,
     transcriber: true,
     whisperModel: null,          // null = 按设备自动选
+    modelMap: null,              // null = 用 <data-dir>/asr-models.json（存在才启用）
+    maxModels: 2,                // 模型池上限：同时留在显存里的模型份数
     device: 'cuda',
     computeType: 'float16',
     public: false,
@@ -200,7 +202,7 @@ export function parseArgs(argv = []) {
   }
   const takesValue = new Set(['data-dir', 'buses', 'port', 'poll-ms', 'grace-ms', 'cols', 'lines',
     'max-rooms', 'only', 'whisper-model', 'compute', 'switch-idle-ms', 'min-hold-ms',
-    'queue-dir', 'depth-report-s', 'translate-mode'])
+    'queue-dir', 'depth-report-s', 'translate-mode', 'model-map', 'max-models'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -229,6 +231,12 @@ export function parseArgs(argv = []) {
       if (!allowed.includes(value)) throw new Error(`--compute 只能是 ${allowed.join(' / ')}`)
       options.computeType = value
     } else if (key === 'whisper-model') options.whisperModel = value
+    else if (key === 'model-map') options.modelMap = value
+    else if (key === 'max-models') {
+      const count = Number(value)
+      if (!Number.isInteger(count) || count < 1) throw new Error('--max-models 必须是正整数')
+      options.maxModels = count
+    }
     else if (key === 'max-rooms') options.maxRooms = Number(value)
     else if (key === 'poll-ms') options.pollMs = Number(value)
     else if (key === 'grace-ms') options.graceMs = Number(value)
@@ -285,6 +293,15 @@ export function parseArgs(argv = []) {
   // 模型没指定就按设备选：GPU large-v3 / CPU small（依据见 docs/04 §11）。
   options.whisperModel = options.whisperModel
     ?? (options.device === 'cuda' ? 'large-v3' : 'small')
+  // 5.40：按语言选模型的表。显式 `--model-map` 就用它（文件不在也不管，识别那边会喊）；
+  // 没显式给就看数据目录里有没有 `asr-models.json` —— 有就自动启用，
+  // 这样"改表做 A/B"不需要动启动命令，也不容易忘。
+  if (options.modelMap === null) {
+    const candidate = join(options.dataDir, 'asr-models.json')
+    options.modelMap = existsSync(candidate) ? candidate : null
+  } else {
+    options.modelMap = resolve(options.modelMap)
+  }
   return options
 }
 
@@ -446,20 +463,29 @@ export function pipelineSteps(options, room) {
  * 它挂了与转发挂了同等严重（所有房间都没字幕了），所以失败策略也相同：全体停。
  */
 export function workerStep(options) {
+  const args = [
+    '--queue-dir', options.queueDir,
+    '--inbox-dir', options.dataDir,
+    '--model', options.whisperModel,
+    '--device', options.device,
+    '--compute-type', options.computeType,
+    '--queue-poll-ms', '60',
+    '--depth-report-s', String(options.depthReportSec),
+    // 收件箱由本脚本按房间清，worker 只管追加（见 prepareRoomFiles）
+    '--keep-inbox',
+  ]
+  // 5.40：**按语言选模型**。数据目录里放了 `asr-models.json` 就传下去（改了自动生效，
+  // 不用改代码也不用重启这套脚本）；没放就还是"一个模型服务所有语种"的老行为。
+  // 为什么用数据目录而不是仓库里：这张表是**部署/实验**配置，跟数据在一起更符合直觉，
+  // 而且换环境（live/test）时天然各有一份。
+  if (options.modelMap) {
+    args.push('--model-map', options.modelMap)
+    args.push('--max-models', String(options.maxModels ?? 2))
+  }
   return {
     key: 'asr-worker', role: 'worker', tag: '识别', label: '识别', color: '\x1b[35m',
     script: join(ROOT, 'bridge', 'asr-worker.mjs'),
-    args: [
-      '--queue-dir', options.queueDir,
-      '--inbox-dir', options.dataDir,
-      '--model', options.whisperModel,
-      '--device', options.device,
-      '--compute-type', options.computeType,
-      '--queue-poll-ms', '60',
-      '--depth-report-s', String(options.depthReportSec),
-      // 收件箱由本脚本按房间清，worker 只管追加（见 prepareRoomFiles）
-      '--keep-inbox',
-    ],
+    args,
   }
 }
 

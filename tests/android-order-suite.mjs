@@ -1768,6 +1768,9 @@ export async function runAndroidOrderSuite({ it, check }) {
       '清理失败', '不认识的模式',
       // 5.00：建房时目标语言的参数校验（客户端只会发合法值，属开发期报错）
       'targetLang 只能是',
+      // 5.40：会话创建时 asrModels 的形状校验 —— 手机永远发的是对象，
+      // 只有手搓请求才会踩到；识别那边对"模型名不认识"另有明确处理（加载失败→跳过并留证）
+      'asrModels 必须是一个对象',
     ]
     const ignore = (raw) => IGNORE.some((i) => raw.startsWith(i))
     const matched = (raw) => exact.includes(raw) || pre.some((p) => raw.startsWith(p))

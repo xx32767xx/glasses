@@ -36,11 +36,12 @@ public final class RelayPipelineBackend implements InterpreterAsrBackend {
     /** 对方说的语言（识别语种，随音频上报）。 */
     private final String speakLang;
     /**
-     * 引擎偏好（5.39，来自 `asr-routes.json`）。
+     * 引擎偏好（5.39/5.40，来自 `asr-routes.json`）。
      *
-     * <p>⚠️ **现在只是"记下来"**：服务器还不支持按语言切引擎（一个识别进程只加载一个模型，
-     * 多模型要吃显存）。所以这个值只进日志与界面（写明"未生效"），
-     * **不参与任何请求**，绝不假装它生效了。
+     * <p>5.40 起它**会真的发给服务器**（会话创建时带上 `asrModels`）：
+     * 识别进程按"房间覆盖 > 服务器模型表 > 默认"选模型，所以这张表确实能拿来做 A/B。
+     * 但服务器可能没有这个模型 —— 那种情况识别进程会明确报"加载失败并跳过这一段"，
+     * 不会偷偷换成别的模型（否则 A/B 的结论就是假的）。
      */
     private final String engine;
 
@@ -121,9 +122,14 @@ public final class RelayPipelineBackend implements InterpreterAsrBackend {
         Listener target = listener;
         if (target == null) return;
         try {
-            JSONObject created = client.orgInterpreterStart("同传翻译官", readLang, speakLang);
+            JSONObject created = client.orgInterpreterStart("同传翻译官", readLang, speakLang, engine);
             JSONObject session = created == null ? null : created.optJSONObject("session");
             String id = session == null ? "" : session.optString("id", "");
+            // 服务器**实际收到**的模型请求（可能是空的：没指定/说了它不认识/写侧车失败）。
+            // 这一句是 A/B 时唯一可信的"到底按哪个模型在跑"的依据，所以打进日志。
+            JSONObject appliedModels = created == null ? null : created.optJSONObject("asrModels");
+            Log.i(TAG, "🎛 模型请求：" + (engine.isEmpty() ? "（没指定）" : engine)
+                    + " → 服务器收到 " + (appliedModels == null ? "（无）" : appliedModels.toString()));
             if (id.isEmpty()) {
                 target.onError(InterpreterErrorCodes.ASR_FAILED, "服务器没有返回会话 id");
                 running = false;

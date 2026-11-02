@@ -1039,12 +1039,34 @@ public class LanClient {
      */
     public JSONObject orgInterpreterStart(String name, String readLang, String speakLang)
             throws IOException, org.json.JSONException {
+        return orgInterpreterStart(name, readLang, speakLang, "");
+    }
+
+    /**
+     * 开一场翻译官会话，并把**这一路希望用哪个模型**一起报给服务器（5.40）。
+     *
+     * @param engine 识别模型的偏好（`asr-routes.json` 里的 engine 字段，例如 `large-v3`）。
+     *               `""` 或 `server-default` = 不指定，服务器按自己的模型表决定。
+     *               ⚠️ 这只是**请求**：服务器可能没有这个模型、也可能不支持按语言切，
+     *               所以界面上显示的是"服务器收到了什么"，不是"我们想要什么"。
+     */
+    public JSONObject orgInterpreterStart(String name, String readLang, String speakLang, String engine)
+            throws IOException, org.json.JSONException {
         JSONObject body = new JSONObject();
         body.put("name", name == null ? "" : name);
         body.put("lang", readLang == null ? "" : readLang);
         body.put("targetLang", readLang == null ? "" : readLang);
         body.put("mode", "remote");
-        if (speakLang != null && !speakLang.isEmpty()) body.put("speakLang", speakLang);
+        if (speakLang != null && !speakLang.isEmpty()) {
+            body.put("speakLang", speakLang);
+            // asrModels：语种 → 模型名。键用**识别语种**（对方说的语言），与服务器侧车一致。
+            String wanted = engine == null ? "" : engine.trim();
+            if (!wanted.isEmpty() && !"server-default".equals(wanted)) {
+                JSONObject models = new JSONObject();
+                models.put(speakLang, wanted);
+                body.put("asrModels", models);
+            }
+        }
         return unwrap(requestWithCode("/org/interpreter/start", "POST", body, 8000));
     }
 

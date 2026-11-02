@@ -385,7 +385,7 @@
     <string name="interp_open_settings">打开设置（服务器地址 / 密钥）</string>
     <string name="interp_where">识别与翻译都在服务器上跑：%1$s（%2$s）</string>
     <!-- 5.39：路由表（asr-routes.json）判出来的结果；引擎偏好只记录、服务器尚未支持 -->
-    <string name="interp_where_engine">服务器 %1$s · %2$s · 引擎偏好「%3$s」（服务器尚不支持按语言切换引擎，未生效）</string>
+    <string name="interp_where_engine">服务器 %1$s · %2$s · 模型请求「%3$s」（服务器会按「房间请求 → 它自己的模型表 → 默认」选模型；实际用了哪个看识别日志）</string>
     <string name="interp_where_unavailable">「对方说%1$s」现在不能用：%2$s</string>
     <string name="interp_route_no_client">这一路要用后端「%1$s」，但还没填服务器地址或密钥（在设置里配好；或把 asr-routes.json 里对应的 backend 改成 scripted 看演示回放）</string>
     <string name="interp_where_demo">还没填服务器地址，现在是演示回放（不是真翻译）。</string>
