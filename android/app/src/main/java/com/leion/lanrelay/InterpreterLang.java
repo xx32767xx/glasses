@@ -28,6 +28,9 @@ public final class InterpreterLang {
     /** 英语（美式）。 */
     public static final String EN = "en-US";
 
+    /** 三种语言（顺序固定：界面上的胶囊、诊断输出、路由表检查都按这个顺序）。 */
+    public static final String[] ALL = { ZH, PT, EN };
+
     /**
      * 对方语言的"自动"取值：交给 {@link #defaultPartner(String)} 推。
      * 为什么需要它：界面上要有一个"不用想"的默认项，但用户又必须能改

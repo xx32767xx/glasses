@@ -98,6 +98,10 @@ public class InterpreterActivity extends android.app.Activity {
     private TextView historyEmpty;
     /** 历史只读一次（除非在这页里结束了一场，见 {@link #stopInterpreting()}）。 */
     private boolean historyLoaded = false;
+    /** 5.39：「哪门语言用哪个识别函数」的表（`assets/asr-routes.json`）。 */
+    private AsrRouteLoader.Table routeTable = AsrRouteLoader.Table.broken("");
+    /** 5.39：每门语言**不能**用的原因（表指向未实现的后端 / 没填服务器地址）。 */
+    private final java.util.Map<String, String> routeProblems = new java.util.LinkedHashMap<>();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -164,6 +168,12 @@ public class InterpreterActivity extends android.app.Activity {
 
         // 5.36：**路线 B** —— 翻译官当"一场会"跑：会话 + 上传音频 + 收服务端字幕帧。
         // 识别与翻译都在服务器上（和会议同一套），所以手机不需要模型也不需要 Key。
+        // 5.39：**哪门语言用哪个识别函数**先读表（`assets/asr-routes.json`），再按表注册后端。
+        routeTable = AsrRouteLoader.load(this);
+        if (!routeTable.problem.isEmpty()) {
+            Log.w("LeionInterp", "🧾 路由表有问题：" + routeTable.problem);
+            statusView.setText(routeTable.problem);
+        }
         rebuildRouter();
 
         applyConfig();
@@ -183,34 +193,78 @@ public class InterpreterActivity extends android.app.Activity {
     }
 
     /**
-     * 按**当前配置**重建后端路由（5.37）。
+     * 按**当前配置 + 路由表**重建后端（5.37 / 5.39）。
      *
      * <p>为什么不在 onCreate 里只建一次：用户可能刚去设置页改了服务器地址/密钥再回来。
      * 那时候还拿着旧客户端，"点开始"会连到旧地址 —— 而且不报错，只是"怎么还是不通"。
      * 所以每次**开跑之前**都按当时的配置重建一次（代价是一次对象构造，不连网）。
      *
-     * 「演示回放」只在**根本没填服务器地址**时注册（buildClient() 返回 null）：
-     * 那是一个明确的"还没配好"状态，徽标会写「演示回放」。
-     * ⚠️ 刻意**不**在"连不上服务器"时退回演示 —— 那会让用户以为在翻译，
-     * 其实只是在放录音。连不上就如实报"连不上"（onError → 状态行）。
+     * <p>5.39 起"哪门语言用哪个后端"**不再写死在代码里**，而是读 `assets/asr-routes.json`：
+     * 每门语言查一次表，能用的就按表注册，不能用（指向未实现的后端 / 没填服务器地址）
+     * 就把**原因**记下来 —— 选到那门语言时页面直接把原因说出来，绝不悄悄换一个后端顶上。
      */
     private void rebuildRouter() {
         LanClient relay = buildClient();
-        RelayPipelineBackend pipeline = relay == null ? null
-                : new RelayPipelineBackend(relay, myName(), lang, partner);
+        client = relay;
         router = new AsrRouter();
-        if (pipeline != null) router.register("relay", pipeline);
-        router.register("scripted", new ScriptedAsrBackend(lang));
-        Log.i("LeionInterp", "🧭 识别后端：" + router.describe() + "（对方说 " + partner + "）");
+        routeProblems.clear();
+        java.util.LinkedHashSet<String> langs = new java.util.LinkedHashSet<>();
+        for (String one : InterpreterLang.ALL) langs.add(one);
+        langs.addAll(routeTable.languages.keySet());
+        for (String one : langs) {
+            AsrRouteTable.Route route = AsrRouteTable.resolve(
+                    routeTable.defaults, routeTable.languages, routeTable.backends, one);
+            if (!route.ok()) {
+                routeProblems.put(one, route.problem);
+                continue;
+            }
+            InterpreterAsrBackend built = buildBackend(route, one, relay);
+            if (built == null) {
+                routeProblems.put(one, getString(R.string.interp_route_no_client, route.backendId));
+                continue;
+            }
+            router.register(route.backendId + ":" + one, built);
+        }
+        Log.i("LeionInterp", "🧭 路由表 → " + router.describe() + "（我读 " + lang + "，对方说 " + partner + "）");
         refreshMeta();
         refreshWhere();
-        // 5.36：第一句提示要说**这一场实际会怎么跑**（服务器识别 + 翻译 / 演示回放），
-        // 而不是一律写"演示回放"——那句在真接上之后就成了假话。
+        // 第一句提示要说**这一场实际会怎么跑**，而不是一句写死的文案
         AsrRouter.Resolution first = router.resolve(partner);
         boolean hasRelay = first != null && first.ok() && first.backend instanceof RelayPipelineBackend;
         if (statusView != null) {
             statusView.setText(getString(hasRelay ? R.string.interp_hint_relay : R.string.interp_status_hint));
         }
+    }
+
+    /**
+     * 按路由表里那一行造一个后端（5.39）。
+     *
+     * <p>这张"id → 实现"的映射就是"提前准备好的识别函数"清单：
+     * <ul>
+     *   <li>`relay` → 服务器 whisper + 大脑（手机不跑模型）；</li>
+     *   <li>`scripted` → 演示回放（按剧本出字，页面会明写不是真识别）；</li>
+     *   <li>其它 id（例如表里预留的 `on-device`）→ 返回 null，由调用方把"还没实现"说出来。</li>
+     * </ul>
+     *
+     * @param speakLang 这一路要识别的语言（= 对方说的语言；relay 会把它当 `?lang=` 上报）
+     */
+    private InterpreterAsrBackend buildBackend(AsrRouteTable.Route route, String speakLang, LanClient relay) {
+        if ("relay".equals(route.backendId)) {
+            if (relay == null) return null;
+            return new RelayPipelineBackend(relay, myName(), lang, speakLang, route.engine);
+        }
+        if ("scripted".equals(route.backendId)) {
+            return new ScriptedAsrBackend(speakLang);
+        }
+        return null;
+    }
+
+    /** 这门语言的路由不可用时，给用户看的那句话（能自动跟随配置变化）。 */
+    private String routeProblemOf(String speakLang) {
+        String recorded = routeProblems.get(speakLang);
+        if (recorded != null && !recorded.isEmpty()) return recorded;
+        AsrRouter.Resolution picked = router == null ? null : router.resolve(speakLang);
+        return picked == null || !picked.ok() ? (picked == null ? "" : picked.problem) : "";
     }
 
     @Override
@@ -384,10 +438,20 @@ public class InterpreterActivity extends android.app.Activity {
 
     private void refreshWhere() {
         if (whereView == null) return;
+        // 5.39：这里说的必须是**表判出来的**结果，不是猜测：「对方说 X」会交给谁，
+        // 以及不可用时到底为什么不满足（未实现的后端 / 没填服务器地址 / 表里没这一条）。
+        String problem = routeProblemOf(partner);
         AsrRouter.Resolution picked = router == null ? null : router.resolve(partner);
         boolean relay = picked != null && picked.ok() && picked.backend instanceof RelayPipelineBackend;
+        if (!problem.isEmpty()) {
+            whereView.setText(getString(R.string.interp_where_unavailable, langText(partner), problem));
+            return;
+        }
         if (relay) {
-            whereView.setText(getString(R.string.interp_where, serverUrl(), backendText(picked.backend)));
+            RelayPipelineBackend backendRelay = (RelayPipelineBackend) picked.backend;
+            String engine = backendRelay.engine().isEmpty() ? "" : backendRelay.engine();
+            whereView.setText(getString(engine.isEmpty() ? R.string.interp_where
+                    : R.string.interp_where_engine, serverUrl(), backendText(picked.backend), engine));
         } else {
             whereView.setText(getString(R.string.interp_where_demo));
         }
@@ -487,8 +551,11 @@ public class InterpreterActivity extends android.app.Activity {
         rebuildRouter();
         AsrRouter.Resolution picked = router.resolve(partner);
         if (!picked.ok()) {
-            statusView.setText(picked.problem);
-            Log.w("LeionInterp", "🧭 没有可用后端：" + picked.problem);
+            // 5.39：说不出来的原因来自**路由表判定**（未实现的后端 / 表里没这条 / 没填地址），
+            // 不是"没有可用后端"这种含糊话
+            String problem = routeProblemOf(partner);
+            statusView.setText(problem.isEmpty() ? picked.problem : problem);
+            Log.w("LeionInterp", "🧭 这一路不可用：" + (problem.isEmpty() ? picked.problem : problem));
             return;
         }
         backend = picked.backend;

@@ -35,16 +35,35 @@ public final class RelayPipelineBackend implements InterpreterAsrBackend {
     private final String readLang;
     /** 对方说的语言（识别语种，随音频上报）。 */
     private final String speakLang;
+    /**
+     * 引擎偏好（5.39，来自 `asr-routes.json`）。
+     *
+     * <p>⚠️ **现在只是"记下来"**：服务器还不支持按语言切引擎（一个识别进程只加载一个模型，
+     * 多模型要吃显存）。所以这个值只进日志与界面（写明"未生效"），
+     * **不参与任何请求**，绝不假装它生效了。
+     */
+    private final String engine;
 
     private volatile boolean running = false;
     private volatile String sessionId = "";
     private Listener listener;
 
     public RelayPipelineBackend(LanClient client, String userName, String readLang, String speakLang) {
+        this(client, userName, readLang, speakLang, "");
+    }
+
+    public RelayPipelineBackend(LanClient client, String userName, String readLang, String speakLang,
+                                String engine) {
         this.client = client;
         this.userName = userName == null ? "" : userName;
         this.readLang = readLang == null || readLang.isEmpty() ? "zh-CN" : readLang;
         this.speakLang = speakLang == null || speakLang.isEmpty() ? "pt-BR" : speakLang;
+        this.engine = engine == null ? "" : engine;
+    }
+
+    /** 引擎偏好（给界面/日志用；见字段注释：现在不生效）。 */
+    public String engine() {
+        return engine;
     }
 
     @Override

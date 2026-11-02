@@ -1,0 +1,45 @@
+{
+  "_comment": "ASR 路由表：哪门语言交给哪个识别函数（5.39）。规则与字段说明见 docs/21 §5.39 与 AsrRouteTable.java。改这个文件不需要改代码；写错的地方会在页面上直接显示出来，不会静默兜底。",
+  "version": 1,
+  "default": {
+    "backend": "relay",
+    "engine": "server-default"
+  },
+  "languages": {
+    "zh-CN": {
+      "backend": "relay",
+      "engine": "server-default",
+      "note": "中文默认走服务器 whisper（与会议同一条链路，术语/校对都在）"
+    },
+    "pt-BR": {
+      "backend": "relay",
+      "engine": "server-default",
+      "note": "巴葡默认走服务器 whisper"
+    },
+    "en-US": {
+      "backend": "relay",
+      "engine": "server-default",
+      "note": "英语也走服务器 whisper；切句参数要不要单独一套，等 WER 量完再定（见 docs/06 §8）"
+    }
+  },
+  "backends": {
+    "relay": {
+      "impl": "RelayPipelineBackend",
+      "available": true,
+      "requiresNetwork": true,
+      "desc": "服务器识别 + 翻译（whisper + 大脑；手机不跑模型）"
+    },
+    "scripted": {
+      "impl": "ScriptedAsrBackend",
+      "available": true,
+      "requiresNetwork": false,
+      "desc": "演示回放（按剧本出字，不是真识别）"
+    },
+    "on-device": {
+      "impl": null,
+      "available": false,
+      "requiresNetwork": false,
+      "desc": "手机本机识别：还没接入（要接系统 SpeechRecognizer 或端侧 whisper，见 docs/21 §5.39 遗留）"
+    }
+  }
+}

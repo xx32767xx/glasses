@@ -86,6 +86,9 @@
     <string name="interp_tts_hint">Só sai por fone de ouvido ou óculos, nunca pelo alto-falante do celular; sem fone, só legendas.</string>
     <string name="interp_open_settings">Abrir ajustes (servidor e chave)</string>
     <string name="interp_where">Reconhecimento e tradução rodam no servidor: %1$s (%2$s)</string>
+    <string name="interp_where_engine">Servidor %1$s · %2$s · preferência de motor \"%3$s\" (o servidor ainda não troca de motor por idioma, então não está em vigor)</string>
+    <string name="interp_where_unavailable">\"Interlocutor fala %1$s\" não está disponível agora: %2$s</string>
+    <string name="interp_route_no_client">Esta rota precisa do backend \"%1$s\", mas o servidor ou a chave ainda não foram configurados (preencha em Ajustes, ou troque essa entrada no asr-routes.json para scripted e veja a demonstração)</string>
     <string name="interp_where_demo">Ainda sem endereço do servidor: agora é uma demonstração com roteiro (não é tradução real).</string>
     <string name="interp_lang_changed">Idioma alterado para %1$s; a sessão em andamento foi parada — toque em Iniciar para começar de novo.</string>
     <string name="interp_hist_loading">Carregando registros de interpretação…</string>

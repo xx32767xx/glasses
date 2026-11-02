@@ -250,6 +250,86 @@ export async function runTtsSuite({ it, check }) {
       /R\.string\.interp_meta_plain/.test(interpSrc))
   })
 
+  await it('5.39：语言 → 识别函数的路由表（JSON 控制，可执行验）', async () => {
+    const { readFileSync } = await import('node:fs')
+    const assets = join(ROOT, 'android', 'app', 'src', 'main', 'assets')
+    const raw = readFileSync(join(assets, 'asr-routes.json'), 'utf-8')
+    const table = JSON.parse(raw)
+
+    // ① 表的形状：default / languages / backends 三块都要有，且每门语言都指向**登记过的**后端
+    check('表里有 version / default / languages / backends',
+      typeof table.version === 'number' && table.default && table.languages && table.backends,
+      JSON.stringify(Object.keys(table)))
+    check('default 写了 backend', typeof table.default.backend === 'string' && table.default.backend !== '')
+    const langs = Object.keys(table.languages)
+    check('三门语言都有一行（zh-CN / pt-BR / en-US）',
+      ['zh-CN', 'pt-BR', 'en-US'].every((one) => langs.includes(one)), JSON.stringify(langs))
+    const dangling = langs.filter((lang) => {
+      const id = table.languages[lang] && table.languages[lang].backend
+      return !table.backends[id]
+    })
+    check('每门语言指向的后端都在 backends 里登记过（写错名字会静默跑错引擎）',
+      dangling.length === 0, dangling.join(','))
+
+    // ② 后端清单要和代码对得上：available=true 的必须真有实现类，false 的必须写明"没实现"
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    for (const [id, spec] of Object.entries(table.backends)) {
+      if (spec.available === true) {
+        check(`后端 ${id} 声明的实现类存在（${spec.impl}）`,
+          typeof spec.impl === 'string' && existsSync(join(javaDir, `${spec.impl}.java`)),
+          String(spec.impl))
+      } else {
+        check(`后端 ${id} 没实现时 impl 为空且写了说明`,
+          (spec.impl === null || spec.impl === undefined) && typeof spec.desc === 'string' && spec.desc !== '',
+          JSON.stringify(spec))
+      }
+    }
+
+    // ③ 判定逻辑跑起来验（纯 Java，不依赖 Android）
+    let javacOk = true
+    try {
+      execFileSync('javac', ['-version'], { stdio: 'ignore' })
+    } catch (error) {
+      javacOk = false
+      if (error && error.code === 'EPERM') {
+        console.log('  ⏭ 这个沙箱不允许 Node 起子进程（javac EPERM），跳过 AsrRouteTableCheck。')
+        return
+      }
+    }
+    if (!javacOk) {
+      console.log('  ⏭ 这台机器没有 javac，跳过 AsrRouteTableCheck')
+      return
+    }
+    const out = join(VAR_DIR, 'test', 'asr-route')
+    rmSync(out, { recursive: true, force: true })
+    mkdirSync(out, { recursive: true })
+    execFileSync('javac', ['-encoding', 'UTF-8', '-d', out,
+      join(JAVA_SRC, 'InterpreterLang.java'), join(JAVA_SRC, 'AsrRouteTable.java'),
+      join(ROOT, 'tests', 'java', 'AsrRouteTableCheck.java')], { stdio: 'ignore' })
+    const logPath = join(out, 'check.log')
+    const fd = openSync(logPath, 'w')
+    try {
+      execFileSync('java', ['-Dstdout.encoding=UTF-8', '-cp', out, 'AsrRouteTableCheck'],
+        { stdio: ['ignore', fd, fd] })
+    } catch {
+      // 断言失败会非零退出：报告已写进文件
+    } finally {
+      closeSync(fd)
+    }
+    const report = readFileSync(logPath, 'utf-8')
+    check('26 条路由判定全通过（命中/缺行/未实现/写错名字/没 default）',
+      /passed=26 failed=0/.test(report), report.trim().slice(-300))
+
+    // ④ 界面必须把"不可用"说出来，不许静默换后端
+    const activity = readFileSync(join(JAVA_SRC, 'InterpreterActivity.java'), 'utf-8')
+    check('页面用的是表判出来的结果（不是自己猜一个后端）',
+      /AsrRouteTable\.resolve\(/.test(activity) && /routeProblems/.test(activity))
+    check('不可用时把原因显示出来', /interp_where_unavailable/.test(activity))
+    check('引擎偏好只记录、写明未生效（不假装生效）',
+      /interp_where_engine/.test(activity) && /未生效/.test(
+        readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml'), 'utf-8')))
+  })
+
   await it('错误码注册表：加码只改三处，漏一处自动红（不用改测试）', async () => {
     const { readFileSync } = await import('node:fs')
     const registryPath = join(JAVA_SRC, 'InterpreterErrorCodes.java')
