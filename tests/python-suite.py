@@ -2310,6 +2310,43 @@ def main():
     check("emit 也走同一个函数（两条出口不许各写一份映射）",
           "language_tag(language)" in inspect.getsource(whisper_stream.emit), "emit 里还在查 LANG_TAGS")
 
+    heading("切句预筛（segment_sim）：参数真接上了，模拟能复现已知方向")
+    # 这一节钉两件事：
+    #   ① 四个 knob（silence / min-speech / max-speech / short-silence）**真的**传进了
+    #      产线切句器 —— 我第一版就写错成"只传 silence"，于是扫出来的表里三个 knob
+    #      全无差别，看着像"参数不敏感"，其实参数根本没接上；
+    #   ② 模拟能复现**已知方向**（中文 silence 500 比 1200 更容易把句子切碎）——
+    #      方向都对不上，说明模拟的约束没起作用，那些数一个都不该信。
+    import segment_sim
+
+    check("三种语言的时长模型都在（zh / pt / en）", set(segment_sim.PATTERNS) == {"zh", "pt", "en"},
+          str(sorted(segment_sim.PATTERNS)))
+    required = {"word_ms", "inner_gap_ms", "phrase_gap_ms", "hesitation_chance",
+                "hesitation_gap_ms", "sentence_gap_ms", "words_per_sentence",
+                "sentences_per_turn", "short_turn_chance"}
+    missing = {lang: sorted(required - set(pattern)) for lang, pattern in segment_sim.PATTERNS.items()}
+    check("每种时长模型的关键字段齐全", all(not value for value in missing.values()), str(missing))
+
+    sim_args = segment_sim.parse_args(["--lang", "zh", "--repeat", "1", "--turns", "6"])
+    probe = segment_sim.make_segmenter(sim_args, {**segment_sim.BASE, "min_speech_ms": 700,
+                                                  "max_speech_ms": 12000})
+    check("min-speech 真的接进切句器（700ms → 7 块）", probe.min_blocks == 7, str(probe.min_blocks))
+    check("max-speech 真的接进切句器（12000ms → 120 块）", probe.max_blocks == 120, str(probe.max_blocks))
+    check("short-silence 真的接进切句器",
+          segment_sim.make_segmenter(
+              sim_args, {**segment_sim.BASE, "short_silence_ms": 1400}).short_silence_blocks == 14)
+
+    zh_streams = segment_sim.make_conversations(sim_args, segment_sim.PATTERNS["zh"])
+    tight = segment_sim.run_once(sim_args, zh_streams, {**segment_sim.BASE, "silence_ms": 500})
+    loose = segment_sim.run_once(sim_args, zh_streams, {**segment_sim.BASE, "silence_ms": 1200})
+    check("中文：silence 500 比 1200 更碎（与生产实测同向）", tight["split"] >= loose["split"],
+          f"500 → {tight['split']}，1200 → {loose['split']}")
+    check("中文：silence 越小，句尾等待越短", tight["median_latency"] <= loose["median_latency"],
+          f"500 → {tight['median_latency']:.2f}s，1200 → {loose['median_latency']:.2f}s")
+    check("同一批对话喂不同参数会得到不同结果（否则说明参数没接上）",
+          tight["segments"] != loose["segments"],
+          f"{tight['segments']} vs {loose['segments']}")
+
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
     if failures:
         print("")
