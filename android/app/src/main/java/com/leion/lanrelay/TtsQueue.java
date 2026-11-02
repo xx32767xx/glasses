@@ -36,8 +36,8 @@ public final class TtsQueue {
         /** @param text 正在念的那一小块（已切块），null = 空闲 */
         void onSpeaking(String text, boolean speaking);
 
-        /** 播报失败/被拒绝（人话，直接显示）。 */
-        void onProblem(String message);
+        /** 播报失败/被拒绝：`code` 是机器码（界面按语言翻），`hint` 是兜底人话。 */
+        void onProblem(String code, String hint);
     }
 
     private static final String TAG = "LeionTts";
@@ -159,7 +159,7 @@ public final class TtsQueue {
             Listener current = listener;
             if (current != null) current.onSpeaking(item.text, true);
             TtsSpeaker.Result result = speaker == null
-                    ? new TtsSpeaker.Result(false, "播报未初始化", 0)
+                    ? new TtsSpeaker.Result(false, InterpreterErrorCodes.TTS_FAILED, "播报未初始化", 0)
                     : speaker.speak(item.text, item.lang);
             if (generation != recordedGeneration || !enabled) {
                 // 播的过程中被关掉了：状态复位完就走
@@ -168,7 +168,7 @@ public final class TtsQueue {
             }
             if (!result.ok) {
                 Log.w(TAG, "🔈 播报失败：" + result.error);
-                if (current != null) current.onProblem(result.error);
+                if (current != null) current.onProblem(result.code, result.error);
             }
             if (current != null) current.onSpeaking(null, false);
         }

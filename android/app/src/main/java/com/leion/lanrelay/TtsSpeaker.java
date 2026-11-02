@@ -42,15 +42,18 @@ public final class TtsSpeaker {
     /** 单块合成+播放的最长等待：卡住就放弃这一块，别把整个队列堵死。 */
     private static final long CHUNK_TIMEOUT_MS = 60_000;
 
-    /** 一次播报的结果：`ok=false` 时 `error` 是给用户看的人话。 */
+    /** 一次播报的结果：`ok=false` 时 `code` 是机器码（界面按语言翻），`error` 是兜底人话。 */
     public static final class Result {
         public final boolean ok;
+        /** 机器码（见 {@link InterpreterErrorCodes}）；ok=true 时为空串。 */
+        public final String code;
         public final String error;
         public final long firstAudioMs;
 
-        Result(boolean ok, String error, long firstAudioMs) {
+        Result(boolean ok, String code, String error, long firstAudioMs) {
             this.ok = ok;
-            this.error = error;
+            this.code = code == null ? "" : code;
+            this.error = error == null ? "" : error;
             this.firstAudioMs = firstAudioMs;
         }
     }
@@ -82,38 +85,38 @@ public final class TtsSpeaker {
     public Result speak(String text, String lang) {
         stopped = false;
         List<String> chunks = TtsChunker.split(text, lang);
-        if (chunks.isEmpty()) return new Result(true, "", 0);
+        if (chunks.isEmpty()) return new Result(true, "", "", 0);
         if (!ensureEngine(lang)) {
-            return new Result(false, ttsProblem.isEmpty()
-                    ? "这台设备没有可用的语音合成引擎" : ttsProblem, 0);
+            return new Result(false, InterpreterErrorCodes.TTS_ENGINE,
+                    ttsProblem.isEmpty() ? "这台设备没有可用的语音合成引擎" : ttsProblem, 0);
         }
         // 输出设备：**只接受近耳**（耳机/蓝牙/眼镜 USB），没有就不播
         AudioDeviceInfo output = preferredOutput();
         if (output == null) {
-            return new Result(false, "没有耳机或眼镜，已取消朗读（会议里禁止外放）", 0);
+            return new Result(false, InterpreterErrorCodes.NO_EARPHONE, "没有耳机或眼镜，已取消朗读（会议里禁止外放）", 0);
         }
         AudioFocusRequest focus = requestFocus();
         long startedAt = System.currentTimeMillis();
         long firstAudioMs = 0;
         try {
             for (String chunk : chunks) {
-                if (stopped) return new Result(true, "", firstAudioMs);
+                if (stopped) return new Result(true, "", "", firstAudioMs);
                 File file = synthesize(chunk, lang);
                 if (file == null) {
-                    return new Result(false, "语音合成失败（引擎没有返回音频）", firstAudioMs);
+                    return new Result(false, InterpreterErrorCodes.TTS_FAILED, "语音合成失败（引擎没有返回音频）", firstAudioMs);
                 }
                 try {
                     boolean played = play(file, output);
                     if (firstAudioMs == 0) firstAudioMs = System.currentTimeMillis() - startedAt;
                     if (!played) {
-                        return new Result(false, "朗读被中断或播放失败", firstAudioMs);
+                        return new Result(false, InterpreterErrorCodes.TTS_FAILED, "朗读被中断或播放失败", firstAudioMs);
                     }
                 } finally {
                     //noinspection ResultOfMethodCallIgnored
                     file.delete();
                 }
             }
-            return new Result(true, "", firstAudioMs);
+            return new Result(true, "", "", firstAudioMs);
         } finally {
             abandonFocus(focus);
         }

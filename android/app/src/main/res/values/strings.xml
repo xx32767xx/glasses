@@ -366,6 +366,20 @@
     <string name="interp_failed">出错了（%1$s）</string>
     <string name="interp_meta">我说%1$s · %2$s</string>
     <string name="interp_no_backend">无可用识别引擎</string>
+    <!-- 5.34：错误码 → 用户能读的一句话。加码时三套 strings.xml 都要加（有门禁）。
+         码值不许改（协议）；换说法只改文案。 -->
+    <string name="err_generic">出错了，请重试</string>
+    <string name="err_asr_network">连不上识别服务，正在重试…</string>
+    <string name="err_asr_busy">识别服务繁忙，稍后自动重试</string>
+    <string name="err_asr_auth">识别服务未授权，请联系管理员</string>
+    <string name="err_asr_failed">识别中断了，正在重试…</string>
+    <string name="err_no_engine">没有能识别这门语言的引擎</string>
+    <string name="err_asr_lang_mismatch">识别引擎与这门语言不匹配（配置问题，请联系管理员）</string>
+    <string name="err_mic_busy">麦克风正被别的功能占用，请稍后再试</string>
+    <!-- 5.34：麦克风没权限复用了已有的 err_mic_permission（182 行），不重复定义 -->
+    <string name="err_no_earphone">没有耳机或眼镜，已取消朗读（会议里禁止外放）</string>
+    <string name="err_tts_engine">这台设备没有可用的语音朗读引擎</string>
+    <string name="err_tts_failed">朗读失败，稍后会再试</string>
     <string name="st_code_failed">获取验证码失败：%1$s</string>
     <string name="st_need_agree_links">请先阅读并同意《用户协议》与《录音与隐私政策》</string>
     <string name="toast_need_agree">请先勾选同意用户协议与录音隐私政策</string>

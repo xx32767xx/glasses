@@ -313,9 +313,12 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             }
 
             @Override
-            public void onProblem(String message) {
+            public void onProblem(String code, String hint) {
                 ui.post(() -> {
-                    if (hintLine != null) hintLine.setText(message);
+                    // 5.34：按机器码取当前界面语言的那句（"没有耳机"这种提示不能只给中文）
+                    if (hintLine != null) {
+                        hintLine.setText(InterpreterErrorCodes.message(RoomActivity.this, code, hint));
+                    }
                 });
             }
         });

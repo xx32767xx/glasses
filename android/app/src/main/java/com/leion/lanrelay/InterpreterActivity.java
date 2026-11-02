@@ -86,8 +86,12 @@ public class InterpreterActivity extends android.app.Activity {
             }
 
             @Override
-            public void onProblem(String message) {
-                ui.post(() -> statusView.setText(message));
+            public void onProblem(String code, String hint) {
+                ui.post(() -> {
+                    // 5.34：按机器码取当前界面语言的那句；未知码才退回后端人话
+                    statusView.setText(InterpreterErrorCodes.message(
+                            InterpreterActivity.this, code, hint));
+                });
             }
         });
         ttsQueue.setEnabled(getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("ttsRead", false));

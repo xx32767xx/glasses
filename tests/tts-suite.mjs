@@ -185,6 +185,64 @@ export async function runTtsSuite({ it, check }) {
       /passed=23 failed=0/.test(report), report.trim().slice(-200))
   })
 
+  await it('错误码注册表：加码只改三处，漏一处自动红（不用改测试）', async () => {
+    const { readFileSync } = await import('node:fs')
+    const registryPath = join(JAVA_SRC, 'InterpreterErrorCodes.java')
+    const registry = readFileSync(registryPath, 'utf-8')
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+
+    // ① 从**注册表本身**读出所有码（不是写死清单）—— 所以以后加码，这条测试自动覆盖。
+    //    只认"既声明了常量、又在 MESSAGES 里注册了"的码：注释里的示例写法不算。
+    const constants = new Map([...registry.matchAll(/public static final String ([A-Z_]+) = "([a-z0-9-]+)"/g)]
+      .map((m) => [m[1], m[2]]))
+    const registered = [...registry.matchAll(/put\(([A-Z_]+), R\.string\.([a-z_0-9]+), (true|false)\)/g)]
+      .map((m) => ({ constant: m[1], resource: m[2], retryable: m[3] === 'true' }))
+    const codes = registered.map((one) => constants.get(one.constant)).filter((code) => code !== undefined)
+    check('注册表里至少登记了识别/采集/朗读三类码', codes.length >= 8, `只找到 ${codes.length} 个`)
+    check('每个 put(...) 用的常量都声明过码值',
+      registered.every((one) => constants.has(one.constant)),
+      registered.filter((one) => !constants.has(one.constant)).map((one) => one.constant).join(','))
+    check('码的格式统一（小写 + 连字符）', codes.every((code) => /^[a-z][a-z0-9-]*$/.test(code)),
+      codes.join(','))
+    check('码与资源名一一对应（err_ + 连字符换下划线）',
+      registered.every((one) => one.resource === `err_${String(constants.get(one.constant)).replace(/-/g, '_')}`),
+      registered.filter((one) => one.resource !== `err_${String(constants.get(one.constant)).replace(/-/g, '_')}`)
+        .map((one) => one.constant).join(','))
+
+    // ② 每个码都要有 `err_<code>` 的三语文案（资源名 = err_ + 连字符换下划线）
+    const resourceOf = (code) => `err_${code.replace(/-/g, '_')}`
+    for (const dir of ['values', 'values-en', 'values-pt-rBR']) {
+      const xml = readFileSync(join(resDir, dir, 'strings.xml'), 'utf-8')
+      for (const code of codes) {
+        check(`${resourceOf(code)} 在 ${dir} 里有`, new RegExp(`name="${resourceOf(code)}"`).test(xml),
+          `码 ${code} 缺三语文案（加码时三套 strings.xml 都要加）`)
+      }
+    }
+
+    // ③ 每个码都要在 MESSAGES 里注册（有文案但没映射 = 界面上永远看不到它）
+    for (const code of codes) {
+      check(`${code} 在 MESSAGES 里注册了文案`, new RegExp(`put\\([A-Z_]+, R\\.string\\.${resourceOf(code)}`).test(registry),
+        `${code} 没有 put(...) 映射`)
+    }
+
+    // ④ 兜底链与"能不能重试"这两个语义必须存在
+    check('有"未知码 → 人话 → 通用话"的兜底链',
+      /if \(hint != null && !hint\.trim\(\)\.isEmpty\(\)\) return hint\.trim\(\)/.test(registry)
+      && /err_generic/.test(registry))
+    check('每个码都标了能不能自动重试', (registry.match(/put\([A-Z_]+, R\.string\.[a-z_]+, (true|false)\)/g) ?? []).length === codes.length,
+      '有码没标 retryable')
+    check('有诊断用的摘要（码 + 可重试/需人工）', /public static String diagnostic\(/.test(registry))
+
+    // ⑤ 调用方必须按码翻译，而不是直接显示后端人话
+    for (const file of ['InterpreterActivity.java', 'RoomActivity.java']) {
+      const source = readFileSync(join(JAVA_SRC, file), 'utf-8')
+      check(`${file} 用注册表翻错误码`, /InterpreterErrorCodes\.message\(/.test(source),
+        '直接 setText(hint) 会让英文界面出现中文')
+    }
+    check('朗读失败也带着码（不是只有一句中文）',
+      /TTS_ENGINE|TTS_FAILED/.test(readFileSync(join(JAVA_SRC, 'TtsSpeaker.java'), 'utf-8')))
+  })
+
   await it('翻译官骨架：后端可换、明写"演示回放"、朗读复用同一套', async () => {
     const { readFileSync } = await import('node:fs')
     const backend = readFileSync(join(JAVA_SRC, 'InterpreterAsrBackend.java'), 'utf-8')
