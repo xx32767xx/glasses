@@ -127,8 +127,8 @@ public class InterpreterActivity extends android.app.Activity {
         });
         // 5.36：第一句提示要说**这一场实际会怎么跑**（服务器识别 + 翻译 / 演示回放），
         // 而不是一律写"演示回放"——那句在真接上之后就成了假话。
-        boolean hasRelay = router != null && !(router.resolve(lang) == null) && router.resolve(lang).ok()
-                && router.resolve(lang).backend instanceof RelayPipelineBackend;
+        AsrRouter.Resolution first = router == null ? null : router.resolve(lang);
+        boolean hasRelay = first != null && first.ok() && first.backend instanceof RelayPipelineBackend;
         statusView.setText(getString(hasRelay ? R.string.interp_hint_relay : R.string.interp_status_hint));
     }
 
