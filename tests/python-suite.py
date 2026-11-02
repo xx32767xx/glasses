@@ -2409,6 +2409,69 @@ def main():
     check("没配表是正常情况（问题串为空）", missing_problem == "", missing_problem)
     shutil.rmtree(broken_dir, ignore_errors=True)
 
+    heading("识别策略表（5.41）：一个策略 = 模型 + 切句；策略名随数据往下走")
+    strategy_table = {
+        "default": {"strategy": "default", "model": "large-v3", "compute_type": "float16",
+                    "beam_size": 5,
+                    "segmentation": {"silence_ms": 800, "max_speech_ms": 30000}},
+        "strategies": {
+            "en-fast": {"segmentation": {"silence_ms": 650, "min_speech_ms": 300}},
+            "en-accurate": {"model": "medium", "segmentation": {"silence_ms": 1000}},
+        },
+        "languages": {
+            "zh-CN": {"strategy": "default"},
+            "en-US": {"strategy": "en-fast"},
+        },
+    }
+    cli5 = {"model": "large-v3", "compute_type": "float16", "beam_size": 5}
+
+    en = whisper_stream.resolve_strategy("en-US", cli5, strategy_table)
+    check("语言行写了 strategy → 用那个策略名", en["strategy"] == "en-fast", str(en["strategy"]))
+    check("策略里的切句参数生效", en["segmentation"]["silence_ms"] == 650, str(en["segmentation"]))
+    check("没写的切句字段继承 default",
+          en["segmentation"]["max_speech_ms"] == 30000 and en["segmentation"]["cut_pause_ms"] == 200,
+          str(en["segmentation"]))
+    check("没写的模型字段继承 default（en-fast 没写 model）", en["model"] == "large-v3", str(en["model"]))
+    check("来源写清切句来自哪个策略", "en-fast" in en["sources"]["segmentation"], str(en["sources"]))
+    zh = whisper_stream.resolve_strategy("zh-CN", cli5, strategy_table)
+    check("策略没写的字段全部继承 default（zh-steady 那种写法）",
+          zh["segmentation"]["silence_ms"] == 800, str(zh["segmentation"]))
+    unknown_lang = whisper_stream.resolve_strategy("ja-JP", cli5, strategy_table)
+    check("表里没有的语言 → default 策略（不猜）", unknown_lang["strategy"] == "default",
+          unknown_lang["strategy"])
+    check("没有策略表时行为与以前一致（内置缺省 + 命令行）",
+          whisper_stream.resolve_strategy("pt-BR", cli5, {})["segmentation"]["silence_ms"] == 800,
+          str(whisper_stream.resolve_strategy("pt-BR", cli5, {})["segmentation"]))
+    bad_numbers = whisper_stream.resolve_strategy("en-US", cli5, {
+        "default": {"segmentation": {"silence_ms": 800}},
+        "languages": {"en-US": {"segmentation": {"silence_ms": "abc", "max_speech_ms": 0}}},
+    })
+    check("非法数值被忽略（不会把 0 或字符串当成参数）",
+          bad_numbers["segmentation"]["silence_ms"] == 800
+          and bad_numbers["segmentation"]["max_speech_ms"] == 30000, str(bad_numbers["segmentation"]))
+    room_model = whisper_stream.resolve_strategy(
+        "en-US", cli5, strategy_table, {"byLang": {"en-US": {"model": "small"}}})
+    check("房间覆盖只改模型，切句仍来自策略",
+          room_model["model"] == "small" and room_model["segmentation"]["silence_ms"] == 650,
+          f"{room_model['model']} / {room_model['segmentation']['silence_ms']}")
+    described_strategies = "\n".join(whisper_stream.describe_strategies(strategy_table))
+    check("describe_strategies 摊出策略名与语种指向",
+          "en-fast" in described_strategies and "en-US" in described_strategies, described_strategies)
+
+    # 切出来的段必须把**策略名**写进 meta —— 这是"策略随数据往下走"的第一步
+    queue_dir = Path(ROOT / "var" / "test" / "queue-strategy")
+    shutil.rmtree(queue_dir, ignore_errors=True)
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    tone_audio = np.zeros(1600, dtype=np.float32)
+    tone_audio[100:900] = 0.3
+    name = whisper_stream._write_segment(str(queue_dir), "room-S", 16000, tone_audio, np,
+                                         "en", speaker="alice", strategy="en-fast")
+    meta = json.load(open(queue_dir / f"{name}.json", encoding="utf-8"))
+    check("队列 meta 带策略名", meta.get("strategy") == "en-fast", str(meta))
+    check("队列 meta 仍然带说话人与语种", meta.get("speaker") == "alice" and meta.get("lang") == "en",
+          str(meta))
+    shutil.rmtree(queue_dir, ignore_errors=True)
+
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
     if failures:
         print("")

@@ -357,6 +357,9 @@ def parse_args(argv=None):
                         help="按语言选模型的表（JSON，5.40）。给了它，每段话就按自己的语种"
                              "查表决定用哪个模型/解码参数；改了文件会自动重新读，不用重启。"
                              "优先级：房间覆盖 > languages[语种] > default > 命令行")
+    parser.add_argument("--data-dir", default=None,
+                        help="数据目录（5.41）：用来读 `<data-dir>/asr-profiles/<房间>.json`"
+                             "（手机开会话时上报的模型/策略请求）。切句端与识别端都要给才能用房间覆盖")
     parser.add_argument("--max-models", type=int, default=2,
                         help="模型池最多同时留在显存里的份数（缺省 2；超了淘汰最久没用的）。"
                              "⚠️ 调大就是多吃显存，不够时表现是 OOM 崩溃而不是变慢")
@@ -376,7 +379,8 @@ def parse_args(argv=None):
 QUEUE_META_SUFFIX = ".json"
 
 
-def _write_segment(queue_dir, tag, samplerate, audio, np, language=None, speaker=None):
+def _write_segment(queue_dir, tag, samplerate, audio, np, language=None, speaker=None,
+                   strategy=None):
     """把一段话落进队列：裸 PCM + 一份 meta。返回写出的文件名（供日志/测试）。"""
     os.makedirs(queue_dir, exist_ok=True)
     # 文件名按**时间戳**排：消费者直接按名字排序就是"到达顺序"（FIFO），
@@ -399,6 +403,9 @@ def _write_segment(queue_dir, tag, samplerate, audio, np, language=None, speaker
         "lang": None if language is None else str(language),
         # 5.08：这段话是谁说的。分轨之后这是**数据自带的**，不用下游再猜"最近的说话人"。
         "speaker": None if speaker is None else str(speaker),
+        # 5.41：这一段是用哪份**识别策略**切的（名字）。随数据一路往下走，
+        # 这样 A/B 报告能按策略分组，而不是事后靠时间顺序猜"这几句是改之前还是之后"。
+        "strategy": None if strategy is None else str(strategy),
         "queuedAt": int(time.time() * 1000),
     }
     # ⚠️ **先写 pcm、最后写 meta**：消费者只认 meta 存在的段。
@@ -416,15 +423,35 @@ def _write_segment(queue_dir, tag, samplerate, audio, np, language=None, speaker
     return base
 
 
-def _new_segmenter(args, np):
-    """按当前参数造一个切句器（一路音频一个：各自的能量统计必须独立）。"""
+def _new_segmenter(args, np, segmentation=None):
+    """按当前参数造一个切句器（一路音频一个：各自的能量统计必须独立）。
+
+    <p>5.41：`segmentation` 给了就按它（来自识别策略）；没给就沿用命令行那套 ——
+    所以"不配策略表"的行为与以前一模一样。
+    """
+    seg = dict(SEGMENTATION_DEFAULTS)
+    seg.update(_numbers_or_skip(segmentation, SEGMENTATION_FIELDS))
     return UtteranceSegmenter(
-        args.samplerate, args.block_ms, args.silence_ms,
-        args.min_speech_ms, args.max_speech_ms, args.rms_threshold, args.preroll_ms, np,
+        args.samplerate, args.block_ms, seg["silence_ms"],
+        seg["min_speech_ms"], seg["max_speech_ms"], args.rms_threshold, args.preroll_ms, np,
         adaptive=args.adaptive, rms_floor=args.rms_floor, noise_multiplier=args.noise_multiplier,
-        short_utterance_ms=args.short_utterance_ms, short_silence_ms=args.short_silence_ms,
-        cut_pause_ms=args.cut_pause_ms,
+        short_utterance_ms=seg["short_utterance_ms"], short_silence_ms=seg["short_silence_ms"],
+        cut_pause_ms=seg["cut_pause_ms"],
     )
+
+
+def _read_lang_sidecar(pcm_path):
+    """读 `<pcm>.lang` 里的语种标签，返回 Whisper 语种码（读不到返回 None）。
+
+    <p>为什么不直接用 {@link PcmFollower.read_language}：那要先有 follower，
+    而 follower 的块长来自切句器，切句器又要先知道语种（5.41 的策略是按语种选的）——
+    顺序上绕不开。这里只做"读一个文件"，不维护任何状态。
+    """
+    try:
+        tag = Path(str(pcm_path) + ".lang").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return whisper_language_of(tag)
 
 
 def run_segment_producer_dir(args, np):
@@ -460,10 +487,37 @@ def run_segment_producer_dir(args, np):
     idle = IdleTracker(args.idle_flush_ms, args.follow_poll_ms)
     idle_stop_ms = (None if args.stop_after_idle is None
                     else max(1, int(args.stop_after_idle * 1000)))
-    # speaker → {follower, segmenter, language, reported, unknown_noticed}
+    # speaker → {follower, segmenter, language, reported, unknown, strategy, segmenter_key}
     tracks = {}
     produced = 0
     announced = set()
+    room_cache = {}
+    # 5.41：策略表（切句这里只读它的 `segmentation` 那一半）
+    table, table_problem = load_asr_models(args.model_map)
+    if table_problem:
+        print(f"[切句] ⚠️ 策略表有问题，先用命令行那套参数：{table_problem}",
+              file=sys.stderr, flush=True)
+    table_stamp = _stamp_of(args.model_map)
+    if args.model_map and table:
+        print(f"[切句] 策略表 {args.model_map}（改了会自动重新读，不用重启）",
+              file=sys.stderr, flush=True)
+        for line in describe_strategies(table):
+            print(f"[切句] {line}", file=sys.stderr, flush=True)
+
+    def strategy_for(language):
+        """这一路该用哪份策略（含切句参数）。策略名会跟着段一路传到收信箱。"""
+        room_profile = read_room_asr_profile(args.data_dir, args.tag, room_cache)
+        return resolve_strategy(language, {
+            "model": args.model, "compute_type": args.compute_type, "beam_size": args.beam_size,
+        }, table, room_profile)
+
+    def segmenter_key(strategy):
+        return tuple(strategy["segmentation"].get(key) for key in SEGMENTATION_FIELDS)
+
+    def make_segmenter(strategy):
+        """按策略里的切句参数造切句器（一路一个：能量统计必须独立）。"""
+        seg = strategy["segmentation"]
+        return _new_segmenter(args, np, segmentation=seg)
 
     def track_of(name):
         """该说话人的那一路（第一次见到就开跟）。"""
@@ -471,16 +525,21 @@ def run_segment_producer_dir(args, np):
         if state is not None:
             return state
         path = root / f"{name}.pcm"
-        segmenter = _new_segmenter(args, np)
-        follower = PcmFollower(path, args.samplerate, np, segmenter.block,
-                              from_start=args.follow_from_start)
-        language = None if args.no_sidecar_lang else follower.read_language(default=args.language)
+        language = None if args.no_sidecar_lang else _read_track_language(path)
         if language is None:
             language = args.language
+        strategy = strategy_for(language)
+        segmenter = make_segmenter(strategy)
+        follower = PcmFollower(path, args.samplerate, np, segmenter.block,
+                              from_start=args.follow_from_start)
         follower.lang_notice = None
         state = {"follower": follower, "segmenter": segmenter, "language": language,
-                 "reported": None, "unknown": False}
+                 "reported": None, "unknown": False,
+                 "strategy": strategy, "segmenter_key": segmenter_key(strategy)}
         tracks[name] = state
+        print(f"[切句] {args.tag or '?'} {name} 策略 = {strategy['strategy']}"
+              f"（切句 {', '.join(f'{k}={v}' for k, v in strategy['segmentation'].items())}）",
+              file=sys.stderr, flush=True)
         return state
 
     def flush(name, state, utterance):
@@ -488,10 +547,13 @@ def run_segment_producer_dir(args, np):
         if utterance is None or len(utterance) == 0:
             return
         base = _write_segment(args.segment_dir, args.tag, args.samplerate, utterance, np,
-                              state["language"], speaker=name)
+                              state["language"], speaker=name,
+                              strategy=state["strategy"]["strategy"])
         produced += 1
+        # 每一句都把策略名打出来（用户要求：便于对照与调节）
         print(f"[切句] {args.tag or '?'} {name} → {base}"
-              f"（{len(utterance) / args.samplerate:.1f}s，累计 {produced} 段）",
+              f"（{len(utterance) / args.samplerate:.1f}s，策略 {state['strategy']['strategy']}，"
+              f"累计 {produced} 段）",
               file=sys.stderr, flush=True)
 
     def report(name, state):
@@ -517,6 +579,21 @@ def run_segment_producer_dir(args, np):
 
     try:
         while True:
+            # 5.41：策略表热加载。读到坏表就**沿用上一份好配置**（切句权重轻、改坏一个逗号
+            # 不该让这整场会一句话都切不出来 —— 这一点和模型侧不同，那边宁可跳过也不换）。
+            if args.model_map:
+                new_stamp = _stamp_of(args.model_map)
+                if new_stamp != table_stamp:
+                    table_stamp = new_stamp
+                    fresh, problem = load_asr_models(args.model_map)
+                    if problem:
+                        print(f"[切句] ⚠️ 策略表更新失败，继续用上一份：{problem}",
+                              file=sys.stderr, flush=True)
+                    else:
+                        table = fresh
+                        print(f"[切句] 策略表已重新加载", file=sys.stderr, flush=True)
+                        for line in describe_strategies(table):
+                            print(f"[切句] {line}", file=sys.stderr, flush=True)
             any_data = False
             try:
                 names = sorted(p.stem for p in root.glob("*.pcm"))
@@ -532,6 +609,22 @@ def run_segment_producer_dir(args, np):
                 if not args.no_sidecar_lang:
                     state["language"] = state["follower"].read_language(default=state["language"])
                     report(name, state)
+                # 语种或策略表变了 → 这一路换参数。**只在没在说话时换**：
+                # 手上正攒着的那句话必须按旧参数收尾，否则同一句会被两套阈值判两次
+                # （那正是"半句旧参数半句新参数"的噪声，A/B 时最难解释的一种）。
+                wanted = strategy_for(state["language"])
+                if segmenter_key(wanted) != state["segmenter_key"]:
+                    if state["segmenter"].speaking:
+                        print(f"[切句] {args.tag or '?'} {name} 策略变了"
+                              f"（{state['strategy']['strategy']} → {wanted['strategy']}），"
+                              f"但这一句还在说 —— 等它收尾后再换", file=sys.stderr, flush=True)
+                    else:
+                        state["strategy"] = wanted
+                        state["segmenter_key"] = segmenter_key(wanted)
+                        state["segmenter"] = make_segmenter(wanted)
+                        print(f"[切句] {args.tag or '?'} {name} 换策略 → {wanted['strategy']}"
+                              f"（切句 {', '.join(f'{k}={v}' for k, v in wanted['segmentation'].items())}）",
+                              file=sys.stderr, flush=True)
                 if blocks:
                     any_data = True
                     idle.saw_data()
@@ -692,6 +785,200 @@ def _pending_segments(queue_dir):
 
 ASR_MODELS_FILE = "asr-models.json"
 
+# ── 「识别策略」：一个策略 = 用哪个模型 + 怎么切句（5.41）────────────────────
+#
+# 为什么把两件东西放进**同一个对象**：它们总是要一起变。切句窗口从 800 调到 650 之后，
+# 段变短了，同一个模型在上面可能会变得更容易"猜"，而调参的人需要**成对地**对待
+# "切在哪"和"拿什么认"。分成两张表，迟早出现"切句改了、模型忘了跟"的半新半旧状态。
+#
+# 但要注意：这两半**由两个不同进程消费**（切句进程 / 识别进程），所以表是同一张，
+# 消费方各取所需 —— 切句进程只读 `segmentation`，识别进程只读 `model/compute_type/beam_size`。
+#
+# 策略**必须有名字**（`default` / `en-fast` / `en-accurate`）：
+# 名字会随数据往下走（队列 meta → 收件箱行 → 日志），否则 A/B 报告里全是裸数字，
+# 事后根本说不清"这一句是哪个策略出的"。
+
+# 切句侧可配的字段 → 与 UtteranceSegmenter 的参数同名，便于对照。
+SEGMENTATION_FIELDS = (
+    "silence_ms", "min_speech_ms", "max_speech_ms",
+    "short_utterance_ms", "short_silence_ms", "cut_pause_ms",
+)
+
+# 识别侧可配的字段。
+MODEL_FIELDS = ("model", "compute_type", "beam_size")
+
+# 命令行没给值时的缺省（与 parse_args 的 default 保持一致；表里没写就落在这里）
+SEGMENTATION_DEFAULTS = {
+    "silence_ms": 800,
+    "min_speech_ms": 500,
+    "max_speech_ms": 30000,
+    "short_utterance_ms": 800,
+    "short_silence_ms": 1100,
+    "cut_pause_ms": 200,
+}
+
+
+def _numbers_or_skip(entry, fields):
+    """从一条配置里挑出这些字段的**合法整数值**（写错了就跳过这一项，不污染整份策略）。"""
+    out = {}
+    if not isinstance(entry, dict):
+        return out
+    for key in fields:
+        value = entry.get(key)
+        if value is None or value == "":
+            continue
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+        if number > 0:
+            out[key] = number
+    return out
+
+
+def merge_strategy(base, *layers):
+    """把若干层配置叠起来（后面的覆盖前面的）；`segmentation` 逐字段合并。
+
+    为什么要"逐字段"：只想改 silence 的人不该被迫把另外五个字段也抄一遍 ——
+    抄写就是漂移的来源。没写的字段一律继承上一层。
+    """
+    merged = {key: value for key, value in (base or {}).items() if key != "segmentation"}
+    merged["segmentation"] = dict((base or {}).get("segmentation") or {})
+    for layer in layers:
+        if not isinstance(layer, dict):
+            continue
+        for key, value in layer.items():
+            if key == "segmentation":
+                if isinstance(value, dict):
+                    merged["segmentation"].update(_numbers_or_skip(value, SEGMENTATION_FIELDS))
+                continue
+            if key in ("strategy", "note", "source"):
+                continue
+            if value is None or value == "":
+                continue
+            merged[key] = value
+    return merged
+
+
+def resolve_strategy(language, cli, table=None, room_profile=None):
+    """算出一段话该用的**整份识别策略**（模型 + 切句参数 + 名字 + 来源）。
+
+    叠加顺序（后面的覆盖前面的）：
+      ① 内置缺省（`SEGMENTATION_DEFAULTS` + 命令行给的模型参数）
+      ② 表里的 `default`
+      ③ 表里的 `strategies[名字]`（名字来自 ②/languages 的 `strategy` 字段）
+      ④ 表里的 `languages[语种]`（行内可以再覆盖任意字段）
+      ⑤ 房间覆盖（手机上报，只影响这一场）
+
+    返回的字典包含：
+      · `strategy`：策略名（日志/数据都用它，**做 A/B 时按它分组**）
+      · `model` / `compute_type` / `beam_size`
+      · `segmentation`：六个切句字段（切句进程用）
+      · `sources`：每个部分最终是**哪一层**定的（"为什么是这个值"要有答案）
+    """
+    cli = cli or {}
+    table = table if isinstance(table, dict) else {}
+
+    base = {
+        "model": cli.get("model"),
+        "compute_type": cli.get("compute_type"),
+        "beam_size": cli.get("beam_size"),
+        "segmentation": dict(SEGMENTATION_DEFAULTS),
+    }
+    sources = {"model": "命令行", "segmentation": "内置缺省"}
+
+    default_layer = table.get("default") if isinstance(table.get("default"), dict) else {}
+    layered = merge_strategy(base, default_layer)
+    if default_layer:
+        sources["model"] = "表 default"
+        if default_layer.get("segmentation"):
+            sources["segmentation"] = "表 default"
+
+    # 策略名：languages 行里写的优先，其次 default 里写的，再其次 "default"
+    languages = table.get("languages") if isinstance(table.get("languages"), dict) else {}
+    strategies = table.get("strategies") if isinstance(table.get("strategies"), dict) else {}
+    tag = language_tag(language) or (language if isinstance(language, str) else "")
+
+    lang_entry = None
+    for key in (tag, language):
+        if key and key in languages:
+            lang_entry = languages[key]
+            break
+
+    name = ""
+    if isinstance(lang_entry, dict) and isinstance(lang_entry.get("strategy"), str):
+        name = lang_entry["strategy"].strip()
+    if not name and isinstance(default_layer.get("strategy"), str):
+        name = default_layer["strategy"].strip()
+    if not name:
+        name = "default"
+
+    named = strategies.get(name)
+    if isinstance(named, dict):
+        layered = merge_strategy(layered, named)
+        if named.get("model") or named.get("compute_type") or named.get("beam_size"):
+            sources["model"] = f"策略 {name}"
+        if named.get("segmentation"):
+            sources["segmentation"] = f"策略 {name}"
+
+    if lang_entry is not None:
+        layered = merge_strategy(layered, lang_entry)
+        label = f"languages.{tag or language}"
+        if isinstance(lang_entry, dict) and any(k in lang_entry for k in MODEL_FIELDS):
+            sources["model"] = label
+        if isinstance(lang_entry, dict) and lang_entry.get("segmentation"):
+            sources["segmentation"] = label
+
+    room_layer = (room_profile or {}).get("byLang") if isinstance(room_profile, dict) else None
+    if isinstance(room_layer, dict):
+        for key in (tag, language):
+            if key and key in room_layer:
+                # 房间覆盖里可以只写模型，也可以带上 segmentation（手机那张表将来能表达）
+                layered = merge_strategy(layered, room_layer[key])
+                if isinstance(room_layer[key], dict):
+                    sources["model"] = f"房间覆盖 {key}"
+                    if room_layer[key].get("segmentation"):
+                        sources["segmentation"] = f"房间覆盖 {key}"
+                break
+
+    layered["strategy"] = name
+    layered["sources"] = sources
+    layered["segmentation"] = {key: layered["segmentation"].get(key, SEGMENTATION_DEFAULTS[key])
+                               for key in SEGMENTATION_FIELDS}
+    return layered
+
+
+def describe_strategies(table):
+    """把表里的策略摊成几行（启动日志与文档对照用）。"""
+    if not isinstance(table, dict) or not table:
+        return ["（没有策略表：所有语种都用命令行那一套）"]
+    lines = []
+    strategies = table.get("strategies") if isinstance(table.get("strategies"), dict) else {}
+    for name in sorted(strategies):
+        one = strategies[name] if isinstance(strategies[name], dict) else {}
+        bits = []
+        for key in MODEL_FIELDS:
+            if one.get(key) is not None:
+                bits.append(f"{key}={one[key]}")
+        seg = _numbers_or_skip(one.get("segmentation"), SEGMENTATION_FIELDS)
+        if seg:
+            bits.append("segmentation{" + ", ".join(f"{k}={v}" for k, v in seg.items()) + "}")
+        lines.append(f"  · {name}：{', '.join(bits) if bits else '（全部继承 default）'}")
+    languages = table.get("languages") if isinstance(table.get("languages"), dict) else {}
+    for lang in sorted(languages):
+        entry = languages[lang]
+        if isinstance(entry, str):
+            lines.append(f"  · {lang} → 模型 {entry}（简写）")
+        elif isinstance(entry, dict):
+            named = entry.get("strategy")
+            extra = [k for k in MODEL_FIELDS if entry.get(k) is not None]
+            seg = _numbers_or_skip(entry.get("segmentation"), SEGMENTATION_FIELDS)
+            bits = ([f"策略={named}"] if named else []) + [f"{k}={entry[k]}" for k in extra]
+            if seg:
+                bits.append("segmentation{" + ", ".join(f"{k}={v}" for k, v in seg.items()) + "}")
+            lines.append(f"  · {lang}: {', '.join(bits) if bits else '（继承 default）'}")
+    return lines or ["  （表是空的）"]
+
 
 def load_asr_models(path):
     """读模型表。返回 `(table, problem)`；读不到/坏了都**不抛**，让调用方决定怎么报。
@@ -846,8 +1133,9 @@ class ModelPool:
         self.log(f"[识别] 模型就绪 {key[0]} / {key[1]}（{took:.1f}s）")
         return model
 
-    def note(self, profile):
-        tag = f"{profile.get('source')} → {profile.get('model')}"
+    def note(self, profile, strategy_name=""):
+        """记一段的处理数（按策略名分组 —— 这就是 A/B 报告的分组口径）。"""
+        tag = f"{strategy_name or profile.get('strategy') or '?'} → {profile.get('model')}"
         self.counts[tag] = self.counts.get(tag, 0) + 1
 
     def report(self):
@@ -912,16 +1200,22 @@ def run_queue_consumer(args, np, pool):
             meta, audio = got
             waited_ms_max = max(waited_ms_max, int(time.time() * 1000) - int(meta.get("queuedAt") or 0))
             language = meta.get("lang") or args.language
-            # 5.40：这一段用哪个模型 —— 房间覆盖 → languages → default → 命令行（见 resolve_asr_profile）
+            # 5.40/5.41：这一段用哪份策略 —— 房间覆盖 → languages → strategies[名字] →
+            # default → 命令行（见 resolve_strategy）。策略里既有模型也有切句参数；
+            # 切句那半边是切句进程用的，这里只取模型这半边，但**名字要一路带下去**。
             room_profile = read_room_asr_profile(args.data_dir, meta.get("room"), room_cache)
-            profile = resolve_asr_profile(language, {
+            strategy = resolve_strategy(language, {
                 # 命令行的"缺省档案"用**启动时真正加载的那一份**（可能来自表的 default），
                 # 否则 A/B 时会拿旧命令行值把表的结论盖掉
                 "model": getattr(args, "startup_model", None) or args.model,
                 "compute_type": getattr(args, "resolved_compute", None) or args.compute_type,
                 "beam_size": args.beam_size,
             }, getattr(args, "asr_table", None), room_profile)
-            pool.note(profile)
+            # 切句那边已经给这一段起过名字（meta["strategy"]）；没给就用这份策略算出来的名字。
+            cutStrategy = meta.get("strategy")
+            strategyName = str(cutStrategy) if isinstance(cutStrategy, str) and cutStrategy.strip() else strategy["strategy"]
+            profile = strategy
+            pool.note(strategy, strategyName)
             try:
                 model = pool.get(profile, device=args.device)
             except Exception as error:      # noqa: BLE001
@@ -930,8 +1224,9 @@ def run_queue_consumer(args, np, pool):
                 # 内容是用户的语音，删了就是无声丢失。所以挪进 `failed/` 子目录 ——
                 # 队列（只看本层的 .json）不再取它，但音频还在，事后能查能重放。
                 print(f"[识别] 这一段要求的模型 {profile.get('model')} 加载失败"
-                      f"（{profile.get('source')}），已挪到 failed/ 留证："
-                      f"{type(error).__name__}: {error}", file=sys.stderr, flush=True)
+                      f"（策略 {strategyName}，模型来源 {profile['sources'].get('model')}），"
+                      f"已挪到 failed/ 留证：{type(error).__name__}: {error}",
+                      file=sys.stderr, flush=True)
                 failed_dir = os.path.join(args.queue_dir, "failed")
                 try:
                     os.makedirs(failed_dir, exist_ok=True)
@@ -974,7 +1269,14 @@ def run_queue_consumer(args, np, pool):
                 who = meta.get("speaker")
                 if isinstance(who, str) and who.strip() != "":
                     payload["speaker"] = who.strip()
+                # 5.41：策略名随数据往下走（收件箱行 → 大脑 → 日志）。
+                payload["strategy"] = strategyName
+                payload["model"] = profile.get("model")
                 print(json.dumps(payload, ensure_ascii=False), flush=True)
+                # 每一句都在日志里留一行策略（用户要求：便于对照与调节）
+                print(f"[识别] 房间 {meta.get('room')} 策略 {strategyName}"
+                      f"（模型 {profile.get('model')}，切句由 {cutStrategy or '旧版段（无策略名）'}）"
+                      f" → {seconds:.1f}s 出字", file=sys.stderr, flush=True)
             processed += 1
             # ⚠️ 处理完就删：队列目录同时是"待处理清单"，删掉才算消费完。
             for suffix in (".pcm", QUEUE_META_SUFFIX):
@@ -2270,7 +2572,7 @@ def main():
     args.asr_table, map_problem = load_asr_models(args.model_map)
     if map_problem:
         print(f"[whisper_stream] ⚠️ 模型表有问题，先按命令行模型跑：{map_problem}", file=sys.stderr)
-    startup = resolve_asr_profile(args.language, {
+    startup = resolve_strategy(args.language, {
         "model": args.model, "compute_type": compute_type, "beam_size": args.beam_size,
     }, args.asr_table)
     startup_model = startup.get("model") or args.model

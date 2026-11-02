@@ -162,7 +162,8 @@ export function normalizeLangTag(from) {
  * 用 `openSync(..., 'a')` + `writeSync` 而不是追一个常开的句柄：房间可能很多，
  * 常开句柄会让"某一场会关掉后文件还被占着"（Windows 上改不了名、删不掉）。
  */
-export function appendInboxLine(inboxDir, roomId, text, from, { fs = null, speaker = '' } = {}) {
+export function appendInboxLine(inboxDir, roomId, text, from,
+  { fs = null, speaker = '', strategy = '', model = '' } = {}) {
   const tag = normalizeLangTag(from)
   // 5.10：说话人跟着这一行走。**字段名必须是 `speakerName`，不能叫 `speaker`** ——
   // 插件那边的 `speaker` 是另一套语义（相对佩戴者的 `'me' / 'them'`），
@@ -173,6 +174,11 @@ export function appendInboxLine(inboxDir, roomId, text, from, { fs = null, speak
   const body = { text }
   if (tag !== null) body.from = tag
   if (who !== '') body.speakerName = who
+  // 5.41：策略名 / 模型名透传给大脑（只用于日志与 A/B 分组，不参与语向判定）。
+  const strategyName = typeof strategy === 'string' ? strategy.trim() : ''
+  const modelName = typeof model === 'string' ? model.trim() : ''
+  if (strategyName !== '') body.strategy = strategyName
+  if (modelName !== '') body.model = modelName
   const line = JSON.stringify(body)
   const file = inboxPathFor(inboxDir, roomId)
   if (fs !== null) {                     // 测试注入：不必真写盘
@@ -334,7 +340,10 @@ export async function main(argv = process.argv.slice(2)) {
     // 5.08：说话人跟着这一行走（来自分轨文件名）。下游能据此给字幕落名字，
     // 不必再用"这个房间最近一次上传的人"去猜 —— 那个在两人交替说话时会记错人。
     const who = typeof payload.speaker === 'string' ? payload.speaker.trim() : ''
-    appendInboxLine(options.inboxDir, room, spoken, raw, { speaker: who })
+    // 5.41：策略名 / 模型名跟着这一行往下走（大脑只拿它写日志，不参与语向判定）
+    const strategy = typeof payload.strategy === 'string' ? payload.strategy.trim() : ''
+    const model = typeof payload.model === 'string' ? payload.model.trim() : ''
+    appendInboxLine(options.inboxDir, room, spoken, raw, { speaker: who, strategy, model })
     if (process.env.LEION_DEBUG === '1') {
       process.stdout.write(`${TAG} ${room} → ${spoken}\n`)
     }

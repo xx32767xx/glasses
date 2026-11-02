@@ -2857,7 +2857,23 @@ function createInterpreter(ctx, rawConfig, deps) {
       // 队列链路（切句按说话人分轨）会把**真名**一起写进来，字段名必须与它区分开 ——
       // 5.08 就是把它写进了 `speaker`，结果每一行都被判成坏行，字幕一句都不出。
       speakerName: typeof parsed.speakerName === 'string' ? parsed.speakerName : undefined,
+      // 5.41：这两项是**纯透传**的元信息（策略名 / 模型名），只为了日志与 A/B 分组。
+      // 它们不参与语向判定，缺了也照样翻译 —— 所以不做校验，缺省 undefined。
+      strategy: typeof parsed.strategy === 'string' ? parsed.strategy : undefined,
+      model: typeof parsed.model === 'string' ? parsed.model : undefined,
     }
+  }
+
+  /** 「[策略 en-fast/model large-v3]」这种小尾巴（没有就不写）。 */
+  function strategyTag(item) {
+    if (item === null || item === undefined) return ''
+    const name = typeof item.strategy === 'string' ? item.strategy.trim() : ''
+    const model = typeof item.model === 'string' ? item.model.trim() : ''
+    if (name === '' && model === '') return ''
+    const parts = []
+    if (name !== '') parts.push(name)
+    if (model !== '') parts.push('模型 ' + model)
+    return '[策略 ' + parts.join(' / ') + ']'
   }
 
   /** 读一次收件箱，把已完整的行排进队列。 */
@@ -3066,7 +3082,11 @@ function createInterpreter(ctx, rawConfig, deps) {
             inbox.processed += 1
             // 自动同传这条路上没有人在看工具的返回值，所以把每一句打进日志 ——
             // 否则 transport 配成 'file' 时，整个 daemon 是完全静默的，出问题只能靠猜。
-            console.log('[leion-pro] ' + result.from + '→' + result.to + '  ' + result.translation)
+            // 5.41：识别侧把「这句用的是哪份识别策略」带进来了，日志里一并写出 ——
+            // 否则 A/B 时"这句字幕是哪个策略出来的"只能靠时间顺序猜。
+            console.log('[leion-pro] ' + result.from + '→' + result.to
+              + (strategyTag(item) === '' ? '' : ' ' + strategyTag(item))
+              + '  ' + result.translation)
           } else {
             inbox.errors += 1
             inbox.lastError = result.failure

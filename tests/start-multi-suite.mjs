@@ -570,6 +570,15 @@ export async function runStartMultiSuite({ it, check, assert }) {
     check('同时带上模型池上限（缺省 2）',
       worker.args.includes('--max-models') && worker.args[worker.args.indexOf('--max-models') + 1] === '2',
       worker.args.join(' '))
+    // 5.41：切句进程也要拿同一张表（它只用 segmentation 那半）——只给识别不给切句，
+    // 会出现"改表只影响识别、切句照旧"的半生效状态，比完全不生效更难察觉。
+    const cut = pipelineSteps(auto, { id: 'room-A' }).find((step) => step.role === 'cut')
+    check('切句进程也收到 --model-map（策略表两半都要生效）',
+      cut.args.includes('--model-map')
+      && cut.args[cut.args.indexOf('--model-map') + 1] === auto.modelMap, cut.args.join(' '))
+    check('切句进程收到 --data-dir（房间覆盖要能读到）',
+      cut.args.includes('--data-dir')
+      && cut.args[cut.args.indexOf('--data-dir') + 1] === auto.dataDir, cut.args.join(' '))
 
     const explicit = parseArgs(['--data-dir', base, '--model-map', 'config/asr-models.json', '--max-models', '3'])
     check('显式 --model-map 优先于自动发现', explicit.modelMap.endsWith(join('config', 'asr-models.json')),

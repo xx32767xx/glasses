@@ -403,6 +403,9 @@ export function pipelineSteps(options, room) {
           // 语言从源头就错了，下游再怎么修都是补丁。
           '--follow-dir', files.audioDir,
           '--follow-poll-ms', '80',
+          // 5.41：切句侧也要读**同一张策略表**（它只用 `segmentation` 那一半）。
+          // 不传的话会出现"改表只影响识别、切句照旧"的半生效状态 —— 那比不生效更难察觉。
+          ...(options.modelMap ? ['--model-map', options.modelMap, '--data-dir', options.dataDir] : []),
         ],
       })
     } else {
@@ -481,6 +484,8 @@ export function workerStep(options) {
   if (options.modelMap) {
     args.push('--model-map', options.modelMap)
     args.push('--max-models', String(options.maxModels ?? 2))
+    // 5.41：房间覆盖（手机上报的策略/模型）也读这里
+    args.push('--data-dir', options.dataDir)
   }
   return {
     key: 'asr-worker', role: 'worker', tag: '识别', label: '识别', color: '\x1b[35m',

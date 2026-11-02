@@ -1,32 +1,76 @@
 {
   "_comment": [
-    "按语言选模型的表（5.40）。放到数据目录里（<data-dir>/asr-models.json）就会自动生效，",
-    "改完保存即可 —— 识别进程每轮都会看一眼 mtime，不用重启。",
-    "优先级：房间覆盖（手机上报） > languages[语种] > default > 命令行 --whisper-model。",
-    "字段：model（faster-whisper 能识别的尺寸名，如 large-v3 / medium / small，或本地目录绝对路径）、",
-    "      compute_type（float16 / int8_float16 / int8_float32 / int8 / float32）、",
-    "      beam_size（整数，越大越准越慢）。都可以只写一项。",
-    "⚠️ 同时留几份模型就吃几份显存：--max-models（缺省 2）超了会淘汰最久没用的那份。",
-    "下面这份是**当前产线的等价配置**：照抄过来不会改变任何行为，只作为改写的起点。"
+    "识别策略表（5.41）。放到数据目录里（<data-dir>/asr-models.json）就自动生效；改完保存即可，",
+    "切句侧与识别侧都会重新读，不用重启。",
+    "",
+    "一个「策略」= 用哪个模型 + 怎么切句。两半由两个进程消费：切句进程读 segmentation，",
+    "识别进程读 model/compute_type/beam_size。但它们**故意放在同一张表里** ——",
+    "因为这两件事总是要成对地调（切句窗口变了，模型表现也会变）。",
+    "",
+    "优先级（后面覆盖前面）：内置缺省 → default → strategies[名字] → languages[语种] → 房间覆盖（手机上报）",
+    "没写的字段一律**继承**上一层，所以只想改 silence_ms 就只写 silence_ms。",
+    "",
+    "字段说明（切句侧，单位毫秒）：",
+    "  silence_ms         说完多久算一句结束（越小字幕越快、越容易切碎；缺省 800）",
+    "  min_speech_ms      一段话至少要有多少语音才交出去（太小会产胡话碎片；缺省 500）",
+    "  max_speech_ms      一段最长多少（超了在内部停顿处断开；缺省 30000）",
+    "  short_utterance_ms 攒到多久才算“够长”，够长后用正常静音判定收句（缺省 800）",
+    "  short_silence_ms   还没攒够时，要多等多久静音才收句（缺省 1100）",
+    "  cut_pause_ms       到上限断句时，至少要找到多长的内部停顿才肯切（缺省 200）",
+    "",
+    "字段说明（识别侧）：",
+    "  model         faster-whisper 的尺寸名（large-v3 / medium / small）或本地目录绝对路径",
+    "  compute_type  float16 / int8_float16 / int8_float32 / int8 / float32",
+    "  beam_size     解码搜索宽度（越大越准越慢）",
+    "",
+    "下面这份**等价于当前产线**：照抄不会改变任何行为，只作为改写的起点。",
+    "策略名会随数据往下走（队列 → 收件箱 → 日志），所以做 A/B 时请**按名字分组**看结果。"
   ],
-  "version": 1,
+  "version": 2,
   "default": {
+    "strategy": "default",
     "model": "large-v3",
     "compute_type": "float16",
-    "beam_size": 5
+    "beam_size": 5,
+    "segmentation": {
+      "silence_ms": 800,
+      "min_speech_ms": 500,
+      "max_speech_ms": 30000,
+      "short_utterance_ms": 800,
+      "short_silence_ms": 1100,
+      "cut_pause_ms": 200
+    }
+  },
+  "strategies": {
+    "en-fast": {
+      "note": "英语：更短的窗口（字幕快 ~1 秒、段更短），代价是偶尔把一句拆成两条。还没用真英文音频量过 WER。",
+      "segmentation": {
+        "silence_ms": 650,
+        "min_speech_ms": 300,
+        "max_speech_ms": 12000
+      }
+    },
+    "en-accurate": {
+      "note": "英语：反过来——等更久、段更长，字幕更完整但更慢。用来和 en-fast 对照。",
+      "segmentation": {
+        "silence_ms": 1000,
+        "max_speech_ms": 25000
+      }
+    },
+    "zh-steady": {
+      "note": "中文：与产线一致（留个名字，方便在日志里一眼看出这场走的是哪套）"
+    }
   },
   "languages": {
     "zh-CN": {
-      "model": "large-v3",
-      "note": "中文：产线用的就是它（CER 4.0% 左右，见 docs/04）"
+      "strategy": "zh-steady"
     },
     "pt-BR": {
-      "model": "large-v3",
-      "note": "巴葡：同上"
+      "strategy": "default"
     },
     "en-US": {
-      "model": "large-v3",
-      "note": "英语：还没量过别的模型；要 A/B 就把它改成 medium 或 small 再说话，看字幕差别"
+      "strategy": "default",
+      "note": "要 A/B 时把这一行改成 \"strategy\": \"en-fast\" 或 \"en-accurate\"，保存即生效"
     }
   }
 }
