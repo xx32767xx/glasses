@@ -352,10 +352,12 @@
     <string name="set_tts_read_hint">戴上耳机或眼镜后，译文会念给你听；没有耳机时不外放。朗读时会暂停对方原声。</string>
     <string name="st_tts_on">已开启朗读译文（需要耳机或眼镜）</string>
     <string name="st_tts_off">已关闭朗读译文</string>
-    <!-- 5.31：同传翻译官页（识别后端目前是"演示回放"，页面必须写明） -->
+    <!-- 5.31：同传翻译官页（识别后端可换：5.36 起默认是服务器识别 + 翻译） -->
     <string name="interp_back">返回</string>
     <string name="interp_backend_scripted">演示回放</string>
+    <string name="interp_backend_relay">服务器识别 + 翻译</string>
     <string name="interp_status_hint">点下面的按钮开始；本页目前是演示回放（按剧本出字），尚未接入真实识别。</string>
+    <string name="interp_hint_relay">点下面的按钮开始；识别与翻译都在服务器上跑（与会议同一条链路），说完一句约一两秒出译文。</string>
     <string name="interp_empty">还没有内容。点下面的「开始」看一遍流程。</string>
     <string name="interp_start">开始</string>
     <string name="interp_stop">停止</string>
@@ -364,7 +366,8 @@
     <string name="interp_stopped">已停止</string>
     <string name="interp_finished">演示回放已播放完毕</string>
     <string name="interp_failed">出错了（%1$s）</string>
-    <string name="interp_meta">我说%1$s · %2$s</string>
+    <!-- 5.36：翻译官是"对方说、我读"，所以这里说的是**我读哪种语言**（不是我说） -->
+    <string name="interp_meta">我读%1$s · %2$s</string>
     <string name="interp_no_backend">无可用识别引擎</string>
     <!-- 5.34：错误码 → 用户能读的一句话。加码时三套 strings.xml 都要加（有门禁）。
          码值不许改（协议）；换说法只改文案。 -->

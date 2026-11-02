@@ -21,7 +21,7 @@ import {
   chooseActiveRoom, describeSwitchReason, readRoomActivity,
   pickRoomsWithDenied, pipelineStatePath, writePipelineState, clearPipelineState,
 } from '../scripts/start-multi.mjs'
-import { createRoom, joinRoom } from '../lib/rooms.mjs'
+import { createInterpreterSession, createRoom, joinRoom } from '../lib/rooms.mjs'
 import { roomAudioPath, roomTrackDir } from '../relay/lan-relay.mjs'
 import { VAR_DIR } from '../lib/paths.mjs'
 
@@ -554,6 +554,37 @@ export async function runStartMultiSuite({ it, check, assert }) {
     mkdirSync(base, { recursive: true })
     const snapshot = readOpenRooms(base)
     check('ok 且空', snapshot.ok === true && snapshot.rooms.length === 0, JSON.stringify(snapshot))
+    rmSync(base, { recursive: true, force: true })
+  })
+
+  await it('5.36：翻译官会话也要被看门狗接管（路线 B 靠它起切句/识别/大脑）', async () => {
+    // 翻译官会话与会议**同表**，但 `listRooms` 默认把它排除（大厅不该显示它）。
+    // 路线 B 恰恰要它也有管线 —— 手机上传的音频要靠切句 → whisper → 大脑变成字幕帧。
+    // 所以 `readOpenRooms` 显式传 includeInterpreter。这条钉住"别哪天又把它过滤掉"：
+    // 一旦漏掉，翻译官会**安静地**只剩全局文件，手机一个字幕都收不到。
+    const base = join(VAR_DIR, 'test', 'multi-suite-interp')
+    rmSync(base, { recursive: true, force: true })
+    mkdirSync(base, { recursive: true })
+    const meeting = createRoom(base, { name: '周会', host: 'alice' })
+    check('会议建成', meeting.ok === true, JSON.stringify(meeting))
+    const session = createInterpreterSession(base, {
+      host: 'alice', name: '和巴西同事', lang: 'zh-CN', targetLang: 'zh-CN',
+    })
+    check('翻译官会话建成', session.ok === true, JSON.stringify(session))
+    const snapshot = readOpenRooms(base)
+    check('读到了房间', snapshot.ok === true, JSON.stringify(snapshot).slice(0, 200))
+    const ids = snapshot.rooms.map((room) => room.id)
+    check('会议在名单里', ids.includes(meeting.room.id), JSON.stringify(ids))
+    check('翻译官会话**也在**名单里', ids.includes(session.session.id), JSON.stringify(ids))
+    // 起出来的那一套必须**按这一场**排：大脑的目标语言 = 我读的语言（`target_lang`），
+    // 收件箱/总线/分轨目录都是这一场自己的。任一环串到别处，手机上就会看到别人的字幕。
+    const steps = pipelineSteps(parseArgs(['--data-dir', 'var/x']), session.session)
+    const brain = steps.find((step) => step.role === 'brain')
+    check('大脑的 --to 是会话登记的目标语言', argsOf(brain).includes('--to zh-CN'), argsOf(brain))
+    check('大脑的总线是这一场的文件', argsOf(brain).includes(`buses/${session.session.id}.json`)
+      || argsOf(brain).includes(`buses\\${session.session.id}.json`), argsOf(brain))
+    check('大脑的听众侧车路径是这一场的', argsOf(brain).includes(`${session.session.id}.json`)
+      && argsOf(brain).includes('room-langs'), argsOf(brain))
     rmSync(base, { recursive: true, force: true })
   })
 

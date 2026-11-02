@@ -62,7 +62,9 @@
     <string name="st_tts_off">Leitura da tradução desativada</string>
     <string name="interp_back">Voltar</string>
     <string name="interp_backend_scripted">Demonstração</string>
+    <string name="interp_backend_relay">Reconhecimento e tradução no servidor</string>
     <string name="interp_status_hint">Toque no botão para começar. Esta tela hoje é uma demonstração com roteiro; o reconhecimento real ainda não está ligado.</string>
+    <string name="interp_hint_relay">Toque no botão para começar. Reconhecimento e tradução rodam no servidor (mesmo fluxo das reuniões); cada frase costuma voltar em um ou dois segundos.</string>
     <string name="interp_empty">Nada aqui ainda. Toque em Iniciar abaixo para ver o fluxo.</string>
     <string name="interp_start">Iniciar</string>
     <string name="interp_stop">Parar</string>
@@ -71,7 +73,7 @@
     <string name="interp_stopped">Parado</string>
     <string name="interp_finished">A demonstração terminou</string>
     <string name="interp_failed">Algo deu errado (%1$s)</string>
-    <string name="interp_meta">Eu falo %1$s · %2$s</string>
+    <string name="interp_meta">Eu leio %1$s · %2$s</string>
     <string name="interp_no_backend">Sem mecanismo de reconhecimento</string>
     <string name="err_generic">Algo deu errado, tente de novo</string>
     <string name="err_asr_network">Não consigo alcançar o serviço de reconhecimento, tentando de novo…</string>

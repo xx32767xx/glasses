@@ -62,7 +62,9 @@
     <string name="st_tts_off">Reading translations aloud is off</string>
     <string name="interp_back">Back</string>
     <string name="interp_backend_scripted">Scripted demo</string>
+    <string name="interp_backend_relay">Server ASR + translation</string>
     <string name="interp_status_hint">Tap the button to start. This screen currently plays a scripted demo; real recognition is not wired up yet.</string>
+    <string name="interp_hint_relay">Tap the button to start. Recognition and translation both run on the server (same pipeline as meetings); a sentence usually comes back in a second or two.</string>
     <string name="interp_empty">Nothing here yet. Tap Start below to walk through the flow.</string>
     <string name="interp_start">Start</string>
     <string name="interp_stop">Stop</string>
@@ -71,7 +73,7 @@
     <string name="interp_stopped">Stopped</string>
     <string name="interp_finished">The scripted demo finished</string>
     <string name="interp_failed">Something went wrong (%1$s)</string>
-    <string name="interp_meta">I speak %1$s · %2$s</string>
+    <string name="interp_meta">I read %1$s · %2$s</string>
     <string name="interp_no_backend">No recognition engine</string>
     <string name="err_generic">Something went wrong, please try again</string>
     <string name="err_asr_network">Can\'t reach the recognition service, retrying…</string>

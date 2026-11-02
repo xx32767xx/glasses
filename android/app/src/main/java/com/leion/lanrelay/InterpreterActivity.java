@@ -102,7 +102,11 @@ public class InterpreterActivity extends android.app.Activity {
 
         // 5.36：**路线 B** —— 翻译官当"一场会"跑：会话 + 上传音频 + 收服务端字幕帧。
         // 识别与翻译都在服务器上（和会议同一套），所以手机不需要模型也不需要 Key。
-        // 「演示回放」保留为**兜底**：连不上服务器时用它跑 UI，并在状态行**明说**不是真翻译。
+        //
+        // 「演示回放」只在**根本没填服务器地址**时注册（buildClient() 返回 null）：
+        // 那是一个明确的"还没配好"状态，徽标会写「演示回放」。
+        // ⚠️ 刻意**不**在"连不上服务器"时退回演示 —— 那会让用户以为在翻译，
+        // 其实只是在放录音。连不上就如实报"连不上"（onError → 状态行）。
         LanClient relay = buildClient();
         RelayPipelineBackend pipeline = relay == null ? null
                 : new RelayPipelineBackend(relay, myName(), lang, partnerLang());
@@ -121,7 +125,11 @@ public class InterpreterActivity extends android.app.Activity {
                 startInterpreting();
             }
         });
-        statusView.setText(getString(R.string.interp_status_hint));
+        // 5.36：第一句提示要说**这一场实际会怎么跑**（服务器识别 + 翻译 / 演示回放），
+        // 而不是一律写"演示回放"——那句在真接上之后就成了假话。
+        boolean hasRelay = router != null && !(router.resolve(lang) == null) && router.resolve(lang).ok()
+                && router.resolve(lang).backend instanceof RelayPipelineBackend;
+        statusView.setText(getString(hasRelay ? R.string.interp_hint_relay : R.string.interp_status_hint));
     }
 
     @Override
@@ -157,7 +165,7 @@ public class InterpreterActivity extends android.app.Activity {
         Log.i("LeionInterp", "🧭 这一场用 " + backend.label() + "（" + picked.reason + "）");
         running = true;
         toggleButton.setText(getString(R.string.interp_stop));
-        statusView.setText(getString(R.string.interp_starting) + " · " + backend.label());
+        statusView.setText(getString(R.string.interp_starting) + " · " + backendText(backend));
         clearCards();
         backend.start(lang, new Callbacks());
         // ⚠️ 这里**不立刻开麦**（5.36）：路线 B 要先有会话 id 才能把音频归属到这一场。
@@ -281,13 +289,25 @@ public class InterpreterActivity extends android.app.Activity {
         TextView badge = findViewById(R.id.interpBackend);
         if (badge != null) {
             if (picked != null && picked.ok()) {
-                badge.setText(picked.backend.label());
+                badge.setText(backendText(picked.backend));
                 badge.setVisibility(View.VISIBLE);
             } else {
                 badge.setText(getString(R.string.interp_no_backend));
                 badge.setVisibility(View.VISIBLE);
             }
         }
+    }
+
+    /**
+     * 后端在**界面上**的名字（5.36）。
+     *
+     * <p>为什么不用 {@link InterpreterAsrBackend#label()}：那个返回值会给日志用（中文就够，
+     * 排查时读得顺），但界面上的字必须是**三语资源**。混用会出现"英文界面里冒出中文徽标"。
+     */
+    private String backendText(InterpreterAsrBackend target) {
+        if (target instanceof RelayPipelineBackend) return getString(R.string.interp_backend_relay);
+        if (target instanceof ScriptedAsrBackend) return getString(R.string.interp_backend_scripted);
+        return target.label();
     }
 
     // ── 后端回调（后台线程）──────────────────────────────────────────────

@@ -545,6 +545,16 @@ export async function runRelaySuite({ it, check, assert }) {
       // 成员登记的语言必须还是中文（大脑按它当听众/译文目标）
       const member = listMembers(dir, sessionId).find((one) => one.username === 'alice')
       check('成员语言没被上传语种改写（仍是 zh-CN）', member?.lang === 'zh-CN', JSON.stringify(member))
+
+      // 听众语言侧车：上传时就会重算一次（不等第一帧）—— 大脑据此决定这句译成哪种语言。
+      // 翻译官里它必须是**我读的语言**（zh-CN），不是上传语种（pt-BR）。
+      const sidecarPath = join(dir, 'room-langs', `${sessionId}.json`)
+      const sidecar = existsSync(sidecarPath) ? JSON.parse(readFileSync(sidecarPath, 'utf-8')) : null
+      check('侧车写出来了', sidecar !== null, String(sidecarPath))
+      check('侧车里的听者语言是我读的中文', JSON.stringify(sidecar?.langs) === JSON.stringify(['zh-CN']),
+        JSON.stringify(sidecar))
+      check('侧车按人记的是中文（不是上传的葡语）', sidecar?.byUser?.alice === 'zh-CN',
+        JSON.stringify(sidecar?.byUser))
     } finally {
       relay.close?.()
       rmSync(dir, { recursive: true, force: true })
