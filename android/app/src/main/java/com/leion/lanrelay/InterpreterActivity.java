@@ -53,6 +53,10 @@ public class InterpreterActivity extends android.app.Activity {
     /** 5.32：按语言挑后端 —— 页面只跟它要"这一场用谁"，不认识具体引擎。 */
     private AsrRouter router;
     private TtsQueue ttsQueue;
+    /** 5.36：路线 B 的采集/上传器（与房间页同一套 MicUploader）。 */
+    private MicUploader uploader;
+    /** 5.36：路线 B 的服务器客户端（会话 + 帧）。 */
+    private LanClient client;
     private boolean running = false;
     /** 读哪种语言（= 入会/设置里选的说话语言；翻译官里它同时也是"朗读哪种译文"）。 */
     private String lang = "zh-CN";
@@ -96,12 +100,16 @@ public class InterpreterActivity extends android.app.Activity {
         });
         ttsQueue.setEnabled(getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("ttsRead", false));
 
-        // 5.32：识别后端**按语言**注册。现在只有一个"通用演示回放"；
-        // 将来是「中文→本地 whisper」「葡语→云端 fun-asr」这样一门语言一条。
-        // 页面不认识任何具体引擎，只向 router 要"这一场用谁"。
+        // 5.36：**路线 B** —— 翻译官当"一场会"跑：会话 + 上传音频 + 收服务端字幕帧。
+        // 识别与翻译都在服务器上（和会议同一套），所以手机不需要模型也不需要 Key。
+        // 「演示回放」保留为**兜底**：连不上服务器时用它跑 UI，并在状态行**明说**不是真翻译。
+        LanClient relay = buildClient();
+        RelayPipelineBackend pipeline = relay == null ? null
+                : new RelayPipelineBackend(relay, myName(), lang, partnerLang());
         router = new AsrRouter();
+        if (pipeline != null) router.register("relay", pipeline);
         router.register("scripted", new ScriptedAsrBackend(lang));
-        Log.i("LeionInterp", "🧭 识别后端：" + router.describe());
+        Log.i("LeionInterp", "🧭 识别后端：" + router.describe() + "（对方说 " + partnerLang() + "）");
 
         refreshMeta();
 
@@ -152,15 +160,114 @@ public class InterpreterActivity extends android.app.Activity {
         statusView.setText(getString(R.string.interp_starting) + " · " + backend.label());
         clearCards();
         backend.start(lang, new Callbacks());
+        // ⚠️ 这里**不立刻开麦**（5.36）：路线 B 要先有会话 id 才能把音频归属到这一场。
+        // 会话建好会回调 onReady，那时再开麦（见 Callbacks.onReady）。
+        // 提前开麦的第一秒音频会落到"没有房间"的全局文件里 —— 既不属于这场，
+        // 也不会被这场的识别进程读到，等于把用户开口的第一句丢了。
+    }
+
+    /**
+     * 开麦 + 上传（只在「服务器识别」这条路里用）。
+     *
+     * <p>与房间页一样：**先向仲裁器申请**，抢不到就把原因显示出来；上传时把
+     * **对方的语言**当 `?lang=` 报上去（识别按它解码），而成员语言（我读的语言）保持不变 ——
+     * 服务端那边对 `kind='interpreter'` 专门跳过了"用上传语种改写成员语言"。
+     */
+    private void startUpload() {
+        String denied = AudioCaptureArbiter.request(AudioCaptureArbiter.OWNER_INTERPRETER);
+        if (!denied.isEmpty()) {
+            statusView.setText(denied);
+            stopInterpreting();
+            return;
+        }
+        uploader = new MicUploader(this, client, new MicUploader.Listener() {
+            @Override
+            public void onUploadStatus(String message) {
+                ui.post(() -> hintLineStatus(message));
+            }
+
+            @Override
+            public void onUploadError(String message) {
+                ui.post(() -> {
+                    statusView.setText(message);
+                    stopInterpreting();
+                });
+            }
+
+            @Override
+            public void onLevel(float rms, float peak) {
+                // 电平不刷界面（每帧刷新会把字幕拖慢），房间页也是这么做的
+            }
+        });
+        AudioCaptureArbiter.attach(AudioCaptureArbiter.OWNER_INTERPRETER, uploader);
+        uploader.setLanguage(partnerLang());
+        String problem = uploader.start();
+        if (problem != null) {
+            uploader = null;
+            AudioCaptureArbiter.release(AudioCaptureArbiter.OWNER_INTERPRETER);
+            statusView.setText(problem);
+            stopInterpreting();
+        }
+    }
+
+    private void stopUpload() {
+        AudioCaptureArbiter.release(AudioCaptureArbiter.OWNER_INTERPRETER);
+        if (uploader != null) {
+            uploader.stop();
+            uploader = null;
+        }
+    }
+
+    private void hintLineStatus(String message) {
+        if (statusView != null && message != null && !message.isEmpty()) statusView.setText(message);
     }
 
     private void stopInterpreting() {
         if (!running) return;
         running = false;
+        stopUpload();
+        if (backend instanceof RelayPipelineBackend) {
+            String id = ((RelayPipelineBackend) backend).sessionId();
+            if (!id.isEmpty()) {
+                // 结束会话：定格时长（历史里那条记录才不会一直显示"进行中"）
+                new Thread(() -> {
+                    try { client.orgInterpreterEnd(id); } catch (Exception ignored) { }
+                }, "interp-end").start();
+            }
+        }
         if (backend != null) backend.stop();
         if (ttsQueue != null) ttsQueue.stop();
         toggleButton.setText(getString(R.string.interp_start));
         statusView.setText(getString(R.string.interp_stopped));
+    }
+
+    /** 建客户端（用设置页里那套 host/secret/token）。拿不到配置就返回 null。 */
+    private LanClient buildClient() {
+        android.content.SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        String host = prefs.getString("host", "");
+        String secret = prefs.getString("secret", "");
+        if (host == null || host.isEmpty()) host = getString(R.string.default_server_url);
+        if (secret == null || secret.isEmpty()) secret = getString(R.string.default_shared_secret);
+        if (host.isEmpty()) return null;
+        LanClient built = new LanClient(host, secret, new FrameSink());
+        String token = prefs.getString("accountToken", "");
+        if (token != null && !token.isEmpty()) built.setToken(token);
+        client = built;
+        return built;
+    }
+
+    private String myName() {
+        String name = getSharedPreferences(PREFS, MODE_PRIVATE).getString("termsUser", "");
+        return name == null ? "" : name;
+    }
+
+    /** 对方说的语言（识别语种）。默认与"我读的语言"互为镜像：中↔葡、中↔英。 */
+    private String partnerLang() {
+        String mine = getSharedPreferences(PREFS, MODE_PRIVATE).getString("speakLang", "");
+        String read = mine == null || mine.isEmpty() ? "zh-CN" : mine;
+        // 面对面最常见的是"对方说葡语/英语、我读中文"；反过来同样成立
+        if ("zh-CN".equals(read)) return "pt-BR";
+        return "zh-CN";
     }
 
     private void refreshMeta() {
@@ -185,23 +292,72 @@ public class InterpreterActivity extends android.app.Activity {
 
     // ── 后端回调（后台线程）──────────────────────────────────────────────
 
+    /**
+     * 路线 B 的帧入口（5.36）：服务端回来的每一帧字幕直接变成一张卡。
+     *
+     * <p>与房间页同一个 Listener 契约，所以"原文在上、译文在下 + 增量原位更新"
+     * 这套显示逻辑完全一样 —— 这正是把翻译官当一场会跑的好处。
+     */
+    private final class FrameSink implements LanClient.Listener {
+        @Override
+        public void onStatus(String message) {
+            ui.post(() -> hintLineStatus(message));
+        }
+
+        @Override
+        public void onHello(String device, int cols, int lineBudget) {
+            // 显示预算暂不用（本页按自己的布局排）
+        }
+
+        @Override
+        public void onFrame(String speaker, String langTag, String[] lines, String text,
+                            String source, String sourceLang, boolean partial, String[] termsMissing,
+                            String speakerName, String notice) {
+            ui.post(() -> {
+                String translated = text == null || text.isEmpty()
+                        ? (lines == null ? "" : String.join("\n", lines)) : text;
+                String src = source == null ? "" : source;
+                if (translated.isEmpty() && src.isEmpty()) return;
+                renderCard("frame-" + (partial ? "p" : "f") + "-" + System.identityHashCode(lines)
+                        + "-" + translated.hashCode(), src, translated, partial);
+                // 只朗读**定稿且非空**的译文；partial 是半句，念出来很怪（与房间页一致）
+                if (!partial && ttsQueue != null && !translated.isEmpty()) {
+                    ttsQueue.offer(translated, langTag == null || langTag.isEmpty() ? lang : langTag);
+                }
+                if (notice != null && !notice.isEmpty() && "same-language".equals(notice)) {
+                    statusView.setText(getString(R.string.st_same_language));
+                }
+            });
+        }
+
+        @Override
+        public void onError(String message) {
+            ui.post(() -> hintLineStatus(message));
+        }
+    }
+
     private final class Callbacks implements InterpreterAsrBackend.Listener {
         @Override
         public void onReady() {
             ui.post(() -> {
                 if (statusView != null) statusView.setText(getString(R.string.interp_ready));
+                // 5.36：会话已经在服务器上建好、客户端也订阅上这一场了，**现在**才开麦 ——
+                // 这个顺序保证每一块音频都带着房间 id（否则第一句会落进没人读的全局文件）。
+                if (running && backend instanceof RelayPipelineBackend && uploader == null) {
+                    startUpload();
+                }
             });
         }
 
         @Override
         public void onPartial(String id, String text, String langTag) {
-            ui.post(() -> renderCard(id, text, true));
+            ui.post(() -> renderCard(id, "", text, true));
         }
 
         @Override
         public void onFinal(String id, String text, String langTag) {
             ui.post(() -> {
-                renderCard(id, text, false);
+                renderCard(id, "", text, false);
                 // 只朗读**定稿且非空**的译文（尾部那句空串是"演完了"的信号，不念）
                 if (ttsQueue != null && text != null && !text.isEmpty()) {
                     ttsQueue.offer(text, lang);
@@ -213,8 +369,8 @@ public class InterpreterActivity extends android.app.Activity {
         public void onError(String code, String hint) {
             ui.post(() -> {
                 if (statusView != null) {
-                    statusView.setText(hint == null || hint.isEmpty()
-                            ? getString(R.string.interp_failed, code) : hint);
+                    statusView.setText(InterpreterErrorCodes.message(
+                            InterpreterActivity.this, code, hint));
                 }
             });
         }
@@ -222,8 +378,16 @@ public class InterpreterActivity extends android.app.Activity {
 
     // ── 字幕流（与房间页同一套规矩：同 id 原位更新、新句往下推、自动滚到底）──
 
-    private void renderCard(String id, String text, boolean partial) {
-        if (text == null || text.isEmpty()) {
+    /**
+     * 落一张卡（5.36：多了 `source` 参数）。
+     *
+     * <p>为什么带原文：路线 B 的帧里**同时有原文和译文**（服务端都算好了），
+     * 而"原文在上、译文在下"是房间页已经在用的显示方式 —— 本页照同一套排，
+     * 用户不用学两套版式。纯识别后端（演示回放）没有原文，传空串即可。
+     */
+    private void renderCard(String id, String source, String text, boolean partial) {
+        String src = source == null ? "" : source.trim();
+        if ((text == null || text.isEmpty()) && src.isEmpty()) {
             if (id != null && id.endsWith("-end")) {
                 statusView.setText(getString(R.string.interp_finished));
             }
@@ -233,29 +397,54 @@ public class InterpreterActivity extends android.app.Activity {
         scroll.setVisibility(View.VISIBLE);
 
         int index = cardIds.indexOf(id);
-        TextView card;
+        View card;
+        TextView main;
+        TextView sub;
         if (index >= 0) {
             // 原位更新：同一句的 partial → 定稿只占一张卡
-            card = (TextView) cards.get(index);
+            card = cards.get(index);
+            main = (TextView) card.findViewWithTag("main");
+            sub = (TextView) card.findViewWithTag("sub");
         } else {
-            card = new TextView(this);
-            card.setBackgroundResource(R.drawable.bg_card);
+            LinearLayout box = new LinearLayout(this);
+            box.setOrientation(LinearLayout.VERTICAL);
+            box.setBackgroundResource(R.drawable.bg_card);
             int pad = Math.round(getResources().getDisplayMetrics().density * 12);
-            card.setPadding(pad, pad, pad, pad);
+            box.setPadding(pad, pad, pad, pad);
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
             params.bottomMargin = pad / 2;
-            card.setLayoutParams(params);
-            card.setTextColor(getColor(R.color.ink));
-            card.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,
+            box.setLayoutParams(params);
+
+            sub = new TextView(this);
+            sub.setTag("sub");
+            sub.setTextColor(getColor(R.color.ink_soft));
+            sub.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,
+                    getResources().getDimension(R.dimen.text_secondary));
+            sub.setVisibility(View.GONE);
+            box.addView(sub);
+
+            main = new TextView(this);
+            main.setTag("main");
+            main.setTextColor(getColor(R.color.ink));
+            main.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,
                     getResources().getDimension(R.dimen.text_body));
-            list.addView(card);
+            box.addView(main);
+
+            list.addView(box);
             cardIds.add(id);
-            cards.add(card);
+            cards.add(box);
+            card = box;
+        }
+        if (card == null || main == null) return;
+        // 原文（小字、灰）在上；译文（大字）在下 —— 与房间页一致
+        if (sub != null) {
+            sub.setText(src);
+            sub.setVisibility(src.isEmpty() ? View.GONE : View.VISIBLE);
         }
         // 未定稿的句子画成浅色：一眼看出"这句还在成形"
-        card.setTextColor(getColor(partial ? R.color.ink_soft : R.color.ink));
-        card.setText(text);
+        main.setTextColor(getColor(partial ? R.color.ink_soft : R.color.ink));
+        main.setText(text == null ? "" : text);
         scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
     }
 

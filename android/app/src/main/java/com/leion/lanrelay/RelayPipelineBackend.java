@@ -1,0 +1,136 @@
+package com.leion.lanrelay;
+
+import android.util.Log;
+
+import org.json.JSONObject;
+
+/**
+ * RelayPipelineBackend —— 「把翻译官**当一场会**跑」这条路的实现（5.36，路线 B）。
+ * ============================================================================
+ * 它做的事情很朴素：**开一场会话 → 照会议那样上传音频 → 收服务端回来的字幕帧**。
+ * 识别（whisper）与翻译（DeepSeek + 术语 + 校对）都在服务器上，和会议是同一套代码 ——
+ * 所以这条后端**不需要在手机上放任何模型、任何 API Key**。
+ *
+ * 为什么选它做"初步接入"：
+ * <ul>
+ *   <li>翻译质量、术语一致性、校对行为**与会议完全相同**（同一个大脑进程在算）；</li>
+ *   <li>不用新增 LLM 通路（relay 现在没有 LLM 客户端，见 docs/21 §5.36）；</li>
+ *   <li>识别是整句出字（没有 partial），但"说完一句 ~1~2 秒出译文"对面对面场景够用。</li>
+ * </ul>
+ *
+ * <p><b>与会议的唯一语义差别</b>：上传的音频是**对方**说的（`?lang=<对方语言>`），
+ * 而我自己读的是另一门语言 —— 所以服务端**不会**用上传语种改写我的成员语言
+ * （relay 里 `audioRoomKind()` 那一处判断）。
+ *
+ * <p>这一层刻意**不碰**麦克风：采集由 {@link MicUploader} 负责、租约由
+ * {@link AudioCaptureArbiter} 管。本类只做"会话 + 帧"。
+ */
+public final class RelayPipelineBackend implements InterpreterAsrBackend {
+
+    private static final String TAG = "LeionInterp";
+
+    private final LanClient client;
+    private final String userName;
+    /** 我读的语言（译文目标）。 */
+    private final String readLang;
+    /** 对方说的语言（识别语种，随音频上报）。 */
+    private final String speakLang;
+
+    private volatile boolean running = false;
+    private volatile String sessionId = "";
+    private Listener listener;
+
+    public RelayPipelineBackend(LanClient client, String userName, String readLang, String speakLang) {
+        this.client = client;
+        this.userName = userName == null ? "" : userName;
+        this.readLang = readLang == null || readLang.isEmpty() ? "zh-CN" : readLang;
+        this.speakLang = speakLang == null || speakLang.isEmpty() ? "pt-BR" : speakLang;
+    }
+
+    @Override
+    public String label() {
+        return "服务器识别 + 翻译";
+    }
+
+    @Override
+    public boolean requiresNetwork() {
+        return true;
+    }
+
+    /**
+     * 这条路**什么语言都能接**（真正的语种判定在服务器上，按分轨 `.lang` 强制解码）。
+     * 所以它是通用后端；将来若接入"中文走本地、葡语走云端"，那些后端才是专用后端。
+     */
+    @Override
+    public String[] languages() {
+        return new String[0];
+    }
+
+    @Override
+    public void start(String lang, Listener target) {
+        if (running) return;
+        this.listener = target;
+        running = true;
+        new Thread(this::openSessionAndListen, "interp-session").start();
+    }
+
+    /** 这条路手机自己上传音频（见类注释），所以这个方法不会被用到。 */
+    @Override
+    public void sendAudio(byte[] pcm, int sampleRate) {
+        // 刻意空实现：采集与上传由 MicUploader 独占（它也走仲裁器）
+    }
+
+    @Override
+    public void stop() {
+        running = false;
+        if (client != null) client.stop();
+    }
+
+    /** 会话 id（界面/诊断用；空 = 还没开起来）。 */
+    public String sessionId() {
+        return sessionId;
+    }
+
+    /** 对方说的语言：`MicUploader` 上传时用它当 `?lang=`。 */
+    public String speakLang() {
+        return speakLang;
+    }
+
+    // ── 内部 ──────────────────────────────────────────────────────────────
+
+    private void openSessionAndListen() {
+        Listener target = listener;
+        if (target == null) return;
+        try {
+            JSONObject created = client.orgInterpreterStart("同传翻译官", readLang, speakLang);
+            JSONObject session = created == null ? null : created.optJSONObject("session");
+            String id = session == null ? "" : session.optString("id", "");
+            if (id.isEmpty()) {
+                target.onError(InterpreterErrorCodes.ASR_FAILED, "服务器没有返回会话 id");
+                running = false;
+                return;
+            }
+            sessionId = id;
+            if (!running) {
+                // 开完会话前用户就点了停止：直接收掉
+                try { client.orgInterpreterEnd(id); } catch (Exception ignored) { }
+                return;
+            }
+            Log.i(TAG, "🎬 会话已建：" + id + "（对方说 " + speakLang + "，我读 " + readLang + "）");
+            // 只订阅这一场的字幕（与房间页同一条通道）
+            client.setRoom(id);
+            if (!userName.isEmpty()) client.setSpeaker(userName);
+            client.start();
+            target.onReady();
+        } catch (Exception error) {
+            Log.w(TAG, "建会话失败：" + error);
+            running = false;
+            target.onError(InterpreterErrorCodes.ASR_NETWORK, describe(error));
+        }
+    }
+
+    private static String describe(Exception error) {
+        String text = error == null ? "" : String.valueOf(error.getMessage());
+        return text.isEmpty() ? "连不上服务器" : text;
+    }
+}

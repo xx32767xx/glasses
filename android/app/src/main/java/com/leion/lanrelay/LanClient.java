@@ -1025,6 +1025,35 @@ public class LanClient {
         return unwrap(requestWithCode("/org/rooms/leave", "POST", body, 8000));
     }
 
+    // ── 同传翻译官会话（5.36）────────────────────────────────────────────
+    //
+    // 与会议**同一套存储**（`rooms.kind='interpreter'`），所以这里只需要三个薄包装：
+    // 开会话、上报一句（没有总线时用）、结束会话。读转写/删历史/列历史全部复用会议端点。
+
+    /**
+     * 开一场翻译官会话。
+     *
+     * @param name       会话名（空 = 用默认名）
+     * @param readLang   我**读**的语言（= 译文目标语言）
+     * @param speakLang  对方**说**的语言（= 识别语种）—— 现在只记录，路由以后按它选引擎
+     */
+    public JSONObject orgInterpreterStart(String name, String readLang, String speakLang)
+            throws IOException, org.json.JSONException {
+        JSONObject body = new JSONObject();
+        body.put("name", name == null ? "" : name);
+        body.put("lang", readLang == null ? "" : readLang);
+        body.put("targetLang", readLang == null ? "" : readLang);
+        body.put("mode", "remote");
+        if (speakLang != null && !speakLang.isEmpty()) body.put("speakLang", speakLang);
+        return unwrap(requestWithCode("/org/interpreter/start", "POST", body, 8000));
+    }
+
+    /** 结束会话（定格时长）。幂等：重复调用服务端也只是再置一次 closed_at。 */
+    public JSONObject orgInterpreterEnd(String sessionId) throws IOException, org.json.JSONException {
+        return unwrap(requestWithCode("/org/interpreter/" + sessionId + "/end", "POST",
+                new JSONObject(), 8000));
+    }
+
     // ── Speaking right (P2b) ───────────────────────────────────────────
     /** 移出成员（仅发起者）；服务端会顺手释放他占着的麦。 */
     public JSONObject orgRemoveMember(String roomIdOrCode, String user)

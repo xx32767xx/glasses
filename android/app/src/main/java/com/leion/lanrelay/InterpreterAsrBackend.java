@@ -109,6 +109,25 @@ public interface InterpreterAsrBackend {
         void onFinal(String id, String text, String lang);
 
         /**
+         * **可选**：这条路同时知道「原文」与「译文」时用它（5.36）。
+         *
+         * <p>为什么加这个而不改上面两个：识别与翻译**在同一端**完成的后端（例如
+         * 「把翻译官当一场会跑」那条路，服务端返回的帧里两个文本都有）能一次把两样交给界面；
+         * 而只做识别的后端只需实现 `onPartial/onFinal`，一行都不用改。
+         * 默认实现就是退回原有那两个 —— 所以老实现方零改动。
+         *
+         * @param sourceText 原文（可能为空：这条路不认识原文时）
+         * @param text       译文
+         */
+        default void onPair(String id, String sourceText, String text, String lang, boolean partial) {
+            if (partial) {
+                onPartial(id, text, lang);
+            } else {
+                onFinal(id, text, lang);
+            }
+        }
+
+        /**
          * @param code 机器码（`asr-network` / `asr-auth` / `asr-busy` …），界面据此选文案
          * @param hint 人话（后端尽量给，界面没有对应文案时兜底显示它）
          */

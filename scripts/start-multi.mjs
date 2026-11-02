@@ -783,7 +783,11 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 export function readOpenRooms(dataDir, fileExists = existsSync) {
   try {
     if (fileExists(dbPath(dataDir)) !== true) return { ok: true, rooms: [] }
-    return { ok: true, rooms: listRooms(dataDir) }
+    // 5.36：**翻译官会话也要起管线** —— 路线 B 就是让它复用会议那条链
+    // （切句 → whisper → 大脑 → 总线），所以这里必须把 kind='interpreter' 的也算进来。
+    // 注意：`listRooms` 的**默认**仍然排除它们 —— 大厅与管理台的"正在开的会议"
+    // 不该出现翻译官会话，那两处用的是默认行为。
+    return { ok: true, rooms: listRooms(dataDir, { includeInterpreter: true }) }
   } catch (error) {
     return { ok: false, rooms: [], error: String(error && error.message ? error.message : error) }
   }

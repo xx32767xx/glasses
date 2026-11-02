@@ -49,7 +49,8 @@ import { handleOrg } from './org-api.mjs'
 import { createWsHub } from '../lib/ws-hub.mjs'
 import { publishMeetingTerms, readCurrentMeeting } from '../lib/meeting-terms.mjs'
 import { loadSelection } from './org-api.mjs'
-import { listMembers, resolveFrameRoom, roomByCode, roomById, setMemberLang } from '../lib/rooms.mjs'
+import { listMembers, resolveFrameRoom, roomByCode, roomById, setMemberLang,
+  interpreterPartnerLang } from '../lib/rooms.mjs'
 import { floorState } from '../lib/floor.mjs'
 import {
   TERMS_LIMITS, getTable, loadTerms, mergePending, normalizeUser, putTable, saveActiveUser, saveTerms, validateTerms,
@@ -878,6 +879,32 @@ export async function startRelay(rawOptions = {}) {
     }
     const holder = floorState(options.dataDir, roomId).holder ?? ''
     return String(holder)
+  }
+
+  /**
+   * 这个 id 是会议还是同传翻译官会话（5.36）。
+   *
+   * <p>为什么需要：两条路**共用同一条音频上传通道**，但"上报的语种"含义相反 ——
+   * 会议里它是我说的话的语言（要写回 `room_members.lang`）；翻译官里它是**对方**的语言
+   * （不能写回，否则"我读的语言"被改掉，一句都不译）。
+   * 查一次库很便宜（单行主键查询），但音频是每秒 1~2 块 —— 所以按 id 缓存，
+   * 会话中途不会变 kind。
+   */
+  const roomKindCache = new Map()
+  function audioRoomKind(roomId) {
+    const key = String(roomId ?? '')
+    if (key === '') return 'meeting'
+    const cached = roomKindCache.get(key)
+    if (cached !== undefined) return cached
+    let kind = 'meeting'
+    try {
+      const room = roomById(options.dataDir, key)
+      kind = room === null ? 'meeting' : String(room.kind ?? 'meeting')
+    } catch (error) {
+      debug(`[房间] 查会话类型失败（按会议处理）：${error?.message ?? error}`)
+    }
+    roomKindCache.set(key, kind)
+    return kind
   }
 
   /**
@@ -1805,13 +1832,20 @@ export async function startRelay(rawOptions = {}) {
             // 按语言扇出时他一条字幕都收不到。两条合起来正是用户报的
             // 「我说英文，但对方那边（以及我自己）不显示字幕」。
             // 现在每次上传都用**本人自报的语种**校正自己那一行（身份仍来自 token/speaker）。
-            try {
-              const synced = setMemberLang(options.dataDir, { roomId: audioRoom, username: speaker, lang })
-              if (synced.ok === true && synced.changed === true) {
-                debug(`[语言] ${speaker} 的参会语言更新为 ${lang}（按他上传时上报的语种）`)
+            //
+            // ⚠️ 5.36：**翻译官会话不能这么做**。它的语义是"对方说外语、我读译文"：
+            // 手机上传的是**对方**的声音（`?lang=pt-BR`），而登记的语言是**我读的**中文。
+            // 若照会议室那样同步，成员语言会被改成葡语 → 大脑算出的目标语言变成"中文以外"
+            // → 一句都不译（或译成葡语再翻回来）。所以只对 `kind='meeting'` 同步。
+            if (audioRoomKind(audioRoom) === 'meeting') {
+              try {
+                const synced = setMemberLang(options.dataDir, { roomId: audioRoom, username: speaker, lang })
+                if (synced.ok === true && synced.changed === true) {
+                  debug(`[语言] ${speaker} 的参会语言更新为 ${lang}（按他上传时上报的语种）`)
+                }
+              } catch (error) {
+                debug(`[语言] 同步成员语言失败（不影响字幕）：${error?.message ?? error}`)
               }
-            } catch (error) {
-              debug(`[语言] 同步成员语言失败（不影响字幕）：${error?.message ?? error}`)
             }
           }
         }
@@ -1820,9 +1854,19 @@ export async function startRelay(rawOptions = {}) {
         // 说中文的人会被强制按葡语解码，整句变成乱码，然后拿这段乱码去翻——比空白更难查。
         if (lang === '') {
           const registered = audioSpeaker === '' ? '' : (roomLangsByUser(audioRoom).get(audioSpeaker) ?? '')
-          lang = registered !== '' ? registered : 'pt-BR'
-          debug(`[语言] 这次上传没带语种 → 用 ${audioSpeaker === '' ? '缺省' : audioSpeaker + ' 登记的语言'} ${lang}`
-            + `（房间 ${audioRoom === '' ? '未知' : audioRoom}）`)
+          // 5.36：翻译官会话里成员登记的是**我读的语言**，而上传的是**对方**的声音。
+          // 所以兜底要取"对方的语言"，不能直接拿登记值 —— 拿错方向会把葡语当成中文解码，
+          // 结果不是"判不出语种"而是一整段乱码，然后拿乱码去翻。
+          const kind = audioRoom === '' ? 'meeting' : audioRoomKind(audioRoom)
+          const mirrored = kind === 'interpreter' ? interpreterPartnerLang(registered) : ''
+          if (mirrored !== '') {
+            lang = mirrored
+            debug(`[语言] 翻译官上传没带语种 → 按"${audioSpeaker} 读 ${registered}"取对方语言 ${lang}`)
+          } else {
+            lang = registered !== '' ? registered : 'pt-BR'
+            debug(`[语言] 这次上传没带语种 → 用 ${audioSpeaker === '' ? '缺省' : audioSpeaker + ' 登记的语言'} ${lang}`
+              + `（房间 ${audioRoom === '' ? '未知' : audioRoom}）`)
+          }
         }
         // 5.00：**先**把听者语言同步给这场会的大脑 —— 它要在第一句就译成正确的几种语言；
         // 等到"第一帧出来"才写就晚了（那已经是在译完之后）。

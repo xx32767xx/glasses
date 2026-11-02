@@ -2,7 +2,7 @@
 import { mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AUDIO_ROOM_TTL_MS, closeRoomByAdmin, createInterpreterSession, createRoom, isRoomClosed, joinRoom, leaveRoom, listHistory, listMembers, listRooms, roomByCode, roomForFrame, roomLibraries, listRoomTranscript, resolveFrameRoom, setRoomLibraries, roomById, removeMember } from '../lib/rooms.mjs'
+import { AUDIO_ROOM_TTL_MS, closeRoomByAdmin, createInterpreterSession, createRoom, interpreterPartnerLang, isRoomClosed, joinRoom, leaveRoom, listHistory, listMembers, listRooms, roomByCode, roomForFrame, roomLibraries, listRoomTranscript, resolveFrameRoom, setRoomLibraries, roomById, removeMember } from '../lib/rooms.mjs'
 import { appendUtterance } from '../lib/db.mjs'
 import { floorState, takeFloor } from '../lib/floor.mjs'
 
@@ -252,6 +252,23 @@ export async function runRoomsSuite({ it, check }) {
     } finally {
       rmSync(dataDir, { recursive: true, force: true })
     }
+  })
+
+  await it('5.36：翻译官「对方的语言」由「我读的语言」唯一推出（服务端兜底与手机端逐字一致）', async () => {
+    // 为什么钉这条：上传没带语种时，relay 要用它兜底。如果服务端算成"我读的语言"，
+    // 葡语音频会被当中文解码 —— 不是"判不出语种"，而是**判错语种**，整句乱码再拿去翻。
+    // 手机端 InterpreterActivity.partnerLang() 与这里必须是同一张表。
+    check('读中文 → 对方说葡语', interpreterPartnerLang('zh-CN') === 'pt-BR',
+      String(interpreterPartnerLang('zh-CN')))
+    check('读葡语 → 对方说中文', interpreterPartnerLang('pt-BR') === 'zh-CN',
+      String(interpreterPartnerLang('pt-BR')))
+    check('读英语 → 对方说中文', interpreterPartnerLang('en-US') === 'zh-CN',
+      String(interpreterPartnerLang('en-US')))
+    check('不认识的输入**不硬猜**（空串 → 调用方走别的兜底）',
+      interpreterPartnerLang('') === '' && interpreterPartnerLang('ja-JP') === '',
+      JSON.stringify([interpreterPartnerLang(''), interpreterPartnerLang('ja-JP')]))
+    check('镜像关系不会自指（对方语言永远不等于我读的语言）',
+      ['zh-CN', 'pt-BR', 'en-US'].every((one) => interpreterPartnerLang(one) !== one))
   })
 
   rmSync(dir, { recursive: true, force: true })

@@ -20,7 +20,7 @@ import { startRelay, formatBanner, pcmLevel, describeLevel, roomAudioPath, roomS
   PUBLIC_LIMITS } from '../relay/lan-relay.mjs'
 import { VAR_DIR } from '../lib/paths.mjs'
 import { takeFloor } from '../lib/floor.mjs'
-import { createRoom, joinRoom, listMembers, listRoomTranscript } from '../lib/rooms.mjs'
+import { createInterpreterSession, createRoom, joinRoom, listMembers, listRoomTranscript } from '../lib/rooms.mjs'
 import { dbPath, openDb } from '../lib/db.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -508,6 +508,43 @@ export async function runRelaySuite({ it, check, assert }) {
         method: 'POST', headers, body: Buffer.alloc(320, 3),
       })
       check('不带 lang、也没有说话人 → 照收（200）', anon.status === 200, String(anon.status))
+    } finally {
+      relay.close?.()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  await it('5.36：翻译官会话上传没带语种 → 取「对方的语言」，且**不改写**成员登记的语言', async () => {
+    // 路线 B 的语义：我读中文、对方说葡语。手机上传的是**对方**的声音（带 ?lang=pt-BR）。
+    // 两个必须同时成立的地方：
+    //   ① 上传漏带 lang 时，兜底必须是"对方的语言"（pt-BR）。若兜底成登记的 zh-CN，
+    //      葡语音频会被强制按中文解码 —— 不是判不出语种，而是**判错**，整段乱码再拿去翻。
+    //   ② 成员语言（我读的语言）**不能被上传语种改写**。会议里那么做是对的（说话人换语言），
+    //      翻译官里那么做会把"读中文的人"改成读葡语 → 大脑一句中文都不译。
+    const dir = mkdtempSync(join(tmpdir(), 'interplang-'))
+    const secret = 's3cret-0123456789abcdef'
+    const relay = await startRelay({ dataDir: dir, port: 0, host: '127.0.0.1', secret, quiet: true })
+    try {
+      const base = `http://127.0.0.1:${relay.port}`
+      const headers = { 'X-Leion-Secret': secret }
+      const created = createInterpreterSession(dir, {
+        host: 'alice', name: '和巴西同事', lang: 'zh-CN', targetLang: 'zh-CN',
+      })
+      check('会话建成', created.ok === true, JSON.stringify(created))
+      const sessionId = created.session.id
+
+      // 不带 lang 上传一块音频（模拟"手机漏报语种"）
+      await fetch(`${base}/audio?rate=16000&room=${encodeURIComponent(sessionId)}&speaker=alice`, {
+        method: 'POST', headers, body: Buffer.alloc(320, 3),
+      })
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      const track = roomSpeakerAudioPath(dir, sessionId, 'alice')
+      const written = existsSync(track + '.lang') ? readFileSync(track + '.lang', 'utf-8').trim() : ''
+      check('识别语种旁文件写的是**对方**的葡语（不是登记的中文）', written === 'pt-BR', written)
+
+      // 成员登记的语言必须还是中文（大脑按它当听众/译文目标）
+      const member = listMembers(dir, sessionId).find((one) => one.username === 'alice')
+      check('成员语言没被上传语种改写（仍是 zh-CN）', member?.lang === 'zh-CN', JSON.stringify(member))
     } finally {
       relay.close?.()
       rmSync(dir, { recursive: true, force: true })
