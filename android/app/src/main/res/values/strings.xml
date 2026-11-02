@@ -841,4 +841,6 @@
     <string name="filter_active">已筛选：%1$s · %2$s</string>
     <string name="transcript_filtered_empty">没有符合筛选条件的转写</string>
     <string name="filter_unknown_speaker">未知发言人</string>
+    <string name="srv_not_interpreter">这个会话不是同传翻译官</string>
+    <string name="srv_interpreter_need_host">缺少会话发起人</string>
 </resources>

@@ -122,6 +122,10 @@ public final class ServerText {
         // 比如管理员用手机调同一个接口；映射缺了就会把中文原样甩给用户）
         put("缺少 roomId", R.string.srv_missing_ids);
         put("房间不存在", R.string.srv_room_missing);
+        // 5.35：同传翻译官会话（与会议同表，只是 kind 不同）
+        put("没有这场会话", R.string.srv_room_missing);
+        put("这不是同传翻译官的会话", R.string.srv_not_interpreter);
+        put("需要说明是谁的会话（host）", R.string.srv_interpreter_need_host);
         put("只有发起者可以移出成员", R.string.srv_host_only_remove);
         put("发起者不能移出自己（要结束会议请用退出）", R.string.srv_cannot_remove_self);
         put("不是你在发言", R.string.srv_not_your_floor);

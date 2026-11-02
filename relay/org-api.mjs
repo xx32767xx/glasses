@@ -29,9 +29,10 @@ import { readJson, writeJsonAtomic } from '../lib/store.mjs'
 import { listLibraries, loadLibrary, loadCategories, saveLibrary, importLibraries } from '../lib/libraries.mjs'
 import { createRequest, decideRequest, hideRequest, loadRequests, pendingOf, visibleOfMine, withdrawRequest } from '../lib/requests.mjs'
 import { writeMeetingSnapshot } from '../lib/snapshot.mjs'
-import { closeRoomByAdmin, createRoom, hideHistoryForUser, isRoomClosed, joinRoom, leaveRoom, listHistory, listHistoryForAdmin, listMembers, listRoomTranscript, listRooms, purgeHistory, removeMember, roomByCode, roomById, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
+import { closeRoomByAdmin, createInterpreterSession, createRoom, hideHistoryForUser, isRoomClosed, joinRoom, leaveRoom, listHistory, listHistoryForAdmin, listMembers, listRoomTranscript, listRooms, purgeHistory, removeMember, roomByCode, roomById, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
 import { FLOOR_LOCKED_LEASE_MS, FLOOR_LEASE_MS, floorState, forceReleaseFloor, heartbeatFloor, releaseFloor, setFloorLock, sweepExpiredFloor, takeFloor } from '../lib/floor.mjs'
 import { publishMeetingTerms } from '../lib/meeting-terms.mjs'
+import { appendUtterance } from '../lib/db.mjs'
 
 export function selectionPath(root, meetingId) {
   // 会议 id 会被拼进路径，所以只允许安全字符（防目录穿越）
@@ -181,6 +182,56 @@ export async function handleOrg(input) {
     const hidden = hideHistoryForUser(root, { user, roomId: segments[2], now })
     if (hidden.ok !== true) return bad(400, hidden.error)
     return { status: 200, json: { ok: true, roomId: hidden.roomId } }
+  }
+
+  // ── 同传翻译官会话（5.35）─────────────────────────────────────────────────
+  //
+  // 与会议**同表同结构**，只靠 `rooms.kind = 'interpreter'` 区分（见 lib/db.mjs）。
+  // 所以：开一场会话 = 建一条 rooms 行 + 一条成员行；写字幕 = 往 utterances 写；
+  // 读转写/删历史/保留期清理**全部复用会议那套端点**，不新增显示代码。
+  //
+  // 为什么由手机上报每一句，而不是像会议那样由 relay 从总线抓：
+  // 翻译官没有房间、没有总线、也没有那台跑 whisper 的管线 —— 文本在手机手上，
+  // 它不报就没别人知道了。上报是**幂等追加**，重复不会造出两句。
+  if (method === 'POST' && segments[1] === 'interpreter' && segments[2] === 'start') {
+    if (allowed(role, 'meeting.configure') !== true) return deny(role, 'meeting.configure')
+    const created = createInterpreterSession(root, {
+      host: user,
+      name: String(body.name ?? ''),
+      lang: String(body.lang ?? ''),
+      targetLang: String(body.targetLang ?? ''),
+      mode: String(body.mode ?? ''),
+      now,
+    })
+    if (created.ok !== true) return bad(400, created.error)
+    return { status: 200, json: { ok: true, session: created.session } }
+  }
+  if (method === 'POST' && segments[1] === 'interpreter' && segments[3] === 'utterance'
+    && segments.length === 5) {
+    if (allowed(role, 'meeting.configure') !== true) return deny(role, 'meeting.configure')
+    const sessionId = segments[2]
+    const session = roomById(root, sessionId)
+    if (session === null) return bad(404, '没有这场会话')
+    if (session.kind !== 'interpreter') return bad(400, '这不是同传翻译官的会话')
+    const saved = appendUtterance(root, {
+      roomId: sessionId,
+      username: user,
+      srcLang: String(body.srcLang ?? ''),
+      dstLang: String(body.dstLang ?? ''),
+      srcText: String(body.srcText ?? ''),
+      dstText: String(body.dstText ?? ''),
+      startAt: Number.isFinite(Number(body.at)) ? Number(body.at) : now,
+      isFinal: true,
+    })
+    if (saved.ok !== true) return bad(400, saved.error)
+    return { status: 200, json: { ok: true, id: saved.id, merged: saved.merged === true } }
+  }
+  if (method === 'POST' && segments[1] === 'interpreter' && segments[3] === 'end'
+    && segments.length === 4) {
+    if (allowed(role, 'meeting.configure') !== true) return deny(role, 'meeting.configure')
+    const closed = closeRoomByAdmin(root, { roomId: segments[2], by: user, now })
+    if (closed.ok !== true) return bad(404, closed.error ?? '没有这场会话')
+    return { status: 200, json: { ok: true, sessionId: segments[2] } }
   }
 
   // 历史记录（4.69）：我参加过的会议 + 字幕保存期（客户端顶部要写“记录保存 N 天”）。

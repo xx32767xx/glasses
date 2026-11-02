@@ -544,4 +544,6 @@ Servidor %2$s</string>
     <string name="filter_active">Filtrado: %1$s · %2$s</string>
     <string name="transcript_filtered_empty">Nenhuma linha corresponde ao filtro</string>
     <string name="filter_unknown_speaker">Falante desconhecido</string>
+    <string name="srv_not_interpreter">Essa sessão não é do intérprete simultâneo</string>
+    <string name="srv_interpreter_need_host">A sessão não tem responsável</string>
 </resources>

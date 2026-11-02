@@ -544,4 +544,6 @@ Server %2$s</string>
     <string name="filter_active">Filtered: %1$s · %2$s</string>
     <string name="transcript_filtered_empty">No transcript lines match the filter</string>
     <string name="filter_unknown_speaker">Unknown speaker</string>
+    <string name="srv_not_interpreter">That session is not an interpreter session</string>
+    <string name="srv_interpreter_need_host">The session has no owner</string>
 </resources>

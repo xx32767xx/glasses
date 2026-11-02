@@ -2,7 +2,7 @@
 import { mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AUDIO_ROOM_TTL_MS, createRoom, isRoomClosed, joinRoom, leaveRoom, listMembers, roomByCode, roomForFrame, roomLibraries, listRoomTranscript, resolveFrameRoom, setRoomLibraries, roomById, removeMember } from '../lib/rooms.mjs'
+import { AUDIO_ROOM_TTL_MS, closeRoomByAdmin, createInterpreterSession, createRoom, isRoomClosed, joinRoom, leaveRoom, listHistory, listMembers, listRooms, roomByCode, roomForFrame, roomLibraries, listRoomTranscript, resolveFrameRoom, setRoomLibraries, roomById, removeMember } from '../lib/rooms.mjs'
 import { appendUtterance } from '../lib/db.mjs'
 import { floorState, takeFloor } from '../lib/floor.mjs'
 
@@ -184,6 +184,74 @@ export async function runRoomsSuite({ it, check }) {
       after.closed === true, JSON.stringify(after))
     check('按邀请码就找不到了（roomByCode 只认未结束的）',
       roomByCode(dir, '888888') === null, 'byCode 应返回 null')
+  })
+
+  await it('5.35：翻译官会话与会议**同表同结构**，只靠 kind 区分（显示层不用写两套）', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'interp-'))
+    try {
+      const meeting = createRoom(dataDir, { name: '周会', host: 'alice', targetLang: 'pt-BR' })
+      check('会议建成', meeting.ok === true, JSON.stringify(meeting))
+      check('会议 kind=meeting', meeting.room.kind === 'meeting', String(meeting.room.kind))
+
+      const session = createInterpreterSession(dataDir, {
+        host: 'alice', name: '和巴西同事', lang: 'zh-CN', targetLang: 'pt-BR',
+      })
+      check('翻译官会话建成', session.ok === true, JSON.stringify(session))
+      check('kind=interpreter', session.session.kind === 'interpreter', JSON.stringify(session.session))
+      check('**不返回邀请码**（它不是可加入的房间）', session.session.code === undefined,
+        JSON.stringify(session.session))
+
+      // 两句转写写进**同一张 utterances 表**（会议那套 appendUtterance 原样复用）
+      appendUtterance(dataDir, {
+        roomId: session.session.id, username: 'alice', srcLang: 'pt-BR', dstLang: 'zh-CN',
+        srcText: 'Bom dia', dstText: '早上好', startAt: Date.now(), isFinal: true,
+      })
+      appendUtterance(dataDir, {
+        roomId: session.session.id, username: 'alice', srcLang: 'pt-BR', dstLang: 'zh-CN',
+        srcText: 'Obrigado', dstText: '谢谢', startAt: Date.now(), isFinal: true,
+      })
+
+      // 历史列表：两种记录**同一条查询**，只有 kind 不同
+      const history = listHistory(dataDir, { user: 'alice' })
+      check('历史里两条都在', history.items.length === 2, String(history.items.length))
+      const kinds = history.items.map((one) => one.kind).sort()
+      check('类型分别是 interpreter / meeting',
+        JSON.stringify(kinds) === JSON.stringify(['interpreter', 'meeting']), JSON.stringify(kinds))
+      const interp = history.items.find((one) => one.kind === 'interpreter')
+      check('翻译官那条也带六样信息（名称/人数/句数/语种/时长）',
+        interp.name === '和巴西同事' && interp.members === 1 && interp.utterances === 2
+        && Array.isArray(interp.langs) && interp.langs.includes('zh-CN')
+        && typeof interp.durationSeconds === 'number',
+        JSON.stringify(interp))
+
+      // 详情/转写：同一套 listRoomTranscript（成员校验也复用）
+      const transcript = listRoomTranscript(dataDir, { roomId: session.session.id, user: 'alice' })
+      check('转写读得到（复用会议那套）', transcript.ok === true && transcript.lines.length === 2,
+        JSON.stringify(transcript.ok === true ? transcript.lines.length : transcript.error))
+      check('原文译文都在', transcript.lines[0].srcText === 'Bom dia'
+        && transcript.lines[0].dstText === '早上好', JSON.stringify(transcript.lines[0]))
+
+      // 但**不能**被当成会议：大厅与管理台/管线看门狗不该看到它
+      const rooms = listRooms(dataDir)
+      check('正在开的会议列表里**没有**翻译官会话',
+        rooms.every((one) => one.id !== session.session.id), JSON.stringify(rooms.map((one) => one.id)))
+      check('会议还在列表里', rooms.some((one) => one.id === meeting.room.id))
+      const all = listRooms(dataDir, { includeInterpreter: true })
+      check('需要时能看到全部（includeInterpreter）', all.some((one) => one.id === session.session.id))
+
+      // 邀请码进不去（翻译官会话没有入会语义）
+      check('随便一个码都进不了翻译官会话', roomByCode(dataDir, '000000') === null)
+      check('roomById 能看到 kind', roomById(dataDir, session.session.id)?.kind === 'interpreter')
+
+      // 结束会话复用 closeRoomByAdmin（closed_at 置上 → 历史里时长定格）
+      const closed = closeRoomByAdmin(dataDir, { roomId: session.session.id, by: 'alice' })
+      check('结束会话成功', closed.ok === true, JSON.stringify(closed))
+      const after = listHistory(dataDir, { user: 'alice' }).items
+        .find((one) => one.id === session.session.id)
+      check('结束后不再是「进行中」', after.active === false, JSON.stringify(after))
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
   })
 
   rmSync(dir, { recursive: true, force: true })
