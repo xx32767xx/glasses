@@ -32,7 +32,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import { PHRASES, inspect } from './test-phrases.mjs'
-import { translationSystem } from '../plugin/core.mjs'
+import { translationSystem } from '../lib/translate.mjs'
 import { lintTranslation } from '../lib/translation-lint.mjs'
 
 const policy = JSON.parse(readFileSync(join(process.cwd(), 'policy', 'br-pt.json'), 'utf8'))

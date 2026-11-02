@@ -11,7 +11,7 @@
  *   · 不记：`高通` 在 `高通量` 这种中文边界里（与匹配器同一套规则）；
  *   · 不记：方向不符（条目只做 zh→pt，却在 pt→zh 的句子上出现）。
  */
-import { detectTermsMiss, proofreadKeptNames } from '../plugin/core.mjs'
+import { detectTermsMiss, proofreadKeptNames } from '../lib/translate.mjs'
 import { validateTerms } from '../lib/terms.mjs'
 
 const ENTRIES = validateTerms([

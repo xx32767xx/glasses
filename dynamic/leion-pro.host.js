@@ -360,370 +360,34 @@ const POLICY = {
 // ============================================================================
 
 /**
- * leion-pro · 核心逻辑 —— 全项目唯一来源
+ * translate.mjs —— **翻译模块**（5.33 从 plugin/core.mjs 搬出）
  * ============================================================================
+ * 这一层只做翻译这件事，而且把它前面（识别）和后面（显示/播放）都隔开：
  *
- * 亮亮视野 (LLVision) Leion Pro / GLXSS ME AR 眼镜设备插件 + 中↔巴西葡语双向同传。
+ * 输入：源文本 + 源语言 + 目标语言 + **这一场的术语表** + 可选的上下文
+ * 输出：译文（以及"用了哪条术语、漏写了哪条"这类观测）
  *
- * 这个文件被两个包装目标共用，二者都不含业务逻辑：
- *   · ../plugin/index.mjs      正式插件（持久）：走 ctx.tools.register()，schema 用
- *                              schemas.generated.mjs 里由本文件 DSL 编译出的原始形式；
- *   · ../dynamic/leion-pro.host.js   动态插件（创造模式）：由 scripts/gen-dynamic.mjs
- *                              把本文件内联进去再包一层沙箱适配器生成。
- * 所以：**改逻辑只改这里**，然后 `node scripts/gen-dynamic.mjs`。
+ * 它负责的三件事（也**只有**这三件事）：
+ *   ① **提示词**：translationSystem / proofreadSystem —— 由 policy 数据生成，不手写；
+ *   ② **热词表**：`mentionedEntries`/`normalizeTerms`/`detectTermsMiss`/`planRescue`
+ *      —— 注入提示、归一译文、观测漏写、必要时小段修正，**全在这一层内部**，
+ *      调用方不需要也不允许自己拿表去 replace；
+ *   ③ **校对（第二遍）**：proofreadRequest / proofreadRegression / revisionProblem
+ *      —— 它属于翻译模块，因为它要重新过一遍热词归一（否则会把归一结果改回去），
+ *      而且"这条修正值不值得上屏"是翻译质量的判断，不是界面的事。
  *
- * 本文件必须保持零 import —— 动态插件沙箱里没有 require/import。
- *
- * 设计要点（改之前先读）
- *   1) transport seam：眼镜怎么收字幕是唯一会随真机变化的东西，被隔离成 createTransport()。
- *      真机接入时只换这一处，其余全部不动。
- *   2) 佩戴者视角：Leion Pro / GLXSS ME 戴在自己脸上，屏幕只给佩戴者看。所以同传主通道是
- *      「对方的语言 → 佩戴者的中文」；佩戴者自己说的话译成巴葡后属于「出站通道」
- *      （给对方的扬声器/第二块屏），眼镜上只做一行回显确认。
- *   3) AR 显示预算：显示区很小，必须先按显示宽度折行、再截到 N 行，否则长译文就是溢出。
+ * 它**不**做：网络调用、线程、重试/超时、字幕排版、历史落库、计费统计。
+ * 所以它不 import 任何东西（连 node:fs 都没有）—— 这样同一份代码既能被 Node 直接
+ * import，也能被 lib/artifacts.mjs 内联进动态插件沙箱（沙箱里没有 import）。
  */
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 可调参数（正式插件经 cordis.yml 的 config 覆盖；动态插件改这里的字面量后重新 define）
-// ─────────────────────────────────────────────────────────────────────────────
-const CONFIG_DEFAULTS = {
-  /** 'mock' = 只打日志/内存（无真机时用）；'file' = 把当前字幕帧写成 JSON 给外部桥读 */
-  transport: 'mock',
-  /** transport === 'file' 时，字幕总线的绝对路径 */
-  sinkPath: '',
-  /** AR 显示预算：每行显示宽度（半角字符数，汉字算 2）与可见行数 */
-  cols: 40,
-  lines: 3,
-  /** 流式翻译时部分字幕的最短刷新间隔（毫秒），防止逐字刷屏 */
-  partialThrottleMs: 400,
-  /** 翻译用的模型路由。留空 = 用第一个已注册 provider，并尝试自动发现模型 */
-  providerId: '',
-  modelId: '',
-  maxTokens: 400,
-  temperature: 0.2,
-  /**
-   * 翻译调用的推理强度。
-   *
-   * 缺省 'off' 是刻意的：翻译是「输入一句、输出一句」的确定性任务，不需要思考。
-   * 而 DeepSeek 适配器缺省的推理强度是 high —— 实测下来思考 token 会把 maxTokens
-   * 吃光，流以非 stop 结束，译文被丢弃（眼镜上什么都不剩，或者只剩碎片）。
-   * 'off' 同时省延迟和费用。留空字符串表示完全不传这个字段（给不接受它的路由用；
-   * 若路由拒绝该字段，插件会自动去掉它重试一次）。
-   */
-  reasoningEffort: 'off',
-
-  /**
-   * 翻译后端 —— 这一步是接缝，不是硬编码。
-   *
-   *   'harness-llm'  用 harness 的模型服务（ctx.llm）。现状，也是本项目的默认。
-   *   'http'         POST 到任意翻译端点。**把模型搬到端侧（手机/眼镜）时用这一条**：
-   *                  端侧只要暴露一个 HTTP 服务，插件配置一行就能接上，不用改代码。
-   *   'none'         插件不做翻译：收件箱里的文字**就是最终字幕**，只做排版与推送。
-   *                  翻译在别处完成后推进来，插件退化成纯显示通道。
-   *
-   * 有了这个开关，"翻译放在哪一层"变成配置，而不是重写。
-   */
-  translator: 'harness-llm',
-  /** translator: 'http' 时的端点 URL（POST，收 {text,from,to}，回 {text} 或 {translation}）。 */
-  translatorUrl: '',
-  /** translator: 'http' 的超时（毫秒）。 */
-  translatorTimeoutMs: 15000,
-
-  /**
-   * ASR 收件箱：外部语音识别程序把文本按行追加到这个文件，插件轮询它并自动出字幕。
-   * 留空 = 关闭自动同传（此时仍可手动调 leion_translate，或用 leion_inbox 的 drain）。
-   * 打开这一项，中↔巴葡同传就从「agent 调工具」变成「外部 ASR 一写就上屏」。
-   */
-  inboxPath: '',
-  /** 轮询间隔（毫秒）。太小会空转，太大会加延迟；150–800 是合理区间。 */
-  inboxPollMs: 700,
-  /** 强制指定收件行的源语种（ASR 已知语种时有用）；留空 = 逐行自动判定。 */
-  inboxFrom: '',
-  /**
-   * 手机侧运行时设置的落点（`{ "proofread": true/false }`），由 relay 的 `PUT /settings` 写。
-   * 留空 = 不读（完全按 config 走）。读不到就忽略 —— 一个坏文件不该影响出字幕。
-   */
-  settingsPath: '',
-  /**
-   * 热词归一（docs/15 §7.1）的总开关。
-   *
-   * <p>`'on'`：译文里出现**已知变体**时换成规范写法；`'off'`：完全不动，
-   * 行为与加这个功能之前**逐字一致**（docs/15 §11 要求的"可回滚闸"）。
-   * 默认开：没有表时它什么也不做，所以"开着"与"没有这个功能"等价。
-   */
-  terms: 'on',
-  /** 热词表文件（`{ tables: { user: { entries } } }`），由 relay 写入。留空 = 不读。 */
-  termsPath: '',
-  /** "当前会话用哪个用户"的文件（`{ user: 'wu' }`），由 relay 写入。 */
-  termsActivePath: '',
-  /** 替换事件的落盘位置（一行一条 JSON）。留空 = 只打控制台。 */
-  termsLogPath: '',
-  /**
-   * "待入表"队列（B 方案，docs/15 §18）：临时修正成功时追一条记录到这里，
-   * 由 relay 在**启动 / 每场开始时**合并进 `terms.json`（插件仍然**只读**正式表）。
-   * 留空 = 不写队列（实验可关）。
-   */
-  termsPendingPath: '',
-  /**
-   * 热词观测（A 方案）：一句话里**提到了**表内名字、但译文里**没写出规范写法**时，
-   * 自动记一笔（`watch` 事件 + 手机端小提示），**本场不改字幕**。
-   *
-   * <p>为什么要它：热词表只能"把已知变体改对"；如果模型写了一个**没登记过**的新变体，
-   * 本场救不了（也不知道它写成了什么）。但我们可以**知道"这句话出问题了"**，
-   * 而且记下来的原文+译文正好是离线候选发现的输入 —— 下一场表就补上了。
-   *
-   * <p>`'off'` 时行为与加这个功能之前逐字一致（可回滚）。
-   */
-  termsWatch: 'on',
-  /**
-   * 本句专名提示（docs/15 §18.9）：翻译时把"这句原文里出现的表内名字 + 规范写法"
-   * 追加进系统提示词，让模型**初译就写对**，而不是等事后修正。
-   *
-   * <p>实测（44 句 A/B 对照，见 §18.9）：规范写法出现率 53/56 → **56/56**，
-   * prompt 只多约 27 token，没有一句被写坏、没有数字丢失。
-   * 对空表 / 原文没提名字的句子**不追加任何东西**（行为与以前逐字一致）。
-   */
-  termsHint: 'on',
-  /**
-   * 热词临时修正（方向一实验，**默认关**）：观测到"提到了名字、译文没写出规范写法"时，
-   * 空闲时问一次模型"这个名字在这句里写成了什么"，只在**片段可验证**时把那一小段换成规范写法。
-   *
-   * <p>三条硬约束（用户定的，写在配置旁边免得以后忘了）：
-   *   · **不把"校对/下一帧把它改回来"当撤销依据** —— 两个机制不一致只能说明冲突，
-   *     不能证明谁正确；所以本功能不监听、不撤销，先落地的那个生效，后到的按"过期"丢弃；
-   *   · **绑定字幕帧与版本号**：结果回来时必须还是**同一帧**（displaySeq 未变 + 帧对象未换），
-   *     否则丢弃 —— 避免修错对象（"最后一句"本身一直在变）；
-   *   · 用户已经读到的错误不可能被"修对"完全消除影响，只能少一条。
-   *
-   * <p>只替换**可验证的片段**：答案必须原样出现在译文里、长度/字数有上限、
-   * 与规范写法共享足够多字符（看起来是同一个名字被写错，而不是被泛化成"这家公司"），
-   * 且不夹带别的表内名字。任何一关不过 → 拒绝（宁可不改，也不改坏）。
-   */
-  termsRescue: 'off',
-  /** 每场最多问几次（防"表配错 → 每句都问"）。 */
-  termsRescueLimit: 20,
-  /** 结果超过这个年龄就丢：屏幕早换页了。 */
-  termsRescueMaxAgeMs: 8000,
-
-  /**
-   * 大模型校对（讯飞那种"两遍"）：第一遍**快速出译文并立刻上屏**，
-   * 第二遍让模型回头检查这一句（听错 / 译错 / 巴葡口径），改了就**覆盖同一帧**。
-   *
-   *   'off'   关闭（缺省）。行为与加这个功能之前完全一样。
-   *   'idle'  只在**没有别的事可做时**做校对（收件箱队列空了、没有翻译在跑）。
-   *          选 'idle' 而不是"翻译完立刻校对"是刻意的：
-   *          收件箱是**串行**处理的，如果校对占着这一句不放，下一句的初译就要等它，
-   *          等于给每一句都额外加一次模型往返（实测初译 0.44~0.96 秒，再加一次就是翻倍）。
-   *          放到空闲时做，观众看到初译的时间**一点不变**。
-   *
-   * 代价与代价的边界（都是刻意的）：
-   *   · 校对结果**只在"屏幕上还是这一句"时才覆盖**。如果这期间已经出了下一句
-   *     （哪怕是下一句的流式增量），校对结果直接丢弃 —— 否则屏幕会**倒退**回上一句。
-   *   · 超过 proofreadMaxAgeMs 还没轮到的，也不再改了：观众早就读过、翻页了。
-   *   · 一次只跑一个校对（proofreading 标志），不和翻译抢模型。
-   *
-   * ⚠️ **缺省值从 'off' 改成了 'idle'（默认开启）**，按用户要求：
-   *   同传里最常见的硬错不是"译得不好"而是"听错了"，而校对是唯一能救回来的手段
-   *   （docs/07 §5.3 有实测：初译把 Qualcomm 泛化成 "alta capacidade"，校对补回来）。
-   *   代价要说清：**每句可能多一次模型调用**。所以：
-   *     · 它是"空闲才跑"，不占关键路径；
-   *     · 手机上有一个开关（设置 → 校对），关掉后这台设备就不再排校对；
-   *     · 手机开关通过 `var/live/settings.json` 生效（见 refreshRuntimeSettings）——
-   *       一份数据两处可改时，**以手机为准**（用户当场能摸到的那个更可信）。
-   */
-  proofread: 'idle',
-  /** 校对结果超过这个年龄（毫秒）就丢弃 —— 屏幕早换页了，改了也没人看。 */
-  proofreadMaxAgeMs: 8000,
-  /** 待校对队列的上限。积压说明机器跟不上，多排也只会更晚、更没意义。 */
-  proofreadMaxQueue: 2,
-  /**
-   * 这场会的**目标语言**（5.00）。
-   *
-   * <p>只有中/葡两种时"译成另一种"是唯一的，所以以前不需要这个配置。
-   * 加了英语之后三种语言并存，"对面"不唯一 —— 目标必须由会议决定：
-   *   房间（`rooms.target_lang`）→ 每场会的大脑 `--to <lang>` → 这里。
-   * 空串 = 老行为（`opposite(源语言)`：中↔葡互译，英语兜底译成中文）。
-   */
-  targetLang: '',
-  /**
-   * 这场会的**听众语言侧车**（5.00）：relay 写的 `room-langs/<房间>.json`。
-   *
-   * <p>为什么用文件而不是配置：成员进出、改语言都可能发生在两句之间，而配置是启动时固定的
-   * （改配置要重启大脑，就赶不上"有人刚进来"这件事）。同一套做法见 `audio/<房间>.lang`（4.37）
-   * 与 `settings.json`（手机侧的校对开关）。
-   *
-   * <p>空串 = 不读文件，按老行为（`opposite(源语言)`）—— 老部署不受影响。
-   */
-  hearLangsPath: '',
-}
-
-const DEVICE = {
-  vendor: 'LLVision 亮亮视野',
-  model: 'Leion Pro',
-  aliases: ['GLXSS ME'],
-  panel: '单目 AR 显示，供佩戴者阅读',
-}
 
 /**
- * 这一句要译成哪几种语言（5.00）。
- *
- * <p><b>为什么是"几种"</b>：三语会议里同一句要给不同语言的人看 —— 但只译**实际有人在读**的
- * 语言（`listenerLangs` 来自 relay 写的侧车，等于 `room_members.lang` 去重）。所以：
- * 两个听众同语言 → 只译一份；不同语言 → 译两份（最多两份，因为只有三种语言、源语言占一种）。
- *
- * <p><b>排除源语言</b>：不排除就会"译成同语言"，产出一份看着正常、其实毫无意义的假字幕。
- *
- * <p>优先级（与 {@link resolveTarget} 一致，只是从"一个"变成"一组"）：
- * 会议显式指定（`config.targetLang`，手机建房时选的覆盖值）→ 监听语言集合 → 兜底 opposite(源)。
- *
- * @param {string} from 源语言
- * @param {string} override 显式目标（空串 = 不覆盖）
- * @param {string[]} listenerLangs 听众登记的语言（可能为空）
- * @returns {{targets: string[], source: 'override'|'listeners'|'paired'|'none'}}
+ * 三种语言的码。**在 core.mjs 里也各有一份**（两边都不能 import 对方：
+ * 这边要能独立被内联，那边要能独立跑）。取值必须一致 —— 有测试钉着。
  */
-function resolveTargets(from, override, listenerLangs) {
-  const clean = (list) => {
-    const seen = new Set()
-    for (const item of Array.isArray(list) ? list : []) {
-      const lang = String(item === undefined || item === null ? '' : item).trim()
-      if (lang === '' || lang === from) continue        // 源语言永远不作为目标
-      if (seen.has(lang)) continue                      // 去重：同语言只译一份
-      seen.add(lang)
-    }
-    return [...seen]
-  }
-  if (typeof override === 'string' && override !== '') {
-    const only = clean([override])
-    return { targets: only, source: only.length === 0 ? 'none' : 'override' }
-  }
-  const heard = clean(listenerLangs)
-  if (heard.length > 0) return { targets: heard, source: 'listeners' }
-  // ⚠️ 关键：**登记了语言、但清完是空**（所有人读的都是源语言）→ 这一句不需要任何译文。
-  //    如果这时回落到 opposite，就会给"没人需要的语言"白译一份 —— 既费钱又可能把
-  //    一份多余的字幕推给不该看到它的人。
-  const anyRegistered = (Array.isArray(listenerLangs) ? listenerLangs : [])
-    .some(item => String(item === undefined || item === null ? '' : item).trim() !== '')
-  if (anyRegistered) return { targets: [], source: 'listeners' }
-  const guess = opposite(from)
-  return { targets: guess === 'unknown' ? [] : [guess], source: guess === 'unknown' ? 'none' : 'paired' }
-}
-
 const ZH = 'zh-CN'
 const PT = 'pt-BR'
-/**
- * 5.00：英语（美式）。
- *
- * <p>中 / 英 / 葡三种里它是"第三种"：**既可以是源、也可以是目标**。
- * 加它之后"哪两种互译"不再唯一 —— 所以目标语言必须由**会议**给定
- * （`rooms.target_lang` → 大脑 `--to` → `config.targetLang`），见 {@link resolveTarget}。
- */
 const EN = 'en-US'
-
-/**
- * 这个路径看起来是不是绝对路径？
- *
- * 刻意不引 `node:path` —— core.mjs 是**零 import** 的（动态插件在沙箱里跑，
- * 拿不到 node 内置模块）。所以这里用最朴素的判断，覆盖三种真实写法：
- *   C:\... / C:/... / \\server\share\... / /usr/...
- */
-function looksAbsolutePath(value) {
-  const text = String(value)
-  return /^[A-Za-z]:[\\/]/.test(text) || text.startsWith('\\\\') || text.startsWith('/')
-}
-
-/** 一个片段一句话（同传里一条字幕就是一句话）。 */
-const HISTORY_CAP = 200
-
-/**
- * 校验配置。harness 的约定是「配置错误要响亮」：不合法的值在加载时就抛，不要留到运行期。
- */
-function validateConfig(raw) {
-  const config = Object.assign({}, CONFIG_DEFAULTS, raw === undefined || raw === null ? {} : raw)
-  if (config.transport !== 'mock' && config.transport !== 'file') {
-    throw new Error(`leion-pro: transport 只能是 'mock' 或 'file'，收到 ${JSON.stringify(config.transport)}`)
-  }
-  if (config.transport === 'file' && (typeof config.sinkPath !== 'string' || config.sinkPath === '')) {
-    throw new Error("leion-pro: transport 'file' 需要 sinkPath 指向一个字幕总线文件的绝对路径")
-  }
-  for (const key of ['cols', 'lines']) {
-    const value = config[key]
-    if (!Number.isInteger(value) || value <= 0) {
-      throw new Error(`leion-pro: ${key} 必须是正整数，收到 ${JSON.stringify(value)}`)
-    }
-  }
-  if (!Number.isFinite(config.partialThrottleMs) || config.partialThrottleMs < 0) {
-    throw new Error(`leion-pro: partialThrottleMs 必须是非负数，收到 ${JSON.stringify(config.partialThrottleMs)}`)
-  }
-  if (!Number.isFinite(config.temperature) || config.temperature < 0 || config.temperature > 2) {
-    throw new Error(`leion-pro: temperature 必须在 0..2，收到 ${JSON.stringify(config.temperature)}`)
-  }
-  if (!Number.isInteger(config.maxTokens) || config.maxTokens <= 0) {
-    throw new Error(`leion-pro: maxTokens 必须是正整数，收到 ${JSON.stringify(config.maxTokens)}`)
-  }
-  if (!['', 'off', 'low', 'high', 'max'].includes(config.reasoningEffort)) {
-    throw new Error(`leion-pro: reasoningEffort 只能是 '' / 'off' / 'low' / 'high' / 'max'，收到 ${JSON.stringify(config.reasoningEffort)}`)
-  }
-  if (!['harness-llm', 'http', 'none'].includes(config.translator)) {
-    throw new Error(`leion-pro: translator 只能是 'harness-llm' / 'http' / 'none'，收到 ${JSON.stringify(config.translator)}`)
-  }
-  if (config.translator === 'http' && (typeof config.translatorUrl !== 'string' || config.translatorUrl === '')) {
-    throw new Error("leion-pro: translator 'http' 需要 translatorUrl 指向翻译端点")
-  }
-  if (!Number.isInteger(config.translatorTimeoutMs) || config.translatorTimeoutMs <= 0) {
-    throw new Error(`leion-pro: translatorTimeoutMs 必须是正整数，收到 ${JSON.stringify(config.translatorTimeoutMs)}`)
-  }
-  if (typeof config.inboxPath !== 'string') {
-    throw new Error(`leion-pro: inboxPath 必须是字符串，收到 ${JSON.stringify(config.inboxPath)}`)
-  }
-  if (typeof config.settingsPath !== 'string') {
-    throw new Error(`leion-pro: settingsPath 必须是字符串，收到 ${JSON.stringify(config.settingsPath)}`)
-  }
-  if (!['on', 'off'].includes(config.terms)) {
-    throw new Error(`leion-pro: terms 只能是 'on' / 'off'，收到 ${JSON.stringify(config.terms)}`)
-  }
-  for (const key of ['termsPath', 'termsActivePath', 'termsLogPath', 'termsPendingPath']) {
-    if (typeof config[key] !== 'string') {
-      throw new Error(`leion-pro: ${key} 必须是字符串，收到 ${JSON.stringify(config[key])}`)
-    }
-  }
-  if (!['on', 'off'].includes(config.termsWatch)) {
-    throw new Error(`leion-pro: termsWatch 只能是 'on' / 'off'，收到 ${JSON.stringify(config.termsWatch)}`)
-  }
-  if (!['on', 'off'].includes(config.termsHint)) {
-    throw new Error(`leion-pro: termsHint 只能是 'on' / 'off'，收到 ${JSON.stringify(config.termsHint)}`)
-  }
-  if (!['on', 'off'].includes(config.termsRescue)) {
-    throw new Error(`leion-pro: termsRescue 只能是 'on' / 'off'，收到 ${JSON.stringify(config.termsRescue)}`)
-  }
-  if (!Number.isInteger(config.termsRescueLimit) || config.termsRescueLimit <= 0) {
-    throw new Error(`leion-pro: termsRescueLimit 必须是正整数，收到 ${JSON.stringify(config.termsRescueLimit)}`)
-  }
-  if (!Number.isInteger(config.termsRescueMaxAgeMs) || config.termsRescueMaxAgeMs <= 0) {
-    throw new Error(`leion-pro: termsRescueMaxAgeMs 必须是正整数，收到 ${JSON.stringify(config.termsRescueMaxAgeMs)}`)
-  }
-  if (config.inboxPath !== '') {
-    if (!Number.isInteger(config.inboxPollMs) || config.inboxPollMs < 100) {
-      throw new Error(`leion-pro: 配置了 inboxPath 时 inboxPollMs 必须是不小于 100 的整数，收到 ${JSON.stringify(config.inboxPollMs)}`)
-    }
-  }
-  if (!['off', 'idle'].includes(config.proofread)) {
-    throw new Error(`leion-pro: proofread 只能是 'off' / 'idle'，收到 ${JSON.stringify(config.proofread)}`)
-  }
-  if (!Number.isInteger(config.proofreadMaxAgeMs) || config.proofreadMaxAgeMs <= 0) {
-    throw new Error(`leion-pro: proofreadMaxAgeMs 必须是正整数，收到 ${JSON.stringify(config.proofreadMaxAgeMs)}`)
-  }
-  if (!Number.isInteger(config.proofreadMaxQueue) || config.proofreadMaxQueue <= 0) {
-    throw new Error(`leion-pro: proofreadMaxQueue 必须是正整数，收到 ${JSON.stringify(config.proofreadMaxQueue)}`)
-  }
-  if (config.inboxFrom !== '' && config.inboxFrom !== ZH && config.inboxFrom !== PT) {
-    throw new Error(`leion-pro: inboxFrom 只能是 '' / '${ZH}' / '${PT}'，收到 ${JSON.stringify(config.inboxFrom)}`)
-  }
-  return config
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 字幕排版
-// ─────────────────────────────────────────────────────────────────────────────
 
 /** 单字符占几列：CJK 全角算 2，其余算 1。 */
 function charCols(ch) {
@@ -762,105 +426,6 @@ function wrapText(text, cols) {
   }
   out.push(line)
   return out
-}
-
-/**
- * 折行后截取「最后 N 行」。
- * 同传是边说边读，读者永远在追最新那句话，所以留尾部而不是头部。
- */
-function fitSubtitle(text, cols, lines) {
-  const wrapped = wrapText(String(text === undefined ? '' : text).trim(), cols)
-  return wrapped.length <= lines ? wrapped : wrapped.slice(wrapped.length - lines)
-}
-
-/** 把一帧字幕画成等宽框，便于在终端/工具卡片里肉眼核对排版。 */
-function drawFrame(frame, cols) {
-  const top = '┌' + '─'.repeat(cols) + '┐'
-  const body = frame.lines.map(l => {
-    const pad = cols - [...l].reduce((n, ch) => n + charCols(ch), 0)
-    return '│' + l + ' '.repeat(pad > 0 ? pad : 0) + '│'
-  })
-  const bottom = '└' + '─'.repeat(cols) + '┘'
-  return [top, ...body, bottom].join('\n')
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 语种判定（双向同传的语向自动路由）
-// ─────────────────────────────────────────────────────────────────────────────
-
-const PT_MARKERS = [
-  'não', 'nao', 'você', 'voce', 'obrigado', 'obrigada', 'está', 'esta', 'estão', 'estao',
-  'com', 'para', 'isso', 'muito', 'bom', 'dia', 'olá', 'ola', 'tudo', 'bem', 'aqui',
-  'sim', 'desculpe', 'falar', 'pode', 'vamos', 'estou', 'também', 'tambem', 'depois',
-  'reunião', 'reuniao', 'quando', 'onde', 'porque', 'então', 'entao', 'como', 'café', 'cafe',
-]
-const PT_DIACRITICS = 'ãõçáéêíóúâàü'
-
-/**
- * 英语的"形状"标记（5.00）。
- *
- * <p>为什么要它：中/英/葡三种里，**英文与巴葡共用拉丁字母**，光看字符集分不开。
- * 所以用"高频功能词"当证据，并且要求 **≥2 个**才算 —— 一个词（比如 `no`、`a`）
- * 在葡语和英语里都可能出现，拿单个词判语种是"猜"，而猜错语种会让整句译错方向。
- *
- * <p>真正的语种来源仍是**每句话自带**（识别进程会给 `from`、手机上报 `lang`）；
- * 这里只是"没给 from 时"的兜底，所以宁可判 `${unknown}` 也不硬凑。
- */
-const EN_MARKERS = [
-  'the', 'and', 'you', 'your', 'we', 'are', 'is', 'was', 'were', 'this', 'that', 'these',
-  'those', 'with', 'for', 'from', 'have', 'has', 'will', 'would', 'can', 'could', 'should',
-  'not', 'but', 'there', 'what', 'when', 'where', 'because', 'about', 'meeting', 'today',
-  'tomorrow', 'thanks', 'thank', 'hello', 'sorry', 'please', 'okay', 'yes', 'know', 'think',
-]
-
-/** 判定一段文本是中文 / 巴葡 / 英语；判不出来返回 'unknown'，让调用方决定，绝不猜。 */
-function detectLang(text) {
-  const s = String(text === undefined ? '' : text)
-  if (/[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/.test(s)) return ZH
-  const lower = s.toLowerCase()
-  const padded = ' ' + lower.replace(/[.,!?;:()"']/g, ' ').replace(/\s+/g, ' ') + ' '
-  let hits = 0
-  for (const marker of PT_MARKERS) {
-    if (padded.includes(' ' + marker + ' ')) hits += 1
-  }
-  const diacritic = [...lower].some(ch => PT_DIACRITICS.includes(ch))
-  if (hits >= 1 || diacritic) return PT
-  // 5.00：巴葡证据一条都没有，才轮到英语 —— 且要**两个**以上功能词才算数。
-  let englishHits = 0
-  for (const marker of EN_MARKERS) {
-    if (padded.includes(' ' + marker + ' ')) englishHits += 1
-  }
-  if (englishHits >= 2) return EN
-  return 'unknown'
-}
-
-/**
- * 「另一种语言」的**兜底**推导（5.00 起它只是兜底）。
- *
- * <p>⚠️ 三种语言并存时，"对面"不唯一 —— 所以真正的目标语言应当由**会议**给定
- * （`rooms.target_lang` → 每场会的大脑 `--to` → `config.targetLang`）。
- * 这个函数只在"没给目标"的老链路上起作用：中↔葡互译，英语默认译成中文。
- */
-function opposite(lang) {
-  if (lang === ZH) return PT
-  if (lang === PT) return ZH
-  if (lang === EN) return ZH
-  return 'unknown'
-}
-
-/**
- * 这一句该译成哪种语言（5.00）。
- *
- * <p>优先级：**这一句显式给了 to** → **会议配置的目标语言** → 兜底 opposite(源语言)。
- * 三个来源都拿不到才报错（宁可不译，也不要猜错方向 —— 译错方向时译文看起来完全正常）。
- *
- * @returns {{target: string, source: 'explicit'|'meeting'|'paired'|'none'}}
- */
-function resolveTarget(from, argsTo, configTarget) {
-  if (typeof argsTo === 'string' && argsTo !== '') return { target: argsTo, source: 'explicit' }
-  if (typeof configTarget === 'string' && configTarget !== '') return { target: configTarget, source: 'meeting' }
-  const guess = opposite(from)
-  return { target: guess === 'unknown' ? '' : guess, source: guess === 'unknown' ? 'none' : 'paired' }
 }
 
 /**
@@ -1359,37 +924,7 @@ function proofreadRequest(input) {
  * 接真机时在这里加一支：'adb'（走 ctx.get('shell')）、'ble'（走外部守护进程）……
  * 注意 ctx.web.fetch 只支持 GET（WebFetchRequest 只有 url 字段），不能当 POST 桥用。
  */
-function createTransport(ctx, config) {
-  if (config.transport === 'file') {
-    return {
-      kind: 'file',
-      detail: config.sinkPath,
-      async send(frame) {
-        const fs = ctx.get('fs')
-        if (fs === undefined) throw new Error('transport "file" 需要 fs 服务，但当前 ctx 里没有')
-        const target = await fs.resolve(config.sinkPath)
-        await fs.writeText(target, JSON.stringify(frame, null, 2) + '\n')
-      },
-    }
-  }
-  return {
-    kind: 'mock',
-    detail: '进程内 console + 内存（无真机模式）',
-    async send(frame) {
-      console.log('[leion-pro] ' + frame.speaker + '/' + frame.lang + ' → ' + frame.lines.join(' ⏎ '))
-    },
-  }
-}
 
-/**
- * 建一个解释器实例：持有 transport、翻译后端、字幕历史、计数，并暴露业务操作。
- * @param ctx 受限 ctx（只需要 get）
- * @param rawConfig 用户配置（会被 validateConfig 校验并填默认值）
- * @param deps 必须提供 { policy } —— 巴葡策略数据，见 policy/br-pt.json 与
- *             plugin/policy.generated.mjs（生成物）。两个包装目标各自把 policy 传进来：
- *             正式包 import 生成模块，动态包由生成器内联成常量。
- */
-/** 折叠用的串，**长度必须不变**（否则所有偏移量都会错位）。 */
 function foldForTerms(text) {
   let out = ''
   for (const char of String(text)) {
@@ -1847,6 +1382,512 @@ function planRescue({ draft, answer, canonical, entries, targetZh, cols, lines }
     to: canon,
   }
 }
+
+
+/**
+ * leion-pro · 核心逻辑 —— 全项目唯一来源
+ * ============================================================================
+ *
+ * 亮亮视野 (LLVision) Leion Pro / GLXSS ME AR 眼镜设备插件 + 中↔巴西葡语双向同传。
+ *
+ * 这个文件被两个包装目标共用，二者都不含业务逻辑：
+ *   · ../plugin/index.mjs      正式插件（持久）：走 ctx.tools.register()，schema 用
+ *                              schemas.generated.mjs 里由本文件 DSL 编译出的原始形式；
+ *   · ../dynamic/leion-pro.host.js   动态插件（创造模式）：由 scripts/gen-dynamic.mjs
+ *                              把本文件内联进去再包一层沙箱适配器生成。
+ * 所以：**改逻辑只改这里**，然后 `node scripts/gen-dynamic.mjs`。
+ *
+ * 本文件必须保持零 import —— 动态插件沙箱里没有 require/import。
+ *
+ * 设计要点（改之前先读）
+ *   1) transport seam：眼镜怎么收字幕是唯一会随真机变化的东西，被隔离成 createTransport()。
+ *      真机接入时只换这一处，其余全部不动。
+ *   2) 佩戴者视角：Leion Pro / GLXSS ME 戴在自己脸上，屏幕只给佩戴者看。所以同传主通道是
+ *      「对方的语言 → 佩戴者的中文」；佩戴者自己说的话译成巴葡后属于「出站通道」
+ *      （给对方的扬声器/第二块屏），眼镜上只做一行回显确认。
+ *   3) AR 显示预算：显示区很小，必须先按显示宽度折行、再截到 N 行，否则长译文就是溢出。
+ */
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 可调参数（正式插件经 cordis.yml 的 config 覆盖；动态插件改这里的字面量后重新 define）
+// ─────────────────────────────────────────────────────────────────────────────
+// （内联构建：translate.mjs 的正文已拼在本文件开头）
+const CONFIG_DEFAULTS = {
+  /** 'mock' = 只打日志/内存（无真机时用）；'file' = 把当前字幕帧写成 JSON 给外部桥读 */
+  transport: 'mock',
+  /** transport === 'file' 时，字幕总线的绝对路径 */
+  sinkPath: '',
+  /** AR 显示预算：每行显示宽度（半角字符数，汉字算 2）与可见行数 */
+  cols: 40,
+  lines: 3,
+  /** 流式翻译时部分字幕的最短刷新间隔（毫秒），防止逐字刷屏 */
+  partialThrottleMs: 400,
+  /** 翻译用的模型路由。留空 = 用第一个已注册 provider，并尝试自动发现模型 */
+  providerId: '',
+  modelId: '',
+  maxTokens: 400,
+  temperature: 0.2,
+  /**
+   * 翻译调用的推理强度。
+   *
+   * 缺省 'off' 是刻意的：翻译是「输入一句、输出一句」的确定性任务，不需要思考。
+   * 而 DeepSeek 适配器缺省的推理强度是 high —— 实测下来思考 token 会把 maxTokens
+   * 吃光，流以非 stop 结束，译文被丢弃（眼镜上什么都不剩，或者只剩碎片）。
+   * 'off' 同时省延迟和费用。留空字符串表示完全不传这个字段（给不接受它的路由用；
+   * 若路由拒绝该字段，插件会自动去掉它重试一次）。
+   */
+  reasoningEffort: 'off',
+
+  /**
+   * 翻译后端 —— 这一步是接缝，不是硬编码。
+   *
+   *   'harness-llm'  用 harness 的模型服务（ctx.llm）。现状，也是本项目的默认。
+   *   'http'         POST 到任意翻译端点。**把模型搬到端侧（手机/眼镜）时用这一条**：
+   *                  端侧只要暴露一个 HTTP 服务，插件配置一行就能接上，不用改代码。
+   *   'none'         插件不做翻译：收件箱里的文字**就是最终字幕**，只做排版与推送。
+   *                  翻译在别处完成后推进来，插件退化成纯显示通道。
+   *
+   * 有了这个开关，"翻译放在哪一层"变成配置，而不是重写。
+   */
+  translator: 'harness-llm',
+  /** translator: 'http' 时的端点 URL（POST，收 {text,from,to}，回 {text} 或 {translation}）。 */
+  translatorUrl: '',
+  /** translator: 'http' 的超时（毫秒）。 */
+  translatorTimeoutMs: 15000,
+
+  /**
+   * ASR 收件箱：外部语音识别程序把文本按行追加到这个文件，插件轮询它并自动出字幕。
+   * 留空 = 关闭自动同传（此时仍可手动调 leion_translate，或用 leion_inbox 的 drain）。
+   * 打开这一项，中↔巴葡同传就从「agent 调工具」变成「外部 ASR 一写就上屏」。
+   */
+  inboxPath: '',
+  /** 轮询间隔（毫秒）。太小会空转，太大会加延迟；150–800 是合理区间。 */
+  inboxPollMs: 700,
+  /** 强制指定收件行的源语种（ASR 已知语种时有用）；留空 = 逐行自动判定。 */
+  inboxFrom: '',
+  /**
+   * 手机侧运行时设置的落点（`{ "proofread": true/false }`），由 relay 的 `PUT /settings` 写。
+   * 留空 = 不读（完全按 config 走）。读不到就忽略 —— 一个坏文件不该影响出字幕。
+   */
+  settingsPath: '',
+  /**
+   * 热词归一（docs/15 §7.1）的总开关。
+   *
+   * <p>`'on'`：译文里出现**已知变体**时换成规范写法；`'off'`：完全不动，
+   * 行为与加这个功能之前**逐字一致**（docs/15 §11 要求的"可回滚闸"）。
+   * 默认开：没有表时它什么也不做，所以"开着"与"没有这个功能"等价。
+   */
+  terms: 'on',
+  /** 热词表文件（`{ tables: { user: { entries } } }`），由 relay 写入。留空 = 不读。 */
+  termsPath: '',
+  /** "当前会话用哪个用户"的文件（`{ user: 'wu' }`），由 relay 写入。 */
+  termsActivePath: '',
+  /** 替换事件的落盘位置（一行一条 JSON）。留空 = 只打控制台。 */
+  termsLogPath: '',
+  /**
+   * "待入表"队列（B 方案，docs/15 §18）：临时修正成功时追一条记录到这里，
+   * 由 relay 在**启动 / 每场开始时**合并进 `terms.json`（插件仍然**只读**正式表）。
+   * 留空 = 不写队列（实验可关）。
+   */
+  termsPendingPath: '',
+  /**
+   * 热词观测（A 方案）：一句话里**提到了**表内名字、但译文里**没写出规范写法**时，
+   * 自动记一笔（`watch` 事件 + 手机端小提示），**本场不改字幕**。
+   *
+   * <p>为什么要它：热词表只能"把已知变体改对"；如果模型写了一个**没登记过**的新变体，
+   * 本场救不了（也不知道它写成了什么）。但我们可以**知道"这句话出问题了"**，
+   * 而且记下来的原文+译文正好是离线候选发现的输入 —— 下一场表就补上了。
+   *
+   * <p>`'off'` 时行为与加这个功能之前逐字一致（可回滚）。
+   */
+  termsWatch: 'on',
+  /**
+   * 本句专名提示（docs/15 §18.9）：翻译时把"这句原文里出现的表内名字 + 规范写法"
+   * 追加进系统提示词，让模型**初译就写对**，而不是等事后修正。
+   *
+   * <p>实测（44 句 A/B 对照，见 §18.9）：规范写法出现率 53/56 → **56/56**，
+   * prompt 只多约 27 token，没有一句被写坏、没有数字丢失。
+   * 对空表 / 原文没提名字的句子**不追加任何东西**（行为与以前逐字一致）。
+   */
+  termsHint: 'on',
+  /**
+   * 热词临时修正（方向一实验，**默认关**）：观测到"提到了名字、译文没写出规范写法"时，
+   * 空闲时问一次模型"这个名字在这句里写成了什么"，只在**片段可验证**时把那一小段换成规范写法。
+   *
+   * <p>三条硬约束（用户定的，写在配置旁边免得以后忘了）：
+   *   · **不把"校对/下一帧把它改回来"当撤销依据** —— 两个机制不一致只能说明冲突，
+   *     不能证明谁正确；所以本功能不监听、不撤销，先落地的那个生效，后到的按"过期"丢弃；
+   *   · **绑定字幕帧与版本号**：结果回来时必须还是**同一帧**（displaySeq 未变 + 帧对象未换），
+   *     否则丢弃 —— 避免修错对象（"最后一句"本身一直在变）；
+   *   · 用户已经读到的错误不可能被"修对"完全消除影响，只能少一条。
+   *
+   * <p>只替换**可验证的片段**：答案必须原样出现在译文里、长度/字数有上限、
+   * 与规范写法共享足够多字符（看起来是同一个名字被写错，而不是被泛化成"这家公司"），
+   * 且不夹带别的表内名字。任何一关不过 → 拒绝（宁可不改，也不改坏）。
+   */
+  termsRescue: 'off',
+  /** 每场最多问几次（防"表配错 → 每句都问"）。 */
+  termsRescueLimit: 20,
+  /** 结果超过这个年龄就丢：屏幕早换页了。 */
+  termsRescueMaxAgeMs: 8000,
+
+  /**
+   * 大模型校对（讯飞那种"两遍"）：第一遍**快速出译文并立刻上屏**，
+   * 第二遍让模型回头检查这一句（听错 / 译错 / 巴葡口径），改了就**覆盖同一帧**。
+   *
+   *   'off'   关闭（缺省）。行为与加这个功能之前完全一样。
+   *   'idle'  只在**没有别的事可做时**做校对（收件箱队列空了、没有翻译在跑）。
+   *          选 'idle' 而不是"翻译完立刻校对"是刻意的：
+   *          收件箱是**串行**处理的，如果校对占着这一句不放，下一句的初译就要等它，
+   *          等于给每一句都额外加一次模型往返（实测初译 0.44~0.96 秒，再加一次就是翻倍）。
+   *          放到空闲时做，观众看到初译的时间**一点不变**。
+   *
+   * 代价与代价的边界（都是刻意的）：
+   *   · 校对结果**只在"屏幕上还是这一句"时才覆盖**。如果这期间已经出了下一句
+   *     （哪怕是下一句的流式增量），校对结果直接丢弃 —— 否则屏幕会**倒退**回上一句。
+   *   · 超过 proofreadMaxAgeMs 还没轮到的，也不再改了：观众早就读过、翻页了。
+   *   · 一次只跑一个校对（proofreading 标志），不和翻译抢模型。
+   *
+   * ⚠️ **缺省值从 'off' 改成了 'idle'（默认开启）**，按用户要求：
+   *   同传里最常见的硬错不是"译得不好"而是"听错了"，而校对是唯一能救回来的手段
+   *   （docs/07 §5.3 有实测：初译把 Qualcomm 泛化成 "alta capacidade"，校对补回来）。
+   *   代价要说清：**每句可能多一次模型调用**。所以：
+   *     · 它是"空闲才跑"，不占关键路径；
+   *     · 手机上有一个开关（设置 → 校对），关掉后这台设备就不再排校对；
+   *     · 手机开关通过 `var/live/settings.json` 生效（见 refreshRuntimeSettings）——
+   *       一份数据两处可改时，**以手机为准**（用户当场能摸到的那个更可信）。
+   */
+  proofread: 'idle',
+  /** 校对结果超过这个年龄（毫秒）就丢弃 —— 屏幕早换页了，改了也没人看。 */
+  proofreadMaxAgeMs: 8000,
+  /** 待校对队列的上限。积压说明机器跟不上，多排也只会更晚、更没意义。 */
+  proofreadMaxQueue: 2,
+  /**
+   * 这场会的**目标语言**（5.00）。
+   *
+   * <p>只有中/葡两种时"译成另一种"是唯一的，所以以前不需要这个配置。
+   * 加了英语之后三种语言并存，"对面"不唯一 —— 目标必须由会议决定：
+   *   房间（`rooms.target_lang`）→ 每场会的大脑 `--to <lang>` → 这里。
+   * 空串 = 老行为（`opposite(源语言)`：中↔葡互译，英语兜底译成中文）。
+   */
+  targetLang: '',
+  /**
+   * 这场会的**听众语言侧车**（5.00）：relay 写的 `room-langs/<房间>.json`。
+   *
+   * <p>为什么用文件而不是配置：成员进出、改语言都可能发生在两句之间，而配置是启动时固定的
+   * （改配置要重启大脑，就赶不上"有人刚进来"这件事）。同一套做法见 `audio/<房间>.lang`（4.37）
+   * 与 `settings.json`（手机侧的校对开关）。
+   *
+   * <p>空串 = 不读文件，按老行为（`opposite(源语言)`）—— 老部署不受影响。
+   */
+  hearLangsPath: '',
+}
+
+const DEVICE = {
+  vendor: 'LLVision 亮亮视野',
+  model: 'Leion Pro',
+  aliases: ['GLXSS ME'],
+  panel: '单目 AR 显示，供佩戴者阅读',
+}
+
+/**
+ * 这一句要译成哪几种语言（5.00）。
+ *
+ * <p><b>为什么是"几种"</b>：三语会议里同一句要给不同语言的人看 —— 但只译**实际有人在读**的
+ * 语言（`listenerLangs` 来自 relay 写的侧车，等于 `room_members.lang` 去重）。所以：
+ * 两个听众同语言 → 只译一份；不同语言 → 译两份（最多两份，因为只有三种语言、源语言占一种）。
+ *
+ * <p><b>排除源语言</b>：不排除就会"译成同语言"，产出一份看着正常、其实毫无意义的假字幕。
+ *
+ * <p>优先级（与 {@link resolveTarget} 一致，只是从"一个"变成"一组"）：
+ * 会议显式指定（`config.targetLang`，手机建房时选的覆盖值）→ 监听语言集合 → 兜底 opposite(源)。
+ *
+ * @param {string} from 源语言
+ * @param {string} override 显式目标（空串 = 不覆盖）
+ * @param {string[]} listenerLangs 听众登记的语言（可能为空）
+ * @returns {{targets: string[], source: 'override'|'listeners'|'paired'|'none'}}
+ */
+function resolveTargets(from, override, listenerLangs) {
+  const clean = (list) => {
+    const seen = new Set()
+    for (const item of Array.isArray(list) ? list : []) {
+      const lang = String(item === undefined || item === null ? '' : item).trim()
+      if (lang === '' || lang === from) continue        // 源语言永远不作为目标
+      if (seen.has(lang)) continue                      // 去重：同语言只译一份
+      seen.add(lang)
+    }
+    return [...seen]
+  }
+  if (typeof override === 'string' && override !== '') {
+    const only = clean([override])
+    return { targets: only, source: only.length === 0 ? 'none' : 'override' }
+  }
+  const heard = clean(listenerLangs)
+  if (heard.length > 0) return { targets: heard, source: 'listeners' }
+  // ⚠️ 关键：**登记了语言、但清完是空**（所有人读的都是源语言）→ 这一句不需要任何译文。
+  //    如果这时回落到 opposite，就会给"没人需要的语言"白译一份 —— 既费钱又可能把
+  //    一份多余的字幕推给不该看到它的人。
+  const anyRegistered = (Array.isArray(listenerLangs) ? listenerLangs : [])
+    .some(item => String(item === undefined || item === null ? '' : item).trim() !== '')
+  if (anyRegistered) return { targets: [], source: 'listeners' }
+  const guess = opposite(from)
+  return { targets: guess === 'unknown' ? [] : [guess], source: guess === 'unknown' ? 'none' : 'paired' }
+}
+
+// （内联构建：ZH 来自 translate.mjs）
+// （内联构建：PT 来自 translate.mjs）
+/**
+ * 5.00：英语（美式）。
+ *
+ * <p>中 / 英 / 葡三种里它是"第三种"：**既可以是源、也可以是目标**。
+ * 加它之后"哪两种互译"不再唯一 —— 所以目标语言必须由**会议**给定
+ * （`rooms.target_lang` → 大脑 `--to` → `config.targetLang`），见 {@link resolveTarget}。
+ *
+ * <p>5.33：这三个常量在 `lib/translate.mjs` 里也各有一份（那边是零 import 的纯模块，
+ * 不能从这里拿）。两边必须一致 —— `tests/tts-suite.mjs` 钉着这一点。
+ */
+// （内联构建：EN 来自 translate.mjs）
+
+/**
+ * 这个路径看起来是不是绝对路径？
+ *
+ * 刻意不引 `node:path` —— core.mjs 是**零 import** 的（动态插件在沙箱里跑，
+ * 拿不到 node 内置模块）。所以这里用最朴素的判断，覆盖三种真实写法：
+ *   C:\... / C:/... / \\server\share\... / /usr/...
+ */
+function looksAbsolutePath(value) {
+  const text = String(value)
+  return /^[A-Za-z]:[\\/]/.test(text) || text.startsWith('\\\\') || text.startsWith('/')
+}
+
+/** 一个片段一句话（同传里一条字幕就是一句话）。 */
+const HISTORY_CAP = 200
+
+/**
+ * 校验配置。harness 的约定是「配置错误要响亮」：不合法的值在加载时就抛，不要留到运行期。
+ */
+function validateConfig(raw) {
+  const config = Object.assign({}, CONFIG_DEFAULTS, raw === undefined || raw === null ? {} : raw)
+  if (config.transport !== 'mock' && config.transport !== 'file') {
+    throw new Error(`leion-pro: transport 只能是 'mock' 或 'file'，收到 ${JSON.stringify(config.transport)}`)
+  }
+  if (config.transport === 'file' && (typeof config.sinkPath !== 'string' || config.sinkPath === '')) {
+    throw new Error("leion-pro: transport 'file' 需要 sinkPath 指向一个字幕总线文件的绝对路径")
+  }
+  for (const key of ['cols', 'lines']) {
+    const value = config[key]
+    if (!Number.isInteger(value) || value <= 0) {
+      throw new Error(`leion-pro: ${key} 必须是正整数，收到 ${JSON.stringify(value)}`)
+    }
+  }
+  if (!Number.isFinite(config.partialThrottleMs) || config.partialThrottleMs < 0) {
+    throw new Error(`leion-pro: partialThrottleMs 必须是非负数，收到 ${JSON.stringify(config.partialThrottleMs)}`)
+  }
+  if (!Number.isFinite(config.temperature) || config.temperature < 0 || config.temperature > 2) {
+    throw new Error(`leion-pro: temperature 必须在 0..2，收到 ${JSON.stringify(config.temperature)}`)
+  }
+  if (!Number.isInteger(config.maxTokens) || config.maxTokens <= 0) {
+    throw new Error(`leion-pro: maxTokens 必须是正整数，收到 ${JSON.stringify(config.maxTokens)}`)
+  }
+  if (!['', 'off', 'low', 'high', 'max'].includes(config.reasoningEffort)) {
+    throw new Error(`leion-pro: reasoningEffort 只能是 '' / 'off' / 'low' / 'high' / 'max'，收到 ${JSON.stringify(config.reasoningEffort)}`)
+  }
+  if (!['harness-llm', 'http', 'none'].includes(config.translator)) {
+    throw new Error(`leion-pro: translator 只能是 'harness-llm' / 'http' / 'none'，收到 ${JSON.stringify(config.translator)}`)
+  }
+  if (config.translator === 'http' && (typeof config.translatorUrl !== 'string' || config.translatorUrl === '')) {
+    throw new Error("leion-pro: translator 'http' 需要 translatorUrl 指向翻译端点")
+  }
+  if (!Number.isInteger(config.translatorTimeoutMs) || config.translatorTimeoutMs <= 0) {
+    throw new Error(`leion-pro: translatorTimeoutMs 必须是正整数，收到 ${JSON.stringify(config.translatorTimeoutMs)}`)
+  }
+  if (typeof config.inboxPath !== 'string') {
+    throw new Error(`leion-pro: inboxPath 必须是字符串，收到 ${JSON.stringify(config.inboxPath)}`)
+  }
+  if (typeof config.settingsPath !== 'string') {
+    throw new Error(`leion-pro: settingsPath 必须是字符串，收到 ${JSON.stringify(config.settingsPath)}`)
+  }
+  if (!['on', 'off'].includes(config.terms)) {
+    throw new Error(`leion-pro: terms 只能是 'on' / 'off'，收到 ${JSON.stringify(config.terms)}`)
+  }
+  for (const key of ['termsPath', 'termsActivePath', 'termsLogPath', 'termsPendingPath']) {
+    if (typeof config[key] !== 'string') {
+      throw new Error(`leion-pro: ${key} 必须是字符串，收到 ${JSON.stringify(config[key])}`)
+    }
+  }
+  if (!['on', 'off'].includes(config.termsWatch)) {
+    throw new Error(`leion-pro: termsWatch 只能是 'on' / 'off'，收到 ${JSON.stringify(config.termsWatch)}`)
+  }
+  if (!['on', 'off'].includes(config.termsHint)) {
+    throw new Error(`leion-pro: termsHint 只能是 'on' / 'off'，收到 ${JSON.stringify(config.termsHint)}`)
+  }
+  if (!['on', 'off'].includes(config.termsRescue)) {
+    throw new Error(`leion-pro: termsRescue 只能是 'on' / 'off'，收到 ${JSON.stringify(config.termsRescue)}`)
+  }
+  if (!Number.isInteger(config.termsRescueLimit) || config.termsRescueLimit <= 0) {
+    throw new Error(`leion-pro: termsRescueLimit 必须是正整数，收到 ${JSON.stringify(config.termsRescueLimit)}`)
+  }
+  if (!Number.isInteger(config.termsRescueMaxAgeMs) || config.termsRescueMaxAgeMs <= 0) {
+    throw new Error(`leion-pro: termsRescueMaxAgeMs 必须是正整数，收到 ${JSON.stringify(config.termsRescueMaxAgeMs)}`)
+  }
+  if (config.inboxPath !== '') {
+    if (!Number.isInteger(config.inboxPollMs) || config.inboxPollMs < 100) {
+      throw new Error(`leion-pro: 配置了 inboxPath 时 inboxPollMs 必须是不小于 100 的整数，收到 ${JSON.stringify(config.inboxPollMs)}`)
+    }
+  }
+  if (!['off', 'idle'].includes(config.proofread)) {
+    throw new Error(`leion-pro: proofread 只能是 'off' / 'idle'，收到 ${JSON.stringify(config.proofread)}`)
+  }
+  if (!Number.isInteger(config.proofreadMaxAgeMs) || config.proofreadMaxAgeMs <= 0) {
+    throw new Error(`leion-pro: proofreadMaxAgeMs 必须是正整数，收到 ${JSON.stringify(config.proofreadMaxAgeMs)}`)
+  }
+  if (!Number.isInteger(config.proofreadMaxQueue) || config.proofreadMaxQueue <= 0) {
+    throw new Error(`leion-pro: proofreadMaxQueue 必须是正整数，收到 ${JSON.stringify(config.proofreadMaxQueue)}`)
+  }
+  if (config.inboxFrom !== '' && config.inboxFrom !== ZH && config.inboxFrom !== PT) {
+    throw new Error(`leion-pro: inboxFrom 只能是 '' / '${ZH}' / '${PT}'，收到 ${JSON.stringify(config.inboxFrom)}`)
+  }
+  return config
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 字幕排版
+// ─────────────────────────────────────────────────────────────────────────────
+
+// （5.33：这一段搬去了 lib/translate.mjs —— 翻译/热词/校对的纯函数）
+
+/**
+ * 折行后截取「最后 N 行」。
+ * 同传是边说边读，读者永远在追最新那句话，所以留尾部而不是头部。
+ */
+function fitSubtitle(text, cols, lines) {
+  const wrapped = wrapText(String(text === undefined ? '' : text).trim(), cols)
+  return wrapped.length <= lines ? wrapped : wrapped.slice(wrapped.length - lines)
+}
+
+/** 把一帧字幕画成等宽框，便于在终端/工具卡片里肉眼核对排版。 */
+function drawFrame(frame, cols) {
+  const top = '┌' + '─'.repeat(cols) + '┐'
+  const body = frame.lines.map(l => {
+    const pad = cols - [...l].reduce((n, ch) => n + charCols(ch), 0)
+    return '│' + l + ' '.repeat(pad > 0 ? pad : 0) + '│'
+  })
+  const bottom = '└' + '─'.repeat(cols) + '┘'
+  return [top, ...body, bottom].join('\n')
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 语种判定（双向同传的语向自动路由）
+// ─────────────────────────────────────────────────────────────────────────────
+
+const PT_MARKERS = [
+  'não', 'nao', 'você', 'voce', 'obrigado', 'obrigada', 'está', 'esta', 'estão', 'estao',
+  'com', 'para', 'isso', 'muito', 'bom', 'dia', 'olá', 'ola', 'tudo', 'bem', 'aqui',
+  'sim', 'desculpe', 'falar', 'pode', 'vamos', 'estou', 'também', 'tambem', 'depois',
+  'reunião', 'reuniao', 'quando', 'onde', 'porque', 'então', 'entao', 'como', 'café', 'cafe',
+]
+const PT_DIACRITICS = 'ãõçáéêíóúâàü'
+
+/**
+ * 英语的"形状"标记（5.00）。
+ *
+ * <p>为什么要它：中/英/葡三种里，**英文与巴葡共用拉丁字母**，光看字符集分不开。
+ * 所以用"高频功能词"当证据，并且要求 **≥2 个**才算 —— 一个词（比如 `no`、`a`）
+ * 在葡语和英语里都可能出现，拿单个词判语种是"猜"，而猜错语种会让整句译错方向。
+ *
+ * <p>真正的语种来源仍是**每句话自带**（识别进程会给 `from`、手机上报 `lang`）；
+ * 这里只是"没给 from 时"的兜底，所以宁可判 `${unknown}` 也不硬凑。
+ */
+const EN_MARKERS = [
+  'the', 'and', 'you', 'your', 'we', 'are', 'is', 'was', 'were', 'this', 'that', 'these',
+  'those', 'with', 'for', 'from', 'have', 'has', 'will', 'would', 'can', 'could', 'should',
+  'not', 'but', 'there', 'what', 'when', 'where', 'because', 'about', 'meeting', 'today',
+  'tomorrow', 'thanks', 'thank', 'hello', 'sorry', 'please', 'okay', 'yes', 'know', 'think',
+]
+
+/** 判定一段文本是中文 / 巴葡 / 英语；判不出来返回 'unknown'，让调用方决定，绝不猜。 */
+function detectLang(text) {
+  const s = String(text === undefined ? '' : text)
+  if (/[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/.test(s)) return ZH
+  const lower = s.toLowerCase()
+  const padded = ' ' + lower.replace(/[.,!?;:()"']/g, ' ').replace(/\s+/g, ' ') + ' '
+  let hits = 0
+  for (const marker of PT_MARKERS) {
+    if (padded.includes(' ' + marker + ' ')) hits += 1
+  }
+  const diacritic = [...lower].some(ch => PT_DIACRITICS.includes(ch))
+  if (hits >= 1 || diacritic) return PT
+  // 5.00：巴葡证据一条都没有，才轮到英语 —— 且要**两个**以上功能词才算数。
+  let englishHits = 0
+  for (const marker of EN_MARKERS) {
+    if (padded.includes(' ' + marker + ' ')) englishHits += 1
+  }
+  if (englishHits >= 2) return EN
+  return 'unknown'
+}
+
+/**
+ * 「另一种语言」的**兜底**推导（5.00 起它只是兜底）。
+ *
+ * <p>⚠️ 三种语言并存时，"对面"不唯一 —— 所以真正的目标语言应当由**会议**给定
+ * （`rooms.target_lang` → 每场会的大脑 `--to` → `config.targetLang`）。
+ * 这个函数只在"没给目标"的老链路上起作用：中↔葡互译，英语默认译成中文。
+ */
+function opposite(lang) {
+  if (lang === ZH) return PT
+  if (lang === PT) return ZH
+  if (lang === EN) return ZH
+  return 'unknown'
+}
+
+/**
+ * 这一句该译成哪种语言（5.00）。
+ *
+ * <p>优先级：**这一句显式给了 to** → **会议配置的目标语言** → 兜底 opposite(源语言)。
+ * 三个来源都拿不到才报错（宁可不译，也不要猜错方向 —— 译错方向时译文看起来完全正常）。
+ *
+ * @returns {{target: string, source: 'explicit'|'meeting'|'paired'|'none'}}
+ */
+function resolveTarget(from, argsTo, configTarget) {
+  if (typeof argsTo === 'string' && argsTo !== '') return { target: argsTo, source: 'explicit' }
+  if (typeof configTarget === 'string' && configTarget !== '') return { target: configTarget, source: 'meeting' }
+  const guess = opposite(from)
+  return { target: guess === 'unknown' ? '' : guess, source: guess === 'unknown' ? 'none' : 'paired' }
+}
+
+// （5.33：这一段搬去了 lib/translate.mjs —— 翻译/热词/校对的纯函数）
+function createTransport(ctx, config) {
+  if (config.transport === 'file') {
+    return {
+      kind: 'file',
+      detail: config.sinkPath,
+      async send(frame) {
+        const fs = ctx.get('fs')
+        if (fs === undefined) throw new Error('transport "file" 需要 fs 服务，但当前 ctx 里没有')
+        const target = await fs.resolve(config.sinkPath)
+        await fs.writeText(target, JSON.stringify(frame, null, 2) + '\n')
+      },
+    }
+  }
+  return {
+    kind: 'mock',
+    detail: '进程内 console + 内存（无真机模式）',
+    async send(frame) {
+      console.log('[leion-pro] ' + frame.speaker + '/' + frame.lang + ' → ' + frame.lines.join(' ⏎ '))
+    },
+  }
+}
+
+/**
+ * 建一个解释器实例：持有 transport、翻译后端、字幕历史、计数，并暴露业务操作。
+ * @param ctx 受限 ctx（只需要 get）
+ * @param rawConfig 用户配置（会被 validateConfig 校验并填默认值）
+ * @param deps 必须提供 { policy } —— 巴葡策略数据，见 policy/br-pt.json 与
+ *             plugin/policy.generated.mjs（生成物）。两个包装目标各自把 policy 传进来：
+ *             正式包 import 生成模块，动态包由生成器内联成常量。
+ */
+/** 折叠用的串，**长度必须不变**（否则所有偏移量都会错位）。 */
+// （5.33：这一段搬去了 lib/translate.mjs —— 翻译/热词/校对的纯函数）
 
 function createInterpreter(ctx, rawConfig, deps) {
   const config = validateConfig(rawConfig)

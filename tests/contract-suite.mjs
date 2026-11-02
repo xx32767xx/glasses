@@ -14,7 +14,7 @@ import { createServer } from 'node:http'
 import { TEST_DIR } from '../lib/paths.mjs'
 // 纯函数直接从源文件拿（core.mjs 零 import，在 node 里能直接加载）——
 // 这样判据可以**绕过链路直接单测**：链路里的假 LLM 输出是固定句型，造不出某些场景。
-import { normalizeTerms, proofreadRegression } from '../plugin/core.mjs'
+import { normalizeTerms, proofreadRegression } from '../lib/translate.mjs'
 
 /** 按 system 提示词判断要产出哪种语言的译文，让语向断言是确定的。 */
 function cannedTranslation(options) {

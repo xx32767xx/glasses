@@ -12,7 +12,7 @@
  * 光看代码看不出来，打出来一眼就看到了。
  */
 
-import { translationSystem } from '../plugin/core.mjs'
+import { translationSystem } from '../lib/translate.mjs'
 import { POLICY } from '../plugin/policy.generated.mjs'
 
 const SEPARATOR = '='.repeat(70)

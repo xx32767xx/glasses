@@ -27,7 +27,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { translationSystem } from '../plugin/core.mjs'
+import { translationSystem } from '../lib/translate.mjs'
 import { verdictOf, findKey, callModel, CANDIDATES } from './bench-models.mjs'
 
 const policy = JSON.parse(readFileSync(join(process.cwd(), 'policy', 'br-pt.json'), 'utf8'))

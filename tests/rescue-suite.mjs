@@ -15,7 +15,7 @@
  * 只靠这四条"不猜语义"的前提，所以它不能在标注集上"证明安全"——
  * 安全靠的是"只改最后一句 + 过期丢弃 + 写表前人工/合闸"（docs/15 §18）。
  */
-import { locateTermSpan, planRescue } from '../plugin/core.mjs'
+import { locateTermSpan, planRescue } from '../lib/translate.mjs'
 
 const ENTRIES = [
   { id: 'e1', zh: '亮亮视野', pt: 'LLVision', approved: ['LLVision'] },

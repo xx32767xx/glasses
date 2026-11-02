@@ -1,5 +1,5 @@
 /** proofread-terms-suite.mjs —— 校对必须遵守术语表（钉住 2026-10-27 那个真错） */
-import { proofreadSystem } from '../plugin/core.mjs'
+import { proofreadSystem } from '../lib/translate.mjs'
 
 const POLICY = {
   variety: { fullName: 'Português brasileiro', counterpart: { name: '中文（简体）' } },

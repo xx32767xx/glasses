@@ -19,7 +19,7 @@ import { readFileSync } from 'node:fs'
 
 import { verdictOf, selfCheck, toMarkdown, CANDIDATES } from '../scripts/bench-models.mjs'
 import { judgeRegional, REGIONAL } from '../scripts/bench-regional.mjs'
-import { translationSystem } from '../plugin/core.mjs'
+import { translationSystem } from '../lib/translate.mjs'
 
 export async function runBenchSuite({ it, check, assert }) {
   const policy = JSON.parse(readFileSync('policy/br-pt.json', 'utf8'))

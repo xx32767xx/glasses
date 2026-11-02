@@ -49,6 +49,7 @@ import { runEnglishSuite } from './english-suite.mjs'
 import { runDiscoverSuite } from './discover-suite.mjs'
 import { runAndroidOrderSuite } from './android-order-suite.mjs'
 import { runTtsSuite } from './tts-suite.mjs'
+import { runTranslateSuite } from './translate-suite.mjs'
 import { runAsrPackSuite } from './asr-pack-suite.mjs'
 import { runLive } from './live/run.mjs'
 
@@ -181,6 +182,12 @@ await runAndroidOrderSuite(helpers)
 // 关掉了还在念、自己的译文被自己录回去。切块器是纯函数，直接编译执行。
 heading('译文朗读（切块 / 耳机优先 / 过期不播 / 关掉立刻闭嘴）')
 await runTtsSuite(helpers)
+
+// ── 4d. 翻译模块的隔离（提示词 / 热词 / 校对都在这一层）────────────────────
+// 这一层被搬出 plugin/core.mjs 之后，靠"零 import、不重复实现、词表在模块内部"
+// 三条机械判据守住 —— 否则又会回到两处各错一遍。
+heading('翻译隔离（提示词 / 热词 / 校对同一层，零 import 可内联）')
+await runTranslateSuite(helpers)
 
 // ── 5. 局域网转发（手机 ↔ 电脑） ────────────────────────────────────────────
 

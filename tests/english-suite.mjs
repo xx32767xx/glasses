@@ -15,9 +15,10 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  EN, PT, ZH, detectLang, opposite, resolveTarget, resolveTargets, translationSystem, proofreadSystem,
-  targetName, EN_OUTPUT_RULES, CONFIG_DEFAULTS,
+  EN, PT, ZH, detectLang, opposite, resolveTarget, resolveTargets, CONFIG_DEFAULTS,
 } from '../plugin/core.mjs'
+// 5.33：翻译/热词/校对的纯函数搬到了 lib/translate.mjs（隔离出的一层）
+import { translationSystem, proofreadSystem, targetName, EN_OUTPUT_RULES } from '../lib/translate.mjs'
 import { createWsHub } from '../lib/ws-hub.mjs'
 import { parseArgs as harnessParse } from '../scripts/harness-side.mjs'
 import { parseArgs as multiParse, pipelineSteps } from '../scripts/start-multi.mjs'

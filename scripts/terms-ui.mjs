@@ -28,7 +28,9 @@ import {
 } from '../lib/libraries.mjs'
 import { createRequest, decideRequest, loadRequests, pendingOf } from '../lib/requests.mjs'
 import { writeMeetingSnapshot } from '../lib/snapshot.mjs'
-import { normalizeTerms, translationSystem, mentionedEntries, ZH, PT } from '../plugin/core.mjs'
+// 5.33：翻译/热词/校对的纯函数在 lib/translate.mjs；语言码从 core 拿（两边取值一致）
+import { normalizeTerms, translationSystem, mentionedEntries } from '../lib/translate.mjs'
+import { ZH, PT } from '../plugin/core.mjs'
 
 const MAX_BODY = 512 * 1024
 
