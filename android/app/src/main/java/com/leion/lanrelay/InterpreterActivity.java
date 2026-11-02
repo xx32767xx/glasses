@@ -8,6 +8,7 @@ import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 
 import java.util.ArrayList;
@@ -39,6 +40,17 @@ import java.util.List;
 public class InterpreterActivity extends android.app.Activity {
 
     private static final String PREFS = "leion";
+    /** 我读的语言（5.37 起翻译官有自己的偏好，不再跟会议的「说话语言」共用一个键）。 */
+    private static final String PREF_READ = "interpReadLang";
+    /** 对方说的语言（`""`/`auto` = 按 {@link InterpreterLang#defaultPartner(String)} 推）。 */
+    private static final String PREF_PARTNER = "interpPartnerLang";
+    /**
+     * 历史那一块一次读多少条（服务端的 `limit`）。
+     *
+     * <p>为什么不是"全部"：这一块是"我最近几场同传"，翻旧账有底部导航那个「历史」页。
+     * 50 条足够覆盖任何一天的使用，也不至于让这一页一次拉几百条记录。
+     */
+    private static final int HISTORY_LIMIT = 50;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
 
@@ -58,11 +70,34 @@ public class InterpreterActivity extends android.app.Activity {
     /** 5.36：路线 B 的服务器客户端（会话 + 帧）。 */
     private LanClient client;
     private boolean running = false;
-    /** 读哪种语言（= 入会/设置里选的说话语言；翻译官里它同时也是"朗读哪种译文"）。 */
-    private String lang = "zh-CN";
+    /** 我读的语言（= 译文语言，也是朗读语言）。默认跟设置页的「我说什么语言」走。 */
+    private String lang = InterpreterLang.ZH;
+    /** 对方说的语言（= 识别语种）。由 {@link InterpreterLang} 的规则推出/校验。 */
+    private String partner = InterpreterLang.PT;
     /** 同一个 id 的 partial 要**原位更新**同一张卡，不要新起一条。 */
     private final List<String> cardIds = new ArrayList<>();
     private final List<View> cards = new ArrayList<>();
+
+    // ── 三块（5.37）：配置 / 收听 / 历史 ────────────────────────────────────
+    /** 现在看的是哪一块（0 配置 / 1 收听 / 2 历史）。 */
+    private int tab = TAB_LIVE;
+    private static final int TAB_CONFIG = 0;
+    private static final int TAB_LIVE = 1;
+    private static final int TAB_HISTORY = 2;
+    private View configPanel;
+    private View livePanel;
+    private View historyPanel;
+    private TextView tabConfig;
+    private TextView tabLive;
+    private TextView tabHistory;
+    private TextView whereView;
+    private Switch ttsSwitch;
+    private LinearLayout historyList;
+    private ScrollView historyScroll;
+    private TextView historyHint;
+    private TextView historyEmpty;
+    /** 历史只读一次（除非在这页里结束了一场，见 {@link #stopInterpreting()}）。 */
+    private boolean historyLoaded = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -75,9 +110,29 @@ public class InterpreterActivity extends android.app.Activity {
         scroll = findViewById(R.id.interpScroll);
         list = findViewById(R.id.interpSubtitles);
         toggleButton = findViewById(R.id.interpToggle);
+        configPanel = findViewById(R.id.interpConfigPanel);
+        livePanel = findViewById(R.id.interpLivePanel);
+        historyPanel = findViewById(R.id.interpHistoryPanel);
+        tabConfig = findViewById(R.id.interpTabConfig);
+        tabLive = findViewById(R.id.interpTabLive);
+        tabHistory = findViewById(R.id.interpTabHistory);
+        whereView = findViewById(R.id.interpWhere);
+        ttsSwitch = findViewById(R.id.interpTtsSwitch);
+        historyList = findViewById(R.id.interpHistoryList);
+        historyScroll = findViewById(R.id.interpHistoryScroll);
+        historyHint = findViewById(R.id.interpHistoryHint);
+        historyEmpty = findViewById(R.id.interpHistoryEmpty);
 
-        String stored = getSharedPreferences(PREFS, MODE_PRIVATE).getString("speakLang", "");
-        if (stored != null && !stored.isEmpty()) lang = stored;
+        // 5.37：两种语言都**过一遍规则**（见 InterpreterLang）：旧配置、手改的偏好、
+        // 或者"读语言与对方语言相同"这种死局，都不能带进一场翻译里。
+        android.content.SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        String storedRead = prefs.getString(PREF_READ, "");
+        if (storedRead == null || storedRead.isEmpty()) {
+            // 第一次进来：跟设置页的「我说什么语言」走（翻译官默认就是"我说什么就读什么"）
+            storedRead = prefs.getString("speakLang", "");
+        }
+        lang = InterpreterLang.resolveRead(storedRead);
+        partner = InterpreterLang.resolvePartner(prefs.getString(PREF_PARTNER, ""), lang);
 
         // 朗读：与房间页共用同一套策略（队列/耳机优先/禁外放/过期不播）
         ttsQueue = new TtsQueue(new TtsSpeaker(this));
@@ -98,24 +153,16 @@ public class InterpreterActivity extends android.app.Activity {
                 });
             }
         });
-        ttsQueue.setEnabled(getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("ttsRead", false));
+        ttsQueue.setEnabled(prefs.getBoolean("ttsRead", false));
 
         // 5.36：**路线 B** —— 翻译官当"一场会"跑：会话 + 上传音频 + 收服务端字幕帧。
         // 识别与翻译都在服务器上（和会议同一套），所以手机不需要模型也不需要 Key。
-        //
-        // 「演示回放」只在**根本没填服务器地址**时注册（buildClient() 返回 null）：
-        // 那是一个明确的"还没配好"状态，徽标会写「演示回放」。
-        // ⚠️ 刻意**不**在"连不上服务器"时退回演示 —— 那会让用户以为在翻译，
-        // 其实只是在放录音。连不上就如实报"连不上"（onError → 状态行）。
-        LanClient relay = buildClient();
-        RelayPipelineBackend pipeline = relay == null ? null
-                : new RelayPipelineBackend(relay, myName(), lang, partnerLang());
-        router = new AsrRouter();
-        if (pipeline != null) router.register("relay", pipeline);
-        router.register("scripted", new ScriptedAsrBackend(lang));
-        Log.i("LeionInterp", "🧭 识别后端：" + router.describe() + "（对方说 " + partnerLang() + "）");
+        rebuildRouter();
 
-        refreshMeta();
+        applyConfig();
+        wireTabs();
+        wireConfig();
+        findViewById(R.id.interpHistoryAll).setOnClickListener(v -> openAllHistory());
 
         findViewById(R.id.interpBack).setOnClickListener(v -> finish());
         toggleButton.setOnClickListener(v -> {
@@ -125,11 +172,52 @@ public class InterpreterActivity extends android.app.Activity {
                 startInterpreting();
             }
         });
+        showTab(TAB_LIVE);
+    }
+
+    /**
+     * 按**当前配置**重建后端路由（5.37）。
+     *
+     * <p>为什么不在 onCreate 里只建一次：用户可能刚去设置页改了服务器地址/密钥再回来。
+     * 那时候还拿着旧客户端，"点开始"会连到旧地址 —— 而且不报错，只是"怎么还是不通"。
+     * 所以每次**开跑之前**都按当时的配置重建一次（代价是一次对象构造，不连网）。
+     *
+     * 「演示回放」只在**根本没填服务器地址**时注册（buildClient() 返回 null）：
+     * 那是一个明确的"还没配好"状态，徽标会写「演示回放」。
+     * ⚠️ 刻意**不**在"连不上服务器"时退回演示 —— 那会让用户以为在翻译，
+     * 其实只是在放录音。连不上就如实报"连不上"（onError → 状态行）。
+     */
+    private void rebuildRouter() {
+        LanClient relay = buildClient();
+        RelayPipelineBackend pipeline = relay == null ? null
+                : new RelayPipelineBackend(relay, myName(), lang, partner);
+        router = new AsrRouter();
+        if (pipeline != null) router.register("relay", pipeline);
+        router.register("scripted", new ScriptedAsrBackend(lang));
+        Log.i("LeionInterp", "🧭 识别后端：" + router.describe() + "（对方说 " + partner + "）");
+        refreshMeta();
+        refreshWhere();
         // 5.36：第一句提示要说**这一场实际会怎么跑**（服务器识别 + 翻译 / 演示回放），
         // 而不是一律写"演示回放"——那句在真接上之后就成了假话。
-        AsrRouter.Resolution first = router == null ? null : router.resolve(lang);
+        AsrRouter.Resolution first = router.resolve(partner);
         boolean hasRelay = first != null && first.ok() && first.backend instanceof RelayPipelineBackend;
-        statusView.setText(getString(hasRelay ? R.string.interp_hint_relay : R.string.interp_status_hint));
+        if (statusView != null) {
+            statusView.setText(getString(hasRelay ? R.string.interp_hint_relay : R.string.interp_status_hint));
+        }
+    }
+
+    @Override
+    protected void attachBaseContext(android.content.Context base) {
+        // 5.37：界面语言（4.56 的那套机制）—— 不接这里，英文/葡语界面下本页会说中文
+        super.attachBaseContext(UiLang.wrap(base));
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        UiLang.trackShown(this);
+        // 从设置页回来：服务器地址/密钥可能改了 —— 没在跑就按新配置重建后端（在跑就别动）
+        if (!running) rebuildRouter();
     }
 
     @Override
@@ -150,24 +238,260 @@ public class InterpreterActivity extends android.app.Activity {
         super.onDestroy();
     }
 
+    // ── 三块（配置 / 收听 / 历史）──────────────────────────────────────────
+
+    /**
+     * 切到某一块（5.37）。
+     *
+     * <p>为什么是**同一页里的三段**而不是三个 Activity：这三块共用同一份状态
+     * （我读的语言、对方语言、正在跑的那一场）。分开就会变成"配置页存偏好 → 收听页读偏好 →
+     * 中途改了要不要重开"这种跨页同步问题，而它对我们毫无价值。
+     *
+     * <p>⚠️ 切到别的块时**不会**停掉正在跑的那一场：用户去配置看一眼语言、
+     * 或者去翻一条历史，都不该把同传停掉（停掉是他按「停止」或离开本页时的事）。
+     */
+    private void showTab(int next) {
+        tab = next;
+        configPanel.setVisibility(next == TAB_CONFIG ? View.VISIBLE : View.GONE);
+        livePanel.setVisibility(next == TAB_LIVE ? View.VISIBLE : View.GONE);
+        historyPanel.setVisibility(next == TAB_HISTORY ? View.VISIBLE : View.GONE);
+        styleTab(tabConfig, next == TAB_CONFIG);
+        styleTab(tabLive, next == TAB_LIVE);
+        styleTab(tabHistory, next == TAB_HISTORY);
+        if (next == TAB_HISTORY && !historyLoaded) loadHistory();
+        if (next == TAB_CONFIG) applyConfig();
+    }
+
+    private void styleTab(TextView view, boolean on) {
+        view.setBackgroundResource(on ? R.drawable.bg_pill_active : R.drawable.bg_chip);
+        view.setTextColor(getColor(on ? R.color.on_brand : R.color.ink_soft));
+    }
+
+    private void wireTabs() {
+        tabConfig.setOnClickListener(v -> showTab(TAB_CONFIG));
+        tabLive.setOnClickListener(v -> showTab(TAB_LIVE));
+        tabHistory.setOnClickListener(v -> showTab(TAB_HISTORY));
+    }
+
+    // ── 配置 ──────────────────────────────────────────────────────────────
+
+    private void wireConfig() {
+        findViewById(R.id.interpReadZh).setOnClickListener(v -> setReadLang(InterpreterLang.ZH));
+        findViewById(R.id.interpReadPt).setOnClickListener(v -> setReadLang(InterpreterLang.PT));
+        findViewById(R.id.interpReadEn).setOnClickListener(v -> setReadLang(InterpreterLang.EN));
+        findViewById(R.id.interpPartnerZh).setOnClickListener(v -> setPartnerLang(InterpreterLang.ZH));
+        findViewById(R.id.interpPartnerPt).setOnClickListener(v -> setPartnerLang(InterpreterLang.PT));
+        findViewById(R.id.interpPartnerEn).setOnClickListener(v -> setPartnerLang(InterpreterLang.EN));
+        findViewById(R.id.interpOpenSettings).setOnClickListener(v ->
+                startActivity(new android.content.Intent(this, SettingsActivity.class)));
+        ttsSwitch.setChecked(getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("ttsRead", false));
+        ttsSwitch.setOnCheckedChangeListener((button, checked) -> {
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean("ttsRead", checked).apply();
+            if (ttsQueue != null) ttsQueue.setEnabled(checked);
+            refreshMeta();
+        });
+    }
+
+    /**
+     * 改「我读的语言」。对方语言若因此变得非法（例如读葡语时对方不能也是葡语），
+     * 按规则重新推一个 —— 绝不留下"原文与译文同语言"这种死局。
+     */
+    private void setReadLang(String next) {
+        String read = InterpreterLang.resolveRead(next);
+        if (read.equals(lang)) return;
+        lang = read;
+        partner = InterpreterLang.resolvePartner(partner, lang);
+        persistLangs();
+        applyConfig();
+        afterLanguageChange();
+    }
+
+    private void setPartnerLang(String next) {
+        String picked = InterpreterLang.resolvePartner(next, lang);
+        if (picked.equals(partner)) return;
+        partner = picked;
+        persistLangs();
+        applyConfig();
+        afterLanguageChange();
+    }
+
+    private void persistLangs() {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putString(PREF_READ, lang)
+                .putString(PREF_PARTNER, partner)
+                .apply();
+    }
+
+    /**
+     * 语言变了之后（5.37）：正在跑的那一场**必须重开** —— 它用的是旧语言开会话、
+     * 上传时带的是旧的识别语种。悄悄继续跑，用户看到的是"语言改了但译文没变"。
+     */
+    private void afterLanguageChange() {
+        refreshMeta();
+        if (!running) {
+            statusView.setText(getString(R.string.interp_lang_changed, langText(partner)));
+            return;
+        }
+        stopInterpreting();
+        statusView.setText(getString(R.string.interp_lang_changed, langText(partner)));
+    }
+
+    /** 把配置块的现状画出来：胶囊的高亮、不可选项的禁用、只读摘要。 */
+    private void applyConfig() {
+        styleChip(findViewById(R.id.interpReadZh), InterpreterLang.ZH.equals(lang), true);
+        styleChip(findViewById(R.id.interpReadPt), InterpreterLang.PT.equals(lang), true);
+        styleChip(findViewById(R.id.interpReadEn), InterpreterLang.EN.equals(lang), true);
+
+        // 对方语言的选项集合由「我读的语言」决定（读中文 → 葡/英；读葡语/英语 → 只有中文）
+        String[] options = InterpreterLang.partnerOptions(lang);
+        styleChip(findViewById(R.id.interpPartnerZh), InterpreterLang.ZH.equals(partner), allows(options, InterpreterLang.ZH));
+        styleChip(findViewById(R.id.interpPartnerPt), InterpreterLang.PT.equals(partner), allows(options, InterpreterLang.PT));
+        styleChip(findViewById(R.id.interpPartnerEn), InterpreterLang.EN.equals(partner), allows(options, InterpreterLang.EN));
+
+        refreshMeta();
+        refreshWhere();
+    }
+
+    private static boolean allows(String[] options, String one) {
+        for (String option : options) {
+            if (option.equals(one)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 一颗语言胶囊的状态：`on` = 选中（品牌底色）；`enabled` = 可选（不可选的画淡，
+     * 并且点了不响应 —— 但**留着**，因为"为什么不能选"本身就是信息）。
+     */
+    private void styleChip(View view, boolean on, boolean enabled) {
+        if (view == null) return;
+        view.setBackgroundResource(on ? R.drawable.bg_pill_active : R.drawable.bg_chip);
+        if (view instanceof TextView) {
+            ((TextView) view).setTextColor(getColor(on ? R.color.on_brand : R.color.ink_soft));
+        }
+        view.setAlpha(enabled ? 1f : 0.35f);
+        view.setEnabled(enabled);
+    }
+
+    private void refreshWhere() {
+        if (whereView == null) return;
+        AsrRouter.Resolution picked = router == null ? null : router.resolve(partner);
+        boolean relay = picked != null && picked.ok() && picked.backend instanceof RelayPipelineBackend;
+        if (relay) {
+            whereView.setText(getString(R.string.interp_where, serverUrl(), backendText(picked.backend)));
+        } else {
+            whereView.setText(getString(R.string.interp_where_demo));
+        }
+    }
+
+    // ── 历史 ──────────────────────────────────────────────────────────────
+
+    /**
+     * 读「历史」那一块（5.37）：只列 `kind='interpreter'` 的会话。
+     *
+     * <p>为什么只列翻译官：这里是翻译官页里的历史，混进会议记录会让用户以为
+     * 点错了地方。全部记录仍在底部导航那个「历史」页（它列两种）。
+     */
+    private void loadHistory() {
+        historyLoaded = true;
+        historyHint.setVisibility(View.VISIBLE);
+        historyEmpty.setVisibility(View.GONE);
+        historyHint.setText(getString(R.string.interp_hist_loading));
+        LanClient read = newClient(new LanClient.Listener() {
+            @Override
+            public void onStatus(String message) { }
+
+            @Override
+            public void onHello(String device, int cols, int lineBudget) { }
+
+            @Override
+            public void onFrame(String speaker, String langTag, String[] lines, String text,
+                                String source, String sourceLang, boolean partial, String[] termsMissing,
+                                String speakerName, String notice) { }
+
+            @Override
+            public void onError(String message) { }
+        });
+        if (read == null) {
+            historyHint.setText(getString(R.string.interp_hist_failed, getString(R.string.interp_where_demo)));
+            return;
+        }
+        new Thread(() -> {
+            try {
+                org.json.JSONObject body = read.orgHistory(HISTORY_LIMIT);
+                ui.post(() -> renderHistory(body, null));
+            } catch (Exception error) {
+                ui.post(() -> renderHistory(null, error));
+            }
+        }, "interp-history").start();
+    }
+
+    private void renderHistory(org.json.JSONObject body, Exception error) {
+        if (error != null) {
+            historyHint.setVisibility(View.VISIBLE);
+            historyHint.setText(getString(R.string.interp_hist_failed, describe(error)));
+            return;
+        }
+        org.json.JSONArray items = body == null ? null : body.optJSONArray("items");
+        historyList.removeAllViews();
+        int shown = 0;
+        if (items != null) {
+            for (int i = 0; i < items.length(); i += 1) {
+                org.json.JSONObject item = items.optJSONObject(i);
+                if (item == null) continue;
+                if (!"interpreter".equals(item.optString("kind", "meeting"))) continue;
+                historyList.addView(historyCard(item));
+                shown += 1;
+            }
+        }
+        historyHint.setVisibility(View.GONE);
+        historyEmpty.setVisibility(shown == 0 ? View.VISIBLE : View.GONE);
+        historyScroll.setVisibility(shown == 0 ? View.GONE : View.VISIBLE);
+        Log.i("LeionInterp", "🗂 翻译官历史 " + shown + " 条");
+    }
+
+    /** 一行历史：**同一份**排版实现（{@link HistoryRows}），与底部导航的「历史」页看起来一样。 */
+    private View historyCard(org.json.JSONObject item) {
+        return HistoryRows.create(this, historyList, item);
+    }
+
+    /** 「查看全部」：交给历史页，但只用 kind 过滤（同一份代码，不写第二套）。 */
+    private void openAllHistory() {
+        android.content.Intent intent = new android.content.Intent(this, HistoryActivity.class);
+        intent.putExtra(HistoryActivity.EXTRA_KIND, "interpreter");
+        startActivity(intent);
+    }
+
+    private static String describe(Exception error) {
+        String text = error == null ? null : error.getMessage();
+        return text == null || text.isEmpty() ? "" : text;
+    }
+
     // ── 开始 / 停止 ────────────────────────────────────────────────────────
 
     private void startInterpreting() {
-        // 5.32：先问路由"这门语言用谁"；问不到就**如实报错并停下**，
+        // 5.32：先问路由"**对方那门语言**用谁"；问不到就**如实报错并停下**，
         // 绝不"随便找个引擎硬顶"（中文音频塞给葡语模型 = 整段乱码，比没识别更难查）。
-        AsrRouter.Resolution picked = router.resolve(lang);
+        // ⚠️ 问的是 `partner`（识别语种），不是 `lang`（我读的语言）——
+        // 路由是按"被识别的音频是什么语言"挑引擎的（5.37 修）。
+        // 开跑前按**当前配置**重建一次（设置页可能刚改过服务器地址）。
+        rebuildRouter();
+        AsrRouter.Resolution picked = router.resolve(partner);
         if (!picked.ok()) {
             statusView.setText(picked.problem);
             Log.w("LeionInterp", "🧭 没有可用后端：" + picked.problem);
             return;
         }
         backend = picked.backend;
-        Log.i("LeionInterp", "🧭 这一场用 " + backend.label() + "（" + picked.reason + "）");
+        Log.i("LeionInterp", "🧭 这一场用 " + backend.debugLabel() + "（" + picked.reason + "）");
         running = true;
+        // 5.37：开跑之后就离开「配置」那一块，否则用户在配置页看不到字幕，
+        // 会以为"点了开始没反应"。要改语言再回来点一下就行。
+        showTab(TAB_LIVE);
         toggleButton.setText(getString(R.string.interp_stop));
         statusView.setText(getString(R.string.interp_starting) + " · " + backendText(backend));
         clearCards();
-        backend.start(lang, new Callbacks());
+        backend.start(partner, new Callbacks());
         // ⚠️ 这里**不立刻开麦**（5.36）：路线 B 要先有会话 id 才能把音频归属到这一场。
         // 会话建好会回调 onReady，那时再开麦（见 Callbacks.onReady）。
         // 提前开麦的第一秒音频会落到"没有房间"的全局文件里 —— 既不属于这场，
@@ -208,7 +532,7 @@ public class InterpreterActivity extends android.app.Activity {
             }
         });
         AudioCaptureArbiter.attach(AudioCaptureArbiter.OWNER_INTERPRETER, uploader);
-        uploader.setLanguage(partnerLang());
+        uploader.setLanguage(partner);
         String problem = uploader.start();
         if (problem != null) {
             uploader = null;
@@ -247,21 +571,41 @@ public class InterpreterActivity extends android.app.Activity {
         if (ttsQueue != null) ttsQueue.stop();
         toggleButton.setText(getString(R.string.interp_start));
         statusView.setText(getString(R.string.interp_stopped));
+        // 5.37：这一场刚结束 → 历史里多了一条。让下次进「历史」时重新读，
+        // 否则用户结束一场再翻历史会看不到它（那一块是懒加载、只读一次的）。
+        historyLoaded = false;
     }
 
     /** 建客户端（用设置页里那套 host/secret/token）。拿不到配置就返回 null。 */
     private LanClient buildClient() {
+        client = newClient(new FrameSink());
+        return client;
+    }
+
+    /**
+     * 建一个**独立**的客户端（读历史用）。
+     *
+     * <p>为什么不复用 {@link #buildClient()}：那个会把 {@link #client} 换成新的，
+     * 而正在跑的那一场的结束调用（`orgInterpreterEnd`）走的就是它 ——
+     * 翻一眼历史不该动到正在进行的会话。配置来源只有一处（{@link #serverUrl()} 与密钥）。
+     */
+    private LanClient newClient(LanClient.Listener listener) {
         android.content.SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        String host = prefs.getString("host", "");
+        String host = serverUrl();
         String secret = prefs.getString("secret", "");
-        if (host == null || host.isEmpty()) host = getString(R.string.default_server_url);
         if (secret == null || secret.isEmpty()) secret = getString(R.string.default_shared_secret);
         if (host.isEmpty()) return null;
-        LanClient built = new LanClient(host, secret, new FrameSink());
+        LanClient built = new LanClient(host, secret, listener);
         String token = prefs.getString("accountToken", "");
         if (token != null && !token.isEmpty()) built.setToken(token);
-        client = built;
         return built;
+    }
+
+    /** 当前生效的服务器地址（设置页优先，其次是出厂默认值）。 */
+    private String serverUrl() {
+        String host = getSharedPreferences(PREFS, MODE_PRIVATE).getString("host", "");
+        if (host == null || host.isEmpty()) host = getString(R.string.default_server_url);
+        return host;
     }
 
     private String myName() {
@@ -269,23 +613,24 @@ public class InterpreterActivity extends android.app.Activity {
         return name == null ? "" : name;
     }
 
-    /** 对方说的语言（识别语种）。默认与"我读的语言"互为镜像：中↔葡、中↔英。 */
-    private String partnerLang() {
-        String mine = getSharedPreferences(PREFS, MODE_PRIVATE).getString("speakLang", "");
-        String read = mine == null || mine.isEmpty() ? "zh-CN" : mine;
-        // 面对面最常见的是"对方说葡语/英语、我读中文"；反过来同样成立
-        if ("zh-CN".equals(read)) return "pt-BR";
-        return "zh-CN";
+    /** 语言的三字母标签（界面上的「中文 / 葡萄牙语 / 英语」）。 */
+    private String langText(String one) {
+        if (InterpreterLang.PT.equals(one)) return getString(R.string.rooms_speak_pt);
+        if (InterpreterLang.EN.equals(one)) return getString(R.string.rooms_speak_en);
+        if (InterpreterLang.ZH.equals(one)) return getString(R.string.rooms_speak_zh);
+        return one == null ? "" : one;
     }
 
+    /**
+     * 「收听」块上那行现状（5.37）：我读什么、对方说什么、朗读开没开。
+     * 徽标按**识别语种**（对方说的语言）挑后端 —— 那才是"哪门语言交给谁识别"。
+     */
     private void refreshMeta() {
-        String langText = "pt-BR".equals(lang) ? getString(R.string.rooms_speak_pt)
-                : ("en-US".equals(lang) ? getString(R.string.rooms_speak_en) : getString(R.string.rooms_speak_zh));
         boolean ttsOn = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("ttsRead", false);
-        metaView.setText(getString(R.string.interp_meta, langText,
+        metaView.setText(getString(R.string.interp_meta, langText(lang), langText(partner),
                 getString(ttsOn ? R.string.st_tts_on : R.string.st_tts_off)));
-        // 5.32：把"这门语言会被谁识别"直接摊在界面上（找不到时也要说清）
-        AsrRouter.Resolution picked = router == null ? null : router.resolve(lang);
+        if (ttsSwitch != null) ttsSwitch.setChecked(ttsOn);
+        AsrRouter.Resolution picked = router == null ? null : router.resolve(partner);
         TextView badge = findViewById(R.id.interpBackend);
         if (badge != null) {
             if (picked != null && picked.ok()) {
@@ -301,13 +646,14 @@ public class InterpreterActivity extends android.app.Activity {
     /**
      * 后端在**界面上**的名字（5.36）。
      *
-     * <p>为什么不用 {@link InterpreterAsrBackend#label()}：那个返回值会给日志用（中文就够，
-     * 排查时读得顺），但界面上的字必须是**三语资源**。混用会出现"英文界面里冒出中文徽标"。
+     * <p>为什么不用 {@link InterpreterAsrBackend#debugLabel()}：那个返回值是给日志用的
+     * （中文就够、排查时读着顺），而界面上的字必须是**三语资源** ——
+     * 混用会出现"英文界面里冒出中文徽标"。
      */
     private String backendText(InterpreterAsrBackend target) {
         if (target instanceof RelayPipelineBackend) return getString(R.string.interp_backend_relay);
         if (target instanceof ScriptedAsrBackend) return getString(R.string.interp_backend_scripted);
-        return target.label();
+        return target.debugLabel();
     }
 
     // ── 后端回调（后台线程）──────────────────────────────────────────────

@@ -43,7 +43,7 @@ public final class ScriptedAsrBackend implements InterpreterAsrBackend {
     }
 
     @Override
-    public String label() {
+    public String debugLabel() {
         return "演示回放";
     }
 

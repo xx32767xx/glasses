@@ -29,7 +29,7 @@ public final class AsrRouterCheck {
         }
 
         @Override
-        public String label() {
+        public String debugLabel() {
             return label;
         }
 

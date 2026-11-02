@@ -1,14 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  page_interpreter.xml —— 同传翻译官（独立场景，5.31 起是**真入口**）
+  page_interpreter.xml —— 同传翻译官（独立场景，5.31 起是**真入口**；5.37 补完三块）
+
+  三块（用户点的：配置 / 收听 / 历史）：
+    · 配置：我读的语言、对方说的语言、朗读开关、识别与翻译在哪（只读摘要）；
+    · 收听：状态 + 字幕流 + 开始/停止（真正的使用界面）；
+    · 历史：这场（以及以往）的记录列表，点进去复用会议详情页。
 
   与会议房间的区别（这也是为什么它单独一页）：
     · 不进房间、没有邀请码/发言权/成员；
-    · 单向：对方说外语 → 我这里出译文（可选朗读）；
-    · 目前识别后端是「演示回放」（脚本出字），所以页面**明写**这一点，
-      任何截图都不会被误当成"识别功能已经做好了"。
+    · 单向：对方说外语 → 我这里出译文（可选朗读）。
 
   id 一律 interp 前缀，避免与 page_room 撞名。
+  文案全部走 @string（三语资源，有门禁）；颜色/尺寸一律用语义 token。
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
@@ -58,76 +62,376 @@
             android:textSize="@dimen/text_caption" />
     </LinearLayout>
 
-    <!-- 状态行：现在在干什么（识别中 / 已就绪 / 出错原因） -->
-    <TextView
-        android:id="@+id/interpStatus"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="@dimen/space_page"
-        android:layout_marginEnd="@dimen/space_page"
-        android:background="@drawable/bg_card"
-        android:padding="@dimen/space_gap_small"
-        android:text="@string/interp_status_hint"
-        android:textColor="@color/ink_soft"
-        android:textSize="@dimen/text_secondary" />
-
-    <!-- 我的语言 / 朗读开关的现状（只显示，改在设置页） -->
-    <TextView
-        android:id="@+id/interpMeta"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginStart="@dimen/space_page"
-        android:layout_marginTop="@dimen/space_gap_small"
-        android:layout_marginEnd="@dimen/space_page"
-        android:textColor="@color/ink_faint"
-        android:textSize="@dimen/text_caption" />
-
-    <!-- 字幕流（新句从下往上推，与房间页一致） -->
-    <ScrollView
-        android:id="@+id/interpScroll"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_marginTop="@dimen/space_gap_small"
-        android:layout_weight="1"
-        android:paddingStart="@dimen/space_page"
-        android:paddingEnd="@dimen/space_page">
-
-        <LinearLayout
-            android:id="@+id/interpSubtitles"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:paddingBottom="@dimen/space_gap" />
-    </ScrollView>
-
-    <!-- 空态：一句话都还没有时显示 -->
-    <TextView
-        android:id="@+id/interpEmpty"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_marginStart="@dimen/space_page"
-        android:layout_marginEnd="@dimen/space_page"
-        android:layout_weight="1"
-        android:gravity="center"
-        android:text="@string/interp_empty"
-        android:textColor="@color/ink_faint"
-        android:textSize="@dimen/text_secondary" />
-
-    <!-- 底部：一个按钮，开了就演示回放（将来接真识别时也是这一个按钮） -->
+    <!-- 三块切换（配置 / 收听 / 历史）：同一页里的三段，不新开页面 -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:padding="@dimen/space_page">
+        android:paddingStart="@dimen/space_page"
+        android:paddingEnd="@dimen/space_page"
+        android:paddingBottom="@dimen/space_gap_small">
 
-        <Button
-            android:id="@+id/interpToggle"
+        <TextView
+            android:id="@+id/interpTabConfig"
+            android:layout_width="0dp"
+            android:layout_height="@dimen/touch_min"
+            android:layout_weight="1"
+            android:background="@drawable/bg_chip"
+            android:gravity="center"
+            android:text="@string/interp_tab_config"
+            android:textColor="@color/ink_soft"
+            android:textSize="@dimen/text_secondary" />
+
+        <TextView
+            android:id="@+id/interpTabLive"
+            android:layout_width="0dp"
+            android:layout_height="@dimen/touch_min"
+            android:layout_marginStart="@dimen/space_gap_small"
+            android:layout_weight="1"
+            android:background="@drawable/bg_pill_active"
+            android:gravity="center"
+            android:text="@string/interp_tab_live"
+            android:textColor="@color/on_brand"
+            android:textSize="@dimen/text_secondary" />
+
+        <TextView
+            android:id="@+id/interpTabHistory"
+            android:layout_width="0dp"
+            android:layout_height="@dimen/touch_min"
+            android:layout_marginStart="@dimen/space_gap_small"
+            android:layout_weight="1"
+            android:background="@drawable/bg_chip"
+            android:gravity="center"
+            android:text="@string/interp_tab_history"
+            android:textColor="@color/ink_soft"
+            android:textSize="@dimen/text_secondary" />
+    </LinearLayout>
+
+    <!-- ── ① 配置 ───────────────────────────────────────────────────────── -->
+    <ScrollView
+        android:id="@+id/interpConfigPanel"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:paddingStart="@dimen/space_page"
+        android:paddingEnd="@dimen/space_page"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingBottom="@dimen/space_gap">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/interp_read_title"
+                android:textColor="@color/ink"
+                android:textSize="@dimen/text_body"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap_tiny"
+                android:text="@string/interp_read_hint"
+                android:textColor="@color/ink_faint"
+                android:textSize="@dimen/text_caption" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap_small"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/interpReadZh"
+                    android:layout_width="0dp"
+                    android:layout_height="@dimen/touch_min"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_chip"
+                    android:gravity="center"
+                    android:text="@string/lang_zh_short"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_secondary" />
+
+                <TextView
+                    android:id="@+id/interpReadPt"
+                    android:layout_width="0dp"
+                    android:layout_height="@dimen/touch_min"
+                    android:layout_marginStart="@dimen/space_gap_small"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_chip"
+                    android:gravity="center"
+                    android:text="@string/lang_pt_short"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_secondary" />
+
+                <TextView
+                    android:id="@+id/interpReadEn"
+                    android:layout_width="0dp"
+                    android:layout_height="@dimen/touch_min"
+                    android:layout_marginStart="@dimen/space_gap_small"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_chip"
+                    android:gravity="center"
+                    android:text="@string/lang_en_short"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_secondary" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap"
+                android:text="@string/interp_partner_title"
+                android:textColor="@color/ink"
+                android:textSize="@dimen/text_body"
+                android:textStyle="bold" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap_tiny"
+                android:text="@string/interp_partner_hint"
+                android:textColor="@color/ink_faint"
+                android:textSize="@dimen/text_caption" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap_small"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/interpPartnerZh"
+                    android:layout_width="0dp"
+                    android:layout_height="@dimen/touch_min"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_chip"
+                    android:gravity="center"
+                    android:text="@string/lang_zh_short"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_secondary" />
+
+                <TextView
+                    android:id="@+id/interpPartnerPt"
+                    android:layout_width="0dp"
+                    android:layout_height="@dimen/touch_min"
+                    android:layout_marginStart="@dimen/space_gap_small"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_chip"
+                    android:gravity="center"
+                    android:text="@string/lang_pt_short"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_secondary" />
+
+                <TextView
+                    android:id="@+id/interpPartnerEn"
+                    android:layout_width="0dp"
+                    android:layout_height="@dimen/touch_min"
+                    android:layout_marginStart="@dimen/space_gap_small"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_chip"
+                    android:gravity="center"
+                    android:text="@string/lang_en_short"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_secondary" />
+            </LinearLayout>
+
+            <!-- 朗读开关（与设置页同一个偏好，改哪边都算） -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/set_tts_read"
+                    android:textColor="@color/ink"
+                    android:textSize="@dimen/text_body" />
+
+                <Switch
+                    android:id="@+id/interpTtsSwitch"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:showText="false" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap_tiny"
+                android:text="@string/interp_tts_hint"
+                android:textColor="@color/ink_faint"
+                android:textSize="@dimen/text_caption" />
+
+            <!-- 识别与翻译在哪（只读摘要）：用户最常问的就是"这是真翻译还是演示" -->
+            <TextView
+                android:id="@+id/interpWhere"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_gap"
+                android:background="@drawable/bg_card"
+                android:padding="@dimen/space_gap_small"
+                android:textColor="@color/ink_soft"
+                android:textSize="@dimen/text_caption" />
+
+            <TextView
+                android:id="@+id/interpOpenSettings"
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/touch_min"
+                android:layout_marginTop="@dimen/space_gap_small"
+                android:background="@drawable/tap_btn_secondary"
+                android:gravity="center"
+                android:text="@string/interp_open_settings"
+                android:textColor="@color/ink_soft"
+                android:textSize="@dimen/text_secondary" />
+        </LinearLayout>
+    </ScrollView>
+
+    <!-- ── ② 收听 ───────────────────────────────────────────────────────── -->
+    <LinearLayout
+        android:id="@+id/interpLivePanel"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <!-- 状态行：现在在干什么（准备中 / 已就绪 / 出错原因） -->
+        <TextView
+            android:id="@+id/interpStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/space_page"
+            android:layout_marginEnd="@dimen/space_page"
+            android:background="@drawable/bg_card"
+            android:padding="@dimen/space_gap_small"
+            android:text="@string/interp_status_hint"
+            android:textColor="@color/ink_soft"
+            android:textSize="@dimen/text_secondary" />
+
+        <!-- 两种语言的现状（改在配置那一块） -->
+        <TextView
+            android:id="@+id/interpMeta"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/space_page"
+            android:layout_marginTop="@dimen/space_gap_small"
+            android:layout_marginEnd="@dimen/space_page"
+            android:textColor="@color/ink_faint"
+            android:textSize="@dimen/text_caption" />
+
+        <!-- 字幕流（新句从下往上推，与房间页一致） -->
+        <ScrollView
+            android:id="@+id/interpScroll"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginTop="@dimen/space_gap_small"
+            android:layout_weight="1"
+            android:paddingStart="@dimen/space_page"
+            android:paddingEnd="@dimen/space_page">
+
+            <LinearLayout
+                android:id="@+id/interpSubtitles"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingBottom="@dimen/space_gap" />
+        </ScrollView>
+
+        <!-- 空态：一句话都还没有时显示 -->
+        <TextView
+            android:id="@+id/interpEmpty"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginStart="@dimen/space_page"
+            android:layout_marginEnd="@dimen/space_page"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="@string/interp_empty"
+            android:textColor="@color/ink_faint"
+            android:textSize="@dimen/text_secondary" />
+
+        <!-- 底部：一个按钮（开始/停止） -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:padding="@dimen/space_page">
+
+            <Button
+                android:id="@+id/interpToggle"
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/touch_min"
+                android:background="@drawable/bg_pill_active"
+                android:text="@string/interp_start"
+                android:textAllCaps="false"
+                android:textColor="@color/on_brand"
+                android:textSize="@dimen/text_body" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- ── ③ 历史（只列同传翻译官记录；点进去复用会议详情页） ─────────────── -->
+    <LinearLayout
+        android:id="@+id/interpHistoryPanel"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="vertical"
+        android:paddingStart="@dimen/space_page"
+        android:paddingEnd="@dimen/space_page"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/interpHistoryHint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/interp_hist_loading"
+            android:textColor="@color/ink_faint"
+            android:textSize="@dimen/text_caption" />
+
+        <ScrollView
+            android:id="@+id/interpHistoryScroll"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginTop="@dimen/space_gap_small"
+            android:layout_weight="1"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:id="@+id/interpHistoryList"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingBottom="@dimen/space_gap" />
+        </ScrollView>
+
+        <TextView
+            android:id="@+id/interpHistoryEmpty"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="@string/interp_hist_empty"
+            android:textColor="@color/ink_faint"
+            android:textSize="@dimen/text_secondary"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/interpHistoryAll"
             android:layout_width="match_parent"
             android:layout_height="@dimen/touch_min"
-            android:background="@drawable/bg_pill_active"
-            android:text="@string/interp_start"
-            android:textAllCaps="false"
-            android:textColor="@color/on_brand"
-            android:textSize="@dimen/text_body" />
+            android:layout_marginTop="@dimen/space_gap_small"
+            android:background="@drawable/tap_btn_secondary"
+            android:gravity="center"
+            android:text="@string/interp_hist_all"
+            android:textColor="@color/ink_soft"
+            android:textSize="@dimen/text_secondary" />
     </LinearLayout>
 </LinearLayout>

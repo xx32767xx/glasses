@@ -185,6 +185,47 @@ export async function runTtsSuite({ it, check }) {
       /passed=23 failed=0/.test(report), report.trim().slice(-200))
   })
 
+  await it('翻译官的两种语言（InterpreterLang）：规则跑起来验，不靠看代码', async () => {
+    const { readFileSync } = await import('node:fs')
+    const langPath = join(JAVA_SRC, 'InterpreterLang.java')
+    const source = readFileSync(langPath, 'utf-8')
+    // 纯逻辑：不许依赖 Android（否则没法在 CI 上跑）
+    check('InterpreterLang 不 import android.*', /import\s+android\./.test(source) === false)
+
+    let javacOk = true
+    try {
+      execFileSync('javac', ['-version'], { stdio: 'ignore' })
+    } catch (error) {
+      javacOk = false
+      if (error && error.code === 'EPERM') {
+        console.log('  ⏭ 这个沙箱不允许 Node 起子进程（javac EPERM），跳过可执行用例。')
+        return
+      }
+    }
+    if (!javacOk) {
+      console.log('  ⏭ 这台机器没有 javac，跳过 InterpreterLangCheck')
+      return
+    }
+    const out = join(VAR_DIR, 'test', 'interp-lang')
+    rmSync(out, { recursive: true, force: true })
+    mkdirSync(out, { recursive: true })
+    execFileSync('javac', ['-encoding', 'UTF-8', '-d', out, langPath,
+      join(ROOT, 'tests', 'java', 'InterpreterLangCheck.java')], { stdio: 'ignore' })
+    const logPath = join(out, 'check.log')
+    const fd = openSync(logPath, 'w')
+    try {
+      execFileSync('java', ['-Dstdout.encoding=UTF-8', '-cp', out, 'InterpreterLangCheck'],
+        { stdio: ['ignore', fd, fd] })
+    } catch {
+      // 断言失败会非零退出：报告已写进文件
+    } finally {
+      closeSync(fd)
+    }
+    const report = readFileSync(logPath, 'utf-8')
+    check('31 条语言规则全通过（镜像/候选集合/归一化/钉正/AUTO）',
+      /passed=31 failed=0/.test(report), report.trim().slice(-300))
+  })
+
   await it('错误码注册表：加码只改三处，漏一处自动红（不用改测试）', async () => {
     const { readFileSync } = await import('node:fs')
     const registryPath = join(JAVA_SRC, 'InterpreterErrorCodes.java')

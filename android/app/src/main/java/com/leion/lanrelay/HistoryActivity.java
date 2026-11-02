@@ -32,6 +32,14 @@ public class HistoryActivity extends android.app.Activity {
 
     private static final String PREFS = "leion";
     private static final int PAGE_LIMIT = 50;
+    /**
+     * 只看某一类记录（5.37）：`"interpreter"` = 只列同传翻译官会话。
+     *
+     * <p>为什么用过滤而不是另写一页：两类记录**同表同结构**（5.35），列表的取数、排版、
+     * 长按删除、详情跳转全在同一个文件里。多一个 kind 参数就够了，复制一页只会漂。
+     * 不传（底部导航进来）= 全部。
+     */
+    public static final String EXTRA_KIND = "historyKindFilter";
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private LanClient client;
@@ -42,6 +50,8 @@ public class HistoryActivity extends android.app.Activity {
     private LinearLayout list;
     /** 当前账号（只用来填确认对话框的副标题）。 */
     private String userName = "";
+    /** 只看这一类（空 = 全部）。来自 {@link #EXTRA_KIND}，翻译官页的「查看全部」用它。 */
+    private String kindFilter = "";
 
     @Override
     protected void attachBaseContext(android.content.Context base) {
@@ -65,6 +75,10 @@ public class HistoryActivity extends android.app.Activity {
         emptyView = findViewById(R.id.historyEmpty);
         hintView = findViewById(R.id.historyHint);
         list = findViewById(R.id.historyList);
+        // 5.37：只列某一类时（翻译官页的「查看全部」传 interpreter）
+        android.content.Intent from = getIntent();
+        String wanted = from == null ? "" : from.getStringExtra(EXTRA_KIND);
+        kindFilter = wanted == null ? "" : wanted.trim();
 
         // 底部导航（4.93）：统一走 NavTabs.go —— 交叉淡化换页，不用默认的"从右侧推入覆盖"
         findViewById(R.id.homeNavHome).setOnClickListener(v -> NavTabs.go(this, NavTabs.HOME));
@@ -135,6 +149,8 @@ public class HistoryActivity extends android.app.Activity {
         } else {
             retentionView.setText("");
         }
+        // 5.37：只列翻译官时，空态说"还没有同传记录"（说"还没有会议记录"会让人以为点错了地方）
+        emptyView.setText(kindFilter.isEmpty() ? getString(R.string.hist_empty) : getString(R.string.interp_hist_empty));
         JSONArray items = body == null ? null : body.optJSONArray("items");
         if (items == null || items.length() == 0) {
             emptyView.setVisibility(View.VISIBLE);
@@ -145,6 +161,8 @@ public class HistoryActivity extends android.app.Activity {
         for (int i = 0; i < items.length(); i++) {
             JSONObject item = items.optJSONObject(i);
             if (item == null) continue;
+            // 5.37：带了 kind 过滤就跳过别的类型（判断与客户端别处一致：缺省当会议）
+            if (!kindFilter.isEmpty() && !kindFilter.equals(item.optString("kind", "meeting"))) continue;
             list.addView(card(inflater, item));
             shown += 1;
         }
@@ -153,35 +171,14 @@ public class HistoryActivity extends android.app.Activity {
         if (shown > 0) hintView.setText(getString(R.string.hist_long_press_hint));
     }
 
+    /** 长按 = 删除这条历史（**按账号**，不影响别人）。为什么用长按：
+     * 卡片本身要能点进详情，再挂一个删除按钮会把列表弄乱。
+     *
+     * <p>5.37：卡片的填字与"点进详情"收在 {@link HistoryRows}（翻译官页的「历史」块也用那一份）；
+     * 只有删除留在这里 —— 那是**历史页**才有的操作。
+     */
     private View card(LayoutInflater inflater, final JSONObject item) {
-        View row = inflater.inflate(R.layout.item_history, list, false);
-        TextView nameView = row.findViewById(R.id.itemName);
-        TextView kindView = row.findViewById(R.id.itemKind);
-        TextView metaView = row.findViewById(R.id.itemMeta);
-        TextView langsView = row.findViewById(R.id.itemLangs);
-
-        String name = item.optString("name", "");
-        nameView.setText(name.isEmpty() ? getString(R.string.hist_unknown_name) : name);
-        kindView.setText(kindLabel(item.optString("kind", "meeting")));
-
-        String when = formatDate(item.optString("createdAt", ""));
-        String duration = formatDuration(item.optInt("durationSeconds", 0));
-        String people = peopleLabel(item.optInt("members", 0));
-        StringBuilder meta = new StringBuilder();
-        meta.append(when).append(" · ").append(duration).append(" · ").append(people);
-        if (item.optBoolean("active", false)) {
-            meta.append(" · ").append(getString(R.string.hist_active));
-        }
-        metaView.setText(meta.toString());
-        langsView.setText(langsLabel(item.optJSONArray("langs")));
-
-        row.setOnClickListener(v -> {
-            Intent intent = new Intent(this, HistoryDetailActivity.class);
-            intent.putExtra(HistoryDetailActivity.EXTRA_JSON, item.toString());
-            startActivity(intent);
-        });
-        // 长按 = 删除这条历史（**按账号**，不影响别人）。为什么用长按：
-        // 卡片本身要能点进详情，再挂一个删除按钮会把列表弄乱。
+        View row = HistoryRows.create(this, list, item);
         row.setOnLongClickListener(v -> {
             confirmDelete(item.optString("id", ""), item.optString("name", ""));
             return true;
@@ -228,57 +225,6 @@ public class HistoryActivity extends android.app.Activity {
         }, "history-delete").start();
     }
 
-    /** 类型标签：只有两种含义（同传会议 / 同传翻译官），别往里塞场景。 */
-    private String kindLabel(String kind) {
-        if ("interpreter".equals(kind)) return getString(R.string.hist_type_interpreter);
-        return getString(R.string.hist_type_meeting);
-    }
-
-    private String peopleLabel(int members) {
-        if (members <= 1) return getString(R.string.hist_only_me);
-        return getString(R.string.hist_members, members);
-    }
-
-    /** 服务端给的是 ISO-8601（2026-10-29T08:17:38.625Z）；卡片上只要到分钟。 */
-    private String formatDate(String iso) {
-        if (iso == null || iso.isEmpty()) return "";
-        try {
-            String head = iso.length() > 19 ? iso.substring(0, 19) : iso;
-            Date date = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).parse(head);
-            if (date == null) return iso;
-            return new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(date);
-        } catch (Exception error) {
-            return iso;
-        }
-    }
-
-    private String formatDuration(int seconds) {
-        if (seconds < 60) return getString(R.string.hist_duration_short);
-        int minutes = seconds / 60;
-        if (minutes < 60) return getString(R.string.hist_duration_minutes, minutes);
-        return getString(R.string.hist_duration_hours, minutes / 60, minutes % 60);
-    }
-
-    /** 掺与语言：把服务端给的语种码换成当前界面语言的名字，组成"中文 ↔ 巴西葡语"。 */
-    private String langsLabel(JSONArray langs) {
-        if (langs == null || langs.length() == 0) return getString(R.string.hist_langs_unknown);
-        StringBuilder zh = new StringBuilder();
-        StringBuilder pt = new StringBuilder();
-        for (int i = 0; i < langs.length(); i++) {
-            String code = langs.optString(i, "");
-            if (code.startsWith("zh")) {
-                if (zh.length() > 0) zh.append(" / ");
-                zh.append(getString(R.string.lang_zh_short));
-            } else if (code.startsWith("pt")) {
-                if (pt.length() > 0) pt.append(" / ");
-                pt.append(getString(R.string.lang_pt_short));
-            }
-        }
-        if (zh.length() > 0 && pt.length() > 0) {
-            return getString(R.string.hist_langs, zh.toString(), pt.toString());
-        }
-        if (zh.length() > 0) return zh.toString();
-        if (pt.length() > 0) return pt.toString();
-        return getString(R.string.hist_langs_unknown);
-    }
+    // 类型标签 / 日期 / 时长 / 语种 / 人数的显示规则收在 HistoryRows（5.37）：
+    // 翻译官页的「历史」块用的是同一份实现，复制在这里就会两处各自漂。
 }

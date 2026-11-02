@@ -367,8 +367,27 @@
     <string name="interp_finished">演示回放已播放完毕</string>
     <string name="interp_failed">出错了（%1$s）</string>
     <!-- 5.36：翻译官是"对方说、我读"，所以这里说的是**我读哪种语言**（不是我说） -->
-    <string name="interp_meta">我读%1$s · %2$s</string>
+    <string name="interp_meta">我读%1$s · 对方说%2$s · %3$s</string>
     <string name="interp_no_backend">无可用识别引擎</string>
+    <!-- 5.37：翻译官页补完为三块（配置 / 收听 / 历史）。
+         文案思路参考了同事那份 i18n 字典的说法（如"仅通过耳机/眼镜播放，不使用手机外放"），
+         但**没有引入他的任何代码**：这里全部是本项目的三语资源。 -->
+    <string name="interp_tab_config">配置</string>
+    <string name="interp_tab_live">收听</string>
+    <string name="interp_tab_history">历史</string>
+    <string name="interp_read_title">我读的语言</string>
+    <string name="interp_read_hint">译文用这门语言显示，朗读也用它。</string>
+    <string name="interp_partner_title">对方说的语言</string>
+    <string name="interp_partner_hint">默认按「我读的语言」自动推；对方说的是另一种时，在这里改。</string>
+    <string name="interp_tts_hint">仅通过耳机或眼镜播放，不使用手机外放；没有耳机时只显示字幕。</string>
+    <string name="interp_open_settings">打开设置（服务器地址 / 密钥）</string>
+    <string name="interp_where">识别与翻译都在服务器上跑：%1$s（%2$s）</string>
+    <string name="interp_where_demo">还没填服务器地址，现在是演示回放（不是真翻译）。</string>
+    <string name="interp_lang_changed">语言已改成「%1$s」；正在跑的那一场已停止，点「开始」用新语言重开。</string>
+    <string name="interp_hist_loading">正在读取同传记录…</string>
+    <string name="interp_hist_empty">还没有同传记录。开始一次收听，结束后转写与译文会保存在这里。</string>
+    <string name="interp_hist_all">查看全部同传记录</string>
+    <string name="interp_hist_failed">读取记录失败：%1$s</string>
     <!-- 5.34：错误码 → 用户能读的一句话。加码时三套 strings.xml 都要加（有门禁）。
          码值不许改（协议）；换说法只改文案。 -->
     <string name="err_generic">出错了，请重试</string>

@@ -23,8 +23,13 @@ package com.leion.lanrelay;
  */
 public interface InterpreterAsrBackend {
 
-    /** 给界面显示的后端名字，例如「演示回放」「本地识别」「云端识别」。 */
-    String label();
+    /**
+     * 后端的**调试名**（只进日志与诊断，例如「服务器识别 + 翻译」「演示回放」）。
+     *
+     * <p>⚠️ 刻意不叫 `label()`：界面上的字必须走三语资源（`interp_backend_*`），
+     * 而日志是中文就够、读着顺。混用会出现"英文界面里冒出中文徽标"。
+     */
+    String debugLabel();
 
     /**
      * 这条路要不要外网。界面上用来解释"为什么现在识别不了"

@@ -48,7 +48,7 @@ public final class RelayPipelineBackend implements InterpreterAsrBackend {
     }
 
     @Override
-    public String label() {
+    public String debugLabel() {
         return "服务器识别 + 翻译";
     }
 

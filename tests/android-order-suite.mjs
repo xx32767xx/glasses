@@ -1592,9 +1592,9 @@ export async function runAndroidOrderSuite({ it, check }) {
     // ② 会议室各页真正引用到的键，三份都得有（漏一个就是运行时崩溃或空白）
     // 5.04：旧大厅 `page_rooms.xml` 拆成创建页 + 加入页，两份都纳入
     const pages = ['page_home.xml', 'page_create_room.xml', 'page_join_room.xml', 'page_room.xml',
-      'page_settings_app.xml', 'page_privacy.xml']
+      'page_settings_app.xml', 'page_privacy.xml', 'page_interpreter.xml']
     const acts = ['HomeActivity.java', 'CreateRoomActivity.java', 'JoinRoomActivity.java',
-      'RoomActivity.java', 'SettingsActivity.java', 'PrivacyActivity.java']
+      'RoomActivity.java', 'SettingsActivity.java', 'PrivacyActivity.java', 'InterpreterActivity.java']
     const refs = new Set()
     for (const f of pages) {
       for (const m of readFileSync(join(resDir, 'layout', f), 'utf-8').matchAll(/@string\/([A-Za-z0-9_]+)/g)) refs.add(m[1])
@@ -2080,6 +2080,8 @@ export async function runAndroidOrderSuite({ it, check }) {
     const page = layout('page_history.xml')
     const item = layout('item_history.xml')
     const history = java('HistoryActivity.java')
+    // 5.37：卡片的填字收进 HistoryRows（翻译官页的「历史」块用同一份）—— 静态检查跟着看两处
+    const rows = java('HistoryRows.java')
     const detail = java('HistoryDetailActivity.java')
 
     // ① 顶部：页面标题 + 保存期限提示；列表 + 空态
@@ -2098,12 +2100,14 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('名称是加粗主色（首要信息）', /@\+id\/itemName[\s\S]{0,400}android:textStyle="bold"/.test(item))
     check('类型标签用品牌色胶囊', /@\+id\/itemKind[\s\S]{0,300}bg_chip_brand/.test(item))
     check('六样都真的填了',
-      /formatDate\(/.test(history) && /formatDuration\(/.test(history)
-      && /peopleLabel\(/.test(history) && /langsLabel\(/.test(history))
-    check('人数 1 显示「仅自己」', /hist_only_me/.test(history))
+      /formatDate\(/.test(rows) && /formatDuration\(/.test(rows)
+      && /peopleLabel\(/.test(rows) && /langsLabel\(/.test(rows))
+    check('人数 1 显示「仅自己」', /hist_only_me/.test(rows))
+    check('历史页与翻译官页**共用**同一份卡片实现（不复制第二份排版）',
+      /HistoryRows\.create\(/.test(history) && /HistoryRows\.create\(/.test(java('InterpreterActivity.java')))
 
     // ③ 类型标签只有两种含义，且不拿场景当类型
-    check('类型只有会议/翻译官两个键', /hist_type_meeting/.test(history) && /hist_type_interpreter/.test(history))
+    check('类型只有会议/翻译官两个键', /hist_type_meeting/.test(rows) && /hist_type_interpreter/.test(rows))
     // 只看代码与文案，不看注释（注释里正解释"为什么不这么分"）
     const stripComments = (text) => text
       .replace(/<!--[\s\S]*?-->/g, '')            // XML 注释
@@ -2118,11 +2122,11 @@ export async function runAndroidOrderSuite({ it, check }) {
       !/面对面|远程/.test(stripComments(history)) && !/面对面|远程/.test(stripComments(item))
       && !/面对面|远程/.test(stripComments(page)))
     check('kind 未知时落到「同传会议」而不是空白',
-      /"interpreter"\.equals\(kind\)\) return getString\(R\.string\.hist_type_interpreter\);\s*\n\s*return getString\(R\.string\.hist_type_meeting\);/.test(history))
+      /"interpreter"\.equals\(kind\)\) return activity\.getString\(R\.string\.hist_type_interpreter\);\s*\n\s*return activity\.getString\(R\.string\.hist_type_meeting\);/.test(rows))
 
     // ④ 卡片可点进详情（详情内容下一轮）
-    check('卡片可点击进详情', /HistoryDetailActivity\.class/.test(history)
-      && /putExtra\(HistoryDetailActivity\.EXTRA_JSON/.test(history))
+    check('卡片可点击进详情', /HistoryDetailActivity\.class/.test(rows)
+      && /putExtra\(HistoryDetailActivity\.EXTRA_JSON/.test(rows))
     check('详情页按原型拆成三段（统计/转写/导出）',
       /statDuration/.test(layout('page_history_detail.xml'))
       && /transcript_title/.test(layout('page_history_detail.xml'))

@@ -114,7 +114,7 @@ public final class AsrRouter {
             String langs = backend.isUniversal()
                     ? "通用（自判语种）"
                     : String.join("/", backend.languages());
-            parts.add(idOf(entry) + "=" + backend.label() + "[" + langs + "]"
+            parts.add(idOf(entry) + "=" + backend.debugLabel() + "[" + langs + "]"
                     + (backend.requiresNetwork() ? "·需外网" : ""));
         }
         return String.join("；", parts);
