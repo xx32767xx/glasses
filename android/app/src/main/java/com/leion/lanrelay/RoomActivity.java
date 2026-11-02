@@ -301,29 +301,33 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // 倾听全自动：进房间就听、自己说话时暂停防回声、说完恢复、重连重新订阅（见 applyListenState）。
         audioPlayer = new RoomAudioPlayer();
         // 5.30：译文朗读（默认关，设置页开）。朗读时**暂停实时传声**（见 applyListenState）。
-        ttsQueue = new TtsQueue(new TtsSpeaker(this));
-        ttsQueue.setListener(new TtsQueue.Listener() {
-            @Override
-            public void onSpeaking(String text, boolean speaking) {
-                ui.post(() -> {
-                    speakingTranslation = speaking;
-                    if (hintLine != null && speaking) hintLine.setText(getString(R.string.st_tts_speaking));
-                    applyListenState();
-                });
-            }
+        // 5.38：整层先停用（{@link TtsFeature}：用户定的「先不使用」）——
+        // 关着的时候**不建队列**，所以 walk 不到任何播报路径，也不会有"以为在念却没声音"的状态。
+        if (TtsFeature.enabled()) {
+            ttsQueue = new TtsQueue(new TtsSpeaker(this));
+            ttsQueue.setListener(new TtsQueue.Listener() {
+                @Override
+                public void onSpeaking(String text, boolean speaking) {
+                    ui.post(() -> {
+                        speakingTranslation = speaking;
+                        if (hintLine != null && speaking) hintLine.setText(getString(R.string.st_tts_speaking));
+                        applyListenState();
+                    });
+                }
 
-            @Override
-            public void onProblem(String code, String hint) {
-                ui.post(() -> {
-                    // 5.34：按机器码取当前界面语言的那句（"没有耳机"这种提示不能只给中文）
-                    if (hintLine != null) {
-                        hintLine.setText(InterpreterErrorCodes.message(RoomActivity.this, code, hint));
-                    }
-                });
-            }
-        });
-        ttsQueue.setEnabled(getSharedPreferences("leion", MODE_PRIVATE)
-                .getBoolean("ttsRead", false));
+                @Override
+                public void onProblem(String code, String hint) {
+                    ui.post(() -> {
+                        // 5.34：按机器码取当前界面语言的那句（"没有耳机"这种提示不能只给中文）
+                        if (hintLine != null) {
+                            hintLine.setText(InterpreterErrorCodes.message(RoomActivity.this, code, hint));
+                        }
+                    });
+                }
+            });
+            ttsQueue.setEnabled(getSharedPreferences("leion", MODE_PRIVATE)
+                    .getBoolean("ttsRead", false));
+        }
         // 隐藏的「开始同传」：原型里没有它，开麦即开始上传；这里只留一个落点备用
         micUploadButton.setOnClickListener(v -> toggleMic());
         updateUploadButton();

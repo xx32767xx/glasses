@@ -135,25 +135,32 @@ public class InterpreterActivity extends android.app.Activity {
         partner = InterpreterLang.resolvePartner(prefs.getString(PREF_PARTNER, ""), lang);
 
         // 朗读：与房间页共用同一套策略（队列/耳机优先/禁外放/过期不播）
-        ttsQueue = new TtsQueue(new TtsSpeaker(this));
-        ttsQueue.setListener(new TtsQueue.Listener() {
-            @Override
-            public void onSpeaking(String text, boolean speaking) {
-                ui.post(() -> {
-                    if (speaking) statusView.setText(getString(R.string.st_tts_speaking));
-                });
-            }
+        // 5.38：整层先停用（{@link TtsFeature}：用户定的「先不使用」）。
+        // 关着时不建队列、也不显示配置里那一行 —— 播报对这套场景不是必需品，字幕就够用。
+        if (TtsFeature.enabled()) {
+            ttsQueue = new TtsQueue(new TtsSpeaker(this));
+            ttsQueue.setListener(new TtsQueue.Listener() {
+                @Override
+                public void onSpeaking(String text, boolean speaking) {
+                    ui.post(() -> {
+                        if (speaking) statusView.setText(getString(R.string.st_tts_speaking));
+                    });
+                }
 
-            @Override
-            public void onProblem(String code, String hint) {
-                ui.post(() -> {
-                    // 5.34：按机器码取当前界面语言的那句；未知码才退回后端人话
-                    statusView.setText(InterpreterErrorCodes.message(
-                            InterpreterActivity.this, code, hint));
-                });
-            }
-        });
-        ttsQueue.setEnabled(prefs.getBoolean("ttsRead", false));
+                @Override
+                public void onProblem(String code, String hint) {
+                    ui.post(() -> {
+                        // 5.34：按机器码取当前界面语言的那句；未知码才退回后端人话
+                        statusView.setText(InterpreterErrorCodes.message(
+                                InterpreterActivity.this, code, hint));
+                    });
+                }
+            });
+            ttsQueue.setEnabled(prefs.getBoolean("ttsRead", false));
+        } else {
+            View ttsBlock = findViewById(R.id.interpConfigTtsBlock);
+            if (ttsBlock != null) ttsBlock.setVisibility(View.GONE);
+        }
 
         // 5.36：**路线 B** —— 翻译官当"一场会"跑：会话 + 上传音频 + 收服务端字幕帧。
         // 识别与翻译都在服务器上（和会议同一套），所以手机不需要模型也不需要 Key。
@@ -284,12 +291,14 @@ public class InterpreterActivity extends android.app.Activity {
         findViewById(R.id.interpPartnerEn).setOnClickListener(v -> setPartnerLang(InterpreterLang.EN));
         findViewById(R.id.interpOpenSettings).setOnClickListener(v ->
                 startActivity(new android.content.Intent(this, SettingsActivity.class)));
-        ttsSwitch.setChecked(getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("ttsRead", false));
-        ttsSwitch.setOnCheckedChangeListener((button, checked) -> {
-            getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean("ttsRead", checked).apply();
-            if (ttsQueue != null) ttsQueue.setEnabled(checked);
-            refreshMeta();
-        });
+        if (TtsFeature.enabled() && ttsSwitch != null) {
+            ttsSwitch.setChecked(getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("ttsRead", false));
+            ttsSwitch.setOnCheckedChangeListener((button, checked) -> {
+                getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean("ttsRead", checked).apply();
+                if (ttsQueue != null) ttsQueue.setEnabled(checked);
+                refreshMeta();
+            });
+        }
     }
 
     /**
@@ -626,10 +635,16 @@ public class InterpreterActivity extends android.app.Activity {
      * 徽标按**识别语种**（对方说的语言）挑后端 —— 那才是"哪门语言交给谁识别"。
      */
     private void refreshMeta() {
-        boolean ttsOn = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("ttsRead", false);
-        metaView.setText(getString(R.string.interp_meta, langText(lang), langText(partner),
-                getString(ttsOn ? R.string.st_tts_on : R.string.st_tts_off)));
-        if (ttsSwitch != null) ttsSwitch.setChecked(ttsOn);
+        boolean ttsOn = TtsFeature.enabled()
+                && getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("ttsRead", false);
+        if (TtsFeature.enabled()) {
+            metaView.setText(getString(R.string.interp_meta, langText(lang), langText(partner),
+                    getString(ttsOn ? R.string.st_tts_on : R.string.st_tts_off)));
+        } else {
+            // 5.38：播报整层停用时不提"朗读"——提了就是在暗示一个并不存在的功能
+            metaView.setText(getString(R.string.interp_meta_plain, langText(lang), langText(partner)));
+        }
+        if (ttsSwitch != null && TtsFeature.enabled()) ttsSwitch.setChecked(ttsOn);
         AsrRouter.Resolution picked = router == null ? null : router.resolve(partner);
         TextView badge = findViewById(R.id.interpBackend);
         if (badge != null) {

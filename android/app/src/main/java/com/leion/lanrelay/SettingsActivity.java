@@ -107,16 +107,24 @@ public class SettingsActivity extends android.app.Activity {
         langEnButton.setOnClickListener(v -> setSpeakLanguage("en-US"));
         proofreadButton.setOnClickListener(v -> toggleProofread());
         // 5.30：朗读译文（默认关；房间页据此决定要不要念）
-        ttsReadButton = findViewById(R.id.setAppTtsRead);
-        applyTtsReadButton(prefs.getBoolean("ttsRead", false));
-        ttsReadButton.setOnClickListener(v -> {
-            boolean next = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("ttsRead", false) == false;
-            getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean("ttsRead", next).apply();
-            applyTtsReadButton(next);
-            String message = getString(next ? R.string.st_tts_on : R.string.st_tts_off);
-            status.setText(message);
-            Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
-        });
+        // 5.38：整块先停用（{@link TtsFeature}：用户定的「先不使用」）。
+        // 停用时**连标题和说明一起隐藏**（只藏按钮会留下"朗读译文 / 戴上耳机后…"
+        // 两行悬在那里，看起来像删了按钮的 bug）。
+        View ttsBlock = findViewById(R.id.setAppTtsBlock);
+        if (!TtsFeature.enabled()) {
+            if (ttsBlock != null) ttsBlock.setVisibility(View.GONE);
+        } else {
+            ttsReadButton = findViewById(R.id.setAppTtsRead);
+            applyTtsReadButton(prefs.getBoolean("ttsRead", false));
+            ttsReadButton.setOnClickListener(v -> {
+                boolean next = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("ttsRead", false) == false;
+                getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean("ttsRead", next).apply();
+                applyTtsReadButton(next);
+                String message = getString(next ? R.string.st_tts_on : R.string.st_tts_off);
+                status.setText(message);
+                Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+            });
+        }
         findViewById(R.id.setAppPrivacy).setOnClickListener(v ->
                 startActivity(new android.content.Intent(this, PrivacyActivity.class)));
         findViewById(R.id.setAppClearRecords).setOnClickListener(v -> clearRecords());

@@ -224,31 +224,38 @@
             android:textColor="@color/ink"
             android:background="@drawable/tap_btn_secondary" />
 
-        <!-- ── 朗读（5.30）────────────────────────────────────────────── -->
-        <TextView
+        <!-- ── 朗读（5.30；5.38 起**整块先停用**，由 TtsFeature 控制可见性）──── -->
+        <LinearLayout
+            android:id="@+id/setAppTtsBlock"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="@dimen/space_section"
-            android:text="@string/set_tts_read"
-            android:textColor="@color/ink"
-            android:textSize="@dimen/text_title"
-            android:textStyle="bold" />
+            android:orientation="vertical">
 
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/set_tts_read_hint"
-            android:textColor="@color/ink_soft"
-            android:textSize="@dimen/text_secondary" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/set_tts_read"
+                android:textColor="@color/ink"
+                android:textSize="@dimen/text_title"
+                android:textStyle="bold" />
 
-        <Button
-            android:id="@+id/setAppTtsRead"
-            android:layout_width="match_parent"
-            android:layout_height="@dimen/height_field"
-            android:layout_marginTop="@dimen/space_gap_tiny"
-            android:text="@string/st_tts_off"
-            android:textColor="@color/ink"
-            android:background="@drawable/tap_btn_secondary" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/set_tts_read_hint"
+                android:textColor="@color/ink_soft"
+                android:textSize="@dimen/text_secondary" />
+
+            <Button
+                android:id="@+id/setAppTtsRead"
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/height_field"
+                android:layout_marginTop="@dimen/space_gap_tiny"
+                android:text="@string/st_tts_off"
+                android:textColor="@color/ink"
+                android:background="@drawable/tap_btn_secondary" />
+        </LinearLayout>
 
         <!-- ── 隐私 ──────────────────────────────────────────────────── -->
         <TextView

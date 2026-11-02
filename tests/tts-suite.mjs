@@ -226,6 +226,30 @@ export async function runTtsSuite({ it, check }) {
       /passed=31 failed=0/.test(report), report.trim().slice(-300))
   })
 
+  await it('5.38：播报整层先停用（用户定「先不使用」），三处入口必须一致', async () => {
+    const { readFileSync } = await import('node:fs')
+    const gate = readFileSync(join(JAVA_SRC, 'TtsFeature.java'), 'utf-8')
+    // 只有一个开关：翻回 true 时三处入口一起回来，不会出现"半开"（有开关但行为不一致）
+    check('开关只有一处（TtsFeature.enabled()）', /public static boolean enabled\(\)/.test(gate))
+    check('现在是**关**的', /public static boolean enabled\(\)\s*\{\s*return false;\s*\}/.test(gate))
+    check('关掉的理由写在类注释里（不是靠人记）',
+      /先不使用/.test(gate) && /qwen3-tts-flash/.test(gate) && /合并冻结/.test(gate))
+
+    const settingsSource = readFileSync(settings, 'utf-8')
+    check('设置页整块隐藏（连标题一起，不留一个悬空的按钮）',
+      /if \(!TtsFeature\.enabled\(\)\)/.test(settingsSource)
+      && /setAppTtsBlock/.test(settingsSource) && /setVisibility\(View\.GONE\)/.test(settingsSource))
+    const roomSrc = readFileSync(room, 'utf-8')
+    check('房间页关着就不建队列（不走进任何播报路径）',
+      /if \(TtsFeature\.enabled\(\)\) \{\s*ttsQueue = new TtsQueue/.test(roomSrc))
+    const interpSrc = readFileSync(join(JAVA_SRC, 'InterpreterActivity.java'), 'utf-8')
+    check('翻译官页同样不建队列、隐藏配置里那一行',
+      /if \(TtsFeature\.enabled\(\)\) \{\s*ttsQueue = new TtsQueue/.test(interpSrc)
+      && /interpConfigTtsBlock/.test(interpSrc))
+    check('关着时界面不提"朗读"（不暗示一个不存在的功能）',
+      /R\.string\.interp_meta_plain/.test(interpSrc))
+  })
+
   await it('错误码注册表：加码只改三处，漏一处自动红（不用改测试）', async () => {
     const { readFileSync } = await import('node:fs')
     const registryPath = join(JAVA_SRC, 'InterpreterErrorCodes.java')

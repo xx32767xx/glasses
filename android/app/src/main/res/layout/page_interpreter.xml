@@ -240,36 +240,45 @@
                     android:textSize="@dimen/text_secondary" />
             </LinearLayout>
 
-            <!-- 朗读开关（与设置页同一个偏好，改哪边都算） -->
+            <!-- 朗读开关（与设置页同一个偏好，改哪边都算）。
+                 5.38 起整块由 TtsFeature 控制可见性：先不使用播报时这里不出现，
+                 而不是留一个点了没反应的开关。 -->
             <LinearLayout
+                android:id="@+id/interpConfigTtsBlock"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="@dimen/space_gap"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/set_tts_read"
+                        android:textColor="@color/ink"
+                        android:textSize="@dimen/text_body" />
+
+                    <Switch
+                        android:id="@+id/interpTtsSwitch"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:showText="false" />
+                </LinearLayout>
 
                 <TextView
-                    android:layout_width="0dp"
+                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="@string/set_tts_read"
-                    android:textColor="@color/ink"
-                    android:textSize="@dimen/text_body" />
-
-                <Switch
-                    android:id="@+id/interpTtsSwitch"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:showText="false" />
+                    android:layout_marginTop="@dimen/space_gap_tiny"
+                    android:text="@string/interp_tts_hint"
+                    android:textColor="@color/ink_faint"
+                    android:textSize="@dimen/text_caption" />
             </LinearLayout>
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="@dimen/space_gap_tiny"
-                android:text="@string/interp_tts_hint"
-                android:textColor="@color/ink_faint"
-                android:textSize="@dimen/text_caption" />
 
             <!-- 识别与翻译在哪（只读摘要）：用户最常问的就是"这是真翻译还是演示" -->
             <TextView

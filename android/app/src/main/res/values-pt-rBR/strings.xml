@@ -74,6 +74,7 @@
     <string name="interp_finished">A demonstração terminou</string>
     <string name="interp_failed">Algo deu errado (%1$s)</string>
     <string name="interp_meta">Eu leio %1$s · Interlocutor fala %2$s · %3$s</string>
+    <string name="interp_meta_plain">Eu leio %1$s · Interlocutor fala %2$s</string>
     <string name="interp_no_backend">Sem mecanismo de reconhecimento</string>
     <string name="interp_tab_config">Configuração</string>
     <string name="interp_tab_live">Ao vivo</string>

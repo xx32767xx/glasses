@@ -368,6 +368,8 @@
     <string name="interp_failed">出错了（%1$s）</string>
     <!-- 5.36：翻译官是"对方说、我读"，所以这里说的是**我读哪种语言**（不是我说） -->
     <string name="interp_meta">我读%1$s · 对方说%2$s · %3$s</string>
+    <!-- 5.38：播报停用时不提"朗读"（提了就是在暗示一个并不存在的功能） -->
+    <string name="interp_meta_plain">我读%1$s · 对方说%2$s</string>
     <string name="interp_no_backend">无可用识别引擎</string>
     <!-- 5.37：翻译官页补完为三块（配置 / 收听 / 历史）。
          文案思路参考了同事那份 i18n 字典的说法（如"仅通过耳机/眼镜播放，不使用手机外放"），

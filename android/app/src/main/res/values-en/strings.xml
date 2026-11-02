@@ -74,6 +74,7 @@
     <string name="interp_finished">The scripted demo finished</string>
     <string name="interp_failed">Something went wrong (%1$s)</string>
     <string name="interp_meta">I read %1$s · Partner speaks %2$s · %3$s</string>
+    <string name="interp_meta_plain">I read %1$s · Partner speaks %2$s</string>
     <string name="interp_no_backend">No recognition engine</string>
     <string name="interp_tab_config">Settings</string>
     <string name="interp_tab_live">Live</string>
