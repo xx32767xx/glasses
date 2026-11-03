@@ -373,6 +373,33 @@ export async function runTtsSuite({ it, check }) {
         readFileSync(join(JAVA_SRC, 'InterpreterActivity.java'), 'utf-8')))
   })
 
+  await it('5.47：版本号必须**每个请求**都带（不只房间页），门禁只挡真正会写坏了的两条', async () => {
+    const { readFileSync } = await import('node:fs')
+    const client = readFileSync(join(JAVA_SRC, 'LanClient.java'), 'utf-8')
+    // 真实问题：门禁覆盖 /hello /audio /frame /say，而"带 app=" 是各处手拼的 ——
+    // 翻译官页漏了 hello，于是/log 里出现"报了（什么都没报）"，装最新版还被要求更新。
+    check('有一条统一的"补 app=" 逻辑（不再各处手拼）',
+      /private String withApp\(String path\)/.test(client) && /withApp\(path\)/.test(client))
+    check('三个请求出口都过它（request / requestWithCode / requestRaw）',
+      (client.match(/new URL\(baseUrl \+ withApp\(path\)\)/g) ?? []).length === 3,
+      String((client.match(/new URL\(baseUrl \+ withApp\(path\)\)/g) ?? []).length))
+    check('没有版本号时原样返回（不让路径变成 app= 空串）', /if \(app\.isEmpty\(\)\) return path;/.test(client))
+    check('已经有 app= 就不重复加', /if \(path\.contains\("app="\)\) return path;/.test(client))
+    check('启动时设一次全局缺省（不依赖"某个页面记得调"）',
+      /static void setDefaultAppVersionCode/.test(client)
+      && /LanClient\.setDefaultAppVersionCode\(String\.valueOf\(UpdateGuard\.versionCode\(this\)\)\)/
+        .test(readFileSync(join(JAVA_SRC, 'MainActivity.java'), 'utf-8')))
+
+    // 门禁范围：只挡"会写进数据"的两条。读字幕（/frame）与手输一句话（/say）
+    // 不该因为版本号抖动把整场字幕断掉 —— 用户提的方案（只在登录界面拦）落地成这个窄化版。
+    const relay = readFileSync(join(ROOT, 'relay', 'lan-relay.mjs'), 'utf-8')
+    check('门禁只管 /hello 与 /audio（写入路径）',
+      /const GATED_ENDPOINTS = new Set\(\['\/hello', '\/audio'\]\)/.test(relay))
+    check('/frame 与 /say 不再被版本门禁挡住',
+      !/'\/frame'/.test(relay.match(/const GATED_ENDPOINTS[^\n]*/)?.[0] ?? "'/frame'")
+      && !/'\/say'/.test(relay.match(/const GATED_ENDPOINTS[^\n]*/)?.[0] ?? "'/say'"))
+  })
+
   await it('错误码注册表：加码只改三处，漏一处自动红（不用改测试）', async () => {
     const { readFileSync } = await import('node:fs')
     const registryPath = join(JAVA_SRC, 'InterpreterErrorCodes.java')

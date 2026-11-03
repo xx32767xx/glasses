@@ -96,7 +96,7 @@ const MAX_BODY_BYTES = 8 * 1024
  * `/status`、`/admin`、`/terms`、`/org/*` 也不拒：管理台网页与排查工具都在用它们，
  * 且它们不涉及"这一场会议能不能用"。
  */
-const GATED_ENDPOINTS = new Set(['/hello', '/audio', '/frame', '/say'])
+const GATED_ENDPOINTS = new Set(['/hello', '/audio'])
 
 /** 请求里上报的客户端版本（`X-Leion-App` 头或 `?app=`）。`tool` = 我们自己的脚本，放行。 */
 function reportedAppVersion(request, url) {

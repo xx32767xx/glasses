@@ -255,6 +255,40 @@ public class LanClient {
     }
 
     /**
+     * 全局缺省的本机 versionCode（5.47）。
+     *
+     * <p>为什么要有这个：服务端的版本门禁认 `app=<纯数字 versionCode>`，**不带就判旧版本**。
+     * 以前是"哪个页面记得调 {@link #setAppVersionCode} 才报" —— 房间页报了、翻译官页漏了，
+     * 于是装了最新版还被拒。现在启动时设一次，之后**每一处**用 LanClient 的地方都自动带上，
+     * 不再依赖"某个页面记得调"。
+     */
+    private static String defaultAppVersionCode = "";
+
+    /** 启动时调一次（`app=MODE_PRIVATE` 的包信息读一次就够）。 */
+    public static void setDefaultAppVersionCode(String code) {
+        defaultAppVersionCode = code == null ? "" : code.trim();
+    }
+
+    /** 拼到 URL 上的版本号：本实例显式设过的优先，否则用全局缺省。 */
+    private String effectiveAppVersion() {
+        if (appVersionCode != null && !appVersionCode.isEmpty()) return appVersionCode;
+        return defaultAppVersionCode == null ? "" : defaultAppVersionCode;
+    }
+
+    /**
+     * 给请求路径补上 `app=<versionCode>`（没有就原样返回）。
+     *
+     * <p>挂在**每一个出站请求**上，而不是散在各处手拼 —— 版本门禁覆盖 `/hello`、`/audio`、
+     * `/frame`、`/say` 四条，漏掉任何一条都会让"最新版被判旧版"（这正是 5.47 修的事）。
+     */
+    private String withApp(String path) {
+        String app = effectiveAppVersion();
+        if (app.isEmpty()) return path;
+        if (path.contains("app=")) return path;
+        return path + (path.contains("?") ? "&" : "?") + "app=" + app;
+    }
+
+    /**
      * 上传一块录音（**同步**，必须在后台线程里调）。
      *
      * @param pcm        裸 PCM，16-bit 小端、单声道
@@ -654,7 +688,7 @@ public class LanClient {
      */
     private JSONObject requestWithCode(String path, String method, JSONObject body, int readTimeoutMs)
             throws IOException {
-        HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + path).openConnection();
+        HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + withApp(path)).openConnection();
         try {
             connection.setRequestMethod(method);
             connection.setRequestProperty("X-Leion-Secret", secret);
@@ -832,7 +866,7 @@ public class LanClient {
     /** 一次请求。非 2xx 一律抛异常（把服务端的错误正文带出来，便于排查）。 */
     private JSONObject request(String path, String method, JSONObject body, int readTimeoutMs)
             throws IOException, org.json.JSONException {
-        HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + path).openConnection();
+        HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + withApp(path)).openConnection();
         try {
             connection.setRequestMethod(method);
             connection.setRequestProperty("X-Leion-Secret", secret);
@@ -878,7 +912,7 @@ public class LanClient {
      */
     private JSONObject requestRaw(String path, byte[] payload, int readTimeoutMs)
             throws IOException, org.json.JSONException {
-        HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + path).openConnection();
+        HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + withApp(path)).openConnection();
         try {
             connection.setRequestMethod("POST");
             connection.setRequestProperty("X-Leion-Secret", secret);

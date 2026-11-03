@@ -286,6 +286,10 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         // 装在最早：后面任何一步崩了都要留下堆栈。
         // 真机上 adb 不一定能用，而"闪退"没有堆栈就只能靠猜。
         CrashLog.install(getApplicationContext());
+        // 5.47：把本机 versionCode 设为**全局缺省**，之后每一处 LanClient 都自动带 `app=`。
+        // 以前是"哪个页面记得调 setAppVersionCode 才报"：房间页报了、翻译官页漏了，
+        // 于是装了最新版还会被服务端门禁判成旧客户端（426 + "需要 4.152"）。
+        LanClient.setDefaultAppVersionCode(String.valueOf(UpdateGuard.versionCode(this)));
         setContentView(R.layout.activity_main);
 
         records = new Records(this);
