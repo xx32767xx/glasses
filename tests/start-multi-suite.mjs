@@ -373,6 +373,42 @@ export async function runStartMultiSuite({ it, check, assert }) {
     check('keep-inbox 生效', parsed.keepInbox === true, String(parsed.keepInbox))
   })
 
+  await it('事故回归：start-multi 传的**每一个**选项，识别进程都必须认得', async () => {
+    // 真实事故（2026-11）：5.40 让 start-multi 给识别进程传 `--model-map`，但这个脚本
+    // 自己的 parseArgs 不认识它 —— 于是**识别进程启动即退出**，整条链被拖停：
+    //   [识别] [asr-worker] ❌ 未知选项 --model-map（用 --help 看用法）
+    //   [识别] ⚠️ 识别进程退出了（code=1）… 正在停止全部进程…
+    // 为什么当时的测试没抓到：那条契约测试用的是"没有策略表的目录"，于是 start-multi
+    // 根本没生成 `--model-map` —— 测的是**老的 happy path**。
+    // 现在改成：把各种组合都过一遍，任何"start-multi 会传、识别进程不认"的选项立刻红。
+    const { parseArgs: workerParse, consumerCommand } = await import('../bridge/asr-worker.mjs')
+    const combos = [
+      ['--data-dir', 'var/x'],
+      ['--data-dir', 'var/x', '--cpu'],
+      ['--data-dir', 'var/x', '--model-map', 'config/asr-models.json'],
+      ['--data-dir', 'var/x', '--model-map', 'config/asr-models.json', '--max-models', '3', '--cpu'],
+      ['--data-dir', 'var/x', '--translate-mode', 'queue', '--whisper-model', 'medium'],
+    ]
+    const failures = []
+    for (const argv of combos) {
+      const options = parseArgs(argv)
+      const workerArgs = workerStep(options).args
+      try {
+        const parsed = workerParse(workerArgs)
+        // 还要真的**透传给 python**：不认只是第一步，忘了往下传同样是"参数白给"（4.86 的教训）
+        const { args: pyArgs } = consumerCommand(parsed)
+        if (options.modelMap) {
+          if (!pyArgs.includes('--model-map')) failures.push(`python 没收到 --model-map（${argv.join(' ')}）`)
+          if (!pyArgs.includes('--max-models')) failures.push(`python 没收到 --max-models（${argv.join(' ')}）`)
+        }
+        if (!pyArgs.includes('--data-dir')) failures.push(`python 没收到 --data-dir（${argv.join(' ')}）`)
+      } catch (error) {
+        failures.push(`${argv.join(' ')} → ${error.message}`)
+      }
+    }
+    check('所有组合都能被识别进程接受，并透传给 python', failures.length === 0, failures.join(' | '))
+  })
+
   await it('python 切句端真的认这些参数（源码里三个都要在）', async () => {
     const source = readFileSync(new URL('../bridge/whisper_stream.py', import.meta.url), 'utf-8')
     for (const flag of ['--segment-dir', '--queue-dir', '--tag']) {

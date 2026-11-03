@@ -75,11 +75,14 @@ export function parseArgs(argv = []) {
     computeType: null,          // null = 按设备定（GPU float16 / CPU int8）
     pollMs: 60,
     depthReportS: 30,
+    // 5.40/5.41：按语言选模型的策略表（透传给 python）。null = 不用表（老行为）
+    modelMap: null,
+    maxModels: 2,
     keepInbox: false,
     dryRun: false,
   }
   const takesValue = new Set(['queue-dir', 'data-dir', 'inbox-dir', 'model', 'device',
-    'compute-type', 'queue-poll-ms', 'depth-report-s'])
+    'compute-type', 'queue-poll-ms', 'depth-report-s', 'model-map', 'max-models'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -99,6 +102,12 @@ export function parseArgs(argv = []) {
     else if (key === 'compute-type') options.computeType = value
     else if (key === 'queue-poll-ms') options.pollMs = Number(value)
     else if (key === 'depth-report-s') options.depthReportS = Number(value)
+    else if (key === 'model-map') options.modelMap = value
+    else if (key === 'max-models') {
+      const count = Number(value)
+      if (!Number.isInteger(count) || count < 1) throw new Error('--max-models 必须是正整数')
+      options.maxModels = count
+    }
   }
   if (options.help === true) return options
   if (options.queueDir === null) throw new Error('必须给 --queue-dir <目录>（切句进程写队列的地方）')
@@ -236,7 +245,17 @@ export function consumerCommand(options) {
     '--queue-depth-report-s', String(options.depthReportS),
     // 队列模式下语种是**每段自带**的（切句时从手机的旁文件读），命令行不写死。
     '--format', 'json',
+    // 5.41：房间覆盖（手机上报的策略/模型）要读 `<data-dir>/asr-profiles/<房间>.json`
+    '--data-dir', options.dataDir,
   ]
+  // 5.40/5.41：策略表。给了就传下去 —— 识别进程按"房间 > languages > strategies > default
+  // > 命令行"选模型。⚠️ 这条曾经漏在这里过：start-multi 传了 `--model-map`，但这个脚本
+  // 的 parseArgs 不认识，于是**识别进程直接退出、整条链被拖停**。
+  // 现在 tests/start-multi-suite.mjs 会拿 workerStep 生成的参数**直接喂给这个 parseArgs**。
+  if (options.modelMap) {
+    args.push('--model-map', options.modelMap)
+    args.push('--max-models', String(options.maxModels ?? 2))
+  }
   return { script: join(ROOT, 'bridge', 'whisper_stream.py'), args }
 }
 
