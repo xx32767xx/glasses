@@ -437,6 +437,55 @@ export async function runTtsSuite({ it, check }) {
     check('每次重试都打日志（不许悄悄重试到成功）', /↻ 翻译这次失败/.test(core))
   })
 
+  await it('5.51：镜片显示 JSON（Rokid 只能显示，识别翻译仍是我们的）', async () => {
+    const { readFileSync } = await import('node:fs')
+    const builder = readFileSync(join(JAVA_SRC, 'CxrViewJson.java'), 'utf-8')
+    // 纯逻辑：不许依赖 Android（否则没法在 CI 上跑）
+    check('CxrViewJson 不 import android.*', /import\s+android\./.test(builder) === false)
+    check('协议形状照着 SDK 来（LinearLayout 根 + TextView 子节点 + action=update 增量）',
+      /quote\("LinearLayout"\)/.test(builder) && /quote\("TextView"\)/.test(builder)
+      && /quote\("update"\)/.test(builder))
+    check('只认字符串（尺寸/颜色都写字符串）', /"16sp"/.test(builder) && /"#FFFFFFFF"/.test(builder))
+    check('有行数上限（眼镜三行预算）', /MAX_LINES = 3/.test(builder))
+    check('自己实现转义（不能用 org.json：desktop 下是 stub）',
+      /public static String quote\(String raw\)/.test(builder)
+      && /\\\\u%04x/.test(builder))
+
+    let javacOk = true
+    try {
+      execFileSync('javac', ['-version'], { stdio: 'ignore' })
+    } catch (error) {
+      javacOk = false
+      if (error && error.code === 'EPERM') {
+        console.log('  ⏭ 这个沙箱不允许 Node 起子进程（javac EPERM），跳过 CxrViewJsonCheck。')
+        return
+      }
+    }
+    if (!javacOk) {
+      console.log('  ⏭ 这台机器没有 javac，跳过 CxrViewJsonCheck')
+      return
+    }
+    const dir = join(VAR_DIR, 'test', 'cxr-view')
+    rmSync(dir, { recursive: true, force: true })
+    mkdirSync(dir, { recursive: true })
+    execFileSync('javac', ['-encoding', 'UTF-8', '-d', dir,
+      join(JAVA_SRC, 'CxrViewJson.java'), join(ROOT, 'tests', 'java', 'CxrViewJsonCheck.java')],
+      { stdio: 'ignore' })
+    const log = join(dir, 'check.log')
+    const handle = openSync(log, 'w')
+    try {
+      execFileSync('java', ['-Dstdout.encoding=UTF-8', '-cp', dir, 'CxrViewJsonCheck'],
+        { stdio: ['ignore', handle, handle] })
+    } catch {
+      // 断言失败会非零退出：报告已写进文件
+    } finally {
+      closeSync(handle)
+    }
+    const report = readFileSync(log, 'utf-8')
+    check('17 条协议断言全通过（形状/id 一致/转义/三行上限）',
+      /passed=17 failed=0/.test(report), report.trim().slice(-300))
+  })
+
   await it('错误码注册表：加码只改三处，漏一处自动红（不用改测试）', async () => {
     const { readFileSync } = await import('node:fs')
     const registryPath = join(JAVA_SRC, 'InterpreterErrorCodes.java')

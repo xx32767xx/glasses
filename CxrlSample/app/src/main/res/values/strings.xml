@@ -1,0 +1,370 @@
+<resources>
+    <string name="app_name">CXR-L Sample v1.1.0</string>
+
+    <!-- Generic actions -->
+    <string name="action_clear">Clear</string>
+    <string name="action_view_all">View all</string>
+    <string name="action_expand">Expand details</string>
+    <string name="action_collapse">Collapse details</string>
+    <string name="action_back_content_description">Back</string>
+
+    <!-- Generic status -->
+    <string name="status_not_started">Not started</string>
+    <string name="status_in_progress">In progress</string>
+    <string name="status_available">Available</string>
+    <string name="status_blocked">Blocked</string>
+    <string name="status_failed">Failed</string>
+    <string name="status_yes">Yes</string>
+    <string name="status_no">No</string>
+
+    <!-- Feature titles (CxrFeature.labelRes) -->
+    <string name="feature_audio_title">Audio</string>
+    <string name="feature_photo_title">Photo</string>
+    <string name="feature_device_control_title">Device Control</string>
+    <string name="feature_custom_cmd_title">Custom Command</string>
+    <string name="feature_custom_view_title">Custom View</string>
+
+    <!-- Status card / phase labels -->
+    <string name="status_card_title">Current state</string>
+    <string name="status_card_phase_label">Phase: %s</string>
+    <string name="status_card_sdk_state_label">SDK state: %s</string>
+    <string name="status_card_close_reason_label">Close reason: %s</string>
+    <string name="phase_connecting">Connecting</string>
+    <string name="phase_scene_not_ready">Scene not ready</string>
+    <string name="phase_paused">Paused</string>
+    <string name="phase_capabilities_ready">Capabilities ready</string>
+    <string name="phase_none">No session</string>
+
+    <!-- Setup flow -->
+    <string name="setup_title">CXR-L Setup</string>
+    <string name="setup_subtitle">Complete environment check, authorization and scene selection</string>
+    <string name="setup_step_install_companion">Install companion</string>
+    <string name="setup_step_authorize">Authorize</string>
+    <string name="setup_step_select_scene">Select scene</string>
+    <string name="setup_recheck_env">Recheck environment</string>
+    <string name="setup_recheck_env_description">Refresh Rokid AI App installation, compatibility and glasses Bluetooth status</string>
+    <string name="setup_next_step">Next step</string>
+    <string name="setup_next_step_description">Proceed after environment check passes</string>
+    <string name="setup_env_result_title">Environment check result</string>
+    <string name="setup_app_not_installed">Not installed, tap to open download page</string>
+    <string name="setup_app_version_low">Version too low (current %1$s, required %2$s), tap to update</string>
+    <string name="setup_app_compatible">Compatible (version %1$s)</string>
+    <string name="setup_app_installed">Installed</string>
+    <string name="setup_app_not_checked">Not checked</string>
+    <string name="setup_app_label">Rokid AI App</string>
+    <string name="setup_request_auth">Request authorization</string>
+    <string name="setup_request_auth_description">Request camera, microphone and media permissions from Rokid AI App</string>
+    <string name="setup_need_activity_context">Activity context required</string>
+    <string name="setup_auth_result_title">Authorization result</string>
+    <string name="setup_auth_token_hidden">Token acquired (hidden)</string>
+    <string name="setup_auth_failed">Authorization failed: %1$s</string>
+    <string name="setup_auth_error_not_authenticated">Not authorized, please call requestAuthorization again</string>
+    <string name="setup_auth_error_token_expired">Token expired, please authorize again</string>
+    <string name="setup_auth_error_app_not_installed">Rokid AI App is not installed, please complete environment check first</string>
+    <string name="setup_auth_error_app_version_low">Rokid AI App version is too low, please update</string>
+    <string name="setup_auth_error_bt_not_connected">Bluetooth not connected, please connect glasses in Rokid AI App</string>
+    <string name="setup_auth_error_default">Please check environment, AI App version and Bluetooth connection, then retry</string>
+    <string name="setup_select_session_type">Select session type</string>
+    <string name="setup_current_type">Current type: %1$s</string>
+    <string name="setup_session_config_editor">SessionConfig editor</string>
+    <string name="setup_grace_period_label">terminatingGracePeriodMs (1000..30000)</string>
+    <string name="setup_view_data_label">viewData (JSON)</string>
+    <string name="setup_package_name_label">glassesPackageName *</string>
+    <string name="setup_activity_name_label">glassesActivityName (optional)</string>
+    <string name="setup_apk_path_label">glassesApkPath (optional)</string>
+    <string name="setup_create_session">Create session</string>
+    <string name="setup_create_session_description">Create CxrSession from current SessionConfig</string>
+    <string name="setup_no_builtin_glass_app">No built-in demo APK: please name your APK demo_glass_app.apk and place it in assets/glass_apps/, then rebuild.</string>
+    <string name="setup_glass_app_copied">Built-in sample ready: %1$s</string>
+    <string name="setup_session_created">Session created</string>
+    <string name="setup_session_created_hint">Entering session hub…</string>
+    <string name="setup_session_already_created">Session already created, please end it before recreating</string>
+    <string name="setup_local_preview_title">Local preview (no glasses required)</string>
+    <string name="setup_local_preview_summary">UpdateViewJson builder + CapsFactory serialize result display (pure local, no SDK call)</string>
+    <string name="setup_local_preview_text_example">Text example</string>
+    <string name="setup_local_preview_text_toggle">Switch text</string>
+    <string name="setup_local_preview_update_json_label">Incremental update JSON</string>
+    <string name="setup_local_preview_caps_result">Caps serialize result: %1$s</string>
+
+    <!-- Setup / config validation errors -->
+    <string name="setup_error_grace_period_out_of_range">terminatingGracePeriodMs must be between 1000 and 30000</string>
+    <string name="setup_error_custom_view_blank_view_data">CUSTOM_VIEW must provide viewData</string>
+    <string name="setup_error_custom_view_invalid_view_data">Invalid viewData JSON: %1$s</string>
+    <string name="setup_error_custom_app_missing_package_name">CUSTOM_APP must provide glassesPackageName</string>
+
+    <!-- CustomView JSON validation errors -->
+    <string name="custom_view_json_root_must_be_object">CustomView JSON root must be an object</string>
+    <string name="custom_view_json_root_missing_type">CustomView JSON root is missing type</string>
+    <string name="custom_view_json_root_invalid_type">CustomView JSON root type %1$s is invalid; allowed: %2$s</string>
+    <string name="custom_view_json_root_missing_id">CustomView JSON root is missing id</string>
+    <string name="custom_view_json_root_invalid_id">CustomView JSON root id cannot be empty or contain illegal characters</string>
+    <string name="custom_view_update_json_must_be_array">Incremental update JSON must be an array</string>
+    <string name="custom_view_update_json_empty_array">Incremental update JSON is an empty array</string>
+    <string name="custom_view_update_action_must_be_update">Incremental update action must be \'update\'</string>
+    <string name="custom_view_update_id_invalid">Incremental update id cannot be empty or contain illegal characters</string>
+    <string name="custom_view_update_missing_props">Incremental update JSON is missing props</string>
+
+    <!-- Hub -->
+    <string name="hub_title">Session Hub</string>
+    <string name="hub_subtitle">Status monitoring and capability entry</string>
+    <string name="hub_session_type_label">Current mode: %1$s</string>
+    <string name="hub_feature_entry_title">Capability entry</string>
+    <string name="hub_end_session">End session</string>
+    <string name="hub_end_session_description">Close current session and return to setup_graph to switch session type or re-authorize</string>
+    <string name="hub_no_session">No session, return to setup_graph to create one</string>
+    <string name="hub_bt_not_connected">Bluetooth not connected</string>
+    <string name="hub_event_log_summary">Event log summary</string>
+    <string name="hub_no_event_logs">No event logs</string>
+    <string name="hub_glasses_events_title">Glasses events</string>
+    <string name="hub_glasses_events_hint">Callbacks such as onLauncherResumed fire in any state (including Idle)</string>
+    <string name="hub_no_glasses_events">No glasses events</string>
+    <string name="hub_allowed_features_hint">Capabilities above are supported for the current session type</string>
+
+    <!-- Feature common -->
+    <string name="feature_expected_outcome_hint">Expected outcome: %1$s</string>
+    <string name="feature_prerequisite_prefix">Prerequisite: %1$s</string>
+    <string name="feature_unavailable_paused">Only Started state is available; currently paused: %1$s</string>
+    <string name="feature_unavailable_generic">Only Started state is available; current phase: %1$s</string>
+    <string name="feature_no_session_phase">No session</string>
+    <string name="feature_error_no_session">No available session</string>
+
+    <!-- Audio -->
+    <string name="audio_title">Audio</string>
+    <string name="audio_subtitle">Audio stream capture and event listening</string>
+    <string name="audio_expected_outcome">After tapping start, new items keep appearing in the event list below.</string>
+    <string name="audio_start_stream">Start audio stream</string>
+    <string name="audio_stop_stream">Stop audio stream</string>
+    <string name="audio_start_description">Start glasses audio stream; callback continuously receives ByteArray data.</string>
+    <string name="audio_stop_description">Stop glasses audio stream.</string>
+    <string name="audio_start_expected">Event list keeps adding audio data items.</string>
+    <string name="audio_stop_expected">Audio stream state becomes false and list stops growing.</string>
+    <string name="audio_events_title">Audio events (latest %1$d)</string>
+    <string name="audio_event_time">Time: %1$s</string>
+    <string name="audio_event_bytes">Bytes: %1$d</string>
+    <string name="audio_event_stream_state">Stream state: %1$s</string>
+    <string name="audio_stream_active">Streaming</string>
+    <string name="audio_stream_stopped">Stopped</string>
+    <string name="audio_error_default">Audio error (errorCode=%1$d)</string>
+
+    <!-- Photo -->
+    <string name="photo_title">Photo</string>
+    <string name="photo_subtitle">takePhoto(width, height, quality) with explicit three parameters</string>
+    <string name="photo_expected_outcome">After tapping capture, a photo preview returned by glasses appears below.</string>
+    <string name="photo_params_title">Photo parameters</string>
+    <string name="photo_width_label">Width</string>
+    <string name="photo_height_label">Height</string>
+    <string name="photo_quality_label">Quality 1-100</string>
+    <string name="photo_capture">Capture</string>
+    <string name="photo_capturing">Capturing…</string>
+    <string name="photo_capture_description">Must explicitly pass width, height and quality; SDK has no default parameters.</string>
+    <string name="photo_capture_expected">A Bitmap preview returned by glasses appears below.</string>
+    <string name="photo_preview_title">Photo preview</string>
+    <string name="photo_preview_content_description">Photo preview</string>
+    <string name="photo_save_to_gallery">Save to gallery</string>
+    <string name="photo_save_permission_hint">Uses MediaStore.Images; WRITE permission is required on API 28, usually not needed on API 29+.</string>
+    <string name="photo_no_photo">No photo</string>
+    <string name="photo_save_permission_denied">Cannot save to gallery, please grant storage permission</string>
+    <string name="photo_save_failed">Save failed: %1$s</string>
+    <string name="photo_save_succeeded">Saved to gallery: %1$s</string>
+    <string name="photo_no_photo_to_save">No photo to save</string>
+
+    <!-- Device control -->
+    <string name="device_title">Device Control</string>
+    <string name="device_subtitle">Brightness / volume and glasses info query</string>
+    <string name="device_expected_outcome">Adjust sliders and tap apply; glasses brightness/volume changes. Refresh to populate the info card.</string>
+    <string name="device_brightness_label">Brightness</string>
+    <string name="device_apply_brightness">Apply brightness</string>
+    <string name="device_brightness_description">Brightness range 0..100</string>
+    <string name="device_brightness_expected">Glasses screen brightness changes.</string>
+    <string name="device_volume_label">Volume</string>
+    <string name="device_apply_volume">Apply volume</string>
+    <string name="device_volume_description">Volume range 0..100</string>
+    <string name="device_volume_expected">Glasses media volume changes.</string>
+    <string name="device_refresh_info">Refresh device info</string>
+    <string name="device_refresh_info_description">Query glasses OS version, battery, free memory, charging status, resolution and screen state.</string>
+    <string name="device_refresh_info_expected">Info card below shows basic glasses information.</string>
+    <string name="device_info_title">Glasses info</string>
+    <string name="device_os_version_label">OS version</string>
+    <string name="device_battery_label">Battery: %1$d%%</string>
+    <string name="device_free_memory_label">Free memory: %1$d MB</string>
+    <string name="device_charging_label">Charging</string>
+    <string name="device_resolution_label">Resolution</string>
+    <string name="device_screen_on_label">Screen on</string>
+    <string name="device_no_info">No device info, tap refresh to fetch.</string>
+
+    <!-- Custom command -->
+    <string name="custom_cmd_title">Custom Command</string>
+    <string name="custom_cmd_subtitle">sendCustomCmd(cmd, payload, stream)</string>
+    <string name="custom_cmd_hint">cmd is the command name registered by the glasses app; channelKey filters responses.</string>
+    <string name="custom_cmd_expected_outcome">After tapping send, response list shows glasses packets matching channelKey.</string>
+    <string name="custom_cmd_not_custom_app">Current session type is not CUSTOM_APP, custom command is unavailable.</string>
+    <string name="custom_cmd_params_title">Command parameters</string>
+    <string name="custom_cmd_payload_label">payload (written to Caps)</string>
+    <string name="custom_cmd_stream_label">stream (text to ByteArray, empty string becomes ByteArray(0))</string>
+    <string name="custom_cmd_send">Send custom command</string>
+    <string name="custom_cmd_send_description">payload is wrapped by CapsFactory; stream empty string passes ByteArray(0).</string>
+    <string name="custom_cmd_send_expected">Response list shows data packets matching channelKey.</string>
+    <string name="custom_cmd_responses_title">Response list</string>
+    <string name="custom_cmd_no_responses">No responses</string>
+    <string name="custom_cmd_response_time">Time: %1$s</string>
+    <string name="custom_cmd_response_channel_key">channelKey: %1$s</string>
+    <string name="custom_cmd_response_data_size">Data size: %1$d bytes</string>
+    <string name="custom_cmd_response_preview">%1$d bytes: %2$s</string>
+    <string name="custom_cmd_response_empty">Empty data</string>
+
+    <!-- Custom view -->
+    <string name="custom_view_title">Custom View</string>
+    <string name="custom_view_subtitle">customViewUpdate(incremental update JSON)</string>
+    <string name="custom_view_hint">Incremental update JSON format: [{"action":"update","id":"...","props":{...}}]</string>
+    <string name="custom_view_expected_outcome">After tapping update, glasses CustomView content refreshes incrementally according to JSON.</string>
+    <string name="custom_view_not_custom_view">Current session type is not CUSTOM_VIEW, custom view update is unavailable.</string>
+    <string name="custom_view_quick_example">Quick example</string>
+    <string name="custom_view_quick_example_description">Tap to generate sample JSON: increment title text counter.</string>
+    <string name="custom_view_generate_example">Generate example (counter %1$d)</string>
+    <string name="custom_view_free_edit">Free edit</string>
+    <string name="custom_view_update_json_label">Incremental update JSON</string>
+    <string name="custom_view_validate_preview">Validate / Preview</string>
+    <string name="custom_view_update">Update CustomView</string>
+    <string name="custom_view_update_description">Pass incremental update JSON array; local validation via CustomViewJsonValidator before calling SDK.</string>
+    <string name="custom_view_update_expected">Glasses CustomView refreshes according to JSON content.</string>
+    <string name="custom_view_local_preview">Local preview</string>
+    <string name="custom_view_last_sent_success">Send succeeded</string>
+    <string name="custom_view_last_sent_failed">Send failed: %1$s</string>
+
+    <!-- Event log -->
+    <string name="event_log_page_title">Event log</string>
+    <string name="event_log_filter">Filter by category: %1$s</string>
+    <string name="event_log_clear">Clear log</string>
+    <string name="event_log_export">Export log</string>
+    <string name="event_log_export_hint">Logs may contain device status and error information; review before sharing.</string>
+    <string name="event_log_empty">No event logs</string>
+    <string name="event_log_last_export">Last export: %1$s</string>
+
+    <!-- Session config page -->
+
+    <!-- Token redaction -->
+    <string name="token_hidden">Token acquired (hidden)</string>
+
+    <!-- Setup flow extra hints -->
+    <string name="setup_env_not_ready_hint_specific">Make sure Rokid AI App is installed and compatible</string>
+    <string name="setup_bt_status_hint">Bluetooth connection status can be viewed in the session hub after the session is created</string>
+    <string name="setup_create_session_auth_required">Please complete authorization first</string>
+
+    <!-- SDK reason mapping: PausedReason -->
+    <string name="reason_paused_bt_disconnected">Bluetooth disconnected; session is paused indefinitely and will auto-resume after reconnection</string>
+    <string name="reason_paused_ai_assist">AI assistant is occupying; will auto-resume after it ends</string>
+
+    <!-- SDK reason mapping: CloseReason cause -->
+    <string name="reason_close_user_closed">Session closed by developer</string>
+    <string name="reason_close_connect_failed">Connection failed</string>
+    <string name="reason_close_glasses_exit">Glasses-side component exited</string>
+    <string name="reason_close_link_lost">Link lost</string>
+    <string name="reason_close_chain_torn">Connection lost, token invalidated</string>
+    <string name="reason_close_fatal_error">Internal fatal error</string>
+
+    <!-- SDK reason mapping: CloseReason action -->
+    <string name="reason_close_user_closed_action">Return to setup_graph to recreate the session</string>
+    <string name="reason_close_connect_failed_action">Please check Bluetooth and Rokid AI App status, then authorize again</string>
+    <string name="reason_close_glasses_exit_action">Please confirm glasses-side app status and recreate the session</string>
+    <string name="reason_close_link_lost_action">Please check Bluetooth connection and authorize again</string>
+    <string name="reason_close_chain_torn_action">Please authorize again</string>
+    <string name="reason_close_fatal_error_action">Please collect logs and recreate the session</string>
+
+    <!-- SDK reason mapping: TerminatingReason -->
+    <string name="reason_terminating_glasses_app_exit">Glasses app exited, gracefully ending session</string>
+    <string name="reason_terminating_glasses_app_crash">Glasses app crashed, ending session</string>
+    <string name="reason_terminating_glasses_resource_reclaimed">Glasses-side resources reclaimed, ending session</string>
+    <string name="reason_terminating_link_chain_torn">Underlying link torn, ending session; token invalidated, please authorize again</string>
+    <string name="reason_terminating_other">Session terminating, please wait for close to complete</string>
+
+    <!-- SDK reason mapping: SessionErrorCode -->
+    <string name="reason_error_ok">Operation successful</string>
+    <string name="reason_error_not_authenticated">Not authorized, please call requestAuthorization again</string>
+    <string name="reason_error_token_expired">Token expired, please authorize again</string>
+    <string name="reason_error_app_not_installed">Rokid AI App is not installed, please complete environment check first</string>
+    <string name="reason_error_app_version_low">Rokid AI App version is too low, please update</string>
+    <string name="reason_error_link_not_ready">Link not ready, please check Bluetooth and network environment then retry</string>
+    <string name="reason_error_bt_not_connected">Bluetooth not connected, please connect glasses in Rokid AI App</string>
+    <string name="reason_error_link_lost">Link lost, please check Bluetooth connection then retry</string>
+    <string name="reason_error_link_timeout">Connection timeout, please check environment then retry</string>
+    <string name="reason_error_session_not_started">Session not started, please create a session first</string>
+    <string name="reason_error_session_terminating">Session is terminating, please wait and retry</string>
+    <string name="reason_error_session_already_exists">Session already exists, do not create repeatedly</string>
+    <string name="reason_error_connect_failed">Connection failed, please check Bluetooth and Rokid AI App status then retry</string>
+    <string name="reason_error_scene_open_failed">Scene open failed, please check scene parameters then retry</string>
+    <string name="reason_error_resource_prepare_failed">Resource preparation failed, please check environment then retry</string>
+    <string name="reason_error_session_paused">Session paused, continue after resume</string>
+    <string name="reason_error_data_not_ready">Data not ready, please try again later</string>
+    <string name="reason_error_invalid_argument">Invalid argument, please check input then retry</string>
+    <string name="reason_error_operation_in_progress">Operation in progress, please wait and retry</string>
+    <string name="reason_error_operation_cancelled">Operation cancelled</string>
+    <string name="reason_error_glasses_signal_timeout">Glasses signal timeout, please check glasses status then retry</string>
+    <string name="reason_error_glasses_app_not_found">Glasses app not found</string>
+    <string name="reason_error_glasses_app_install_failed">Glasses app installation failed</string>
+    <string name="reason_error_glasses_memory_pressure">Glasses memory pressure, please close some apps then retry</string>
+    <string name="reason_error_glasses_camera_error">Glasses camera error, please check device then retry</string>
+    <string name="reason_error_glasses_audio_error">Glasses audio error, please check device then retry</string>
+    <string name="reason_error_internal_error">Internal error, please check environment then retry</string>
+    <string name="reason_error_unknown">Unknown error, please check environment then retry</string>
+    <string name="reason_error_fallback">Operation failed, please check environment then retry</string>
+
+    <!-- Event log: lifecycle -->
+    <string name="log_session_started">Session started</string>
+    <string name="log_session_started_suggestion">Capability APIs are available</string>
+    <string name="log_session_paused">Session paused</string>
+    <string name="log_session_paused_suggestion">Capability APIs are disabled; wait for auto-resume</string>
+    <string name="log_session_resumed">Session resumed</string>
+    <string name="log_session_resumed_suggestion">Capability APIs are available again</string>
+    <string name="log_session_terminating">Session terminating (gracePeriodMs=%1$d)</string>
+    <string name="log_session_terminating_suggestion">Do not call capability APIs; wait for onSessionClosed</string>
+    <string name="log_session_closed">Session closed</string>
+
+    <!-- Event log: connect results -->
+    <string name="log_connect_success">Connection successful</string>
+    <string name="log_connect_failure">Connection failed</string>
+    <string name="log_connect_failure_suggestion">Please check Bluetooth and Rokid AI App status, then authorize again</string>
+
+    <!-- Event log: Hub internal -->
+    <string name="log_no_launch_params">No launch params; waiting to recreate session</string>
+    <string name="log_create_session_failed">Failed to create session</string>
+    <string name="log_create_session_failed_suggestion">Please check SessionConfig and retry</string>
+    <string name="log_connect_session_failed">Failed to connect session</string>
+    <string name="log_connect_session_failed_suggestion">Please check Bluetooth and Rokid AI App status, then authorize again</string>
+
+    <!-- Event log: capability callbacks -->
+    <string name="log_audio_received">Received audio data (%1$d bytes)</string>
+    <string name="log_audio_callback_error">Audio callback error</string>
+    <string name="log_audio_stream_state_changed">Audio stream state changed: isStreaming=%1$s</string>
+    <string name="log_image_received">Received image data (%1$d bytes), decode %2$s</string>
+    <string name="log_image_callback_error">Image callback error</string>
+    <string name="log_custom_cmd_result">Custom command response (channelKey=%1$s, %2$d bytes)</string>
+
+    <!-- Event log: glasses events -->
+    <string name="log_glasses_app_resumed">Glasses app resumed</string>
+    <string name="log_glasses_app_paused">Glasses app paused</string>
+    <string name="log_wearing_status_changed">Wearing status changed: wearing=%1$s</string>
+    <string name="log_device_info_changed">Device info changed: %1$s</string>
+    <string name="log_screen_off">Screen off</string>
+    <string name="log_screen_on">Screen on</string>
+    <string name="log_launcher_resumed">Launcher resumed</string>
+    <string name="log_ai_wake">AI wake</string>
+    <string name="log_ai_interrupt_changed">AI interrupt state changed: interruptWake=%1$s</string>
+    <string name="log_glasses_event_note">%1$s (callback fires in any state including Idle)</string>
+
+    <!-- Event log: SDK call results -->
+    <string name="log_call_sdk_api">Calling %1$s</string>
+    <string name="log_sdk_api_success">%1$s succeeded</string>
+    <string name="log_sdk_api_failure">%1$s failed</string>
+
+    <!-- Event log: recovery suggestions -->
+    <string name="log_suggestion_check_bluetooth_session">Please check Bluetooth and session state then retry</string>
+    <string name="log_suggestion_check_session_camera_permission">Please check session state and camera permission then retry</string>
+    <string name="log_suggestion_check_started_state">Please confirm session is in Started state then retry</string>
+    <string name="log_suggestion_check_started_custom_app">Please confirm session is in Started state and is CUSTOM_APP mode</string>
+    <string name="log_suggestion_check_started_custom_view">Please confirm session is in Started state and is CUSTOM_VIEW mode</string>
+
+    <!-- Event log: generic helpers -->
+    <string name="log_decode_success">success</string>
+    <string name="log_decode_failure">failure</string>
+
+</resources>
