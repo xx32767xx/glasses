@@ -1107,13 +1107,20 @@ class ModelPool:
         self.order = []         # 最近使用顺序（末尾最新）
         self.loads = []         # [{"key", "seconds"}] 加载耗时记录（--stats 用）
         self.counts = {}        # profile 的 source/model → 处理段数
+        self.compute_of = {}    # 策略名 → 实际用的 precision（A/B 时要能看见）
 
     @staticmethod
     def key_of(profile):
         return (profile.get("model"), profile.get("compute_type"))
 
     def get(self, profile, np=None, device="cuda"):
-        key = self.key_of(profile)
+        # 5.42：策略表给的 precision 同样要过硬件检查（见 main 里那段事故说明）。
+        requested_compute = profile.get("compute_type") or "float16"
+        compute, note = resolve_compute_type(requested_compute, device)
+        if note:
+            self.log(f"[识别] {note}（策略 {profile.get('strategy') or '?'} 要求 {requested_compute}）")
+        key = (profile.get("model"), compute)
+        self.compute_of[profile.get("strategy") or profile.get("model")] = compute
         if key in self.models:
             self.order.remove(key)
             self.order.append(key)
@@ -1125,17 +1132,41 @@ class ModelPool:
                      f"淘汰 {drop[0]} / {drop[1]}（要同时留更多份就调大它，代价是显存）")
         self.log(f"[识别] 加载模型 {key[0]}（compute_type={key[1]}）…")
         started = time.perf_counter()
-        model = self.make_model(key[0], device, key[1])
+        try:
+            model = self.make_model(key[0], device, key[1])
+        except Exception as error:      # noqa: BLE001
+            # 兜底：精度不支持时**换一个这台设备能跑的**再试一次，并大声说明。
+            # 为什么这条兜底必须存在（真实事故）：表里抄了 float16，而这台卡是 Pascal
+            # （算力 6.1，没有 FP16 加速）→ 启动即失败，而报错说"本地没有模型"，
+            # 于是人跑去搬一个本来就有的模型。精度是**硬件能力**问题，不是策略选择，
+            # 换掉它不会污染模型 A/B 的结论；但必须说清换过（否则用户以为在跑 float16）。
+            if not is_compute_type_error(error):
+                raise
+            fallback = "int8_float32" if device == "cuda" else "int8"
+            if fallback == key[1]:
+                raise
+            self.log(f"[识别] ⚠️ 这台设备跑不了 {key[1]}（{type(error).__name__}），"
+                     f"改用 {fallback} 继续 —— 请把策略表里的 compute_type 删掉或改成 {fallback}；"
+                     f"精度是硬件能力，不参与模型对比")
+            key = (key[0], fallback)
+            if key in self.models:
+                self.order.remove(key)
+                self.order.append(key)
+                return self.models[key]
+            model = self.make_model(key[0], device, key[1])
         took = time.perf_counter() - started
         self.models[key] = model
         self.order.append(key)
+        self.compute_of[profile.get("strategy") or profile.get("model")] = key[1]
         self.loads.append({"key": key, "seconds": round(took, 2)})
         self.log(f"[识别] 模型就绪 {key[0]} / {key[1]}（{took:.1f}s）")
         return model
 
     def note(self, profile, strategy_name=""):
         """记一段的处理数（按策略名分组 —— 这就是 A/B 报告的分组口径）。"""
-        tag = f"{strategy_name or profile.get('strategy') or '?'} → {profile.get('model')}"
+        name = strategy_name or profile.get("strategy") or "?"
+        compute = self.compute_of.get(name) or profile.get("compute_type") or ""
+        tag = f"{name} → {profile.get('model')}" + (f"/{compute}" if compute else "")
         self.counts[tag] = self.counts.get(tag, 0) + 1
 
     def report(self):
@@ -2530,8 +2561,30 @@ def missing_model_advice(model):
     )
 
 
-def model_load_failure(model, error):
+def is_compute_type_error(error):
+    """这次加载失败是不是"精度不支持"（而不是"模型不存在"）。
+
+    <p>为什么必须分开：两类错误的**解法完全相反** —— 精度不支持要改 `--compute`（或表里的
+    `compute_type`），模型不存在要搬模型。混在一起报，用户会去搬一个本来就有的模型。
+    """
+    text = f"{type(error).__name__}: {error}".lower()
+    if "compute type" in text or "compute_type" in text or "float16" in text:
+        return True
+    return "not support" in text and ("half" in text or "precision" in text)
+
+
+def model_load_failure(model, error, compute_type=None):
     raw = f"{type(error).__name__}: {error}"
+    if is_compute_type_error(error):
+        return (
+            f"[whisper_stream] ✗ 加载模型 {model} 失败：这台设备跑不了 {compute_type or '这个'} 精度\n"
+            f"  {raw}\n"
+            "  这不是「模型没搬过来」：Pascal 架构（P40/P100，算力 6.1）没有 FP16 加速，\n"
+            "  ctranslate2 直接不提供 float16。改精度就能起来：\n"
+            "    ① 命令行：--compute int8_float32\n"
+            "    ② 如果精度来自**策略表**（asr-models.json 的 compute_type），把它删掉或改成 int8_float32\n"
+            "  查这台卡能跑哪些精度：python -c \"import ctranslate2;print(ctranslate2.get_supported_compute_types('cuda'))\""
+        )
     return (
         f"[whisper_stream] ✗ 加载模型 {model} 失败：{raw}\n"
         + missing_model_advice(model)
@@ -2576,7 +2629,18 @@ def main():
         "model": args.model, "compute_type": compute_type, "beam_size": args.beam_size,
     }, args.asr_table)
     startup_model = startup.get("model") or args.model
-    startup_compute = startup.get("compute_type") or compute_type
+    # ⚠️ 5.42：**表里的 precision 也要过硬件检查**。真实事故：表里抄了
+    # `"compute_type": "float16"`，而这台卡（Pascal，算力 6.1）根本不支持 FP16 ——
+    # 命令行明明给了 int8_float32，被表覆盖成 float16 之后启动即失败，
+    # 而报错还说"本地没有模型"（把精度问题说成模型问题，方向全错）。
+    # 现在的做法是：按命令行同样的规则把 precision 换成这台卡能跑的，并且**大声说明换过**。
+    startup_compute_raw = startup.get("compute_type") or compute_type
+    startup_compute, compute_note = resolve_compute_type(startup_compute_raw, args.device)
+    if compute_note:
+        source = startup.get("sources", {}).get("compute_type") or startup.get("source") or "配置"
+        print(f"[whisper_stream] {compute_note}"
+              f"（这个精度来自 {source}；策略表里的 compute_type 会覆盖命令行 --compute）",
+              file=sys.stderr)
     # 队列消费者要用同一组值当"命令行档案"，否则表里的 default 会被命令行旧值盖住
     args.startup_model = startup_model
     args.resolved_compute = startup_compute
@@ -2603,13 +2667,38 @@ def main():
     try:
         model = WhisperModel(startup_model, device=args.device, compute_type=startup_compute)
     except Exception as error:  # noqa: BLE001
-        # 真事故（搬迁服务器后）：模型不在本地缓存，于是 faster-whisper 去 HuggingFace 拉，
-        # 而新机器出网被掐 -> httpcore.RemoteProtocolError: Server disconnected without sending
-        # a response，一屏 traceback，看不出"其实是模型没搬过来"。
-        print(model_load_failure(startup_model, error), file=sys.stderr)
-        if os.environ.get("LEION_DEBUG") == "1":
-            raise
-        return 2
+        # 兜底一：**精度不支持**（硬件能力问题）→ 换一个这台设备能跑的再试一次，并说明。
+        # 这一条是被真实事故逼出来的：表里抄了 float16，卡是 Pascal（算力 6.1）不支持 FP16，
+        # 启动即失败；而旧报错说的是"本地没有模型"，把人引去搬模型（方向完全是错的）。
+        if is_compute_type_error(error):
+            fallback = "int8_float32" if args.device == "cuda" else "int8"
+            if fallback != startup_compute:
+                print(f"[whisper_stream] ⚠️ 这台设备跑不了 {startup_compute}"
+                      f"（{type(error).__name__}: {error}），改用 {fallback} 继续。\n"
+                      f"  这个精度来自 {startup.get('sources', {}).get('compute_type') or '配置'}；"
+                      f"请把策略表里的 compute_type 删掉或改成 {fallback}（精度是硬件能力，不参与模型对比）",
+                      file=sys.stderr)
+                startup_compute = fallback
+                args.resolved_compute = fallback
+                try:
+                    model = WhisperModel(startup_model, device=args.device, compute_type=startup_compute)
+                except Exception as retry_error:  # noqa: BLE001
+                    print(model_load_failure(startup_model, retry_error, startup_compute),
+                          file=sys.stderr)
+                    if os.environ.get("LEION_DEBUG") == "1":
+                        raise
+                    return 2
+            else:
+                print(model_load_failure(startup_model, error, startup_compute), file=sys.stderr)
+                return 2
+        else:
+            # 真事故（搬迁服务器后）：模型不在本地缓存，于是 faster-whisper 去 HuggingFace 拉，
+            # 而新机器出网被掐 -> httpcore.RemoteProtocolError: Server disconnected without sending
+            # a response，一屏 traceback，看不出"其实是模型没搬过来"。
+            print(model_load_failure(startup_model, error, startup_compute), file=sys.stderr)
+            if os.environ.get("LEION_DEBUG") == "1":
+                raise
+            return 2
     print("[whisper_stream] 模型就绪", file=sys.stderr)
 
     if args.self_check:

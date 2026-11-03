@@ -2472,6 +2472,44 @@ def main():
           str(meta))
     shutil.rmtree(queue_dir, ignore_errors=True)
 
+    heading("精度不是策略变量（5.42）：表里写了这台设备跑不了的精度要能自己纠正并说明")
+    # 真实事故：策略表里抄了 compute_type=float16，而服务器是 Pascal 卡（算力 6.1，无 FP16 加速），
+    # 命令行明明给了 --compute int8_float32 却被表覆盖 → 启动即失败，而旧报错说"本地没有模型"，
+    # 把人引去搬模型（方向完全错）。两条固化：① 错误要分类；② 加载失败要能自动换成能跑的精度。
+    check("认得出「精度不支持」这一类错误",
+          whisper_stream.is_compute_type_error(
+              ValueError("Requested float16 compute type, but the target device or backend "
+                         "do not support efficient float16 computation.")))
+    check("不会把「模型不存在」误判成精度问题",
+          not whisper_stream.is_compute_type_error(FileNotFoundError("no such model")))
+    compute_message = whisper_stream.model_load_failure(
+        "large-v3", ValueError("Requested float16 compute type"), "float16")
+    check("精度失败的提示指向 --compute / 表里的 compute_type（不是叫人搬模型）",
+          "--compute" in compute_message and "compute_type" in compute_message, compute_message[:120])
+    check("精度失败的提示要明说「这不是模型没搬过来」",
+          "不是" in compute_message and "模型没搬过来" in compute_message, compute_message[:200])
+
+    loaded_computes = []
+
+    class FakeModelForCompute:
+        def __init__(self, name, device=None, compute_type=None):
+            loaded_computes.append(compute_type)
+            if compute_type == "float16":
+                raise ValueError("Requested float16 compute type, but the target device "
+                                 "or backend do not support efficient float16 computation.")
+            self.compute = compute_type
+
+    fence_pool = whisper_stream.ModelPool(FakeModelForCompute, max_models=1, log=lambda _l: None)
+    fence_model = fence_pool.get({"model": "large-v3", "compute_type": "float16",
+                                  "strategy": "en-fast"}, device="cuda")
+    check("表里写了跑不了的精度 → 自动换成 int8_float32 继续（A/B 不能被硬件问题卡死）",
+          fence_model.compute == "int8_float32", str(loaded_computes))
+    check("确实先试了 float16（不是一开始就绕过用户配置）", loaded_computes[0] == "float16",
+          str(loaded_computes))
+    fence_pool.note({"model": "large-v3", "compute_type": "float16", "strategy": "en-fast"}, "en-fast")
+    check("分流报告里能看到**实际**用的精度（不是表里写的那个）",
+          "int8_float32" in fence_pool.report(), fence_pool.report())
+
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
     if failures:
         print("")
