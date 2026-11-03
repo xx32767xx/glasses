@@ -339,6 +339,40 @@ export async function runTtsSuite({ it, check }) {
       /optJSONObject\("asrModels"\)/.test(relaySrc))
   })
 
+  await it('5.43：翻译官页必须报 versionCode（否则"装的是最新版还被要求更新"）', async () => {
+    const { readFileSync } = await import('node:fs')
+    const interp = readFileSync(join(JAVA_SRC, 'InterpreterActivity.java'), 'utf-8')
+    const room = readFileSync(join(JAVA_SRC, 'RoomActivity.java'), 'utf-8')
+    // 真实问题：服务端门禁认纯数字 versionCode，不带这个参数一律判"版本过旧"→ 426。
+    // 房间页一直有这一行；翻译官页是后接的链路，漏了 → 用户装了 4.148 却被告知要升到 4.148。
+    check('翻译官页创建客户端时上报 versionCode',
+      /setAppVersionCode\(String\.valueOf\(UpdateGuard\.versionCode\(this\)\)\)/.test(interp))
+    check('房间页也上报（两处口径一致，别再各写一份）',
+      /setAppVersionCode\(String\.valueOf\(UpdateGuard\.versionCode\(this\)\)\)/.test(room))
+    check('上报的是**数字** versionCode，不是 versionName（4.9 vs 4.127 的坑）',
+      /UpdateGuard\.versionCode\(/.test(interp) && !/setAppVersionCode\(UpdateGuard\.versionName/.test(interp))
+  })
+
+  await it('翻译官页头部与「创建会议」一致（标题在左、返回胶囊在右、没有右上角小字）', async () => {
+    const { readFileSync } = await import('node:fs')
+    const layoutDir = join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout')
+    const interp = readFileSync(join(layoutDir, 'page_interpreter.xml'), 'utf-8')
+    const create = readFileSync(join(layoutDir, 'page_create_room.xml'), 'utf-8')
+    const backBlock = (xml) => (xml.match(/android:id="@\+id\/\w*[Bb]ack"[\s\S]{0,600}?\/>/) ?? [''])[0]
+    const mine = backBlock(interp)
+    check('返回是胶囊（tap_pill + common_back + touch_min 高度）',
+      /tap_pill/.test(mine) && /common_back/.test(mine) && /touch_min/.test(mine), mine.slice(0, 120))
+    check('与创建会议页同一形式（同一个 drawable、同一个文案键）',
+      /tap_pill/.test(create) && /common_back/.test(create))
+    check('右上角的后端小字已删除（徽标不占返回按钮的位置）', !/interpBackend/.test(interp))
+    check('页面代码里也不再引用那个徽标', !/R\.id\.interpBackend/.test(
+      readFileSync(join(JAVA_SRC, 'InterpreterActivity.java'), 'utf-8')))
+    // 删掉了徽标，但"这一路走的什么"仍要能看见 —— 配置块里的摘要那行不能一起删
+    check('摘要行还在（删徽标 ≠ 让页面不再说走哪条路）',
+      /interpWhere/.test(interp) && /interp_where/.test(
+        readFileSync(join(JAVA_SRC, 'InterpreterActivity.java'), 'utf-8')))
+  })
+
   await it('错误码注册表：加码只改三处，漏一处自动红（不用改测试）', async () => {
     const { readFileSync } = await import('node:fs')
     const registryPath = join(JAVA_SRC, 'InterpreterErrorCodes.java')
@@ -419,8 +453,13 @@ export async function runTtsSuite({ it, check }) {
       /target\.onPartial\(id, sentence\.substring/.test(scripted))
     check('三套剧本（中/葡/英）', /startsWith\("pt"\)/.test(scripted) && /startsWith\("en"\)/.test(scripted))
 
-    // ③ 页面：明写后端是什么，不许"看着能用其实没接"
-    check('页面有后端徽标', /interpBackend/.test(layout) && /interp_backend_scripted/.test(layout))
+    // ③ 页面：明写"这一路走的什么"，不许"看着能用其实没接"
+    // 5.43：用户要求删掉右上角的后端小字（位置留给返回胶囊），所以这条不再检查徽标，
+    // 而是检查"这件事还有没有别处说清" —— 摘要行（interpWhere）+ 状态行文案。
+    check('页面仍写明走哪条路（摘要行 + 后端名走资源）',
+      /interpWhere/.test(layout) && /interp_backend_relay/.test(layout === null ? '' : readFileSync(
+        join(ROOT, 'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml'), 'utf-8')))
+    check('右上角的后端小字已按用户要求删除', !/interpBackend/.test(layout))
     check('状态行说清"目前是演示回放"', /尚未接入真实识别/.test(readFileSync(join(ROOT,
       'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml'), 'utf-8')))
     check('页面同 id 原位更新（同一句只占一张卡）', /cardIds\.indexOf\(id\)/.test(activity))

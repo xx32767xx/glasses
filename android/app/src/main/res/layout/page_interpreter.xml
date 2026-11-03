@@ -20,7 +20,7 @@
     android:background="@color/page"
     android:orientation="vertical">
 
-    <!-- 标题栏 -->
+    <!-- 标题 + 返回（与「创建会议」页同一形式：标题在左占满、返回是右侧的胶囊） -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -29,19 +29,8 @@
         android:padding="@dimen/space_page">
 
         <TextView
-            android:id="@+id/interpBack"
-            android:layout_width="@dimen/touch_min"
-            android:layout_height="@dimen/touch_min"
-            android:background="@drawable/tap_btn_secondary"
-            android:gravity="center"
-            android:text="@string/interp_back"
-            android:textColor="@color/ink_soft"
-            android:textSize="@dimen/text_secondary" />
-
-        <TextView
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginStart="@dimen/space_gap"
             android:layout_weight="1"
             android:text="@string/card_interp_title"
             android:textColor="@color/ink"
@@ -49,17 +38,18 @@
             android:textStyle="bold" />
 
         <TextView
-            android:id="@+id/interpBackend"
+            android:id="@+id/interpBack"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:background="@drawable/bg_chip"
-            android:paddingStart="@dimen/space_gap_small"
-            android:paddingTop="@dimen/space_gap_tiny"
-            android:paddingEnd="@dimen/space_gap_small"
-            android:paddingBottom="@dimen/space_gap_tiny"
-            android:text="@string/interp_backend_scripted"
+            android:layout_height="@dimen/touch_min"
+            android:background="@drawable/tap_pill"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:paddingStart="@dimen/space_gap"
+            android:paddingEnd="@dimen/space_gap"
+            android:text="@string/common_back"
             android:textColor="@color/ink_soft"
-            android:textSize="@dimen/text_caption" />
+            android:textSize="@dimen/text_body" />
     </LinearLayout>
 
     <!-- 三块切换（配置 / 收听 / 历史）：同一页里的三段，不新开页面 -->

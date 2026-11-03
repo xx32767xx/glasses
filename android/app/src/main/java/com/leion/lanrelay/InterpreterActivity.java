@@ -674,6 +674,11 @@ public class InterpreterActivity extends android.app.Activity {
         LanClient built = new LanClient(host, secret, listener);
         String token = prefs.getString("accountToken", "");
         if (token != null && !token.isEmpty()) built.setToken(token);
+        // ⚠️ 5.43 修的真实问题：这里**必须**把自己这一版的 versionCode 报上去。
+        // 服务端的强制更新门禁认的是纯数字 versionCode；不带这个参数会被判成"版本过旧"
+        // 直接 426 —— 于是"我明明装的是 4.148，却被要求更新到 4.148"。
+        // （房间页一直有这一行，翻译官页是后来接的，漏了。）
+        built.setAppVersionCode(String.valueOf(UpdateGuard.versionCode(this)));
         return built;
     }
 
@@ -712,17 +717,6 @@ public class InterpreterActivity extends android.app.Activity {
             metaView.setText(getString(R.string.interp_meta_plain, langText(lang), langText(partner)));
         }
         if (ttsSwitch != null && TtsFeature.enabled()) ttsSwitch.setChecked(ttsOn);
-        AsrRouter.Resolution picked = router == null ? null : router.resolve(partner);
-        TextView badge = findViewById(R.id.interpBackend);
-        if (badge != null) {
-            if (picked != null && picked.ok()) {
-                badge.setText(backendText(picked.backend));
-                badge.setVisibility(View.VISIBLE);
-            } else {
-                badge.setText(getString(R.string.interp_no_backend));
-                badge.setVisibility(View.VISIBLE);
-            }
-        }
     }
 
     /**

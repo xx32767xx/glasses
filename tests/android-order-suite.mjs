@@ -1853,7 +1853,14 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('入口指向翻译官页', /InterpreterActivity\.class/.test(java))
     const interpLayout = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout',
       'page_interpreter.xml'), 'utf-8')
-    check('翻译官页写明后端（演示回放）', /interp_backend_scripted/.test(interpLayout))
+    // 5.43：用户要求删掉右上角的后端小字（徽标位置让给返回胶囊）。
+    // 但"这一路走的什么"这件事**不能跟着一起消失** —— 现在由配置块里的摘要行承担：
+    // 有服务器地址时说"识别与翻译都在服务器上跑"，没填地址时说"演示回放（不是真翻译）"。
+    const interpJava = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java',
+      'com', 'leion', 'lanrelay', 'InterpreterActivity.java'), 'utf-8')
+    check('翻译官页仍写明走哪条路（摘要行，不再靠右上角徽标）',
+      /interpWhere/.test(interpLayout) && /interp_where/.test(interpJava)
+      && /backendText\(picked\.backend\)/.test(interpJava))
 
     // 已支持语言：中文 / 巴西葡萄牙语 / 扩展提示
     const supported = home.slice(home.indexOf('home_supported_title'), home.indexOf('@+id/homeLegacy'))
