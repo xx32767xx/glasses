@@ -551,9 +551,11 @@ def run_segment_producer_dir(args, np):
                               strategy=state["strategy"]["strategy"])
         produced += 1
         # 每一句都把策略名打出来（用户要求：便于对照与调节）
+        # 5.52：尾巴裁掉多少也带上 —— 它紧贴最后一个音节，是"句尾缺一截"的头号嫌疑
+        trim = getattr(state["segmenter"], "last_tail_trim_ms", 0)
         print(f"[切句] {args.tag or '?'} {name} → {base}"
               f"（{len(utterance) / args.samplerate:.1f}s，策略 {state['strategy']['strategy']}，"
-              f"累计 {produced} 段）",
+              f"尾部静音裁掉 {trim}ms，累计 {produced} 段）",
               file=sys.stderr, flush=True)
 
     def report(name, state):
@@ -1540,6 +1542,9 @@ class UtteranceSegmenter:
         self.speaking = False
         self.voiced = 0          # 本句里"确实超过门槛"的块数（前导缓存不算，见 _take）
         self.cut_count = 0       # 因为到上限而断句的次数（供统计与诊断）
+        # 5.52：上一段收句时**尾部静音裁掉了多少毫秒**（0 = 没裁）。日志用它解释
+        # "为什么句尾那个词少了一截"——裁掉的尾巴紧贴最后一个音节。
+        self.last_tail_trim_ms = 0
         # ── 被丢弃的短碎片（只记录位置与长度，**不改变任何行为**）──────────────
         # 为什么要能取出来：`--silence-ms` 从 500 提到 800 的收益里，有一大块来自
         # "碎片不再被丢"，但 `覆盖率` 这个数**说不清丢的到底是静音还是真话**
@@ -1680,11 +1685,19 @@ class UtteranceSegmenter:
             # 记下这次丢掉的区间（只记录，不改变行为）——见 __init__ 里 dropped_runs 的说明
             length = sum(int(block.size) for block in blocks) if blocks else 0
             end = self.fed_samples
-            self.dropped_runs.append({
+            run = {
                 "start": round((end - length) / float(self.samplerate), 3),
                 "end": round(end / float(self.samplerate), 3),
                 "voicedMs": round(self.block_ms * voiced, 1),
-            })
+            }
+            self.dropped_runs.append(run)
+            # 5.52：**丢东西必须说出来**。以前这里只进内存列表，日志里一个字都没有 ——
+            # 于是"某些音节被删掉了"这种问题只能靠猜（用户实测报过：academic → Islamic）。
+            # 一行一条，带位置（秒）和语音时长，能直接和录音对上。
+            print(f"[切句] ⚠️ 丢掉一段碎片：{run['start']:.1f}s–{run['end']:.1f}s "
+                  f"（语音只有 {run['voicedMs']:.0f}ms < min-speech {self.min_blocks * self.block_ms}ms）"
+                  f"—— 如果那里其实是说话，这就是**被吃掉的音节**",
+                  file=sys.stderr, flush=True)
             return None
         return self.np.concatenate(blocks)
 
@@ -1783,6 +1796,11 @@ class UtteranceSegmenter:
         # 爆音会被算成 0.35 秒的"一句话"送进识别 —— 白算一次，还容易诱发幻听。
         if tail > 0:
             blocks = blocks[:len(blocks) - tail]
+        # 5.52：把"裁掉多少尾巴静音"记下来，交给上层打日志。
+        # 为什么重要：这个裁剪**紧贴最后一个音节**，如果最后一个音节偏轻（被算成静音块），
+        # 它就会被一起削掉 —— 表现是"句尾那个词少了一截"，比如 meeting → meetin。
+        # 以前这个数完全不可见，用户只能凭"好像少了点"去猜。
+        self.last_tail_trim_ms = tail * self.block_ms
         return self._release(blocks, voiced)
 
     def flush(self):
@@ -1796,10 +1814,12 @@ class UtteranceSegmenter:
             self.speaking = False
             self.silent_run = 0
             self.voiced = 0
+            self.last_tail_trim_ms = tail * self.block_ms
             return self._release(blocks, voiced)
         self.buffer = []
         self.speaking = False
         self.voiced = 0
+        self.last_tail_trim_ms = 0
         return None
 
 
@@ -1831,11 +1851,19 @@ def silence_skip_reason(audio, threshold=SILENCE_SKIP_RMS) -> str | None:
     """明显不是人声就返回丢弃原因（None = 照常解码）。
 
     单独成函数是为了能被测试直接钉住：这个闸判错一次，要么吃真字幕、要么放幻听进来。
+
+    <p>5.52：**接近门槛时要说清楚**。电平在 threshold 的一半以上、又没过线，
+    往往是"话说得很轻"而不是"没有声音"。以前一律报"近乎静音"，人就会去查麦克风，
+    而真正该做的是把 `--silence-skip-level` 调低一点。
     """
     if audio is None or len(audio) == 0:
         return "空音频"
     level = rms_of(audio)
     if level < threshold:
+        if level >= threshold * 0.5:
+            return (f"电平偏低（原始 {level:.4f}，门槛 {threshold}）→ 按静音丢弃。"
+                    f"⚠️ 这不是「没有声音」：如果这段确实在说话，把 --silence-skip-level 调到 "
+                    f"{max(0.004, round(level * 0.8, 4))} 左右就能救回这一句")
         return (f"近乎静音（原始电平 {level:.4f} < {threshold}）"
                 f"→ 解码前丢弃：不花识别时间，也不给幻听机会")
     return None

@@ -2586,6 +2586,51 @@ def main():
         check("段里带这一路的语种", produced_meta.get("lang") == "en", str(produced_meta))
     shutil.rmtree(sim_dir, ignore_errors=True)
 
+    heading("丢掉音节时必须说话（5.52 诊断：用户报「academic 被识别成 Islamic」）")
+    # 这句错法的机制：词的**前半截**被切走 / 被当成静音，模型只看到 "-demic" 这种残片，
+    # 于是补成另一个以 -ic 结尾的常见词。以前这类丢失**日志里一个字都没有**（只在内存里记账），
+    # 所以用户只能凭"好像少了点"去猜。这一节钉住三条可见性。
+    import io as _io
+    import contextlib as _contextlib
+
+    drop_seg = whisper_stream.UtteranceSegmenter(16000, 100, 800, 500, 30000, 0.01, 250, np)
+    drop_log = _io.StringIO()
+    with _contextlib.redirect_stderr(drop_log):
+        for _ in range(30):
+            drop_seg.push(np.zeros(1600, dtype=np.float32) + 0.0005)
+        for _ in range(4):                     # 400ms 语音：不到 min-speech(500ms)
+            drop_seg.push(np.full(1600, 0.2, dtype=np.float32))
+        for _ in range(15):                    # 长静音 → 收句 → 这段会被丢
+            drop_seg.push(np.zeros(1600, dtype=np.float32) + 0.0005)
+    drop_text = drop_log.getvalue()
+    check("被丢的碎片会打日志（不再静默）", "丢掉一段碎片" in drop_text, drop_text[:120])
+    check("日志带位置（秒），能直接和录音对上", "s–" in drop_text, drop_text[:120])
+    check("日志说明原因（语音时长 < min-speech）", "min-speech" in drop_text, drop_text[:160])
+    check("记账里也确实有这一条（位置与语音时长）",
+          bool(drop_seg.dropped_runs) and drop_seg.dropped_runs[-1]["voicedMs"] > 0,
+          str(drop_seg.dropped_runs))
+
+    trim_seg = whisper_stream.UtteranceSegmenter(16000, 100, 800, 500, 30000, 0.01, 250, np)
+    for _ in range(30):
+        trim_seg.push(np.zeros(1600, dtype=np.float32) + 0.0005)
+    for _ in range(20):
+        trim_seg.push(np.full(1600, 0.2, dtype=np.float32))
+    trimmed = []
+    for _ in range(20):
+        trimmed.extend(trim_seg.push(np.zeros(1600, dtype=np.float32) + 0.0005))
+    check("收句时记录「尾部静音裁掉多少毫秒」（它是句尾缺一截的嫌疑）",
+          len(trimmed) == 1 and trim_seg.last_tail_trim_ms > 0,
+          f"段数={len(trimmed)} trim={trim_seg.last_tail_trim_ms}ms")
+
+    near = (np.random.default_rng(0).normal(0, 0.012, 16000)).astype(np.float32)
+    near_reason = whisper_stream.silence_skip_reason(near)
+    check("电平接近门槛时提示「可能是说得轻」并给出能救回来的阈值",
+          "电平偏低" in near_reason and "--silence-skip-level" in near_reason, near_reason[:120])
+    quiet = (np.random.default_rng(1).normal(0, 0.001, 16000)).astype(np.float32)
+    check("真的没声音时仍按静音丢弃（不多嘴）",
+          "近乎静音" in whisper_stream.silence_skip_reason(quiet),
+          whisper_stream.silence_skip_reason(quiet)[:80])
+
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
     if failures:
         print("")
