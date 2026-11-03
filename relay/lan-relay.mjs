@@ -702,6 +702,15 @@ export async function startRelay(rawOptions = {}) {
     lastFrame: null,
     /** 按房间存的帧（4.74）：多场会并发时互不覆盖。roomId -> {seq, frame} */
     framesByRoom: new Map(),
+    /**
+     * 5.53：按 **(房间, 译文语言)** 分别保留最新帧。
+     *
+     * <p>为什么需要：一个人可能同时看两种译文（我说葡语，但英文和中文都想看），
+     * 大脑会为同一句产出两份帧。传统 `framesByRoom` 每房间只留"最新一帧"，
+     * 两份会互相覆盖 —— 用户勾了两种，却只看到随机的一种，而且**不报错**。
+     * 所以这里按语言各存一份，`/frame?...&langs=a,b` 一次取回多种。
+     */
+    framesByRoomLang: new Map(),
     /** 每个房间自己的序号（手机只关心自己那条流）。 */
     seqByRoom: new Map(),
     /** 最近一次往哪个房间上传了音频（归属的重要线索）。 */
@@ -930,6 +939,27 @@ export async function startRelay(rawOptions = {}) {
   }
 
   /**
+   * 这个房间里"每个人**想读**哪些语言"（5.53）。
+   *
+   * <p>与 {@link roomLangsByUser}（每个人**说什么**语言）分开：
+   * 说一种、想看多种是真实需求。`langs` 取所有人的并集 —— 大脑据此决定"这一句要译成几种"。
+   */
+  function roomHearLangsByUser(roomId) {
+    const map = new Map()
+    try {
+      for (const member of listMembers(options.dataDir, roomId)) {
+        const langs = Array.isArray(member.hearLangs) ? member.hearLangs : []
+        const speak = String(member.lang ?? '').trim()
+        const merged = langs.length > 0 ? langs : (speak === '' ? [] : [speak])
+        if (merged.length > 0) map.set(String(member.username), merged)
+      }
+    } catch (error) {
+      debug(`[语言] 读成员"想读的语言"失败（不影响字幕）：${error?.message ?? error}`)
+    }
+    return map
+  }
+
+  /**
    * 把"这个房间的语言集合"写给这场会的大脑 + 同步给 WS 连接（5.00）。
    *
    * <p>为什么要落文件：大脑是**另一个进程**（harness-side），只能靠文件/侧车知道会议状态
@@ -937,18 +967,30 @@ export async function startRelay(rawOptions = {}) {
    * 避免每秒一次无谓的写盘。
    */
   function publishRoomLangs(roomId) {
+    // 5.53：`langs` = 所有人**想读**的语言的并集（大脑据此决定一句要译成几种）；
+    // `byUser` 仍是"每个人说什么语言"（大脑判断源语言时用），`hearByUser` 是"每个人想读什么"。
+    // 老成员没有 hear_lang 时，listMembers 已经回退成"只有他自己那门"，所以这里不用再兜底。
     const byUser = roomLangsByUser(roomId)
-    const langs = [...new Set([...byUser.values()])].sort()
-    const key = langs.join('|')
+    const hearByUser = roomHearLangsByUser(roomId)
+    const heard = new Set()
+    for (const list of hearByUser.values()) for (const one of list) heard.add(one)
+    // 兼容：老数据里 hear 为空但 lang 有值的成员（listMembers 已回退，这里再兜一次底）
+    if (heard.size === 0) for (const one of byUser.values()) heard.add(one)
+    const langs = [...heard].sort()
+    const key = `${langs.join('|')}#${[...hearByUser.entries()].map(([u, l]) => `${u}:${l.join(',')}`).join(';')}`
     if (state.roomLangsSent.get(roomId) !== key) {
       state.roomLangsSent.set(roomId, key)
       const file = join(options.dataDir, 'room-langs', `${String(roomId).replace(/[^A-Za-z0-9_-]/g, '_')}.json`)
       void mkdir(dirname(file), { recursive: true })
         .then(() => writeFile(file, JSON.stringify({
-          roomId, langs, byUser: Object.fromEntries(byUser), at: Date.now(),
+          roomId, langs, byUser: Object.fromEntries(byUser),
+          hearByUser: Object.fromEntries(hearByUser), at: Date.now(),
         }), 'utf-8'))
         .catch((error) => debug(`[语言] 写侧车失败（不影响字幕）：${error?.message ?? error}`))
-      debug(`[语言] ${roomId} 的听者语言：${langs.length === 0 ? '（还没登记）' : langs.join(' / ')}`)
+      debug(`[语言] ${roomId} 的听者语言：${langs.length === 0 ? '（还没登记）' : langs.join(' / ')}`
+        + (hearByUser.size > 0
+          ? `（${[...hearByUser.entries()].map(([u, l]) => `${u}→${l.join('+')}`).join('，')}）`
+          : ''))
     }
     if (wsHub !== null) {
       try { wsHub.applyRoomLangs(roomId, byUser) } catch { /* 没有连接就算了 */ }
@@ -995,6 +1037,16 @@ export async function startRelay(rawOptions = {}) {
       const roomSeq = (state.seqByRoom.get(attribution.roomId) ?? 0) + 1
       state.seqByRoom.set(attribution.roomId, roomSeq)
       state.framesByRoom.set(attribution.roomId, { seq: roomSeq, frame })
+      // 5.53：同一句可能有两种译文（不同 lang），按语言各存一份最新的
+      const frameLang = String(frame.lang ?? '').trim()
+      if (frameLang !== '') {
+        let perLang = state.framesByRoomLang.get(attribution.roomId)
+        if (perLang === undefined) {
+          perLang = new Map()
+          state.framesByRoomLang.set(attribution.roomId, perLang)
+        }
+        perLang.set(frameLang, { seq: roomSeq, frame })
+      }
     }
     // 调试：字幕总线一变就报一行 —— 手机应该马上能看到这一帧。
     // **一定要标出"增量还是定稿"**，否则"眼镜上显示 Ol…"这类问题无从追查。
@@ -2086,6 +2138,13 @@ export async function startRelay(rawOptions = {}) {
         // 4.74：?room=<id> 只取那个房间的帧（多场会并发时互不覆盖）。
         // 不带 room 参数时行为不变（旧 APK 照样能用）。
         const roomParam = String(url.searchParams.get('room') ?? '').trim()
+        // 5.53：手机可以报"我要看哪几种语言"（`&langs=zh-CN,en-US`）。
+        // 给了就按语言各取一份最新帧（`frames` 数组）；没给就还是老行为（单帧）。
+        const langsParam = String(url.searchParams.get('langs') ?? '').trim()
+        const wantedLangs = langsParam === ''
+          ? []
+          : [...new Set(langsParam.split(/[,;\s]+/).map((one) => one.trim())
+            .filter((one) => LANGS.includes(one)))]
         const roomFrame = roomParam === '' ? null : state.framesByRoom.get(roomParam)
         const roomSeq = roomParam === '' ? 0 : (state.seqByRoom.get(roomParam) ?? 0)
         const since = Number(url.searchParams.get('since') ?? '0')
@@ -2105,6 +2164,23 @@ export async function startRelay(rawOptions = {}) {
         // 分房间时用该房间自己的序号与帧；没带 room 参数就还是全局那一套
         const curSeq = roomParam === '' ? state.seq : roomSeq
         const curFrame = roomParam === '' ? state.lastFrame : (roomFrame === undefined ? null : roomFrame.frame)
+        /**
+         * 5.53：按"我要看的语言"取出每一门的最新帧。
+         *
+         * <p>没带 `langs` 时返回空数组（老行为：只看单帧）。带了就按语言挑 —— 同一句的
+         * 两种译文都会回给手机，而不是只剩最后到的那一份。
+         */
+        const pickLangs = (roomId) => {
+          if (wantedLangs.length === 0 || roomId === '') return []
+          const perLang = state.framesByRoomLang.get(roomId)
+          if (perLang === undefined) return []
+          const out = []
+          for (const one of wantedLangs) {
+            const hit = perLang.get(one)
+            if (hit !== undefined) out.push({ lang: one, frame: hit.frame })
+          }
+          return out
+        }
         if (since > curSeq) {
           // 4.81：这条日志以前会一秒刷几十行。限流到 3 秒一条，并顺手做自保 ——
           // 如果同一个 since 在一秒内被问了几十次，说明客户端在死循环（旧版客户端就是），
@@ -2127,6 +2203,7 @@ export async function startRelay(rawOptions = {}) {
             changed: curFrame !== null,
             seq: curSeq,
             frame: curFrame,
+            frames: pickLangs(roomParam),
           }))
           return
         }
@@ -2134,6 +2211,7 @@ export async function startRelay(rawOptions = {}) {
           debug(`➡ 手机取字幕（since=${since}），立即给第 ${curSeq} 帧`)
           send(response, 200, framePayload(info(), {
             ok: true, changed: true, seq: curSeq, frame: curFrame,
+            frames: pickLangs(roomParam),
           }))
           return
         }
@@ -2159,6 +2237,8 @@ export async function startRelay(rawOptions = {}) {
             changed: changed && liveFrame !== null,
             seq: liveSeq,
             frame: changed ? liveFrame : null,
+            // 5.53：唤醒时也要按语言各给一份（否则多语言用户只会收到"最后到的那一份"）
+            frames: changed ? pickLangs(roomParam) : [],
           }))
         }
         const timer = setTimeout(() => { settle(false) }, options.pollHoldMs)

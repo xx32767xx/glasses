@@ -473,6 +473,73 @@ export async function runRelaySuite({ it, check, assert }) {
     }
   })
 
+  await it('5.53：一个人看两种译文时，两种都要能取到（不是只剩最后一份）', async () => {
+    // 真实风险：房间维度只留"最新一帧"，同一句的两种译文会互相覆盖 ——
+    // 用户勾了两种语言，却只看到随机一种，而且**不报错**。
+    const dir = mkdtempSync(join(tmpdir(), 'multilang-'))
+    const secret = 's3cret-0123456789abcdef'
+    const buses = join(dir, 'buses')
+    await mkdir(buses, { recursive: true })
+    const relay = await startRelay({
+      dataDir: dir, port: 0, host: '127.0.0.1', secret, quiet: true, bus: buses, pollHoldMs: 200,
+    })
+    try {
+      const base = `http://127.0.0.1:${relay.port}`
+      const headers = { 'X-Leion-Secret': secret }
+      const room = createRoom(dir, { name: '双语文', host: 'alice', lang: 'pt-BR' })
+      joinRoom(dir, { roomId: room.room.id, username: 'alice', lang: 'pt-BR', hearLangs: 'pt-BR,zh-CN' })
+      const busFile = join(buses, `${room.room.id}.json`)
+      const say = (lang, text) => writeFile(busFile, JSON.stringify({
+        device: 'Leion Pro', cols: 40, lines: 3, speaker: 'them', lang, partial: false,
+        text, lines: [text], source: 'Bom dia', sourceLang: 'pt-BR',
+      }), 'utf-8')
+
+      // 同一句的两种译文：中文先到、英文后到
+      await say('zh-CN', '早上好')
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      await say('en-US', 'Good morning')
+      await new Promise((resolve) => setTimeout(resolve, 300))
+
+      const plain = await (await fetch(`${base}/frame?since=0&room=${encodeURIComponent(room.room.id)}`,
+        { headers })).json()
+      check('不带 langs 时仍是单帧（老客户端不变）',
+        plain.frame !== null && Array.isArray(plain.frames) === false || (plain.frames ?? []).length === 0,
+        JSON.stringify(plain.frames))
+
+      const multi = await (await fetch(
+        `${base}/frame?since=0&room=${encodeURIComponent(room.room.id)}&langs=zh-CN,en-US`,
+        { headers })).json()
+      const got = Array.isArray(multi.frames) ? multi.frames : []
+      check('两种语言都取到了（不是只剩最后一份）', got.length === 2,
+        JSON.stringify(got.map((one) => one.lang)))
+      check('中文那份还在（没被英文覆盖）',
+        got.some((one) => one.lang === 'zh-CN' && String(one.frame.text).includes('早上好')),
+        JSON.stringify(got.map((one) => one.lang)))
+      check('英文那份也在',
+        got.some((one) => one.lang === 'en-US' && String(one.frame.text).includes('Good morning')),
+        JSON.stringify(got.map((one) => one.lang)))
+      check('只要求一种时只回一种', (await (await fetch(
+        `${base}/frame?since=0&room=${encodeURIComponent(room.room.id)}&langs=zh-CN`,
+        { headers })).json()).frames.length === 1)
+      check('要了没有的语言时不给假帧（空数组）', (await (await fetch(
+        `${base}/frame?since=0&room=${encodeURIComponent(room.room.id)}&langs=xx-YY`,
+        { headers })).json()).frames.length === 0)
+
+      // 侧车：langs 是"想读"的并集，byUser 仍是"说什么"
+      const sidecar = JSON.parse(readFileSync(join(dir, 'room-langs', `${room.room.id}.json`), 'utf-8'))
+      check('侧车 langs 含两种想读的语言',
+        Array.isArray(sidecar.langs) && sidecar.langs.includes('zh-CN') && sidecar.langs.includes('pt-BR'),
+        JSON.stringify(sidecar.langs))
+      check('侧车 byUser 记的是"他说什么语言"', sidecar.byUser.alice === 'pt-BR', JSON.stringify(sidecar.byUser))
+      check('侧车 hearByUser 记的是"他想读什么"',
+        Array.isArray(sidecar.hearByUser?.alice) && sidecar.hearByUser.alice.includes('zh-CN'),
+        JSON.stringify(sidecar.hearByUser))
+    } finally {
+      relay.close?.()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   await it('5.24：上传没带语种时用**本人登记的语言**（不再写死葡语）', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'roomlang-'))
     const secret = 's3cret-0123456789abcdef'

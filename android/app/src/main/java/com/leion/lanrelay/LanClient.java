@@ -91,6 +91,8 @@ public class LanClient {
      */
     /** 当前房间（空 = 不限定，与旧版行为一致）（4.74） */
     private volatile String roomId = "";
+    /** 我要看哪几种语言的译文（逗号分隔；空 = 不指定，看单帧的老行为）（5.53） */
+    private volatile String hearLangs = "";
     /** 上传音频时随请求自报的发言人（4.96，见 setSpeaker）。 */
     private volatile String speakerName = "";
     private volatile String user = "";
@@ -152,6 +154,18 @@ public class LanClient {
      * <p>带上之后，{@code /frame?room=} 只返回这个房间的字幕；
      * 多场会并发时就不会互相覆盖（不带时行为与旧版一致）。
      */
+    /**
+     * 告诉轮询"我要看哪几种语言的译文"（5.53）。
+     *
+     * <p>为什么需要：一个人可能同时看两种译文（我说葡语，英文和中文都想看）。
+     * 服务端会按语言各存一份最新帧，带上这个参数就能一次取回多种；不带 = 老行为（单帧）。
+     *
+     * @param langs 逗号分隔的语种标签（`zh-CN,en-US`）；空串 = 不指定
+     */
+    public void setHearLangs(String langs) {
+        this.hearLangs = langs == null ? "" : langs.trim();
+    }
+
     public void setRoom(String roomId) {
         this.roomId = roomId == null ? "" : roomId.trim();
     }
@@ -797,7 +811,9 @@ public class LanClient {
         while (running) {
             try {
                 String frameUrl = "/frame?since=" + seq
-                        + (roomId.isEmpty() ? "" : "&room=" + java.net.URLEncoder.encode(roomId, "UTF-8"));
+                        + (roomId.isEmpty() ? "" : "&room=" + java.net.URLEncoder.encode(roomId, "UTF-8"))
+                        + (hearLangs.isEmpty() ? ""
+                            : "&langs=" + java.net.URLEncoder.encode(hearLangs, "UTF-8"));
                 JSONObject response = request(frameUrl, "GET", null, 35000);
                 long serverSeq = response.optLong("seq", seq);
                 // 序号重置（转发进程重启过）：把本地序号拉回服务端的值。
@@ -815,38 +831,23 @@ public class LanClient {
                 }
                 if (response.optBoolean("changed", false)) {
                     seq = serverSeq;
+                    // 5.53：带了 `langs` 时服务端会把**每种语言各一份**帧放在 `frames` 里；
+                    // 老行为（单帧）仍然走 `frame`。两者都投一遍 —— 同一句的两种译文
+                    // 都要上屏，而不是只剩最后到的那一份。
+                    JSONArray multi = response.optJSONArray("frames");
+                    boolean deliveredMulti = false;
+                    if (multi != null) {
+                        for (int i = 0; i < multi.length(); i++) {
+                            JSONObject entry = multi.optJSONObject(i);
+                            JSONObject one = entry == null ? null : entry.optJSONObject("frame");
+                            if (one == null) continue;
+                            deliverFrame(one);
+                            deliveredMulti = true;
+                        }
+                    }
                     JSONObject frame = response.optJSONObject("frame");
-                    if (frame != null) {
-                        JSONArray lines = frame.optJSONArray("lines");
-                        int count = lines == null ? 0 : lines.length();
-                        String[] out = new String[count];
-                        for (int i = 0; i < count; i++) {
-                            out[i] = lines.optString(i, "");
-                        }
-                        // 热词观测（docs/15 §17）：本句"提到了表内名字、但译文没写出规范写法"的条目。
-                        // 电脑侧只给中文名（zh），提示文案由手机拼 —— 这样文案改起来不用改电脑。
-                        JSONArray miss = frame.optJSONArray("termsMiss");
-                        String[] missing = new String[miss == null ? 0 : miss.length()];
-                        for (int i = 0; i < missing.length; i++) {
-                            JSONObject item = miss.optJSONObject(i);
-                            missing[i] = item == null ? "" : item.optString("zh", "");
-                        }
-                        listener.onFrame(
-                                frame.optString("speaker", "them"),
-                                frame.optString("lang", "?"),
-                                out,
-                                frame.optString("text", ""),
-                                frame.optString("source", ""),
-                                frame.optString("sourceLang", "unknown"),
-                                frame.optBoolean("partial", false),
-                                missing,
-                                // 4.96：`speakerName` 可能是"没有这个字段"（服务端认不出谁在说）。
-                                // ⚠️ 不能直接用 optString：安卓的 org.json 在值是 JSON null 时
-                                // 会返回字符串 "null"，界面上就会出现一个叫 null 的发言人。
-                                speakerNameOf(frame),
-                                // 5.12：`notice` = 这一帧附带的一句提示（例如"本场语言相同"）。
-                                // 同样要防 JSON null（optString 会给出 "null"）。
-                                noticeOf(frame));
+                    if (frame != null && !deliveredMulti) {
+                        deliverFrame(frame);
                     }
                 }
             } catch (Exception error) {
@@ -861,6 +862,40 @@ public class LanClient {
                 }
             }
         }
+    }
+
+    /** 一帧 → 回调（5.53 抽出来，单帧与多语言帧共用同一份解析）。 */
+    private void deliverFrame(JSONObject frame) {
+        JSONArray lines = frame.optJSONArray("lines");
+        int count = lines == null ? 0 : lines.length();
+        String[] out = new String[count];
+        for (int i = 0; i < count; i++) {
+            out[i] = lines.optString(i, "");
+        }
+        // 热词观测（docs/15 §17）：本句"提到了表内名字、但译文没写出规范写法"的条目。
+        // 电脑侧只给中文名（zh），提示文案由手机拼 —— 这样文案改起来不用改电脑。
+        JSONArray miss = frame.optJSONArray("termsMiss");
+        String[] missing = new String[miss == null ? 0 : miss.length()];
+        for (int i = 0; i < missing.length; i++) {
+            JSONObject item = miss.optJSONObject(i);
+            missing[i] = item == null ? "" : item.optString("zh", "");
+        }
+        listener.onFrame(
+                frame.optString("speaker", "them"),
+                frame.optString("lang", "?"),
+                out,
+                frame.optString("text", ""),
+                frame.optString("source", ""),
+                frame.optString("sourceLang", "unknown"),
+                frame.optBoolean("partial", false),
+                missing,
+                // 4.96：`speakerName` 可能是"没有这个字段"（服务端认不出谁在说）。
+                // ⚠️ 不能直接用 optString：安卓的 org.json 在值是 JSON null 时
+                // 会返回字符串 "null"，界面上就会出现一个叫 null 的发言人。
+                speakerNameOf(frame),
+                // 5.12：`notice` = 这一帧附带的一句提示（例如"本场语言相同"）。
+                // 同样要防 JSON null（optString 会给出 "null"）。
+                noticeOf(frame));
     }
 
     /** 一次请求。非 2xx 一律抛异常（把服务端的错误正文带出来，便于排查）。 */

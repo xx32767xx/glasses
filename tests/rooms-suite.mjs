@@ -2,7 +2,7 @@
 import { mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AUDIO_ROOM_TTL_MS, closeRoomByAdmin, createInterpreterSession, createRoom, interpreterPartnerLang, isRoomClosed, joinRoom, leaveRoom, listHistory, listMembers, listRooms, roomByCode, roomForFrame, roomLibraries, listRoomTranscript, resolveFrameRoom, setRoomLibraries, roomById, removeMember } from '../lib/rooms.mjs'
+import { AUDIO_ROOM_TTL_MS, closeRoomByAdmin, createInterpreterSession, createRoom, interpreterPartnerLang, isRoomClosed, joinRoom, leaveRoom, listHistory, listMembers, listRooms, normalizeHearLangs, roomByCode, roomForFrame, roomLibraries, listRoomTranscript, resolveFrameRoom, setMemberHearLangs, setRoomLibraries, roomById, removeMember } from '../lib/rooms.mjs'
 import { appendUtterance } from '../lib/db.mjs'
 import { floorState, takeFloor } from '../lib/floor.mjs'
 
@@ -269,6 +269,53 @@ export async function runRoomsSuite({ it, check }) {
       JSON.stringify([interpreterPartnerLang(''), interpreterPartnerLang('ja-JP')]))
     check('镜像关系不会自指（对方语言永远不等于我读的语言）',
       ['zh-CN', 'pt-BR', 'en-US'].every((one) => interpreterPartnerLang(one) !== one))
+  })
+
+  await it('5.53：「我说一种」与「我想看多种」分开存，且强制包含自己说的语言', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'hear-'))
+    try {
+      // 老师的场景：我说葡语，但英文和中文的译文都想看。
+      const created = createRoom(dataDir, {
+        name: '双向阅读', host: 'alice', lang: 'pt-BR', hearLangs: 'zh-CN,en-US',
+      })
+      check('会议建成', created.ok === true, JSON.stringify(created))
+      const alice = listMembers(dataDir, created.room.id).find((one) => one.username === 'alice')
+      check('他说的语言是葡语', alice.lang === 'pt-BR', String(alice.lang))
+      check('他想看中文 + 英文（按固定顺序归一化）',
+        JSON.stringify(alice.hearLangs) === JSON.stringify(['zh-CN', 'pt-BR', 'en-US']),
+        JSON.stringify(alice.hearLangs))
+      check('**强制包含自己说的语言**（不然别人说的话没人为他翻译）',
+        alice.hearLangs.includes('pt-BR'), JSON.stringify(alice.hearLangs))
+
+      // 老客户端（不传 hearLangs）→ 只有自己那门，行为与以前一致
+      joinRoom(dataDir, { roomId: created.room.id, username: 'bob', lang: 'zh-CN' })
+      const bob = listMembers(dataDir, created.room.id).find((one) => one.username === 'bob')
+      check('不传就只登记自己那门（老行为不变）',
+        JSON.stringify(bob.hearLangs) === JSON.stringify(['zh-CN']), JSON.stringify(bob.hearLangs))
+
+      // 会中可以改"我想看哪些"
+      const changed = setMemberHearLangs(dataDir, {
+        roomId: created.room.id, username: 'bob', langs: 'en-US,zh-CN',
+      })
+      check('改读语言成功', changed.ok === true && changed.changed === true, JSON.stringify(changed))
+      const bob2 = listMembers(dataDir, created.room.id).find((one) => one.username === 'bob')
+      check('改完是中文 + 英文', JSON.stringify(bob2.hearLangs) === JSON.stringify(['zh-CN', 'en-US']),
+        JSON.stringify(bob2.hearLangs))
+      check('重复设置同一组不算变化（不会每轮都写盘）',
+        setMemberHearLangs(dataDir, { roomId: created.room.id, username: 'bob', langs: 'zh-CN,en-US' })
+          .changed === false)
+
+      // 归一化：不认识的语言被丢掉、去重、顺序固定
+      check('脏输入被清掉（xx 丢掉、重复去掉）',
+        JSON.stringify(normalizeHearLangs('en-US,xx,en-US', 'zh-CN'))
+        === JSON.stringify(['zh-CN', 'en-US']), JSON.stringify(normalizeHearLangs('en-US,xx,en-US', 'zh-CN')))
+      check('空输入 + 有说话语言 → 只有说话语言',
+        JSON.stringify(normalizeHearLangs('', 'en-US')) === JSON.stringify(['en-US']))
+      check('说话语言与读语言都空 → 空数组（不硬塞一个）',
+        JSON.stringify(normalizeHearLangs('', '')) === '[]')
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
   })
 
   rmSync(dir, { recursive: true, force: true })
