@@ -35,6 +35,24 @@
         android:layout_marginTop="4dp"
         android:orientation="horizontal">
 
+        <!-- 5.54：这一行译文是**哪种语言**。
+             为什么需要：一个人可能同时看两种译文（我说葡语，英文和中文都想看），
+             没有标签时两行文字只能靠猜哪行是哪门语言。 -->
+        <TextView
+            android:id="@+id/segLang"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="8dp"
+            android:layout_marginTop="4dp"
+            android:background="@drawable/bg_chip"
+            android:paddingStart="6dp"
+            android:paddingTop="2dp"
+            android:paddingEnd="6dp"
+            android:paddingBottom="2dp"
+            android:textColor="@color/ink_soft"
+            android:textSize="10sp"
+            android:visibility="gone" />
+
         <TextView
             android:id="@+id/segTarget"
             android:layout_width="0dp"

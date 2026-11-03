@@ -412,10 +412,16 @@ export async function runTtsSuite({ it, check }) {
     check('不再用"每帧一个新 id"自己画卡片',
       !/identityHashCode\(lines\)/.test(interp)
       && !/private void renderCard\(/.test(interp) && !/List<String> cardIds/.test(interp))
-    check('归并规则在 SubtitleList 里：原文相同 → 同一条（不是按 id）',
-      /private Segment find\(String source\)/.test(list) && /source\.equals\(segment\.source\)/.test(list))
-    check('原文为空的增量帧续写到上一条未定稿的卡片上',
-      /Segment last = segments\.get\(segments\.size\(\) - 1\)/.test(list) && /return last\.partial \? last : null;/.test(list))
+    // 5.54：身份 = 原文 + 语言标签（一个人看两种译文时，两条不能互相覆盖）
+    check('归并规则在 SubtitleList 里：原文相同（且同一语言）→ 同一条',
+      /private Segment find\(String source, String langLabel\)/.test(list)
+      && /source\.equals\(segment\.source\) && segment\.langLabel\.equals\(label\)/.test(list))
+    check('原文为空的增量帧续写到上一条未定稿的**同语言**卡片上',
+      /Segment last = segments\.get\(segments\.size\(\) - 1\)/.test(list)
+      && /return last\.langLabel\.equals\(label\) \? last : null;/.test(list))
+    check('语言标签有独立控件（两行译文才分得清）',
+      /R\.id\.segLang/.test(list) && /segLang/.test(
+        readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout', 'item_subtitle.xml'), 'utf-8')))
     check('时间标记按本场开始算（mm:ss），每场重置',
       /startedAt = System\.currentTimeMillis\(\)/.test(interp) && /%d:%02d/.test(interp))
   })

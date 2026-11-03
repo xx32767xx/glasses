@@ -927,7 +927,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             pushToGlasses(text, source);
             if (session != null && session.active) {
                 String time = elapsedLabel();
-                SubtitleList.Segment segment = subtitles.submit(time, source, text, partial, watchNote);
+                SubtitleList.Segment segment = subtitles.submit(time, source, text, partial, watchNote, langLabelOf(lang));
                 if (segment != null) {
                     // 同一片段（同原文）的增量/定稿/校对修订都落到同一条记录行上，
                     // 这样导出的记录里也是一条一句，而不是每次增量一行。
@@ -942,13 +942,28 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                     line.target = text == null ? "" : text;
                 }
                 if (fullscreenList != null) {
-                    fullscreenList.submit(time, source, text, partial, watchNote);
+                    fullscreenList.submit(time, source, text, partial, watchNote, langLabelOf(lang));
                 }
             } else if (text != null && !text.isEmpty()) {
                 // 没在会话里也收到字幕（电脑侧自己在跑）→ 只更新眼镜预览，不污染记录
                 showNote(getString(R.string.processing));
             }
         });
+    }
+
+    /**
+     * 这一帧译文的语言名（5.54）。
+     *
+     * <p>为什么需要：一个人可能同时看两种译文，两行文字必须有标签才分得清。
+     * 标签用**当前界面语言**里的写法（`中文` / `English` / `葡萄牙语`）——
+     * 选语言的人就是在这个界面里选的。
+     */
+    private String langLabelOf(String langTag) {
+        String tag = langTag == null ? "" : langTag.trim().toLowerCase(java.util.Locale.ROOT);
+        if (tag.startsWith("zh")) return getString(R.string.lang_zh_short);
+        if (tag.startsWith("pt")) return getString(R.string.lang_pt_short);
+        if (tag.startsWith("en")) return getString(R.string.lang_en_short);
+        return "";                      // 认不出就不加标签（不硬编一个）
     }
 
     /** 把"本句提到的表内名字"拼成一行小提示；没有就返回空串。 */
@@ -3435,7 +3450,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         fullscreenList.setScale(fontScale);
         // 把已有片段搬过去（同一个会话，两边看到的内容必须一致）
         for (SubtitleList.Segment segment : subtitles.segments()) {
-            fullscreenList.submit(segment.time, segment.source, segment.target, segment.partial);
+            fullscreenList.submit(segment.time, segment.source, segment.target, segment.partial, "", segment.langLabel);
         }
         view.findViewById(R.id.fsExit).setOnClickListener(v -> closeOverlay());
         view.findViewById(R.id.fsPause).setOnClickListener(v -> {

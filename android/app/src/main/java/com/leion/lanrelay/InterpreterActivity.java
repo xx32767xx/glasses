@@ -774,7 +774,7 @@ public class InterpreterActivity extends android.app.Activity {
                 // 之前这里用"每次 self-made 一个新 id"画卡片，于是同一句会收到好几帧
                 // （原文帧 + 增量译文帧 + 定稿译文帧）→ 屏幕上冒出好几张卡、还互相闪烁。
                 // SubtitleList 的规则是：**原文相同就是同一条**，增量→定稿→校对都在原位更新。
-                submitCard(src, translated, partial);
+                submitCard(src, translated, partial, langTag);
                 // 只朗读**定稿且非空**的译文；partial 是半句，念出来很怪（与房间页一致）
                 if (!partial && ttsQueue != null && !translated.isEmpty()) {
                     ttsQueue.offer(translated, langTag == null || langTag.isEmpty() ? lang : langTag);
@@ -846,12 +846,31 @@ public class InterpreterActivity extends android.app.Activity {
      * 这与房间页完全是同一套显示逻辑，两页行为一致。
      */
     private void submitCard(String source, String text, boolean partial) {
+        submitCard(source, text, partial, "");
+    }
+
+    /**
+     * 落一条字幕（5.54：多了"这门译文是哪种语言"）。
+     *
+     * <p>同时看两种译文时，同一句原文会有两条卡片，靠语言标签区分；只有一种时不加标签，
+     * 版面与之前完全一样。身份 = 原文 + 语言标签（见 {@link SubtitleList#submit}）。
+     */
+    private void submitCard(String source, String text, boolean partial, String langTag) {
         String src = source == null ? "" : source.trim();
         String target = text == null ? "" : text;
         if (src.isEmpty() && target.isEmpty()) return;
-        subtitles.submit(elapsedLabel(), src, target, partial);
+        subtitles.submit(elapsedLabel(), src, target, partial, "", langLabelOf(langTag));
         emptyView.setVisibility(View.GONE);
         scroll.setVisibility(View.VISIBLE);
+    }
+
+    /** 译文语言名（用当前界面语言的写法；认不出就不加标签）。 */
+    private String langLabelOf(String langTag) {
+        String tag = langTag == null ? "" : langTag.trim().toLowerCase(java.util.Locale.ROOT);
+        if (tag.startsWith("zh")) return getString(R.string.lang_zh_short);
+        if (tag.startsWith("pt")) return getString(R.string.lang_pt_short);
+        if (tag.startsWith("en")) return getString(R.string.lang_en_short);
+        return "";
     }
 
     /** 本场从开始到现在的时间标记（与房间页的写法一致：mm:ss）。 */

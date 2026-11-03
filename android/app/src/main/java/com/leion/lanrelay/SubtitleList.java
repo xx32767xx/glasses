@@ -38,21 +38,26 @@ public class SubtitleList {
         public final String source;
         public String target;
         public boolean partial;
+        /** 5.54：这条译文是哪门语言（`中文` / `English`…）。空 = 老客户端没给（不显示标签）。 */
+        public final String langLabel;
         public final View view;
         public final TextView sourceView;
         public final TextView targetView;
         public final TextView tagView;
         public final TextView noteView;
+        public final TextView langView;
 
-        Segment(String time, String source, View view, TextView sourceView,
-                TextView targetView, TextView tagView, TextView noteView) {
+        Segment(String time, String source, String langLabel, View view, TextView sourceView,
+                TextView targetView, TextView tagView, TextView noteView, TextView langView) {
             this.time = time;
             this.source = source;
+            this.langLabel = langLabel == null ? "" : langLabel;
             this.view = view;
             this.sourceView = sourceView;
             this.targetView = targetView;
             this.tagView = tagView;
             this.noteView = noteView;
+            this.langView = langView;
         }
     }
 
@@ -166,9 +171,24 @@ public class SubtitleList {
     }
 
     public Segment submit(String time, String source, String target, boolean partial, String note) {
-        Segment segment = find(source);
+        return submit(time, source, target, partial, note, "");
+    }
+
+    /**
+     * 收到一帧字幕（5.54：多了"这门译文是哪种语言"）。
+     *
+     * <p>为什么语言标签会进"身份"：一个人可能同时看两种译文（我说葡语，英文和中文都想看），
+     * 同一句原文会有**两条**译文。若仍按原文归并，第二条会把第一条覆盖掉 ——
+     * 用户勾了两种、只看得到一种，而且不报错。所以身份 = 原文 + 语言标签。
+     *
+     * @param langLabel 这门译文语言的显示名（`中文` / `English` / `葡萄牙语`）；空 = 不显示标签
+     */
+    public Segment submit(String time, String source, String target, boolean partial, String note,
+                          String langLabel) {
+        String label = langLabel == null ? "" : langLabel.trim();
+        Segment segment = find(source, label);
         if (segment == null) {
-            segment = create(time, source);
+            segment = create(time, source, label);
             segments.add(segment);
             list.addView(segment.view);
         }
@@ -194,33 +214,48 @@ public class SubtitleList {
         return segment;
     }
 
-    /** 按原文找同一条片段。原文为空时按"最后一条"处理（没有原文可认，只能续写）。 */
-    private Segment find(String source) {
+    /**
+     * 按 (原文, 语言标签) 找同一条片段。
+     *
+     * <p>原文为空时按"最后一条"处理（没有原文可认，只能续写）；此时也要求语言标签一致，
+     * 否则"中文那份"和"英文那份"会互相续写到对方身上。
+     */
+    private Segment find(String source, String langLabel) {
         if (segments.isEmpty()) return null;
+        String label = langLabel == null ? "" : langLabel.trim();
         if (source == null || source.isEmpty()) {
             Segment last = segments.get(segments.size() - 1);
-            return last.partial ? last : null;
+            if (!last.partial) return null;
+            return last.langLabel.equals(label) ? last : null;
         }
         for (int index = segments.size() - 1; index >= 0; index--) {
             Segment segment = segments.get(index);
-            if (source.equals(segment.source)) return segment;
+            if (source.equals(segment.source) && segment.langLabel.equals(label)) return segment;
         }
         return null;
     }
 
-    private Segment create(String time, String source) {
+    private Segment create(String time, String source, String langLabel) {
         View view = inflater.inflate(R.layout.item_subtitle, list, false);
         TextView sourceView = view.findViewById(R.id.segSource);
         TextView targetView = view.findViewById(R.id.segTarget);
         TextView tagView = view.findViewById(R.id.segTag);
         TextView noteView = view.findViewById(R.id.segNote);
+        TextView langView = view.findViewById(R.id.segLang);
         TextView timeView = view.findViewById(R.id.segTime);
         timeView.setText(time);
         sourceView.setText(source);
         sourceView.setVisibility(bilingual ? View.VISIBLE : View.GONE);
         tagView.setVisibility(View.GONE);
         noteView.setVisibility(View.GONE);
-        return new Segment(time, source == null ? "" : source, view, sourceView, targetView, tagView, noteView);
+        // 5.54：语言标签（空 = 不显示，老客户端行为不变）
+        String label = langLabel == null ? "" : langLabel.trim();
+        if (langView != null) {
+            langView.setText(label);
+            langView.setVisibility(label.isEmpty() ? View.GONE : View.VISIBLE);
+        }
+        return new Segment(time, source == null ? "" : source, label, view,
+                sourceView, targetView, tagView, noteView, langView);
     }
 
     private void scrollToBottom() {
