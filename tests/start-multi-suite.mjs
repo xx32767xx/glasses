@@ -418,12 +418,12 @@ export async function runStartMultiSuite({ it, check, assert }) {
       /def run_segment_producer/.test(source)
         && /return run_segment_producer\(args, np\)/.test(source), '缺生产者分支')
     check('消费者在模型加载**之后**才进入（首段不再付预热的十几秒）',
-      source.indexOf('return run_queue_consumer(args, np, pool)') > source.indexOf('model = WhisperModel('),
+      source.indexOf('return run_queue_consumer(args, np, pool)') > source.indexOf('startup_engine.load('),
       '顺序不对')
     // 5.40：启动时加载的那份模型要**先问模型表**（表说 default 是 medium 就先加载 medium），
     // 否则会白加载一份用不上的大模型、白占几个 GB 显存。
     check('启动加载哪份模型由模型表决定（不是先按命令行加载再说）',
-      source.indexOf('startup = resolve_asr_profile(') < source.indexOf('model = WhisperModel('),
+      source.indexOf('startup = resolve_strategy(') < source.indexOf('startup_engine.load('),
       '顺序不对：先加载后查表会白占一份显存')
   })
 

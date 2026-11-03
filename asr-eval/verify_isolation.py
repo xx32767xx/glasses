@@ -206,14 +206,34 @@ def main(argv=None):
 
         # ── ⑤ 写错必须说出来（不许悄悄换一个）────────────────────────────
         print("\n⑤ 配错了要明确失败（绝不静默兜底）")
-        pool = ws.ModelPool(lambda name, device, compute: (_ for _ in ()).throw(RuntimeError("no such model")),
-                            max_models=1, log=lambda _line: None)
+        class BoomHandle:
+            pass
+
+        class BoomEngine(ws.AsrEngine):
+            key = "boom"
+            display = "会失败的引擎"
+
+            def load(self, profile, device):
+                raise RuntimeError("no such model")
+
+            def transcribe(self, handle, audio, language, profile=None):
+                return {}
+
+        pool = ws.ModelPool({"boom": BoomEngine()}, max_models=1, log=lambda _line: None)
         raised = ""
         try:
-            pool.get({"model": "not-installed", "compute_type": "int8_float32", "strategy": "bad"}, device="cpu")
+            pool.get({"engine": "boom", "model": "not-installed",
+                      "compute_type": "int8_float32", "strategy": "bad"}, device="cpu")
         except RuntimeError as error:
             raised = str(error)
         check("模型不存在时**抛出**而不是换一个模型", raised == "no such model", raised)
+        unknown = ""
+        try:
+            pool.get({"engine": "whisper", "model": "x"})
+        except ValueError as error:
+            unknown = str(error)
+        check("策略写了没注册的引擎 → 抛错并列出已知引擎（不静默换成 whisper）",
+              "whisper" in unknown and "boom" in unknown, unknown)
         empty_table = {}
         fallback = ws.resolve_strategy("en-US", cli, empty_table)
         check("没有策略表时行为回落到命令行（老行为不变）",

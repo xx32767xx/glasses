@@ -2188,8 +2188,11 @@ def main():
     check("提示里给了 --model 指本地目录的用法", "--model" in advice)
     source = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "..", "bridge", "whisper_stream.py"), encoding="utf-8").read()
+    # 5.50：加载走引擎，`WhisperModel(...)` 现在在 WhisperEngine.load 里；断言改成"加载被 try 包着"
     check("加载模型被 try/except 包着（不再甩 traceback）",
-          "try:\n        model = WhisperModel(" in source)
+          "try:\n        handle = startup_engine.load(" in source
+          or "try:\n            return self.model_class(" in source)
+    check("加载失败能给出人话建议（model_load_failure）", "model_load_failure(" in source)
     check("失败时返回非零退出码", "return 2" in source)
 
     # ── 生产者-消费者队列（切句与识别分开，显存只够一份模型）──────────────────
@@ -2376,23 +2379,45 @@ def main():
           whisper_stream.resolve_asr_profile("pt-BR", cli, table, room)["model"] == "large-v3")
 
     # 模型池：超过上限要淘汰最久没用的（而不是无限加载，也不是一直重载同一个）
+    # 5.50 起池子按「引擎 + 模型」取用，所以这里用一个假引擎来验 LRU（不碰 whisper）。
     loaded = []
 
-    def fake_model(name, device, compute):
-        loaded.append((name, compute))
-        return f"model:{name}"
+    class FakeEngine(whisper_stream.AsrEngine):
+        key = "fake"
+        display = "假引擎"
 
-    pool = whisper_stream.ModelPool(fake_model, max_models=2, log=lambda _line: None)
-    pool.get({"model": "a", "compute_type": "float16"})
-    pool.get({"model": "b", "compute_type": "float16"})
-    pool.get({"model": "a", "compute_type": "float16"})     # 再摸一次 a（此时 a 最新）
-    pool.get({"model": "c", "compute_type": "float16"})     # 触发淘汰：应淘汰 b
-    check("三份都真加载过（c 先触发一次淘汰，再加载一次）",
-          [name for name, _c in loaded] == ["a", "b", "c"], str(loaded))
-    check("淘汰后留在池子里的是 a 和 c", set(pool.models) == {("a", "float16"), ("c", "float16")},
-          str(set(pool.models)))
-    check("同一个模型不会被重复加载",
-          len([n for n, _c in loaded if n == "a"]) == 1, str(loaded))
+        def describe(self, profile):
+            return f"fake:{profile.get('model')}"
+
+        def load(self, profile, device):
+            loaded.append(profile.get("model"))
+            return f"model:{profile.get('model')}"
+
+        def transcribe(self, handle, audio, language, profile=None):
+            return {"text": "", "empty": True, "reason": "假引擎", "resolved_language": language}
+
+    pool = whisper_stream.ModelPool({"fake": FakeEngine()}, max_models=2, log=lambda _line: None)
+    def pool_get(name):
+        return pool.get({"engine": "fake", "model": name, "compute_type": "float16"})
+    pool_get("a")
+    pool_get("b")
+    pool_get("a")          # 再摸一次 a（此时 a 最新）
+    pool_get("c")          # 触发淘汰：应淘汰 b
+    check("三份都真加载过（c 先触发一次淘汰，再加载一次）", loaded == ["a", "b", "c"], str(loaded))
+    check("淘汰后留在池子里的是 a 和 c",
+          set(pool.models) == {("fake", "a"), ("fake", "c")}, str(set(pool.models)))
+    check("同一个模型不会被重复加载", len([n for n in loaded if n == "a"]) == 1, str(loaded))
+    check("池子的键含引擎（换引擎不会撞同一个模型名）",
+          whisper_stream.ModelPool.key_of({"engine": "whisper", "model": "large-v3"})
+          != whisper_stream.ModelPool.key_of({"engine": "cloud", "model": "large-v3"}))
+    unknown_engine_error = ""
+    try:
+        pool.get({"engine": "not-registered", "model": "x"})
+    except ValueError as error:
+        unknown_engine_error = str(error)
+    check("策略写了没注册的引擎 → 抛错并列出已知引擎（不静默兜底）",
+          "not-registered" in unknown_engine_error and "fake" in unknown_engine_error,
+          unknown_engine_error)
 
     # 表坏了：保留旧表，绝不能"读到半张表就当没有"
     broken_dir = Path(ROOT / "var" / "test" / "asr-model-map")
@@ -2499,14 +2524,19 @@ def main():
                                  "or backend do not support efficient float16 computation.")
             self.compute = compute_type
 
-    fence_pool = whisper_stream.ModelPool(FakeModelForCompute, max_models=1, log=lambda _l: None)
-    fence_model = fence_pool.get({"model": "large-v3", "compute_type": "float16",
-                                  "strategy": "en-fast"}, device="cuda")
+    # 5.50：精度兜底搬进了 WhisperEngine.load（启动与队列共用一处实现），所以这里验的是**引擎**。
+    fence_args = whisper_stream.parse_args(["--queue-dir", "var/test/precision-probe"])
+    fence_pool = whisper_stream.ModelPool(
+        {"whisper": whisper_stream.WhisperEngine(FakeModelForCompute, fence_args)},
+        max_models=1, log=lambda _l: None, device="cuda")
+    fence_handle = fence_pool.get({"engine": "whisper", "model": "large-v3",
+                                   "compute_type": "float16", "strategy": "en-fast"})
     check("表里写了跑不了的精度 → 自动换成 int8_float32 继续（A/B 不能被硬件问题卡死）",
-          fence_model.compute == "int8_float32", str(loaded_computes))
+          fence_handle[1] == "int8_float32", str(loaded_computes))
     check("确实先试了 float16（不是一开始就绕过用户配置）", loaded_computes[0] == "float16",
           str(loaded_computes))
-    fence_pool.note({"model": "large-v3", "compute_type": "float16", "strategy": "en-fast"}, "en-fast")
+    fence_pool.note({"engine": "whisper", "model": "large-v3", "compute_type": "float16",
+                     "strategy": "en-fast"}, "en-fast")
     check("分流报告里能看到**实际**用的精度（不是表里写的那个）",
           "int8_float32" in fence_pool.report(), fence_pool.report())
 

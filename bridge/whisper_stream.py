@@ -804,8 +804,12 @@ SEGMENTATION_FIELDS = (
     "short_utterance_ms", "short_silence_ms", "cut_pause_ms",
 )
 
-# 识别侧可配的字段。
-MODEL_FIELDS = ("model", "compute_type", "beam_size")
+# 识别侧可配的字段。`engine` 是 5.50 加的：**先选引擎家族，再选它里面的模型**。
+# 为什么要分两级：`large-v3` 只在 whisper 里有意义，换成云端引擎（比如某个 ASR HTTP 接口）
+# 时"模型名"和"解码参数"的概念都不一样 —— 把它们混在一层，第二个引擎就接不进来。
+# 不写 engine = whisper（老行为不变）。
+MODEL_FIELDS = ("engine", "model", "compute_type", "beam_size")
+DEFAULT_ENGINE = "whisper"
 
 # 命令行没给值时的缺省（与 parse_args 的 default 保持一致；表里没写就落在这里）
 SEGMENTATION_DEFAULTS = {
@@ -943,6 +947,7 @@ def resolve_strategy(language, cli, table=None, room_profile=None):
 
     layered["strategy"] = name
     layered["sources"] = sources
+    layered["engine"] = str(layered.get("engine") or DEFAULT_ENGINE).strip().lower() or DEFAULT_ENGINE
     layered["segmentation"] = {key: layered["segmentation"].get(key, SEGMENTATION_DEFAULTS[key])
                                for key in SEGMENTATION_FIELDS}
     return layered
@@ -1092,6 +1097,124 @@ def read_room_asr_profile(data_dir, room, cache=None):
     return value
 
 
+class AsrEngine:
+    """一个**识别引擎**的最小接口（5.50）。
+
+    <p>为什么要这层：策略表原来只能表达"whisper 的哪个尺寸"。一旦要接 whisper 之外的
+    识别（云端 ASR、设备侧 SDK 的服务器版…），"模型名"和"解码参数"就不再是同一套概念了。
+    所以把"引擎家族"与"引擎内的模型"分开：
+
+    ```
+    策略: { engine: "whisper", model: "large-v3", compute_type: "int8_float32", segmentation: {...} }
+           { engine: "gpt6audio", model: "default", segmentation: {...} }
+    ```
+
+    <p><b>三条实现契约</b>（写新引擎时照着做，违反任何一条都会让排障失去依据）：
+    <ol>
+    <li>`load()` **只做加载**，慢与不慢都在这一步；失败要抛异常，让上层"跳过这一段并留证"
+        （绝不允许在引擎内部偷偷换成另一个模型 —— 那会让 A/B 结论作废）；</li>
+    <li>`transcribe()` 返回 `{"text", "empty", "reason", "resolved_language"}`，
+        **不要**自己写收件箱、不要自己打日志的组织格式（上层统一负责）；</li>
+    <li>引擎只吃 `profile` 里它认识的字段。`args` 命名空间会整个传进来，但**别依赖**
+        whisper 专有的旋钮（`--no-speech-prob` / `--min-logprob` / 上下文续传…）——
+        那些对云端引擎没有意义，依赖它们等于把引擎焊死在 whisper 上。</li>
+    </ol>
+    """
+
+    key = "?"
+    display = "?"
+
+    def describe(self, profile):
+        """一行说明"这个策略在跑什么"（启动日志与 /status 用）。"""
+        return f"{self.display}:{profile.get('model') or 'default'}"
+
+    def load(self, profile, device):
+        """加载（或建立连接）。返回一个句柄，之后原样传给 `transcribe`。"""
+        raise NotImplementedError
+
+    def transcribe(self, handle, audio, language, profile=None):
+        """把一段音频转成文字。`audio` 是 16k 单声道 float32 的 numpy 数组。"""
+        raise NotImplementedError
+
+
+class WhisperEngine(AsrEngine):
+    """本地 faster-whisper。**默认引擎，行为与 5.50 之前完全一致。**"""
+
+    key = "whisper"
+    display = "本地 whisper"
+
+    def __init__(self, model_class, args):
+        self.model_class = model_class
+        self.args = args           # 只在这里读 whisper 专有旋钮，不外泄
+
+    def describe(self, profile):
+        return f"whisper:{profile.get('model') or 'default'}"
+
+    def load(self, profile, device):
+        """加载模型（含"精度这台设备跑不跑得了"的兜底）。返回 `(model, 实际精度)`。"""
+        name = profile.get("model") or self.args.model
+        requested = profile.get("compute_type") or "float16"
+        compute, note = resolve_compute_type(requested, device)
+        if note:
+            print(f"[识别] {note}（策略 {profile.get('strategy') or '?'} 要求 {requested}）",
+                  file=sys.stderr, flush=True)
+        try:
+            return self.model_class(name, device=device, compute_type=compute), compute
+        except Exception as error:      # noqa: BLE001
+            # 精度不支持是**硬件能力**问题（Pascal 卡没有 FP16），不是策略选择：
+            # 换掉它不污染模型 A/B 的结论，但必须说清换过。
+            if not is_compute_type_error(error):
+                raise
+            fallback = "int8_float32" if device == "cuda" else "int8"
+            if fallback == compute:
+                raise
+            print(f"[识别] ⚠️ 这台设备跑不了 {compute}（{type(error).__name__}），"
+                  f"改用 {fallback} 继续 —— 请把策略表里的 compute_type 删掉或改成 {fallback}；"
+                  f"精度是硬件能力，不参与模型对比", file=sys.stderr, flush=True)
+            return self.model_class(name, device=device, compute_type=fallback), fallback
+
+    def transcribe(self, handle, audio, language, profile=None):
+        model, _compute = handle
+        beam = (profile or {}).get("beam_size") or self.args.beam_size
+        text, empty, reason, overrode, kind, resolved_language = transcribe(
+            model, audio, language,
+            self.args.min_logprob, self.args.no_speech_prob,
+            beam_size=beam,
+            silence_floor=self.args.silence_skip_level,
+            hint_text=None if self.args.no_prompt else prompt_for(language, self.args.initial_prompt),
+            context_text=None,
+            do_normalize=not self.args.no_normalize,
+            candidates=self.args.lang_candidates,
+        )
+        return {"text": text, "empty": empty, "reason": reason,
+                "resolved_language": resolved_language}
+
+
+def build_engines(model_class, args):
+    """引擎注册表。**加一个新引擎 = 在这里加一行 + 写一个 AsrEngine 子类。**
+
+    <p>注意：这里刻意没有"缺省引擎兜底"的逻辑。策略里写了不认识的 engine，
+    {@link resolve_engine} 会直接报错并列出已知引擎 —— 悄悄用 whisper 顶上，
+    等于让人以为在测新引擎。
+    """
+    return {
+        WhisperEngine.key: WhisperEngine(model_class, args),
+    }
+
+
+def resolve_engine(profile, engines):
+    """按策略取引擎；不认识就**抛错**（附上已知引擎清单）。"""
+    key = str((profile or {}).get("engine") or DEFAULT_ENGINE).strip().lower() or DEFAULT_ENGINE
+    engine = (engines or {}).get(key)
+    if engine is None:
+        known = "/".join(sorted(engines or {})) or "（一个都没注册）"
+        raise ValueError(
+            f"策略 {str((profile or {}).get('strategy') or '?')} 要求引擎 `{key}`，"
+            f"但这台机器上只注册了：{known}。"
+            f"要接新引擎：写一个 AsrEngine 子类并在 build_engines() 里登记（见 docs/21 §5.50）")
+    return engine
+
+
 class ModelPool:
     """模型池：按档案取模型，缺就加载，超过上限按"最久没用"淘汰。
 
@@ -1099,28 +1222,30 @@ class ModelPool:
     显存事故几乎都来自"以为只有一份，其实悄悄加了一份"。
     """
 
-    def __init__(self, make_model, max_models=2, log=print):
-        self.make_model = make_model
+    def __init__(self, engines, max_models=2, log=print, device="cuda"):
+        self.engines = engines
         self.max_models = max(1, int(max_models))
         self.log = log
-        self.models = {}        # key -> model
+        self.device = device
+        self.models = {}        # key -> handle（whisper 是 (model, compute)，云端引擎可以是客户端对象）
         self.order = []         # 最近使用顺序（末尾最新）
         self.loads = []         # [{"key", "seconds"}] 加载耗时记录（--stats 用）
-        self.counts = {}        # profile 的 source/model → 处理段数
+        self.counts = {}        # 策略名 → 处理段数
         self.compute_of = {}    # 策略名 → 实际用的 precision（A/B 时要能看见）
+        self.engine_of = {}     # 策略名 → 引擎 key
 
     @staticmethod
     def key_of(profile):
-        return (profile.get("model"), profile.get("compute_type"))
+        """池子的键 = **引擎 + 模型**（精度由引擎自己兜底，不进键 —— 否则同一模型会存两份）。"""
+        engine = str((profile or {}).get("engine") or DEFAULT_ENGINE).strip().lower() or DEFAULT_ENGINE
+        return (engine, (profile or {}).get("model"))
 
-    def get(self, profile, np=None, device="cuda"):
-        # 5.42：策略表给的 precision 同样要过硬件检查（见 main 里那段事故说明）。
-        requested_compute = profile.get("compute_type") or "float16"
-        compute, note = resolve_compute_type(requested_compute, device)
-        if note:
-            self.log(f"[识别] {note}（策略 {profile.get('strategy') or '?'} 要求 {requested_compute}）")
-        key = (profile.get("model"), compute)
-        self.compute_of[profile.get("strategy") or profile.get("model")] = compute
+    def get(self, profile, device=None):
+        device = device or self.device
+        engine = resolve_engine(profile, self.engines)
+        name = profile.get("strategy") or profile.get("model")
+        key = self.key_of(profile)
+        self.engine_of[name] = engine.key
         if key in self.models:
             self.order.remove(key)
             self.order.append(key)
@@ -1129,44 +1254,26 @@ class ModelPool:
             drop = self.order.pop(0)
             self.models.pop(drop, None)
             self.log(f"[识别] 模型池已满（--max-models {self.max_models}），"
-                     f"淘汰 {drop[0]} / {drop[1]}（要同时留更多份就调大它，代价是显存）")
-        self.log(f"[识别] 加载模型 {key[0]}（compute_type={key[1]}）…")
+                     f"淘汰 {drop[0]}:{drop[1]}（要同时留更多份就调大它，代价是显存）")
+        self.log(f"[识别] 加载 {engine.describe(profile)}（引擎 {engine.key}）…")
         started = time.perf_counter()
-        try:
-            model = self.make_model(key[0], device, key[1])
-        except Exception as error:      # noqa: BLE001
-            # 兜底：精度不支持时**换一个这台设备能跑的**再试一次，并大声说明。
-            # 为什么这条兜底必须存在（真实事故）：表里抄了 float16，而这台卡是 Pascal
-            # （算力 6.1，没有 FP16 加速）→ 启动即失败，而报错说"本地没有模型"，
-            # 于是人跑去搬一个本来就有的模型。精度是**硬件能力**问题，不是策略选择，
-            # 换掉它不会污染模型 A/B 的结论；但必须说清换过（否则用户以为在跑 float16）。
-            if not is_compute_type_error(error):
-                raise
-            fallback = "int8_float32" if device == "cuda" else "int8"
-            if fallback == key[1]:
-                raise
-            self.log(f"[识别] ⚠️ 这台设备跑不了 {key[1]}（{type(error).__name__}），"
-                     f"改用 {fallback} 继续 —— 请把策略表里的 compute_type 删掉或改成 {fallback}；"
-                     f"精度是硬件能力，不参与模型对比")
-            key = (key[0], fallback)
-            if key in self.models:
-                self.order.remove(key)
-                self.order.append(key)
-                return self.models[key]
-            model = self.make_model(key[0], device, key[1])
+        handle = engine.load(profile, device)
         took = time.perf_counter() - started
-        self.models[key] = model
+        self.models[key] = handle
         self.order.append(key)
-        self.compute_of[profile.get("strategy") or profile.get("model")] = key[1]
+        # whisper 的句柄是 (model, 实际精度)：把实际精度记下来（A/B 报告要显示它）
+        if isinstance(handle, tuple) and len(handle) == 2 and isinstance(handle[1], str):
+            self.compute_of[name] = handle[1]
         self.loads.append({"key": key, "seconds": round(took, 2)})
-        self.log(f"[识别] 模型就绪 {key[0]} / {key[1]}（{took:.1f}s）")
-        return model
+        self.log(f"[识别] 模型就绪 {engine.describe(profile)}（{took:.1f}s）")
+        return handle
 
     def note(self, profile, strategy_name=""):
         """记一段的处理数（按策略名分组 —— 这就是 A/B 报告的分组口径）。"""
         name = strategy_name or profile.get("strategy") or "?"
+        engine = self.engine_of.get(name) or profile.get("engine") or DEFAULT_ENGINE
         compute = self.compute_of.get(name) or profile.get("compute_type") or ""
-        tag = f"{name} → {profile.get('model')}" + (f"/{compute}" if compute else "")
+        tag = f"{name} → {engine}:{profile.get('model')}" + (f"/{compute}" if compute else "")
         self.counts[tag] = self.counts.get(tag, 0) + 1
 
     def report(self):
@@ -1248,14 +1355,14 @@ def run_queue_consumer(args, np, pool):
             profile = strategy
             pool.note(strategy, strategyName)
             try:
-                model = pool.get(profile, device=args.device)
+                handle = pool.get(profile, device=args.device)
             except Exception as error:      # noqa: BLE001
-                # 不能静默退回别的模型：那会让"我在测模型 A"变成"其实一直在测 B"。
+                # 不能静默退回别的模型/引擎：那会让"我在测 A"变成"其实一直在测 B"。
                 # 这一段也**不能留在队列里**（会一直堵住后面所有段），但更不能直接删：
                 # 内容是用户的语音，删了就是无声丢失。所以挪进 `failed/` 子目录 ——
                 # 队列（只看本层的 .json）不再取它，但音频还在，事后能查能重放。
-                print(f"[识别] 这一段要求的模型 {profile.get('model')} 加载失败"
-                      f"（策略 {strategyName}，模型来源 {profile['sources'].get('model')}），"
+                print(f"[识别] 这一段要求的引擎/模型 {profile.get('engine')}:{profile.get('model')} "
+                      f"加载失败（策略 {strategyName}，来源 {profile['sources'].get('model')}），"
                       f"已挪到 failed/ 留证：{type(error).__name__}: {error}",
                       file=sys.stderr, flush=True)
                 failed_dir = os.path.join(args.queue_dir, "failed")
@@ -1269,16 +1376,31 @@ def run_queue_consumer(args, np, pool):
                     print(f"[识别] 连挪动都失败了（这段会一直重试）：{move_error}",
                           file=sys.stderr, flush=True)
                 continue
-            text, empty, reason, overrode, kind, resolved_language = transcribe(
-                model, audio, language,
-                args.min_logprob, args.no_speech_prob,
-                beam_size=profile.get("beam_size") or args.beam_size,
-                silence_floor=args.silence_skip_level,
-                hint_text=None if args.no_prompt else prompt_for(language, args.initial_prompt),
-                context_text=None,
-                do_normalize=not args.no_normalize,
-                candidates=args.lang_candidates,
-            )
+            # 5.50：转写交给这一策略选中的**引擎**。whisper 只是其中一个实现。
+            try:
+                outcome = resolve_engine(profile, pool.engines).transcribe(handle, audio, language, profile)
+            except Exception as error:      # noqa: BLE001
+                print(f"[识别] 引擎 {profile.get('engine')} 转写这一段失败"
+                      f"（策略 {strategyName}）：{type(error).__name__}: {error}",
+                      file=sys.stderr, flush=True)
+                failed_dir = os.path.join(args.queue_dir, "failed")
+                try:
+                    os.makedirs(failed_dir, exist_ok=True)
+                    for suffix in (".pcm", QUEUE_META_SUFFIX):
+                        if os.path.exists(os.path.join(args.queue_dir, base + suffix)):
+                            os.rename(os.path.join(args.queue_dir, base + suffix),
+                                      os.path.join(failed_dir, base + suffix))
+                except OSError:
+                    pass
+                continue
+            text = outcome.get("text", "")
+            empty = outcome.get("empty", False)
+            reason = outcome.get("reason")
+            resolved_language = outcome.get("resolved_language")
+            override_beam = profile.get("beam_size")
+            if isinstance(handle, tuple) and len(handle) == 2 and isinstance(handle[1], str):
+                pass            # whisper 句柄：(model, 实际精度)，beam 由引擎从 args 读
+            _ = override_beam
             seconds = len(audio) / float(meta.get("rate") or args.samplerate)
             if empty:
                 print(f"  [丢弃 {seconds:.1f}s，房间 {meta.get('room')}：{reason or '没有内容'}]",
@@ -2664,41 +2786,27 @@ def main():
         missing = missing_model_advice(startup_model)
         print(missing, file=sys.stderr)
         return 2
+    # 5.50：启动加载改由**引擎**负责（whisper 只是其中一个实现）。
+    # 精度兜底也搬进了 WhisperEngine.load —— 一处实现，队列消费者与启动共用同一份逻辑。
+    engines = build_engines(WhisperModel, args)
     try:
-        model = WhisperModel(startup_model, device=args.device, compute_type=startup_compute)
+        startup_engine = resolve_engine(startup, engines)
+    except ValueError as error:
+        print(f"[whisper_stream] ✗ {error}", file=sys.stderr)
+        return 2
+    try:
+        handle = startup_engine.load(startup, args.device)
     except Exception as error:  # noqa: BLE001
-        # 兜底一：**精度不支持**（硬件能力问题）→ 换一个这台设备能跑的再试一次，并说明。
-        # 这一条是被真实事故逼出来的：表里抄了 float16，卡是 Pascal（算力 6.1）不支持 FP16，
-        # 启动即失败；而旧报错说的是"本地没有模型"，把人引去搬模型（方向完全是错的）。
-        if is_compute_type_error(error):
-            fallback = "int8_float32" if args.device == "cuda" else "int8"
-            if fallback != startup_compute:
-                print(f"[whisper_stream] ⚠️ 这台设备跑不了 {startup_compute}"
-                      f"（{type(error).__name__}: {error}），改用 {fallback} 继续。\n"
-                      f"  这个精度来自 {startup.get('sources', {}).get('compute_type') or '配置'}；"
-                      f"请把策略表里的 compute_type 删掉或改成 {fallback}（精度是硬件能力，不参与模型对比）",
-                      file=sys.stderr)
-                startup_compute = fallback
-                args.resolved_compute = fallback
-                try:
-                    model = WhisperModel(startup_model, device=args.device, compute_type=startup_compute)
-                except Exception as retry_error:  # noqa: BLE001
-                    print(model_load_failure(startup_model, retry_error, startup_compute),
-                          file=sys.stderr)
-                    if os.environ.get("LEION_DEBUG") == "1":
-                        raise
-                    return 2
-            else:
-                print(model_load_failure(startup_model, error, startup_compute), file=sys.stderr)
-                return 2
-        else:
-            # 真事故（搬迁服务器后）：模型不在本地缓存，于是 faster-whisper 去 HuggingFace 拉，
-            # 而新机器出网被掐 -> httpcore.RemoteProtocolError: Server disconnected without sending
-            # a response，一屏 traceback，看不出"其实是模型没搬过来"。
-            print(model_load_failure(startup_model, error, startup_compute), file=sys.stderr)
-            if os.environ.get("LEION_DEBUG") == "1":
-                raise
-            return 2
+        # 真事故（搬迁服务器后）：模型不在本地缓存，于是 faster-whisper 去 HuggingFace 拉，
+        # 而新机器出网被掐 -> httpcore.RemoteProtocolError: Server disconnected without sending
+        # a response，一屏 traceback，看不出"其实是模型没搬过来"。
+        print(model_load_failure(startup_model, error, startup_compute), file=sys.stderr)
+        if os.environ.get("LEION_DEBUG") == "1":
+            raise
+        return 2
+    model = handle[0] if isinstance(handle, tuple) else handle
+    startup_compute = handle[1] if isinstance(handle, tuple) and len(handle) == 2 else startup_compute
+    args.resolved_compute = startup_compute
     print("[whisper_stream] 模型就绪", file=sys.stderr)
 
     if args.self_check:
@@ -2709,14 +2817,16 @@ def main():
     # 放在预热**之后**：队列里可能已经堆着几段，第一段不该再付那十几秒的固定开销。
     if args.queue_dir is not None:
         pool = ModelPool(
-            lambda name, device, compute: WhisperModel(name, device=device, compute_type=compute),
+            engines,
             max_models=args.max_models,
             log=lambda line: print(line, file=sys.stderr, flush=True),
+            device=args.device,
         )
         # 把已经加载好的那份塞进池子：命令行模型的加载与失败提示仍走原来那条路
-        seeded = {"model": startup_model, "compute_type": startup_compute,
-                  "beam_size": args.beam_size, "source": startup.get("source")}
-        pool.models[ModelPool.key_of(seeded)] = model
+        seeded = {"engine": startup_engine.key, "model": startup_model,
+                  "compute_type": startup_compute, "beam_size": args.beam_size,
+                  "source": startup.get("source")}
+        pool.models[ModelPool.key_of(seeded)] = handle
         pool.order.append(ModelPool.key_of(seeded))
         return run_queue_consumer(args, np, pool)
 
