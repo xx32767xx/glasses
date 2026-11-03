@@ -54,7 +54,7 @@ import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { LOGS_DIR, ROOT } from '../lib/paths.mjs'
 import { DEFAULT_DATA_DIR, roomAudioPath, roomTrackDir } from '../relay/lan-relay.mjs'
-import { listRooms } from '../lib/rooms.mjs'
+import { listRooms, closeRoomByAdmin } from '../lib/rooms.mjs'
 import { dbPath } from '../lib/db.mjs'
 import { currentTermsPaths, readCurrentMeeting } from '../lib/meeting-terms.mjs'
 // 这五个都从 start-all 借：两份脚本各写一遍就会各错一遍（端口探测那个 SO_REUSEADDR 的坑尤其）。
@@ -193,6 +193,8 @@ export function parseArgs(argv = []) {
     whisperModel: null,          // null = 按设备自动选
     modelMap: null,              // null = 用 <data-dir>/asr-models.json（存在才启用）
     maxModels: 2,                // 模型池上限：同时留在显存里的模型份数
+    // 5.45：翻译官会话多久没音频就判定"客户端不在了"并结束它（0 = 关掉这个兜底）
+    interpreterIdleMin: 10,
     device: 'cuda',
     computeType: 'float16',
     public: false,
@@ -202,7 +204,8 @@ export function parseArgs(argv = []) {
   }
   const takesValue = new Set(['data-dir', 'buses', 'port', 'poll-ms', 'grace-ms', 'cols', 'lines',
     'max-rooms', 'only', 'whisper-model', 'compute', 'switch-idle-ms', 'min-hold-ms',
-    'queue-dir', 'depth-report-s', 'translate-mode', 'model-map', 'max-models'])
+    'queue-dir', 'depth-report-s', 'translate-mode', 'model-map', 'max-models',
+    'interpreter-idle-min'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -232,6 +235,11 @@ export function parseArgs(argv = []) {
       options.computeType = value
     } else if (key === 'whisper-model') options.whisperModel = value
     else if (key === 'model-map') options.modelMap = value
+    else if (key === 'interpreter-idle-min') {
+      const minutes = Number(value)
+      if (!Number.isFinite(minutes) || minutes < 0) throw new Error('--interpreter-idle-min 必须是非负数（0 = 关闭兜底）')
+      options.interpreterIdleMin = minutes
+    }
     else if (key === 'max-models') {
       const count = Number(value)
       if (!Number.isInteger(count) || count < 1) throw new Error('--max-models 必须是正整数')
@@ -589,6 +597,60 @@ export function readRoomActivity(options, roomIds, statFile = (path) => statSync
 }
 
 /**
+ * 翻译官会话"没人管了"怎么办（5.45，第一档）。
+ *
+ * <p><b>问题</b>：翻译官会话就是一条 `rooms` 行。它只会在两种情况下被关掉：
+ * 手机点「停止」（`POST /org/interpreter/<id>/end` → `closeRoomByAdmin`）或管理员结束。
+ * 于是 App 崩了、被系统杀掉、或者用户直接挂着不管时：
+ * <ul>
+ *   <li>会话行永远 `closed_at IS NULL` → 历史里**一直显示"进行中"**、时长一直涨；</li>
+ *   <li>它的单成员永远不会离开，所以看门狗也**不会**收它的管线 —— 切句/大脑一直跑着占 CPU。</li>
+ * </ul>
+ *
+ * <p><b>这一档的做法</b>：用**音频活动**当"还活着"的证据。翻译官每说一句都会往
+ * `audio/<房间>/<说话人>.pcm` 追加；超过 `--interpreter-idle-min`（缺省 10 分钟，0=关）
+ * 一条音频都没有，就把它当"客户端已经不在了"，直接结束会话（`closed_at` 写上）。
+ * 会话一关，它下一轮就从 `listRooms` 里消失，管线随之被 {@link planStop} 正常收掉。
+ *
+ * <p>为什么用音频活动、不新加心跳接口：这条路**不需要 App 配合**，老版本 App 也一样受益；
+ * 而"说话"本来就是翻译官唯一的心跳（不说就是没用）。心跳接口（第二档）能更准，
+ * 但要动协议，等这一档跑一段再说。
+ *
+ * @param {Array} rooms `listRooms(..., { includeInterpreter: true })` 的结果
+ * @param {(roomId: string) => number} lastActivityOf 该房间最后一次音频活动的时间（ms；没有给 -Infinity）
+ * @param {number} now 当前时间
+ * @param {number} idleMs 多久没动静算"没人了"
+ * @returns {Array<{id: string, name: string, idleMinutes: number}>}
+ */
+export function idleInterpreterSessions(rooms, lastActivityOf, now, idleMs) {
+  if (!Number.isFinite(idleMs) || idleMs <= 0) return []
+  const out = []
+  for (const room of Array.isArray(rooms) ? rooms : []) {
+    if (room === null || typeof room !== 'object') continue
+    // 只处理翻译官会话：普通会议有自己的"发起者退出即结束"语义，不该被这里顺带关掉
+    if (room.kind !== 'interpreter') continue
+    const id = typeof room.id === 'string' ? room.id : ''
+    if (id === '') continue
+    let last = -Infinity
+    try {
+      last = Number(lastActivityOf(id))
+    } catch {
+      last = -Infinity
+    }
+    // 从没说过话的会话：用它的创建时间当基线（否则刚开就等着说话的会话会被立刻关掉）
+    if (!Number.isFinite(last) || last === -Infinity) {
+      const created = Date.parse(room.createdAt ?? '')
+      last = Number.isFinite(created) ? created : now
+    }
+    const idle = now - last
+    if (idle >= idleMs) {
+      out.push({ id, name: typeof room.name === 'string' ? room.name : '', idleMinutes: Math.round(idle / 60000) })
+    }
+  }
+  return out
+}
+
+/**
  * 从"所有开着的房间"里挑出**该起管线**的那些。
  *
  * 缺省只挑"有人在里面"的房间（`members > 0`）：房间开着但一个人都不在，
@@ -922,6 +984,9 @@ export async function main(argv = process.argv.slice(2)) {
   }
   console.log(`  翻译模式   ${describeMode(options)}`
     + `；房间没人后 ${options.graceMs}ms 才收管线`)
+  console.log(`  翻译官兜底 ${options.interpreterIdleMin > 0
+    ? `空闲 ${options.interpreterIdleMin} 分钟没音频就结束会话（App 崩溃/离线时不留下"永远进行中"的记录）`
+    : '已关闭（--interpreter-idle-min 0）'}`)
   console.log(`  术语来源   ${termSummary ?? '旧的全局表（<data-dir>/terms.json；手机上"开始同传"后会发布会议术语）'}`)
   console.log(`  数据目录   ${options.dataDir}`)
   if (staleState.buses > 0 || staleState.segments > 0) {
@@ -1216,6 +1281,33 @@ export async function main(argv = process.argv.slice(2)) {
     })
     absentSince = plan.absentSince
     for (const roomId of plan.stops) stopRoom(roomId, '房间已关闭或没人了')
+
+    // 5.45：翻译官会话"没人管了"要能自己结束。
+    // 顺序在 planStop 之后：这一轮先按老逻辑收掉该收的，再关"空闲到不像话"的会话；
+    // 关掉之后它下一轮就不在 desired 里，管线由 planStop 正常收（不在库里留脏数据，
+    // 也不会让一条永远"进行中"的记录一直挂在那里）。
+    if (options.interpreterIdleMin > 0) {
+      const activity = readRoomActivity(options, snapshot.rooms.map(room => room.id))
+      const idle = idleInterpreterSessions(
+        snapshot.rooms,
+        (roomId) => {
+          const one = activity.get(roomId)
+          return one === undefined ? -Infinity : one.at
+        },
+        Date.now(),
+        options.interpreterIdleMin * 60000,
+      )
+      for (const one of idle) {
+        try {
+          closeRoomByAdmin(options.dataDir, { roomId: one.id, by: 'system', now: Date.now() })
+          console.log(`  ${DIM}■ 翻译官会话 ${shortRoomId(one.id)} 已空闲 ${one.idleMinutes} 分钟，`
+            + `已结束（客户端可能已崩溃/离线）${RESET}`)
+        } catch (error) {
+          console.error(`  ⚠️ 结束空闲的翻译官会话失败（${shortRoomId(one.id)}）：`
+            + `${error && error.message ? error.message : error}`)
+        }
+      }
+    }
 
     if (options.translateMode !== 'serial') {
       // queue / parallel：每场一套（queue 的"省显存"靠切句不加载模型 + 全局唯一识别，

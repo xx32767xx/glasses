@@ -629,6 +629,53 @@ export async function runStartMultiSuite({ it, check, assert }) {
     rmSync(base, { recursive: true, force: true })
   })
 
+  await it('5.45：翻译官会话没人管了要自己结束（否则历史里永远"进行中"）', async () => {
+    // 翻译官会话就是一条 rooms 行，只会在"手机点停止"或"管理员结束"时关。
+    // App 崩了 / 被系统杀掉 / 挂着不管时：行永远是 closed_at=NULL，而它的单成员
+    // 永远不离开 → 看门狗也不会收它的管线。这一档用**音频活动**当心跳兜底。
+    const { idleInterpreterSessions, parseArgs: parseOwn } = await import('../scripts/start-multi.mjs')
+    const now = 1_700_000_000_000
+    const rooms = [
+      { id: 'room-idle', kind: 'interpreter', name: '空闲的', createdAt: new Date(now - 60 * 60000).toISOString() },
+      { id: 'room-busy', kind: 'interpreter', name: '在说的', createdAt: new Date(now - 60 * 60000).toISOString() },
+      { id: 'room-meet', kind: 'meeting', name: '会议', createdAt: new Date(now - 600 * 60000).toISOString() },
+      { id: 'room-new', kind: 'interpreter', name: '刚开的', createdAt: new Date(now - 60000).toISOString() },
+    ]
+    const activity = new Map([
+      ['room-idle', now - 12 * 60000],   // 12 分钟没说话
+      ['room-busy', now - 30 * 1000],    // 30 秒前刚说过
+      ['room-meet', now - 600 * 60000],  // 会议再闲也不归这里管
+    ])
+    const idle = idleInterpreterSessions(rooms, (id) => activity.get(id) ?? -Infinity, now, 10 * 60000)
+    check('只挑出"空闲超过阈值"的翻译官会话',
+      idle.length === 1 && idle[0].id === 'room-idle', JSON.stringify(idle))
+    check('刚说过话的不动（30 秒前说过）', !idle.some((one) => one.id === 'room-busy'))
+    check('普通会议不归它管（有自己的"发起者退出即结束"）', !idle.some((one) => one.id === 'room-meet'))
+    check('刚开还没说过话的会话不误杀（用创建时间当基线）', !idle.some((one) => one.id === 'room-new'))
+    check('空闲时长写进日志给人看', idle[0].idleMinutes >= 10, String(idle[0] && idle[0].idleMinutes))
+
+    const noActivity = idleInterpreterSessions(
+      [{ id: 'room-x', kind: 'interpreter', createdAt: new Date(now - 3 * 60000).toISOString() }],
+      () => -Infinity, now, 10 * 60000)
+    check('完全没有音频活动时按创建时间算（3 分钟前建的不会被判空闲）', noActivity.length === 0,
+      JSON.stringify(noActivity))
+    check('阈值设 0 = 关闭这个兜底', idleInterpreterSessions(rooms, (id) => activity.get(id) ?? -Infinity,
+      now, 0).length === 0)
+    check('缺省 10 分钟 / 可配 / 0 允许', parseOwn(['--data-dir', 'var/x']).interpreterIdleMin === 10
+      && parseOwn(['--data-dir', 'var/x', '--interpreter-idle-min', '3']).interpreterIdleMin === 3
+      && parseOwn(['--data-dir', 'var/x', '--interpreter-idle-min', '0']).interpreterIdleMin === 0)
+    let rejectedIdle = ''
+    try { parseOwn(['--data-dir', 'var/x', '--interpreter-idle-min', '-1']) } catch (error) {
+      rejectedIdle = String(error.message)
+    }
+    check('负数要被拒（不是悄悄当成 0）', rejectedIdle.includes('非负'), rejectedIdle)
+
+    // 收尾动作必须是**真的关会话**（写 closed_at），不是只收进程
+    const source = readFileSync(new URL('../scripts/start-multi.mjs', import.meta.url), 'utf-8')
+    check('空闲扫描后真的调用 closeRoomByAdmin（写 closed_at）',
+      /idleInterpreterSessions\(/.test(source) && /closeRoomByAdmin\(options\.dataDir/.test(source))
+  })
+
   await it('库还不存在 → 当"没有房间"，不抛异常', async () => {
     const base = join(VAR_DIR, 'test', 'multi-suite-nodb')
     rmSync(base, { recursive: true, force: true })
