@@ -56,6 +56,13 @@ LeionProDemo_SDK/
 # 本地装的词对齐实验仓库（awesome-align 源码，非本项目产物）
 awesome-align-master/
 
+# Rokid 官方的 CXR-L SDK 示例工程（CxrlSample/）。**放在本地供参考，不纳入版本控制**：
+#  ① 它是**厂商的示例**，不是我们的产物（性质同上两条）；
+#  ② 结论已经吸取进 docs/21 §5.51：它只提供设备协同与显示（音频回调 + CustomView 画字），
+#    **不提供 ASR，也不提供翻译** —— 我们没用它的代码，只用了它的协议形状。
+# 需要重新看它的协议时，本地留一份即可（这个目录一直都在）。
+CxrlSample/
+
 # 漏传数据目录时凭空建出来的库（4.118 修掉的真 bug：`dbPath(undefined)` →
 # `<cwd>/undefined/leion.db`，所有读写都"成功"但查不到任何数据）。
 # lib/db.mjs 现在会直接抛错，这条只是兜底：万一老版本脚本还这么干，也别把它提交进来。
