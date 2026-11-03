@@ -1387,8 +1387,18 @@ export async function main(argv = process.argv.slice(2)) {
         const frames = countFrames(files.busFile)
         return `${shortRoomId(roomId)} 收件箱 ${inbox} 行 · 字幕 ${frames} 帧`
       })
+      // 5.46：这里两个数字口径不同，凑在一起容易看不懂（用户就问过）：
+      //   · "开着的房间" = 数据库里 closed_at IS NULL 的那些行；
+      //   · "在翻译" = 我们还占着管线的进程（含**宽限期内还没收掉**的那些）。
+      // 会话被关闭（手机点停止 / 兜底结束）之后，行立刻就不在列表里了，但它的管线
+      // 要等 --grace-ms（缺省 60 秒）才收 —— 中间这段时间就会出现"0 个房间 / 1 场在翻译"。
+      // 所以把"正在收尾"的场数明写在括号里，别让人以为自己看错了。
+      const openIds = new Set(snapshot.rooms.map(room => room.id))
+      const closing = [...running.keys()].filter(roomId => !openIds.has(roomId))
       console.log(`  ${DIM}· 还在看（开着的房间 ${snapshot.rooms.length} 个，`
-        + `在翻译 ${running.size} 场${names.length > 0 ? `：${names.join(' / ')}` : ''}）${RESET}`)
+        + `在翻译 ${running.size} 场${names.length > 0 ? `：${names.join(' / ')}` : ''}`
+        + `${closing.length > 0
+          ? `；其中 ${closing.length} 场已关闭、宽限期后收尾` : ''}）${RESET}`)
       if (perRoom.length > 0) console.log(`  ${DIM}  ${perRoom.join(' | ')}${RESET}`)
     }
     schedule()

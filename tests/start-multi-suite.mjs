@@ -676,6 +676,25 @@ export async function runStartMultiSuite({ it, check, assert }) {
       /idleInterpreterSessions\(/.test(source) && /closeRoomByAdmin\(options\.dataDir/.test(source))
   })
 
+  await it('5.46：「开着的房间 0 个 / 在翻译 1 场」不是矛盾，是宽限期', async () => {
+    // 用户实测问过这句：两个数字口径不同 —— 房间数看数据库（closed_at IS NULL），
+    // 在翻译看我们占着的管线（**含宽限期内还没收掉的**）。会话一关行就不在列表里了，
+    // 但管线要等 --grace-ms 才收，于是出现"0 个房间 / 1 场在翻译"。
+    const source = readFileSync(new URL('../scripts/start-multi.mjs', import.meta.url), 'utf-8')
+    check('心跳行把"正在收尾"的场数写出来（不再让人以为看错了）',
+      /宽限期后收尾/.test(source) && /已关闭/.test(source))
+    check('口径来自数据库列表 vs 我们自己的 running', /const openIds = new Set\(snapshot\.rooms/.test(source))
+    // 宽限期本身还是原来那条逻辑（不在本节的范围内改动）
+    const { planStop } = await import('../scripts/start-multi.mjs')
+    const now = 1_700_000_000_000
+    const plan = planStop({ running: ['room-x'], desired: [], absentSince: new Map(), now, graceMs: 60000 })
+    check('房间从列表消失后并不立刻停（先记时间，等宽限期）',
+      plan.stops.length === 0 && plan.absentSince.has('room-x'), JSON.stringify(plan.stops))
+    const later = planStop({ running: ['room-x'], desired: [], absentSince: plan.absentSince,
+      now: now + 60001, graceMs: 60000 })
+    check('过了宽限期才真收', later.stops.includes('room-x'), JSON.stringify(later.stops))
+  })
+
   await it('库还不存在 → 当"没有房间"，不抛异常', async () => {
     const base = join(VAR_DIR, 'test', 'multi-suite-nodb')
     rmSync(base, { recursive: true, force: true })
