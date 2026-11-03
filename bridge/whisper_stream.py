@@ -525,7 +525,7 @@ def run_segment_producer_dir(args, np):
         if state is not None:
             return state
         path = root / f"{name}.pcm"
-        language = None if args.no_sidecar_lang else _read_track_language(path)
+        language = None if args.no_sidecar_lang else _read_lang_sidecar(path)
         if language is None:
             language = args.language
         strategy = strategy_for(language)

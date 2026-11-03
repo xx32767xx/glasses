@@ -2510,6 +2510,52 @@ def main():
     check("分流报告里能看到**实际**用的精度（不是表里写的那个）",
           "int8_float32" in fence_pool.report(), fence_pool.report())
 
+    heading("切句端按策略跑起来（5.44 事故回归：这类 NameError 只有真跑才抓得到）")
+    # 真实事故：`track_of()` 里调用了一个**并不存在**的函数名（`_read_track_language`），
+    # 于是切句进程一起来就 NameError 退出，而日志里看起来像"没有音频"。
+    # 这一节直接**把切句进程跑一遍**（不需要模型，纯 numpy），而不是只读源码。
+    import argparse as _argparse
+
+    sim_dir = Path(ROOT / "var" / "test" / "producer-strategy")
+    shutil.rmtree(sim_dir, ignore_errors=True)
+    (sim_dir / "audio" / "room-P").mkdir(parents=True, exist_ok=True)
+    (sim_dir / "queue").mkdir(parents=True, exist_ok=True)
+    track = sim_dir / "audio" / "room-P" / "alice.pcm"
+    clip = np.zeros(16000, dtype=np.float32)
+    clip[2000:14000] = 0.2
+    track.write_bytes((np.clip(clip, -1, 1) * 32767).astype(np.int16).tobytes())
+    (sim_dir / "audio" / "room-P" / "alice.pcm.rate").write_text("16000\n", encoding="utf-8")
+    (sim_dir / "audio" / "room-P" / "alice.pcm.lang").write_text("en-US\n", encoding="utf-8")
+    strategy_table_path = sim_dir / "asr-models.json"
+    strategy_table_path.write_text(json.dumps({
+        "default": {"strategy": "default", "segmentation": {"silence_ms": 800}},
+        "strategies": {"en-fast": {"segmentation": {"silence_ms": 650, "min_speech_ms": 300}}},
+        "languages": {"en-US": {"strategy": "en-fast"}},
+    }), encoding="utf-8")
+
+    producer_args = _argparse.Namespace(
+        segment_dir=str(sim_dir / "queue"), tag="room-P", follow=None,
+        follow_dir=str(sim_dir / "audio" / "room-P"), follow_rate=None,
+        follow_from_start=True, follow_poll_ms=40, stop_after_idle=0.6,
+        idle_flush_ms=200, samplerate=16000, block_ms=100,
+        silence_ms=800, min_speech_ms=500, max_speech_ms=30000,
+        rms_threshold=0.01, preroll_ms=250, adaptive=True, rms_floor=0.004,
+        noise_multiplier=4.0, short_utterance_ms=800, short_silence_ms=1100,
+        cut_pause_ms=200, language=None, lang_candidates=None, no_sidecar_lang=False,
+        model="large-v3", compute_type=None, beam_size=5,
+        model_map=str(strategy_table_path), max_models=2, data_dir=str(sim_dir),
+    )
+    producer_code = whisper_stream.run_segment_producer(producer_args, np)
+    check("切句进程能真跑起来并正常退出（不再 NameError）", producer_code == 0, str(producer_code))
+    produced_files = sorted(p.name for p in (sim_dir / "queue").glob("*.json"))
+    check("切出至少一段", len(produced_files) >= 1, str(produced_files))
+    if produced_files:
+        produced_meta = json.loads((sim_dir / "queue" / produced_files[0]).read_text(encoding="utf-8"))
+        check("段里带策略名（en-US → en-fast）", produced_meta.get("strategy") == "en-fast",
+              str(produced_meta))
+        check("段里带这一路的语种", produced_meta.get("lang") == "en", str(produced_meta))
+    shutil.rmtree(sim_dir, ignore_errors=True)
+
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
     if failures:
         print("")
