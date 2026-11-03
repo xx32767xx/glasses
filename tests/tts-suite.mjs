@@ -420,6 +420,23 @@ export async function runTtsSuite({ it, check }) {
       /startedAt = System\.currentTimeMillis\(\)/.test(interp) && /%d:%02d/.test(interp))
   })
 
+  await it('5.49：网络抖动导致的翻译失败要重试（缺一句比慢一句糟）', async () => {
+    const { readFileSync } = await import('node:fs')
+    const core = readFileSync(join(ROOT, 'plugin', 'core.mjs'), 'utf-8')
+    // 现场日志：`finish=error，TRANSPORT：DeepSeek API request to https://api.deepseek.com failed`
+    // 这是**对外网络抖动**，一两秒后重发常常就成功；之前直接放弃 → 那一句只剩原文、没有译文。
+    check('翻译失败有重试包装', /async function translateWithRetry\(llm, args\)/.test(core))
+    check('重试次数有上限（600ms / 1500ms 两次，不是无限重试）',
+      /const delays = \[600, 1500\]/.test(core) && /attempt < delays\.length/.test(core))
+    check('已经吐了半截译文就不再重试（屏幕上不能出现两个版本）',
+      /partial === '' && isTransientFailure/.test(core))
+    check('只重试"可能自己会好"的失败（网络/限流/超时）',
+      /TRANSPORT\|API request\|finish=error/.test(core))
+    check('配置类失败不重试（没有 llm 服务、空译文）',
+      /没有 llm 服务/.test(core) && /返回了空译文/.test(core))
+    check('每次重试都打日志（不许悄悄重试到成功）', /↻ 翻译这次失败/.test(core))
+  })
+
   await it('错误码注册表：加码只改三处，漏一处自动红（不用改测试）', async () => {
     const { readFileSync } = await import('node:fs')
     const registryPath = join(JAVA_SRC, 'InterpreterErrorCodes.java')

@@ -3307,11 +3307,56 @@ function createInterpreter(ctx, rawConfig, deps) {
               + '或者用 leion_display 自己翻译后推送',
           }
         }
-        return await streamTranslation(llm, args.text, args.from, args.to, args.onDelta,
-          termsHintFor(args.text, args.from))
+        return await translateWithRetry(llm, args)
       },
     }
   })()
+
+  /**
+   * 翻译一次，**失败时按需重试**（5.49）。
+   *
+   * <p>为什么要有它：现场日志里出现过
+   * `finish=error，TRANSPORT：DeepSeek API request to https://api.deepseek.com failed` ——
+   * 这是**对外网络抖动**，一两秒后重发往往就成功了。而现在的行为是：这一句直接没有译文
+   * （只有原文帧），用户看到的就是"这句没翻"。对同传来说，缺一句比慢一句糟得多。
+   *
+   * <p>三条克制：
+   * <ol>
+   *   <li>**只在没有任何增量发出去时重试**：已经吐了半截译文再重来，屏幕上会出现
+   *       两遍不同版本的字幕（比缺一句更让人困惑）；</li>
+   *   <li>**只重试"可能自己会好"的失败**（网络/限流）；参数错、没有 llm 服务这类重试也没用；</li>
+   *   <li>次数固定为 2 次（间隔 600ms / 1500ms），并且每次都打日志 ——
+   *       不允许"悄悄重试到成功"，那会让延迟超标也看不出原因。</li>
+   * </ol>
+   */
+  async function translateWithRetry(llm, args) {
+    const delays = [600, 1500]
+    for (let attempt = 0; ; attempt += 1) {
+      const result = await streamTranslation(llm, args.text, args.from, args.to, args.onDelta,
+        termsHintFor(args.text, args.from))
+      if (result.ok === true) return result
+      const partial = typeof result.partial === 'string' ? result.partial.trim() : ''
+      const retryable = partial === '' && isTransientFailure(result.failure) && attempt < delays.length
+      if (!retryable) {
+        if (partial !== '' && attempt > 0) {
+          console.log('[leion-pro] ↻ 重试后仍然只拿到半截译文，已按失败处理（不再重试）')
+        }
+        return result
+      }
+      console.log('[leion-pro] ↻ 翻译这次失败（' + result.failure + '），'
+        + `${delays[attempt]}ms 后重试（第 ${attempt + 1}/${delays.length} 次）`)
+      await new Promise((resolve) => setTimeout(resolve, delays[attempt]))
+    }
+  }
+
+  /** 这个失败值不值得重试（网络/限流 → 值得；配置/参数错 → 不值得）。 */
+  function isTransientFailure(failure) {
+    const text = String(failure ?? '')
+    if (text.includes('没有 llm 服务') || text.includes('ctx 里没有 llm')) return false
+    if (text.includes('返回了空译文')) return false
+    return /TRANSPORT|API request|finish=error|rate.?limit|429|timeout|timed out|ECONNRESET|ETIMEDOUT|socket hang up/i
+      .test(text)
+  }
 
   const api = {
     config,
