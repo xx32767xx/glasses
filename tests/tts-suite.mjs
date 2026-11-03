@@ -400,6 +400,26 @@ export async function runTtsSuite({ it, check }) {
       && !/'\/say'/.test(relay.match(/const GATED_ENDPOINTS[^\n]*/)?.[0] ?? "'/say'"))
   })
 
+  await it('5.48：同一句的原文帧/增量帧/定稿帧必须并成一张卡（不再每帧一张）', async () => {
+    const { readFileSync } = await import('node:fs')
+    const interp = readFileSync(join(JAVA_SRC, 'InterpreterActivity.java'), 'utf-8')
+    const list = readFileSync(join(JAVA_SRC, 'SubtitleList.java'), 'utf-8')
+    // 真实问题：一句话会来好几帧（原文帧 en-US 无译文、译文增量帧若干、译文定稿帧），
+    // 翻译官页以前给**每一帧**算一个新 id（identityHashCode(lines)+hashCode(text)），
+    // 于是同一句在屏幕上是两三张卡、互相闪烁 —— 用户看到的"定稿帧和增量帧一起发过来"。
+    check('翻译官页改用与房间页同一个字幕列表（按原文归并）',
+      /new SubtitleList\(/.test(interp) && /subtitles\.submit\(/.test(interp))
+    check('不再用"每帧一个新 id"自己画卡片',
+      !/identityHashCode\(lines\)/.test(interp)
+      && !/private void renderCard\(/.test(interp) && !/List<String> cardIds/.test(interp))
+    check('归并规则在 SubtitleList 里：原文相同 → 同一条（不是按 id）',
+      /private Segment find\(String source\)/.test(list) && /source\.equals\(segment\.source\)/.test(list))
+    check('原文为空的增量帧续写到上一条未定稿的卡片上',
+      /Segment last = segments\.get\(segments\.size\(\) - 1\)/.test(list) && /return last\.partial \? last : null;/.test(list))
+    check('时间标记按本场开始算（mm:ss），每场重置',
+      /startedAt = System\.currentTimeMillis\(\)/.test(interp) && /%d:%02d/.test(interp))
+  })
+
   await it('错误码注册表：加码只改三处，漏一处自动红（不用改测试）', async () => {
     const { readFileSync } = await import('node:fs')
     const registryPath = join(JAVA_SRC, 'InterpreterErrorCodes.java')
@@ -489,7 +509,9 @@ export async function runTtsSuite({ it, check }) {
     check('右上角的后端小字已按用户要求删除', !/interpBackend/.test(layout))
     check('状态行说清"目前是演示回放"', /尚未接入真实识别/.test(readFileSync(join(ROOT,
       'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml'), 'utf-8')))
-    check('页面同 id 原位更新（同一句只占一张卡）', /cardIds\.indexOf\(id\)/.test(activity))
+    // 5.48：不再自己维护"同 id 原位更新"，这件事交给了房间页同一个 SubtitleList（按原文归并）
+    check('字幕归并走 SubtitleList（同一句只占一张卡）',
+      /new SubtitleList\(/.test(activity) && /subtitles\.submit\(/.test(activity))
     check('退到后台就停（不偷偷占资源）', /protected void onStop\(\)[\s\S]{0,200}?stopInterpreting\(\)/.test(activity))
 
     // ④ 朗读复用房间那套（策略一致）

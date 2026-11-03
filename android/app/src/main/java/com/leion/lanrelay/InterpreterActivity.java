@@ -59,6 +59,14 @@ public class InterpreterActivity extends android.app.Activity {
     private TextView emptyView;
     private ScrollView scroll;
     private LinearLayout list;
+    /**
+     * 5.48：字幕流交给**房间页同一个** {@link SubtitleList}（按原文归并）。
+     * 以前这里自己维护 `cardIds`/`cards`，用"每帧一个新 id"画卡片 ——
+     * 于是同一句的原文帧、增量译文帧、定稿译文帧各占一张，屏幕上重复+闪烁。
+     */
+    private SubtitleList subtitles;
+    /** 本场开始的时刻（字幕的时间标记用 mm:ss）。 */
+    private long startedAt = System.currentTimeMillis();
     private Button toggleButton;
 
     private InterpreterAsrBackend backend;
@@ -75,9 +83,6 @@ public class InterpreterActivity extends android.app.Activity {
     /** 对方说的语言（= 识别语种）。由 {@link InterpreterLang} 的规则推出/校验。 */
     private String partner = InterpreterLang.PT;
     /** 同一个 id 的 partial 要**原位更新**同一张卡，不要新起一条。 */
-    private final List<String> cardIds = new ArrayList<>();
-    private final List<View> cards = new ArrayList<>();
-
     // ── 三块（5.37）：配置 / 收听 / 历史 ────────────────────────────────────
     /** 现在看的是哪一块（0 配置 / 1 收听 / 2 历史）。 */
     private int tab = TAB_LIVE;
@@ -113,6 +118,9 @@ public class InterpreterActivity extends android.app.Activity {
         emptyView = findViewById(R.id.interpEmpty);
         scroll = findViewById(R.id.interpScroll);
         list = findViewById(R.id.interpSubtitles);
+        // 5.48：与房间页共用的字幕列表（按原文归并、自动跟随、手指上滑暂停跟随）
+        subtitles = new SubtitleList(getLayoutInflater(), scroll, list, null);
+        subtitles.setBilingual(true);
         toggleButton = findViewById(R.id.interpToggle);
         configPanel = findViewById(R.id.interpConfigPanel);
         livePanel = findViewById(R.id.interpLivePanel);
@@ -567,6 +575,8 @@ public class InterpreterActivity extends android.app.Activity {
         toggleButton.setText(getString(R.string.interp_stop));
         statusView.setText(getString(R.string.interp_starting) + " · " + backendText(backend));
         clearCards();
+        // 每一场的时间标记从 0 开始（与房间页一致：时间相对本场开始）
+        startedAt = System.currentTimeMillis();
         backend.start(partner, new Callbacks());
         // ⚠️ 这里**不立刻开麦**（5.36）：路线 B 要先有会话 id 才能把音频归属到这一场。
         // 会话建好会回调 onReady，那时再开麦（见 Callbacks.onReady）。
@@ -760,8 +770,11 @@ public class InterpreterActivity extends android.app.Activity {
                         ? (lines == null ? "" : String.join("\n", lines)) : text;
                 String src = source == null ? "" : source;
                 if (translated.isEmpty() && src.isEmpty()) return;
-                renderCard("frame-" + (partial ? "p" : "f") + "-" + System.identityHashCode(lines)
-                        + "-" + translated.hashCode(), src, translated, partial);
+                // 5.48：**交给房间页同一个 SubtitleList**（按原文归并）。
+                // 之前这里用"每次 self-made 一个新 id"画卡片，于是同一句会收到好几帧
+                // （原文帧 + 增量译文帧 + 定稿译文帧）→ 屏幕上冒出好几张卡、还互相闪烁。
+                // SubtitleList 的规则是：**原文相同就是同一条**，增量→定稿→校对都在原位更新。
+                submitCard(src, translated, partial);
                 // 只朗读**定稿且非空**的译文；partial 是半句，念出来很怪（与房间页一致）
                 if (!partial && ttsQueue != null && !translated.isEmpty()) {
                     ttsQueue.offer(translated, langTag == null || langTag.isEmpty() ? lang : langTag);
@@ -793,13 +806,13 @@ public class InterpreterActivity extends android.app.Activity {
 
         @Override
         public void onPartial(String id, String text, String langTag) {
-            ui.post(() -> renderCard(id, "", text, true));
+            ui.post(() -> submitCard("", text, true));
         }
 
         @Override
         public void onFinal(String id, String text, String langTag) {
             ui.post(() -> {
-                renderCard(id, "", text, false);
+                submitCard("", text, false);
                 // 只朗读**定稿且非空**的译文（尾部那句空串是"演完了"的信号，不念）
                 if (ttsQueue != null && text != null && !text.isEmpty()) {
                     ttsQueue.offer(text, lang);
@@ -821,79 +834,34 @@ public class InterpreterActivity extends android.app.Activity {
     // ── 字幕流（与房间页同一套规矩：同 id 原位更新、新句往下推、自动滚到底）──
 
     /**
-     * 落一张卡（5.36：多了 `source` 参数）。
+     * 落一条字幕（5.48：改用房间页那套 {@link SubtitleList}，不再自己造卡片）。
      *
-     * <p>为什么带原文：路线 B 的帧里**同时有原文和译文**（服务端都算好了），
-     * 而"原文在上、译文在下"是房间页已经在用的显示方式 —— 本页照同一套排，
-     * 用户不用学两套版式。纯识别后端（演示回放）没有原文，传空串即可。
+     * <p><b>为什么必须换</b>：一句话会来**好几帧** —— 原文帧（en-US，无译文）、
+     * 译文的增量帧（可能好几次）、译文定稿帧。以前这里给每一帧都算一个新 id
+     * （由行数组和译文文本拼出来），于是同一句在屏幕上变成两三张卡、
+     * 互相闪烁。用户看到的就是"定稿帧和增量帧一起发过来"。
+     *
+     * <p>{@link SubtitleList} 的身份规则是**原文**：原文相同 → 同一条卡片原位更新；
+     * 原文为空（增量译文帧常不带原文）→ 续写到上一条未定稿的卡片上。
+     * 这与房间页完全是同一套显示逻辑，两页行为一致。
      */
-    private void renderCard(String id, String source, String text, boolean partial) {
+    private void submitCard(String source, String text, boolean partial) {
         String src = source == null ? "" : source.trim();
-        if ((text == null || text.isEmpty()) && src.isEmpty()) {
-            if (id != null && id.endsWith("-end")) {
-                statusView.setText(getString(R.string.interp_finished));
-            }
-            return;
-        }
+        String target = text == null ? "" : text;
+        if (src.isEmpty() && target.isEmpty()) return;
+        subtitles.submit(elapsedLabel(), src, target, partial);
         emptyView.setVisibility(View.GONE);
         scroll.setVisibility(View.VISIBLE);
+    }
 
-        int index = cardIds.indexOf(id);
-        View card;
-        TextView main;
-        TextView sub;
-        if (index >= 0) {
-            // 原位更新：同一句的 partial → 定稿只占一张卡
-            card = cards.get(index);
-            main = (TextView) card.findViewWithTag("main");
-            sub = (TextView) card.findViewWithTag("sub");
-        } else {
-            LinearLayout box = new LinearLayout(this);
-            box.setOrientation(LinearLayout.VERTICAL);
-            box.setBackgroundResource(R.drawable.bg_card);
-            int pad = Math.round(getResources().getDisplayMetrics().density * 12);
-            box.setPadding(pad, pad, pad, pad);
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-            params.bottomMargin = pad / 2;
-            box.setLayoutParams(params);
-
-            sub = new TextView(this);
-            sub.setTag("sub");
-            sub.setTextColor(getColor(R.color.ink_soft));
-            sub.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,
-                    getResources().getDimension(R.dimen.text_secondary));
-            sub.setVisibility(View.GONE);
-            box.addView(sub);
-
-            main = new TextView(this);
-            main.setTag("main");
-            main.setTextColor(getColor(R.color.ink));
-            main.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,
-                    getResources().getDimension(R.dimen.text_body));
-            box.addView(main);
-
-            list.addView(box);
-            cardIds.add(id);
-            cards.add(box);
-            card = box;
-        }
-        if (card == null || main == null) return;
-        // 原文（小字、灰）在上；译文（大字）在下 —— 与房间页一致
-        if (sub != null) {
-            sub.setText(src);
-            sub.setVisibility(src.isEmpty() ? View.GONE : View.VISIBLE);
-        }
-        // 未定稿的句子画成浅色：一眼看出"这句还在成形"
-        main.setTextColor(getColor(partial ? R.color.ink_soft : R.color.ink));
-        main.setText(text == null ? "" : text);
-        scroll.post(() -> scroll.fullScroll(View.FOCUS_DOWN));
+    /** 本场从开始到现在的时间标记（与房间页的写法一致：mm:ss）。 */
+    private String elapsedLabel() {
+        long seconds = Math.max(0, (System.currentTimeMillis() - startedAt) / 1000L);
+        return String.format(java.util.Locale.US, "%d:%02d", seconds / 60, seconds % 60);
     }
 
     private void clearCards() {
-        list.removeAllViews();
-        cardIds.clear();
-        cards.clear();
+        subtitles.clear();
         emptyView.setVisibility(View.VISIBLE);
         scroll.setVisibility(View.GONE);
         Log.i("LeionInterp", "🗒 清空字幕流");
