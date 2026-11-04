@@ -184,6 +184,13 @@ def parse_args(argv=None):
     这样测试才能直接断言"缺省值到底是什么"，而不是靠人去读一遍源码。"""
     parser = argparse.ArgumentParser(description="faster-whisper 实时转写，逐行输出")
     parser.add_argument("--model", default="small", help="模型大小：tiny/base/small/medium/large-v3（缺省 small）")
+    # 5.79：命令行也能指定**引擎家族**（whisper / parakeet / tencent）。
+    # 为什么需要它：`--file` 与麦克风流式模式只吃"启动时加载的那一份"，
+    # 而在此之前引擎只能从策略表里来 —— 于是想用同一批音频离线量 parakeet，
+    # 就必须先起整套管线、改表、再说一遍话。有了这个参数，一行命令就能量。
+    # 优先级与模型相同：命令行 → 表 default → strategies → languages → 房间覆盖。
+    parser.add_argument("--engine", default=None,
+                        help="引擎家族：whisper（缺省）/ parakeet / tencent（策略表里的 engine 会覆盖它）")
     parser.add_argument("--device", default="cpu", help="cpu 或 cuda（本机实测两者都能跑，见 --stats）")
     parser.add_argument("--compute-type", default="int8",
                         help="int8 / int8_float32 / int8_float16 / float16 / float32"
@@ -890,6 +897,9 @@ def resolve_strategy(language, cli, table=None, room_profile=None):
         "model": cli.get("model"),
         "compute_type": cli.get("compute_type"),
         "beam_size": cli.get("beam_size"),
+        # 5.79：命令行也能指定引擎家族（表里的 engine 会覆盖它）。
+        # 不放进 base 的话 `--engine parakeet` 会被**静默忽略** —— 那正是最难查的一类错。
+        "engine": cli.get("engine"),
         "segmentation": dict(SEGMENTATION_DEFAULTS),
     }
     sources = {"model": "命令行", "segmentation": "内置缺省"}
@@ -3330,6 +3340,7 @@ def main():
         print(f"[whisper_stream] ⚠️ 模型表有问题，先按命令行模型跑：{map_problem}", file=sys.stderr)
     startup = resolve_strategy(args.language, {
         "model": args.model, "compute_type": compute_type, "beam_size": args.beam_size,
+        "engine": args.engine,
     }, args.asr_table)
     startup_model = startup.get("model") or args.model
     # ⚠️ 5.42：**表里的 precision 也要过硬件检查**。真实事故：表里抄了
@@ -3420,6 +3431,29 @@ def main():
     )
     stats = Stats()
 
+    def engine_transcribe(sample, language, hint=None, carried=None):
+        """这一份样本交给**启动时加载的那个引擎**（5.79）。
+
+        <p>为什么要有这层：单文件/麦克风流式这条路原来直接调模块级 `transcribe(model, …)`，
+        那是 whisper 专用函数 —— 于是 `--engine parakeet` 加载得到、却根本用不上
+        （运行时报一堆参数不匹配，或者干脆把 dict 句柄当模型用）。
+        现在把"喂谁"统一到这里：whisper 走原来那条（保留 `--min-logprob` / 续传提示等旋钮），
+        其它引擎走它们的 `transcribe(handle, …)`，返回值补成同一个六元组。
+        """
+        if startup_engine.key == "whisper":
+            return transcribe(
+                model, sample, language,
+                args.min_logprob, args.no_speech_prob,
+                beam_size=args.beam_size,
+                silence_floor=args.silence_skip_level,
+                hint_text=hint, context_text=carried or None,
+                do_normalize=not args.no_normalize,
+                candidates=args.lang_candidates,
+            )
+        outcome = startup_engine.transcribe(handle, sample, language, startup)
+        return (outcome.get("text", ""), bool(outcome.get("empty", False)),
+                outcome.get("reason"), False, "", outcome.get("resolved_language"))
+
     # ── 预热 ────────────────────────────────────────────────────────────────
     # 实测：CUDA 上第一次推理要 11.3 秒（cuDNN 选算法、分配显存），之后的句子只要 0.1 秒。
     # 不预热的话，用户说出的第一句话会被卡十几秒 —— 这是同传最不能接受的失败方式。
@@ -3428,7 +3462,7 @@ def main():
         warm_start = time.perf_counter()
         silent = np.zeros(args.samplerate, dtype=np.float32)
         try:
-            transcribe(model, silent, args.language, args.min_logprob, args.no_speech_prob)
+            engine_transcribe(silent, args.language)
         except Exception as error:      # 预热失败不该让整个程序起不来
             print(f"[whisper_stream] 预热失败（忽略）：{type(error).__name__}: {error}", file=sys.stderr)
         print(f"[whisper_stream] 预热完成：{time.perf_counter() - warm_start:.2f}s"
@@ -3458,17 +3492,9 @@ def main():
         # ⚠️ 但两段**分开传给 transcribe**：它们的闸判据强度不一样（见 transcribe 的说明）。
         hint = None if args.no_prompt else prompt_for(language, args.initial_prompt)
         carried = carry.prompt(language, now)
-        text, empty, reason, overrode, kind, resolved_language = transcribe(
-            model, utterance, language,
-            args.min_logprob, args.no_speech_prob,
-            beam_size=args.beam_size,
-            # 解码前的静音闸阈值（可调）：实测在 0.012~0.019 的敲击/呼吸段上，
-            # Whisper 会吐「谢谢大家」「搅拌均匀」这类假字幕，所以缺省取人声门槛 0.02。
-            silence_floor=args.silence_skip_level,
-            hint_text=hint, context_text=carried or None,
-            do_normalize=not args.no_normalize,
-            # 只有在**没指定语种**时才用得上（指定了就不检测）。见 transcribe 里的说明。
-            candidates=args.lang_candidates,
+        text, empty, reason, overrode, kind, resolved_language = engine_transcribe(
+            # 5.79：交给**启动时加载的那个引擎**（whisper / parakeet / tencent 都行）
+            utterance, language, hint=hint, carried=carried,
         )
         elapsed = time.perf_counter() - start
         stats.add(seconds, elapsed, empty)   # 每段都记：短段的固定开销正是同传的敌人

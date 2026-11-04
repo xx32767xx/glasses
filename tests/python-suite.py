@@ -2655,6 +2655,24 @@ def main():
     check("NeMo 转写抛错时变成空结果+原因（不让整条流水线崩）",
           parakeet.transcribe_nemo({"model": object()}, None, "en")["empty"] is True)
 
+    # 5.79：命令行要能指定引擎 —— 否则"用同一批音频离线量 parakeet"就做不到
+    # （单文件/麦克风模式原来直接调 whisper 专用函数，引擎加载了也用不上）
+    cli_args = whisper_stream.parse_args(["--file", "x.wav", "--engine", "parakeet",
+                                         "--model", "/opt/leion/models/parakeet-dir"])
+    check("命令行认 --engine", cli_args.engine == "parakeet", str(cli_args.engine))
+    cli_strategy = whisper_stream.resolve_strategy(
+        "en-US", {"model": cli_args.model, "engine": cli_args.engine}, {})
+    check("--engine 会进到策略里（不被静默忽略）",
+          cli_strategy["engine"] == "parakeet" and cli_strategy["model"].endswith("parakeet-dir"),
+          str([cli_strategy["engine"], cli_strategy["model"]]))
+    covered = whisper_stream.resolve_strategy(
+        "en-US", {"model": "large-v3", "engine": "parakeet"},
+        {"languages": {"en-US": {"engine": "tencent", "model": "16k_en"}}})
+    check("策略表仍然压过命令行（优先级没被 --engine 打乱）",
+          covered["engine"] == "tencent" and covered["model"] == "16k_en", str(covered))
+    check("不给 --engine 时仍是 whisper（老行为不变）",
+          whisper_stream.resolve_strategy("en-US", {"model": "large-v3"}, {})["engine"] == "whisper")
+
     missing_sherpa = ""
     try:
         engines["parakeet"].load({"engine": "parakeet", "model": "/nope"}, "cpu")
