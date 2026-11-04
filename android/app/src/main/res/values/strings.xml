@@ -392,6 +392,7 @@
     <!-- 5.58 识别引擎：只影响**这一场**，清单由服务器给（服务器上有什么才能选什么） -->
     <string name="interp_engine_row">识别引擎：%1$s</string>
     <string name="interp_engine_default">服务器默认</string>
+    <string name="interp_engine_same_as_default">（＝服务器默认，选它看不出区别）</string>
     <string name="interp_engine_loading">读取中…</string>
     <string name="interp_engine_pick_title">这一场用哪个识别模型</string>
     <string name="interp_engine_option">%1$s — %2$s</string>

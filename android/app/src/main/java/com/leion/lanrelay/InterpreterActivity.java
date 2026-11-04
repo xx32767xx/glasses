@@ -610,7 +610,11 @@ public class InterpreterActivity extends android.app.Activity {
         String suffix = "";
         if (option.broken()) suffix = getString(R.string.interp_engine_missing);
         else if (options_unknown(option)) suffix = getString(R.string.interp_engine_unverified);
-        return suffix.isEmpty() ? option.label : getString(R.string.interp_engine_option, option.label, suffix);
+        String label = option.label;
+        // ⚠️ 2026-11 实测踩到：下拉框里"服务器默认"和"当前那一项（比如 large-v3）"长得一样，
+        //    人选了后者等于什么都没改，然后以为"切换功能没生效"。这里把它标出来。
+        if (option.current) label = label + getString(R.string.interp_engine_same_as_default);
+        return suffix.isEmpty() ? label : getString(R.string.interp_engine_option, label, suffix);
     }
 
     private static boolean options_unknown(AsrEngineOptions.Option option) {

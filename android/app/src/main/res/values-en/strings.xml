@@ -92,6 +92,7 @@
     <string name="interp_where_demo">No server address yet, so this is the scripted demo (not real translation).</string>
     <string name="interp_engine_row">Recognition model: %1$s</string>
     <string name="interp_engine_default">server default</string>
+    <string name="interp_engine_same_as_default">(same as the server default — picking this changes nothing)</string>
     <string name="interp_engine_loading">loading…</string>
     <string name="interp_engine_pick_title">Which recognition model for this session?</string>
     <string name="interp_engine_option">%1$s — %2$s</string>

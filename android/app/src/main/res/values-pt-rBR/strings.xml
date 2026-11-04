@@ -92,6 +92,7 @@
     <string name="interp_where_demo">Ainda sem endereço do servidor: agora é uma demonstração com roteiro (não é tradução real).</string>
     <string name="interp_engine_row">Modelo de reconhecimento: %1$s</string>
     <string name="interp_engine_default">padrão do servidor</string>
+    <string name="interp_engine_same_as_default">(igual ao padrão do servidor — escolher isto não muda nada)</string>
     <string name="interp_engine_loading">carregando…</string>
     <string name="interp_engine_pick_title">Qual modelo de reconhecimento nesta sessão?</string>
     <string name="interp_engine_option">%1$s — %2$s</string>
