@@ -2604,6 +2604,18 @@ def main():
           {"whisper", "parakeet", "tencent", "funasr"}.issubset(set(engines)),
           str(sorted(engines)))
 
+    # 5.86：启动时的"本地模型"检查必须**问引擎**，不能对云端引擎也去查本地缓存。
+    # 实测踩到：funasr 的 model 是模型 ID（fun-asr-flash-…），被当路径查缓存 ->
+    # 报"本地没有模型，请 rsync / 换镜像"，与真实原因（云端引擎）完全无关。
+    check("whisper / parakeet(onnx) 要本地模型",
+          engines["whisper"].needs_local_model({"model": "large-v3"}) is True
+          and engines["parakeet"].needs_local_model({"runtime": "onnx"}) is True)
+    check("parakeet(nemo) 不要本地文件（交给 NeMo 自己按仓库名缓存）",
+          engines["parakeet"].needs_local_model({"runtime": "nemo"}) is False)
+    check("云端引擎不要本地模型（tencent / funasr）",
+          engines["tencent"].needs_local_model({"model": "16k_en"}) is False
+          and engines["funasr"].needs_local_model({"model": "fun-asr-flash-2026-06-15"}) is False)
+
     # 5.77：parakeet 有两条 runtime —— onnx（CPU int8，量准确率）与 nemo（GPU，上产线）。
     # 同一个引擎键、策略里一个字段切换，是为了"不用等另一套代码写完就能 A/B"。
     parakeet = engines["parakeet"]

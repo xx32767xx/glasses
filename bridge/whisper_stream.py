@@ -1174,6 +1174,15 @@ class AsrEngine:
         """一行说明"这个策略在跑什么"（启动日志与 /status 用）。"""
         return f"{self.display}:{profile.get('model') or 'default'}"
 
+    def needs_local_model(self, profile=None):
+        """这一路的"模型"是不是**本地文件**（决定启动时要不要查缓存/目录）。
+
+        <p>为什么要问引擎而不是在 main() 里写死：云端引擎的 `model` 字段是**引擎编码**
+        （腾讯 `16k_en`）或**模型 ID**（DashScope `fun-asr-flash-…`），拿它去查本地缓存
+        必然查不到 —— 而报错会说"本地没有模型，请 rsync / 换镜像"，与真实原因无关。
+        """
+        return True
+
     def load(self, profile, device):
         """加载（或建立连接）。返回一个句柄，之后原样传给 `transcribe`。"""
         raise NotImplementedError
@@ -1266,7 +1275,13 @@ class ParakeetEngine(AsrEngine):
     def __init__(self, model_class, args):
         self.args = args
 
+    def needs_local_model(self, profile=None):
+        # onnx 路要模型目录；nemo 路交给 NeMo 自己按仓库名下载/缓存
+        return self.runtime_of(profile) == "onnx"
+
     def runtime_of(self, profile):
+
+
         wanted = str((profile or {}).get("runtime") or "").strip().lower() or "onnx"
         if wanted not in self.RUNTIMES:
             raise RuntimeError(
@@ -1533,6 +1548,9 @@ class TencentEngine(AsrEngine):
 
     key = "tencent"
     display = "腾讯云一句话识别"
+
+    def needs_local_model(self, profile=None):
+        return False        # 云端：可用性取决于密钥，不是本地文件
     ENV_ID = "TENCENT_ASR_SECRET_ID"
     ENV_KEY = "TENCENT_ASR_SECRET_KEY"
     ENV_REGION = "TENCENT_ASR_REGION"
@@ -1675,6 +1693,9 @@ class FunAsrEngine(AsrEngine):
 
     key = "funasr"
     display = "DashScope Fun-ASR"
+
+    def needs_local_model(self, profile=None):
+        return False        # 云端：可用性取决于密钥，不是本地文件
     ENV_KEY = "DASHSCOPE_API_KEY"
 
     def __init__(self, model_class, args):
@@ -3487,30 +3508,39 @@ def main():
         print(f"[whisper_stream] 模型表：{describe_asr_table(args.asr_table)}"
               f"（启动先加载 {startup_model}，来源：{startup.get('source')}）", file=sys.stderr)
 
-    print(f"[whisper_stream] 加载模型 {startup_model}"
-          f"（device={args.device}, compute_type={startup_compute}）…", file=sys.stderr)
-    # 把"模型从哪儿来"打出来。这一行是被一次真实事故逼出来的：
-    # 用户自己跑的时候没设 HF_HOME，于是模型从零开始下载到默认缓存 ——
-    # 直连 HuggingFace 三分钟只下了 2.5MB，识别进程 4 分钟都没开始听，
-    # 而终端上只看到"加载模型…"一句，完全看不出它在下载。
-    hf_home = os.environ.get("HF_HOME") or os.environ.get("HF_HUB_CACHE") or "(默认 ~/.cache/huggingface)"
-    hf_endpoint = os.environ.get("HF_ENDPOINT") or "huggingface.co"
-    print(f"[whisper_stream] 模型缓存 {hf_home}；下载源 {hf_endpoint}", file=sys.stderr)
-    print("[whisper_stream] 若这里显示的是默认缓存，而模型仓库里已经有了，"
-          "说明 HF_HOME 没设 —— 它会重新下一个几百 MB 的模型，慢得像是卡住了",
-          file=sys.stderr)
-    if not model_is_local(startup_model):
-        missing = missing_model_advice(startup_model)
-        print(missing, file=sys.stderr)
-        return 2
-    # 5.50：启动加载改由**引擎**负责（whisper 只是其中一个实现）。
-    # 精度兜底也搬进了 WhisperEngine.load —— 一处实现，队列消费者与启动共用同一份逻辑。
+    # 5.86：先建引擎注册表并解析出**这一路是哪个引擎**，再决定要不要做"本地模型"检查。
+    # 原来这个检查排在解析引擎之前，于是云端引擎（tencent / funasr）的"模型"（其实是
+    # 引擎编码 / 模型 ID）被当成文件路径去查缓存，直接以"本地没有模型"退出 ——
+    # 而现场看是一堆 rsync / HF 镜像的建议，方向和真实原因完全无关。
     engines = build_engines(WhisperModel, args)
     try:
         startup_engine = resolve_engine(startup, engines)
     except ValueError as error:
         print(f"[whisper_stream] ✗ {error}", file=sys.stderr)
         return 2
+
+    print(f"[whisper_stream] 加载 {startup_engine.describe(startup)}"
+          f"（engine={startup_engine.key}, device={args.device}, compute_type={startup_compute}）…",
+          file=sys.stderr)
+    if startup_engine.needs_local_model(startup):
+        # 把"模型从哪儿来"打出来。这一行是被一次真实事故逼出来的：
+        # 用户自己跑的时候没设 HF_HOME，于是模型从零开始下载到默认缓存 ——
+        # 直连 HuggingFace 三分钟只下了 2.5MB，识别进程 4 分钟都没开始听，
+        # 而终端上只看到"加载模型…"一句，完全看不出它在下载。
+        hf_home = (os.environ.get("HF_HOME") or os.environ.get("HF_HUB_CACHE")
+                   or "(默认 ~/.cache/huggingface)")
+        hf_endpoint = os.environ.get("HF_ENDPOINT") or "huggingface.co"
+        print(f"[whisper_stream] 模型缓存 {hf_home}；下载源 {hf_endpoint}", file=sys.stderr)
+        print("[whisper_stream] 若这里显示的是默认缓存，而模型仓库里已经有了，"
+              "说明 HF_HOME 没设 —— 它会重新下一个几百 MB 的模型，慢得像是卡住了",
+              file=sys.stderr)
+        if not model_is_local(startup_model):
+            missing = missing_model_advice(startup_model)
+            print(missing, file=sys.stderr)
+            return 2
+    else:
+        print(f"[whisper_stream] 这一路是云端引擎 {startup_engine.key}，不需要本地模型文件",
+              file=sys.stderr)
     try:
         # ⚠️ 5.81：这个变量**不能**叫 `handle`
         # —— 后面 `def handle(utterance)` 会在同一作用域重新绑定它，
