@@ -336,7 +336,35 @@ export async function runAsrPackSuite({ it, check }) {
       /from whisper_stream import .*UtteranceSegmenter/.test(segEval), '没找到 UtteranceSegmenter')
   })
 
-  // ── 7. 识别结果的 dump 与「只重打分」（改判据不必重跑模型）──────────────────
+  // ── 7. 仓库里不许出现云密钥（5.94）────────────────────────────────────────
+  //
+  // 为什么这条值得自动检查：密钥通常是**调试过程中**被粘进代码或配置里的，
+  // 而一旦进了 git 历史，删文件也没用（要改写历史）。密钥文件本身放 var/secrets/
+  // （已被 .gitignore 的 var/ 排除），所以这里扫的是"会被提交的目录"。
+  await it('仓库里不许出现云密钥（sk- / AKID 这类模式）', () => {
+    const suspicious = [/sk-ws-[A-Za-z0-9._-]{10,}/, /sk-[A-Za-z0-9]{24,}/, /AKID[A-Za-z0-9]{10,}/]
+    const scopes = ['scripts', 'config', 'asr-eval', 'bridge', 'relay', 'lib', 'tests', 'docs']
+    const offenders = []
+    const walk = (dir) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name)
+        if (entry.isDirectory()) {
+          walk(full)
+          continue
+        }
+        if (!/\.(mjs|js|cjs|py|json|md|sh|ts)$/.test(entry.name)) continue
+        const text = readFileSync(full, 'utf8')
+        if (suspicious.some((pattern) => pattern.test(text))) offenders.push(full.replace(ROOT, ''))
+      }
+    }
+    for (const scope of scopes) {
+      const dir = join(ROOT, scope)
+      if (existsSync(dir)) walk(dir)
+    }
+    check('一个都没有（密钥只放 var/secrets/）', offenders.length === 0, offenders.join('、'))
+  })
+
+  // ── 8. 识别结果的 dump 与「只重打分」（改判据不必重跑模型）──────────────────
   //
   // 为什么这条值得一个**真跑一次 CLI**的测试：判据会改（`asr-norm-v2` 补英语数字词就是
   // 这么来的），而识别是最贵的一步。如果 dump/重打分坏了，发现它的方式会是"某人改了判据、
