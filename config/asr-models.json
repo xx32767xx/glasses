@@ -70,11 +70,6 @@
       "note": "**验收用的对照**（5.61）：tiny 故意很差，选它以后字幕会一眼看出变烂 —— 用它证明「切换真的生效」，不要用它做业务。约 75MB，几十秒下完。",
       "model": "tiny"
     },
-    "en-buzzasr": {
-      "note": "英语候选（5.58）：BuzzASR 英文微调（外部报告里 WER 2.86%）。⚠️ 这是本地目录，没搬进来就选不了 —— 清单里会标 missing。",
-      "model": "/var/lib/leion/models/buzzasr-en-ct2",
-      "langs": ["en-US"]
-    },
     "en-parakeet": {
       "note": "英语本地首选（5.75）：NVIDIA Parakeet TDT 0.6B v2 的 ONNX 导出，走 sherpa-onnx（CPU int8，不需要 torch）。外部报告：总体 WER 2.13%、美音 0.93%、巴西口音英语 2.52%。model 写的是**模型目录**。",
       "engine": "parakeet",
