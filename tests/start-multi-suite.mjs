@@ -388,6 +388,8 @@ export async function runStartMultiSuite({ it, check, assert }) {
       ['--data-dir', 'var/x', '--model-map', 'config/asr-models.json'],
       ['--data-dir', 'var/x', '--model-map', 'config/asr-models.json', '--max-models', '3', '--cpu'],
       ['--data-dir', 'var/x', '--translate-mode', 'queue', '--whisper-model', 'medium'],
+    // 5.70：实机按日志建议加 --silence-skip-level 时，这个脚本原来直接报「未知选项」
+    ['--data-dir', 'var/x', '--model-map', 'config/asr-models.json', '--silence-skip-level', '0.008'],
     ]
     const failures = []
     for (const argv of combos) {

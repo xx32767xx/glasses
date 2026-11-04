@@ -52,6 +52,8 @@ const HELP = `asr-worker —— 唯一的识别消费者（一份模型服务所
   --queue-poll-ms <n>    多久看一次队列（缺省 60）
   --depth-report-s <n>   每隔多少秒报一次队列深度（缺省 30；0 = 不报）
   --keep-inbox           启动时**不清空**收件箱（缺省清空，理由见下）
+ --silence-skip-level <0~1> 电平低于这个就当静音丢弃（缺省 0.02）。实机麦克风常常只有
+                        0.007~0.020，日志里出现「电平偏低 → 按静音丢弃」时把它调低
   --dry-run              只检查参数与目录，不起 python
   --help
 
@@ -78,11 +80,16 @@ export function parseArgs(argv = []) {
     // 5.40/5.41：按语言选模型的策略表（透传给 python）。null = 不用表（老行为）
     modelMap: null,
     maxModels: 2,
+    // 5.70：电平门槛。null = 不传，用 python 侧缺省（0.02）。实机麦克风电平常常只有
+    // 0.007~0.020，缺省会把整句当静音丢掉 —— 那看起来像"识别坏了"，其实是门槛太高。
+    silenceSkipLevel: null,
     keepInbox: false,
     dryRun: false,
   }
   const takesValue = new Set(['queue-dir', 'data-dir', 'inbox-dir', 'model', 'device',
-    'compute-type', 'queue-poll-ms', 'depth-report-s', 'model-map', 'max-models'])
+    'compute-type', 'queue-poll-ms', 'depth-report-s', 'model-map', 'max-models',
+    // 5.70：电平门槛（实机麦克风只有 0.007~0.020，缺省 0.02 会把整句丢掉）
+    'silence-skip-level'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -103,6 +110,7 @@ export function parseArgs(argv = []) {
     else if (key === 'queue-poll-ms') options.pollMs = Number(value)
     else if (key === 'depth-report-s') options.depthReportS = Number(value)
     else if (key === 'model-map') options.modelMap = value
+    else if (key === 'silence-skip-level') options.silenceSkipLevel = Number(value)
     else if (key === 'max-models') {
       const count = Number(value)
       if (!Number.isInteger(count) || count < 1) throw new Error('--max-models 必须是正整数')
@@ -255,6 +263,10 @@ export function consumerCommand(options) {
   if (options.modelMap) {
     args.push('--model-map', options.modelMap)
     args.push('--max-models', String(options.maxModels ?? 2))
+  }
+  // 5.70：电平门槛。给了才传 —— 不给就让 python 用它的缺省，别在这里替他做决定。
+  if (options.silenceSkipLevel !== null && options.silenceSkipLevel !== undefined) {
+    args.push('--silence-skip-level', String(options.silenceSkipLevel))
   }
   return { script: join(ROOT, 'bridge', 'whisper_stream.py'), args }
 }

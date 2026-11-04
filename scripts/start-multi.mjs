@@ -33,6 +33,9 @@
  * 常用参数
  *   --cpu                 识别用 CPU（缺省 cuda/float16；没有 N 卡时用这个）
  *   --whisper-model <尺寸> tiny/base/small/medium/large-v3（缺省按设备：GPU large-v3、CPU small）
+ *   --silence-skip-level <0~1> 识别侧「电平低于这个就当静音」的门槛（缺省 0.02）。
+ *     实机麦克风电平常常只有 0.007~0.020，日志里出现「电平偏低 → 按静音丢弃」时把它调低
+ *     （日志会给出建议值，例如 0.008）；调得太高会把整句话都丢掉，那看起来像"识别坏了"。
  *   --max-rooms <n>       最多同时几场（缺省 0 = 不限；显存吃紧时用它兜底）
  *   --only <id,id>        只跑这几场（调试时用，避免把无关房间也翻译一遍）
  *   --poll-ms <n>         房间轮询间隔（缺省 3000）
@@ -193,6 +196,11 @@ export function parseArgs(argv = []) {
     whisperModel: null,          // null = 按设备自动选
     modelMap: null,              // null = 用 <data-dir>/asr-models.json（存在才启用）
     maxModels: 2,                // 模型池上限：同时留在显存里的模型份数
+    // 5.70：识别侧「电平低于这个就当静音丢弃」的门槛。null = 不传，用识别进程自己的缺省。
+    // 为什么必须有这个开关：实机麦克风电平只有 0.007~0.020，而缺省门槛 0.02 会把整句丢掉 ——
+    // 表现是「一句字幕都没有」，却看不出是电平问题；而这个脚本原来根本不认这个参数，
+    // 用户照着日志的建议加 `--silence-skip-level 0.008` 只会得到「未知选项」。
+    silenceSkipLevel: null,
     // 5.45：翻译官会话多久没音频就判定"客户端不在了"并结束它（0 = 关掉这个兜底）
     interpreterIdleMin: 10,
     device: 'cuda',
@@ -205,7 +213,7 @@ export function parseArgs(argv = []) {
   const takesValue = new Set(['data-dir', 'buses', 'port', 'poll-ms', 'grace-ms', 'cols', 'lines',
     'max-rooms', 'only', 'whisper-model', 'compute', 'switch-idle-ms', 'min-hold-ms',
     'queue-dir', 'depth-report-s', 'translate-mode', 'model-map', 'max-models',
-    'interpreter-idle-min'])
+    'interpreter-idle-min', 'silence-skip-level'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -235,6 +243,7 @@ export function parseArgs(argv = []) {
       options.computeType = value
     } else if (key === 'whisper-model') options.whisperModel = value
     else if (key === 'model-map') options.modelMap = value
+    else if (key === 'silence-skip-level') options.silenceSkipLevel = Number(value)
     else if (key === 'interpreter-idle-min') {
       const minutes = Number(value)
       if (!Number.isFinite(minutes) || minutes < 0) throw new Error('--interpreter-idle-min 必须是非负数（0 = 关闭兜底）')
@@ -279,6 +288,13 @@ export function parseArgs(argv = []) {
     if (!Number.isInteger(options[key]) || options[key] < 0) {
       throw new Error(`--${key === 'switchIdleMs' ? 'switch-idle-ms' : 'min-hold-ms'} 必须是非负整数，收到 ${JSON.stringify(options[key])}`)
     }
+  }
+  // 电平门槛：0 < x < 1（它是 RMS 电平，不是百分比）。范围写错就把正确范围说出来 ——
+  // 传个 8 进去会把整段静音都送去识别（"反而更糟"的那种错，而它不会报错）。
+  if (options.silenceSkipLevel !== null
+    && (!Number.isFinite(options.silenceSkipLevel) || options.silenceSkipLevel <= 0
+      || options.silenceSkipLevel >= 1)) {
+    throw new Error(`--silence-skip-level 必须是 0~1 之间的小数（例如 0.008），收到 ${JSON.stringify(options.silenceSkipLevel)}`)
   }
   if (!Number.isInteger(options.depthReportSec) || options.depthReportSec < 0) {
     throw new Error(`--depth-report-s 必须是非负整数，收到 ${JSON.stringify(options.depthReportSec)}`)
@@ -494,6 +510,10 @@ export function workerStep(options) {
     args.push('--max-models', String(options.maxModels ?? 2))
     // 5.41：房间覆盖（手机上报的策略/模型）也读这里
     args.push('--data-dir', options.dataDir)
+  }
+  // 5.70：电平门槛（不给就用识别进程的缺省；实机验证时几乎总要调低）
+  if (options.silenceSkipLevel !== null && options.silenceSkipLevel !== undefined) {
+    args.push('--silence-skip-level', String(options.silenceSkipLevel))
   }
   return {
     key: 'asr-worker', role: 'worker', tag: '识别', label: '识别', color: '\x1b[35m',
