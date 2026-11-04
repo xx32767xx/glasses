@@ -390,21 +390,6 @@
     <string name="interp_route_no_client">这一路要用后端「%1$s」，但还没填服务器地址或密钥（在设置里配好；或把 asr-routes.json 里对应的 backend 改成 scripted 看演示回放）</string>
     <string name="interp_where_demo">还没填服务器地址，现在是演示回放（不是真翻译）。</string>
     <!-- 5.58 识别引擎：只影响**这一场**，清单由服务器给（服务器上有什么才能选什么） -->
-    <string name="interp_engine_row">识别引擎：%1$s</string>
-    <string name="interp_engine_default">服务器默认</string>
-    <string name="interp_engine_same_as_default">（＝服务器默认，选它看不出区别）</string>
-    <string name="interp_engine_not_for_lang">识别引擎：%1$s 那门语言选的模型这里用不上，按%2$s（点一下可以给当前语言重选）</string>
-    <string name="interp_engine_loading">读取中…</string>
-    <string name="interp_engine_pick_title">这一场用哪个识别模型</string>
-    <string name="interp_engine_option">%1$s — %2$s</string>
-    <string name="interp_engine_missing">服务器上没有（选了会失败）</string>
-    <string name="interp_engine_unverified">首次会下载</string>
-    <string name="interp_engine_failed">识别引擎：取不到清单（%1$s）—— 点这里重试</string>
-    <string name="interp_engine_no_server">还没填服务器地址</string>
-    <string name="interp_engine_bad_reply">服务器没返回清单</string>
-    <string name="interp_engine_pick_wait">正在向服务器要可选模型，稍等一下再点</string>
-    <string name="interp_engine_ready">识别引擎就绪：%1$s（下一场生效）</string>
-    <string name="interp_engine_changed">识别引擎已换成 %1$s，正在跑的这场已重开</string>
     <string name="interp_lang_changed">语言已改成「%1$s」；正在跑的那一场已停止，点「开始」用新语言重开。</string>
     <string name="interp_hist_loading">正在读取同传记录…</string>
     <string name="interp_hist_empty">还没有同传记录。开始一次收听，结束后转写与译文会保存在这里。</string>

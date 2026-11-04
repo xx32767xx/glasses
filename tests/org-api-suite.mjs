@@ -358,80 +358,6 @@ export async function runOrgApiSuite({ it, check, assert }) {
   //      否则手机把它显示成"服务器收到了 large-v3"就是在骗用户；
   //   ② 手机选的东西必须**真的落到侧车**（engine+model 两个字段）—— 侧车在 Python 那边
   //      优先级最高，所以"手机选的"一定压过"表里算出来的"，这是这套设计的关键性质。
-  await it('识别引擎清单：列出服务器真的配过的组合，且不编造模型名', async () => {
-    const listed = await call({
-      method: 'GET', path: '/org/asr/engines?lang=en-US', user: 'boss@example.com', role: 'admin',
-    })
-    check('没有策略表时也返回 200（不能因为没配表就让手机以为功能坏了）', listed.status === 200,
-      String(listed.status))
-    check('只有一条"服务器默认"', listed.json.options.length === 1
-      && listed.json.options[0].label.includes('服务器默认'), JSON.stringify(listed.json.options))
-    check('而且 model 是空串（不编造尺寸名）', listed.json.options[0].model === '',
-      JSON.stringify(listed.json.options[0]))
-    check('tableFound=false 让手机知道"没有表"而不是"表里没东西"', listed.json.tableFound === false)
-
-    // 写一份"三个 whisper 变体"的表（只改 model，不动切句）
-    writeFileSync(join(root, 'asr-models.json'), JSON.stringify({
-      default: { model: 'large-v3' },
-      strategies: {
-        'en-turbo': { model: 'large-v3-turbo', note: '快 3-4 倍' },
-        'en-distil': { model: 'distil-large-v3' },
-        'en-buzzasr': { model: '/models/buzzasr-en' },
-      },
-      languages: { 'en-US': { strategy: 'en-turbo' }, 'zh-CN': {} },
-    }, null, 2), 'utf-8')
-
-    const variants = await call({
-      method: 'GET', path: '/org/asr/engines?lang=en-US', user: 'boss@example.com', role: 'admin',
-    })
-    const labels = variants.json.options.map((option) => option.model)
-    check('三个变体 + 默认都列出来', labels.length === 4, JSON.stringify(labels))
-    check('按"引擎+模型"去重（同一个模型配了两次不会出现两次）',
-      new Set(labels).size === labels.length, JSON.stringify(labels))
-    check('当前用的是表里 languages.en-US 指定的那个', variants.json.current.strategy === 'en-turbo',
-      JSON.stringify(variants.json.current))
-    check('当前那一条排在最前面（用户先看到"现在用哪个"）',
-      variants.json.options[0].current === true, JSON.stringify(variants.json.options[0]))
-    check('写了绝对路径但不存在 → available=missing（选了必然失败，要提前说）',
-      variants.json.options.find((option) => option.model === '/models/buzzasr-en')?.available === 'missing',
-      JSON.stringify(variants.json.options.map((option) => [option.model, option.available])))
-    check('只是个尺寸名 → available=unverified（首次用会下载，别假装已就绪）',
-      variants.json.options.find((option) => option.model === 'large-v3-turbo')?.available === 'unverified')
-    check('语种必须是那三个之一', (await call({
-      method: 'GET', path: '/org/asr/engines?lang=fr-FR', user: 'boss@example.com', role: 'admin',
-    })).status === 400)
-    // ⚠️ 普通用户**要能**调：换模型是"配置自己这场会"的一部分（meeting.configure），
-    //    而翻译官会话正是普通用户开的 —— 挡掉他们等于这个功能只对管理员可用。
-    check('普通用户能调（换模型属于配置自己的会议）', (await call({
-      method: 'GET', path: '/org/asr/engines?lang=en-US', user: 'alice@example.com', role: 'user',
-    })).status === 200)
-
-    // `langs`：纯英文模型不许出现在中文那一栏（否则用户一选就是满屏乱码）
-    writeFileSync(join(root, 'asr-models.json'), JSON.stringify({
-      default: { model: 'large-v3' },
-      strategies: {
-        'en-distil': { model: 'distil-large-v3', langs: ['en-US'] },
-        'any-tiny': { model: 'tiny' },
-      },
-    }, null, 2), 'utf-8')
-    const forEnglish = await call({
-      method: 'GET', path: '/org/asr/engines?lang=en-US', user: 'boss@example.com', role: 'admin',
-    })
-    const forChinese = await call({
-      method: 'GET', path: '/org/asr/engines?lang=zh-CN', user: 'boss@example.com', role: 'admin',
-    })
-    check('英文栏里有纯英文模型', forEnglish.json.options.some((one) => one.model === 'distil-large-v3'),
-      JSON.stringify(forEnglish.json.options.map((one) => one.model)))
-    check('中文栏里**没有**纯英文模型（选了就是乱码）',
-      !forChinese.json.options.some((one) => one.model === 'distil-large-v3'),
-      JSON.stringify(forChinese.json.options.map((one) => one.model)))
-    check('而且会说明"这些因为语种被跳过了"（不是悄悄消失）',
-      (forChinese.json.skippedByLang ?? []).includes('en-distil'),
-      JSON.stringify(forChinese.json.skippedByLang))
-    check('没写 langs 的多语模型两边都在', forChinese.json.options.some((one) => one.model === 'tiny')
-      && forEnglish.json.options.some((one) => one.model === 'tiny'))
-  })
-
   await it('房间侧车能同时记下引擎与模型（手机选的才真到得了识别进程）', () => {
     const written = writeAsrProfileSidecar(root, 'room-5-58', { 'en-US': 'large-v3-turbo' },
       { 'en-US': 'whisper' })
@@ -496,47 +422,6 @@ export async function runOrgApiSuite({ it, check, assert }) {
     const parsed = parseJsonLoose('\uFEFF{"a": 1}')
     check('带 BOM 的 JSON 能读，而且会告诉你它带 BOM', parsed.value.a === 1 && parsed.hadBom === true)
     check('没有 BOM 时如实报没有', parseJsonLoose('{"a": 1}').hadBom === false)
-  })
-
-  await it('手机切换识别引擎时，服务器终端要看得见（5.66）', async () => {
-    const lines = []
-    const withLog = (options) => handleOrg({
-      root, user: 'alice@example.com', role: 'user', log: (line) => lines.push(line), ...options,
-    })
-    const saved = await withLog({
-      method: 'POST', path: '/org/asr/choice',
-      body: { lang: 'en-US', strategy: 'en-tiny', engine: 'whisper', model: 'tiny' },
-    })
-    check('200 并落一份记录（谁会去翻 json 都要能查到"最后一次换了什么"）',
-      saved.status === 200 && saved.json.recorded === true, JSON.stringify(saved.json))
-    const recorded = JSON.parse(readFileSync(join(root, 'asr-choices', 'alice@example.com.json'), 'utf-8'))
-    check('记录里有语种、策略、模型', recorded.lang === 'en-US' && recorded.strategy === 'en-tiny'
-      && recorded.model === 'tiny', JSON.stringify(recorded))
-    check('终端那行说清了"换了什么、什么时候生效"',
-      lines.some((line) => line.includes('换了识别引擎') && line.includes('en-US')
-        && line.includes('下一场生效')), JSON.stringify(lines))
-    check('非法语种不报错但明确"没记下来"（痕迹接口不许拦住换引擎）',
-      (await withLog({
-        method: 'POST', path: '/org/asr/choice', body: { lang: 'fr-FR', strategy: 'en-tiny' },
-      })).json.recorded === false)
-    const dirty = await withLog({
-      method: 'POST', path: '/org/asr/choice',
-      body: { lang: 'en-US', strategy: 'Tiny!', model: 'bad model' },
-    })
-    check('脏字段丢掉并在响应里列出来（不是静默接受）',
-      dirty.status === 200 && dirty.json.ignored.length === 2, JSON.stringify(dirty.json))
-    check('而且那行日志里说了丢掉了什么',
-      lines.some((line) => line.includes('忽略了') && line.includes('strategy=Tiny!')),
-      JSON.stringify(lines.slice(-3)))
-
-    lines.length = 0
-    await withLog({ method: 'GET', path: '/org/asr/engines?lang=en-US' })
-    check('手机点开下拉框也会打一行（"切了没"这件事第一秒就能分清）',
-      lines.some((line) => line.includes('看识别引擎清单') && line.includes('en-US')),
-      JSON.stringify(lines))
-    check('没给 log 回调时静默（测试/嵌入调用不该被强制打日志）',
-      (await call({ method: 'GET', path: '/org/asr/engines?lang=en-US',
-        user: 'alice@example.com', role: 'user' })).status === 200)
   })
 
   await it('服务器端换模型（setLanguageModel）：改表就生效，别动别的字段', () => {

@@ -35,7 +35,6 @@ import { closeRoomByAdmin, createInterpreterSession, createRoom, hideHistoryForU
 import { FLOOR_LOCKED_LEASE_MS, FLOOR_LEASE_MS, floorState, forceReleaseFloor, heartbeatFloor, releaseFloor, setFloorLock, sweepExpiredFloor, takeFloor } from '../lib/floor.mjs'
 import { publishMeetingTerms } from '../lib/meeting-terms.mjs'
 import { appendUtterance } from '../lib/db.mjs'
-import { ENGINE_LANGUAGES, listEngineOptions, loadStrategyTable, recordEngineChoice } from '../lib/asr-engines.mjs'
 
 /** 允许出现在"模型名"里的字符：尺寸名（large-v3）或本地目录路径都能表达，但不含空格/引号。 */
 const ASR_MODEL_NAME = /^[A-Za-z0-9._/-]{1,120}$/
@@ -171,89 +170,6 @@ export async function handleOrg(input) {
   const segments = path.split('?')[0].split('/').filter(Boolean).map((item) => decodeURIComponent(item))
 
   if (user === null || user === undefined) return bad(401, '需要登录（缺少有效 token）')
-
-  // ── 识别引擎清单（5.58：手机在 App 里选"这一场用哪个模型"）─────────────────
-  //
-  // 只读、只做展示：权威仍在 Python 侧。手机选中之后会把 engine+model **显式写进房间侧车**，
-  // 而侧车在 Python 那边的优先级最高，所以"手机选的"一定压过"表里算出来的"。
-  // 这一点很关键：清单算错顶多让某个选项名字不对，不会让识别悄悄跑成另一个模型。
-  if (method === 'GET' && segments[0] === 'org' && segments[1] === 'asr'
-    && segments[2] === 'engines') {
-    if (allowed(role, 'meeting.configure') !== true) return deny(role, 'meeting.configure')
-    const query = new URLSearchParams(String(input.path ?? '').split('?')[1] ?? '')
-    const lang = (query.get('lang') ?? '').trim() || 'en-US'
-    if (!ENGINE_LANGUAGES.includes(lang)) {
-      return bad(400, `lang 只能是 ${ENGINE_LANGUAGES.join(' / ')}`)
-    }
-    const loaded = loadStrategyTable(root)
-    const listed = listEngineOptions(loaded.table, lang)
-    // 5.66：手机每次问清单都打一行 —— "我切了配置"这件事在服务器上要看得见
-    logLine(log, `🎛 手机看识别引擎清单：${lang} → ${listed.options.length} 项`
-      + `（当前 ${listed.current.label}${loaded.problem ? `；表有问题：${loaded.problem}` : ''}）`)
-    return {
-      status: 200,
-      json: {
-        ok: true,
-        lang: listed.lang,
-        tableFound: listed.tableFound,
-        tablePath: loaded.path,
-        // 表写坏了要说出来（热改表写错逗号是常见手误），但**不拦**：列不出来就退化成一条"服务器默认"
-        tableProblem: loaded.problem,
-        current: listed.current,
-        options: listed.options,
-        // 因为 `langs` 不匹配而被跳过的策略名（纯英文模型出现在中文栏那种事，
-        // 要能解释"为什么没看到"，而不是让人以为服务器没配）
-        skippedByLang: listed.skippedByLang ?? [],
-      },
-    }
-  }
-
-  // ── 手机报告「我刚换了识别引擎」（5.66）────────────────────────────────────
-  //
-  // 为什么需要它：手机的选择原来只在**开会话**那一刻才传到服务器，于是"我在配置页
-  // 换了个模型"这件事服务器完全不知道 —— 排查时分不清"没换"、"换了没生效"、
-  // "换了但要下一场才生效"。这个接口只做两件事：在终端打一行、记一份
-  // `asr-choices/<用户名>.json`。
-  //
-  // ⚠️ **它不影响识别**：真正生效的仍然是会话侧车（`asr-profiles/<房间>.json`）。
-  //    这份记录是排障用的 —— 别再给它加"改识别行为"的权力，否则又多一条旁路。
-  if (method === 'POST' && segments[0] === 'org' && segments[1] === 'asr'
-    && segments[2] === 'choice') {
-    if (allowed(role, 'meeting.configure') !== true) return deny(role, 'meeting.configure')
-    // ⚠️ 这个接口**永远不 4xx**（除了权限）：它只是痕迹，不是功能。
-    //    它要是能拦下来，"换引擎"就会被一个纯排障用的旁路卡住 —— 那正是这次要避免的。
-    //    脏字段的处理方式是"丢掉 + 在日志里说丢掉了"，不是报错。
-    const raw = {
-      lang: String(body.lang ?? '').trim(),
-      strategy: String(body.strategy ?? '').trim(),
-      engine: String(body.engine ?? '').trim().toLowerCase(),
-      model: String(body.model ?? '').trim(),
-    }
-    const dropped = []
-    const lang = ENGINE_LANGUAGES.includes(raw.lang) ? raw.lang : ''
-    if (lang === '' && raw.lang !== '') dropped.push(`lang=${raw.lang}`)
-    const strategy = ASR_ENGINE_NAME.test(raw.strategy) ? raw.strategy : ''
-    if (strategy === '' && raw.strategy !== '') dropped.push(`strategy=${raw.strategy}`)
-    const engine = ASR_ENGINE_NAME.test(raw.engine) ? raw.engine : ''
-    if (engine === '' && raw.engine !== '') dropped.push(`engine=${raw.engine}`)
-    const model = ASR_MODEL_NAME.test(raw.model) ? raw.model : ''
-    if (model === '' && raw.model !== '') dropped.push(`model=${raw.model}`)
-    const recorded = lang === ''
-      // 机器码而不是中文句子：这个接口面向的是排障日志，而且服务端的中文文案
-      // 都要过 4.58 的三语映射检查 —— 一条只出现在日志里的字不值得走一遍翻译流程
-      ? { saved: false, path: '', error: 'unsupported-lang' }
-      : recordEngineChoice(root, user, { lang, strategy, engine, model, note: body.note })
-    logLine(log, `🎛 手机换了识别引擎：${lang || '（语种不可识别）'} → `
-      + `${strategy || '（服务器默认）'}${model ? `（模型 ${model}）` : ''}`
-      + `${engine ? `，引擎 ${engine}` : ''} —— 下一场生效`
-      + `${dropped.length ? `；忽略了 ${dropped.join('、')}` : ''}`
-      + `${recorded.saved ? '' : `；没记下来：${recorded.error}`}`)
-    return {
-      status: 200,
-      json: { ok: true, recorded: recorded.saved, path: recorded.saved ? recorded.path : '',
-        ignored: dropped },
-    }
-  }
 
   // ── 库列表 / 详情 ────────────────────────────────────────────────────────
   if (method === 'GET' && segments[0] === 'org' && segments[1] === 'libraries' && segments.length === 2) {

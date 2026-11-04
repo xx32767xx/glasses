@@ -107,12 +107,6 @@ public class InterpreterActivity extends android.app.Activity {
     private AsrRouteLoader.Table routeTable = AsrRouteLoader.Table.broken("");
     /** 5.39：每门语言**不能**用的原因（表指向未实现的后端 / 没填服务器地址）。 */
     private final java.util.Map<String, String> routeProblems = new java.util.LinkedHashMap<>();
-    /** 5.58：服务器告诉我们的「这一路能用哪些引擎/模型」，以及取不到时的原因。 */
-    private AsrEngineOptions engineOptions = AsrEngineOptions.empty();
-    private String engineProblem = "";
-    private TextView engineView;
-    /** 正在取清单（防连点重复请求）。 */
-    private volatile boolean engineLoading = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -135,7 +129,6 @@ public class InterpreterActivity extends android.app.Activity {
         tabLive = findViewById(R.id.interpTabLive);
         tabHistory = findViewById(R.id.interpTabHistory);
         whereView = findViewById(R.id.interpWhere);
-        engineView = findViewById(R.id.interpEngine);
         ttsSwitch = findViewById(R.id.interpTtsSwitch);
         historyList = findViewById(R.id.interpHistoryList);
         historyScroll = findViewById(R.id.interpHistoryScroll);
@@ -243,9 +236,6 @@ public class InterpreterActivity extends android.app.Activity {
         Log.i("LeionInterp", "🧭 路由表 → " + router.describe() + "（我读 " + lang + "，对方说 " + partner + "）");
         refreshMeta();
         refreshWhere();
-        // 5.58：顺手问一次"这一路能用哪些识别引擎"（只在还没清单时问，不打扰用户）
-        refreshEngineRow();
-        loadEngineOptions(false);
         // 第一句提示要说**这一场实际会怎么跑**，而不是一句写死的文案
         AsrRouter.Resolution first = router.resolve(partner);
         boolean hasRelay = first != null && first.ok() && first.backend instanceof RelayPipelineBackend;
@@ -269,14 +259,10 @@ public class InterpreterActivity extends android.app.Activity {
     private InterpreterAsrBackend buildBackend(AsrRouteTable.Route route, String speakLang, LanClient relay) {
         if ("relay".equals(route.backendId)) {
             if (relay == null) return null;
-            // 5.58：模型/引擎优先用**用户在 App 里选的那一项**（它来自服务器给的清单）；
-            // ⚠️ 只有**真的选过**才上报 —— 没选过就保持老行为（只报路由表那一列），
-            // 否则每一场都会往侧车里钉一个模型名，"跟着服务器表变"这件事就失效了。
-            AsrEngineOptions.Option picked = engineOptions.find(savedEngineStrategy());
-            if (picked != null) {
-                return new RelayPipelineBackend(relay, myName(), lang, speakLang,
-                        picked.modelRequest(), picked.engineRequest());
-            }
+            // 5.69：「这一场用哪个模型」**不再由手机决定**（见 docs/21 §5.69）——
+            // 归服务器管：`scripts/asr-model-switch.mjs` 改表即生效，或写房间侧车只影响一场。
+            // 手机这边只保留路由表那一列（`asr-routes.json` 的 engine，默认 `server-default`
+            // 表示"不指定"），它仍然会作为 asrModels 报给服务器 —— 一个可用的逃生口。
             return new RelayPipelineBackend(relay, myName(), lang, speakLang, route.engine);
         }
         if ("scripted".equals(route.backendId)) {
@@ -371,11 +357,6 @@ public class InterpreterActivity extends android.app.Activity {
         findViewById(R.id.interpPartnerEn).setOnClickListener(v -> setPartnerLang(InterpreterLang.EN));
         findViewById(R.id.interpOpenSettings).setOnClickListener(v ->
                 startActivity(new android.content.Intent(this, SettingsActivity.class)));
-        if (engineView != null) {
-            // 5.58：点一下弹出「这一场用哪个识别模型」。清单来自服务器 ——
-            // 服务器上没有的东西**不列**，所以不会出现"选了但一句话都不出来"。
-            engineView.setOnClickListener(v -> openEnginePicker());
-        }
         if (TtsFeature.enabled() && ttsSwitch != null) {
             ttsSwitch.setChecked(getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("ttsRead", false));
             ttsSwitch.setOnCheckedChangeListener((button, checked) -> {
@@ -421,12 +402,6 @@ public class InterpreterActivity extends android.app.Activity {
      * 上传时带的是旧的识别语种。悄悄继续跑，用户看到的是"语言改了但译文没变"。
      */
     private void afterLanguageChange() {
-        // 5.58：可选项按**识别语种**变 —— 换语言就把旧清单丢掉重问，
-        // 否则会出现"对方说英语，下拉框里却是中文那套模型"的错配。
-        engineOptions = AsrEngineOptions.empty();
-        engineProblem = "";
-        refreshEngineRow();
-        loadEngineOptions(true);
         refreshMeta();
         if (!running) {
             statusView.setText(getString(R.string.interp_lang_changed, langText(partner)));
@@ -492,206 +467,6 @@ public class InterpreterActivity extends android.app.Activity {
         } else {
             whereView.setText(getString(R.string.interp_where_demo));
         }
-    }
-
-    // ── 识别引擎（5.58）────────────────────────────────────────────────────
-
-    /**
-     * 识别引擎的选择**跨语种记住最后一次**（5.67）。
-     *
-     * <p>原来是按语种分别记（`interpEngine_<语种>`），实机一测就露馅：用户在
-     * 「对方说英语」时选了 tiny，随后改了语言，写侧车时读的是**新语种**那一格（空的），
-     * 于是上报"无"、日志显示"（无，按模型表）" —— 用户会认为"我选过啊"。
-     *
-     * <p>⚠️ 用不上时**不硬顶**：`find()` 找不到就退回服务器默认（例如纯英文模型出现在
-     * 中文那一栏），并单独记下当初是按哪个语种选的，好在界面上说清"为什么不生效"。
-     */
-    private static final String PREF_ENGINE = "interpEngine";
-    private static final String PREF_ENGINE_LANG = "interpEngineLang";
-
-    private String savedEngineStrategy() {
-        String value = getSharedPreferences(PREFS, MODE_PRIVATE).getString(PREF_ENGINE, "");
-        return value == null ? "" : value;
-    }
-
-    private String savedEngineLang() {
-        String value = getSharedPreferences(PREFS, MODE_PRIVATE).getString(PREF_ENGINE_LANG, "");
-        return value == null ? "" : value;
-    }
-
-    /** 当前实际会用哪一项：已保存的优先，其次服务器算出来的当前项；都没有就 null（服务器默认）。 */
-    private AsrEngineOptions.Option engineChoice() {
-        return engineOptions.pick(savedEngineStrategy());
-    }
-
-    /**
-     * 向服务器要「这一路能用哪些识别引擎」。
-     *
-     * <p>为什么是"要"而不是在 App 里写死：能不能用取决于**服务器上装了哪些模型**。
-     * 写死一份清单，用户选了服务器没有的模型，表现是"半天没有字幕"——
-     * 那比"下拉框里根本没有这一项"糟得多。
-     *
-     * <p>失败**不改动已有清单**：网络抖一下不该让下拉框突然变空。
-     */
-    private void loadEngineOptions(boolean force) {
-        if (engineLoading) return;
-        if (!force && !engineOptions.isEmpty()) return;
-        LanClient relay = client != null ? client : buildClient();
-        if (relay == null) {
-            engineProblem = getString(R.string.interp_engine_no_server);
-            refreshEngineRow();
-            return;
-        }
-        engineLoading = true;
-        final String askLang = partner;
-        refreshEngineRow();
-        new Thread(() -> {
-            AsrEngineOptions fetched = null;
-            String problem = "";
-            try {
-                fetched = relay.asrEngines(askLang);
-                if (fetched == null) problem = getString(R.string.interp_engine_bad_reply);
-            } catch (Exception error) {
-                problem = describe(error);
-            }
-            final AsrEngineOptions result = fetched;
-            final String failure = problem;
-            runOnUiThread(() -> {
-                engineLoading = false;
-                if (result != null && !result.isEmpty()) {
-                    // 换语言时旧清单已经过时：只保留这次问的那门语言的结果
-                    if (askLang.equals(partner)) {
-                        engineOptions = result;
-                        engineProblem = "";
-                    }
-                } else if (askLang.equals(partner)) {
-                    engineProblem = failure;
-                }
-                refreshEngineRow();
-                refreshWhere();
-            });
-        }, "interp-engines").start();
-    }
-
-    /** 把「识别引擎」这一行画出来（取不到清单时说的是**为什么**，不是一句"加载中"）。 */
-    private void refreshEngineRow() {
-        if (engineView == null) return;
-        if (engineLoading) {
-            engineView.setText(getString(R.string.interp_engine_row,
-                    getString(R.string.interp_engine_loading)));
-            return;
-        }
-        if (!engineProblem.isEmpty()) {
-            engineView.setText(getString(R.string.interp_engine_failed, engineProblem));
-            return;
-        }
-        AsrEngineOptions.Option picked = engineChoice();
-        String chosen = savedEngineStrategy();
-        // 跨语种记住的选择，在**这门语言**用不上时要说清楚。
-        // 不说的话用户看到"服务器默认"会以为"我明明选过 tiny，怎么又回去了"（实机踩过）。
-        if (!chosen.isEmpty() && engineOptions.find(chosen) == null
-                && !savedEngineLang().isEmpty() && !savedEngineLang().equals(partner)) {
-            engineView.setText(getString(R.string.interp_engine_not_for_lang,
-                    langText(savedEngineLang()),
-                    picked == null ? getString(R.string.interp_engine_default) : picked.label));
-            return;
-        }
-        engineView.setText(getString(R.string.interp_engine_row,
-                picked == null ? getString(R.string.interp_engine_default) : picked.label));
-    }
-
-    /** 点「识别引擎」：弹一个单选列表（选项就是服务器给的那几条，外加"服务器默认"）。 */
-    private void openEnginePicker() {
-        if (engineOptions.isEmpty()) {
-            loadEngineOptions(true);
-            statusView.setText(getString(R.string.interp_engine_pick_wait));
-            return;
-        }
-        AsrEngineOptions.Option picked = engineChoice();
-        java.util.List<AsrEngineOptions.Option> options = engineOptions.all();
-        final String[] labels = new String[options.size() + 1];
-        labels[0] = getString(R.string.interp_engine_default);
-        for (int index = 0; index < options.size(); index += 1) {
-            labels[index + 1] = labelOf(options.get(index));
-        }
-        int checked = 0;
-        for (int index = 0; index < options.size(); index += 1) {
-            if (picked != null && options.get(index).strategy.equals(picked.strategy)) checked = index + 1;
-        }
-        new android.app.AlertDialog.Builder(this)
-                .setTitle(R.string.interp_engine_pick_title)
-                .setSingleChoiceItems(labels, checked, (dialog, which) -> {
-                    dialog.dismiss();
-                    applyEngineChoice(which == 0 ? "" : options.get(which - 1).strategy);
-                })
-                .setNegativeButton(R.string.common_cancel, null)
-                .show();
-    }
-
-    /** 选项的文字：把"本地没有/首次会下载"直接写在选项上（别让人选了才发现）。 */
-    private String labelOf(AsrEngineOptions.Option option) {
-        String suffix = "";
-        if (option.broken()) suffix = getString(R.string.interp_engine_missing);
-        else if (options_unknown(option)) suffix = getString(R.string.interp_engine_unverified);
-        String label = option.label;
-        // ⚠️ 2026-11 实测踩到：下拉框里"服务器默认"和"当前那一项（比如 large-v3）"长得一样，
-        //    人选了后者等于什么都没改，然后以为"切换功能没生效"。这里把它标出来。
-        if (option.current) label = label + getString(R.string.interp_engine_same_as_default);
-        return suffix.isEmpty() ? label : getString(R.string.interp_engine_option, label, suffix);
-    }
-
-    private static boolean options_unknown(AsrEngineOptions.Option option) {
-        return "unverified".equals(option.available);
-    }
-
-    /**
-     * 落地一次选择。
-     *
-     * <p>⚠️ 正在跑的那一场**必须重开**：侧车是开会话时写的，改完不重开等于没改，
-     * 而用户会以为"换了模型但结果没变，所以两个模型一样"—— 这是个会毁掉 A/B 结论的坑。
-     */
-    private void applyEngineChoice(String strategy) {
-        String before = savedEngineStrategy();
-        if (before.equals(strategy)) return;
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-                .putString(PREF_ENGINE, strategy)
-                .putString(PREF_ENGINE_LANG, partner)
-                .apply();
-        rebuildRouter();
-        refreshEngineRow();
-        AsrEngineOptions.Option picked = engineChoice();
-        String label = picked == null ? getString(R.string.interp_engine_default) : picked.label;
-        reportEngineChoice(strategy, picked);
-        if (running) {
-            stopInterpreting();
-            statusView.setText(getString(R.string.interp_engine_changed, label));
-        } else {
-            statusView.setText(getString(R.string.interp_engine_ready, label));
-        }
-        Log.i("LeionInterp", "🎛 识别引擎 → " + (strategy.isEmpty() ? "服务器默认" : strategy)
-                + "（" + label + "）");
-    }
-
-    /**
-     * 把这次切换**报告**给服务器（5.66）：让"我在手机上换了模型"在服务器终端上立刻可见。
-     *
-     * <p>⚠️ 它不改变识别行为 —— 真正的生效路径是开会话时写进房间侧车的那份请求。
-     * 这里只是痕迹：失败也不打扰用户（不弹提示、不拦操作），否则一个纯排障用的
-     * 旁路会在网络抖一下时把"换引擎"这件事整个卡住。
-     */
-    private void reportEngineChoice(String strategy, final AsrEngineOptions.Option picked) {
-        final LanClient relay = client != null ? client : buildClient();
-        if (relay == null) return;
-        final String askLang = partner;
-        new Thread(() -> {
-            try {
-                relay.reportAsrChoice(askLang, strategy,
-                        picked == null ? "" : picked.engineRequest(),
-                        picked == null ? "" : picked.modelRequest());
-            } catch (Exception error) {
-                Log.w("LeionInterp", "🎛 切换记录没送到服务器（不影响功能）：" + describe(error));
-            }
-        }, "interp-choice-report").start();
     }
 
     // ── 历史 ──────────────────────────────────────────────────────────────

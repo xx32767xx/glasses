@@ -1136,7 +1136,7 @@ public class LanClient {
      */
     public JSONObject orgInterpreterStart(String name, String readLang, String speakLang)
             throws IOException, org.json.JSONException {
-        return orgInterpreterStart(name, readLang, speakLang, "");
+        return orgInterpreterStart(name, readLang, speakLang, "", "");
     }
 
     /**
@@ -1174,64 +1174,6 @@ public class LanClient {
             }
         }
         return unwrap(requestWithCode("/org/interpreter/start", "POST", body, 8000));
-    }
-
-    /**
-     * 告诉服务器「我刚换了识别引擎」（5.66）。**只是打日志 + 记一份排队文件**，
-     * 不改变识别行为（真正的生效路径是开会话时写的房间侧车）。
-     *
-     * <p>为什么非要这一下：手机的选择原来只在"开会话"那一刻才传到服务器，
-     * 于是"我在配置页换了个模型"这件事服务器完全看不见 —— 排查时分不清
-     * "没换"、"换了没生效"、"换了但要下一场才生效"。这一条让第一秒就能分清。
-     *
-     * <p>失败**不打扰用户**：它只是痕迹，不是功能；调用方吞掉异常即可。
-     */
-    public void reportAsrChoice(String lang, String strategy, String engine, String model)
-            throws IOException, org.json.JSONException {
-        JSONObject body = new JSONObject();
-        body.put("lang", lang == null ? "" : lang);
-        body.put("strategy", strategy == null ? "" : strategy);
-        body.put("engine", engine == null ? "" : engine);
-        body.put("model", model == null ? "" : model);
-        body.put("note", "手机配置页切换");
-        unwrap(requestWithCode("/org/asr/choice", "POST", body, 4000));
-    }
-
-    /** 兼容老调用（只给模型名）：引擎家族留空 = 用服务器缺省的 whisper。 */
-    public JSONObject orgInterpreterStart(String name, String readLang, String speakLang, String engine)
-            throws IOException, org.json.JSONException {
-        return orgInterpreterStart(name, readLang, speakLang, engine, "");
-    }
-
-    /**
-     * 问服务器「这一路能用哪些识别引擎」（5.58）。**只读**，给 App 里的选择器用。
-     *
-     * <p>为什么必须问服务器而不是在 App 里写死清单：可用与否取决于**服务器上装了哪些模型**，
-     * 写死在 App 里就会出现"选了但服务器没有"的静默失败 —— 那正是 A/B 结论不可信的原因。
-     *
-     * @return 失败时返回 {@code null}（界面显示"取不到清单"，而不是显示一个空清单）
-     */
-    public AsrEngineOptions asrEngines(String lang) throws IOException {
-        String target = lang == null ? "" : lang.trim();
-        JSONObject body = unwrap(requestWithCode(
-                "/org/asr/engines?lang=" + java.net.URLEncoder.encode(target, "UTF-8"),
-                "GET", null, 6000));
-        org.json.JSONArray options = body == null ? null : body.optJSONArray("options");
-        if (options == null) return null;
-        java.util.List<AsrEngineOptions.Option> parsed = new java.util.ArrayList<>();
-        for (int index = 0; index < options.length(); index += 1) {
-            JSONObject one = options.optJSONObject(index);
-            if (one == null) continue;
-            parsed.add(new AsrEngineOptions.Option(
-                    one.optString("strategy", ""),
-                    one.optString("engine", ""),
-                    one.optString("model", ""),
-                    one.optString("label", ""),
-                    one.optString("available", ""),
-                    one.optString("hint", ""),
-                    one.optBoolean("current", false)));
-        }
-        return new AsrEngineOptions(parsed);
     }
 
     /** 结束会话（定格时长）。幂等：重复调用服务端也只是再置一次 closed_at。 */
