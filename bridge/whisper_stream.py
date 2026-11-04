@@ -1328,8 +1328,10 @@ class ParakeetEngine(AsrEngine):
             raise RuntimeError(
                 f"parakeet 模型目录 {directory} 里缺文件：{'、'.join(missing)}。"
                 "（sherpa-onnx 的 NeMo transducer 模型需要 encoder/decoder/joiner 三个 onnx + tokens.txt）")
-        # 8 核机器上把线程全给它：CPU 路线的速度几乎只由线程数和核心架构决定
-        threads = int((profile or {}).get("beam_size") or 0) or max(1, os.cpu_count() or 4)
+        # 线程数：8 核机器上把线程全给它最快，但**它会和切句进程/转发抢 CPU**。
+        # 所以策略里可以写 `"threads": 6` 留两核；没写就用满。
+        # ⚠️ 不要复用 beam_size 当线程数（那是解码宽度，语义完全不同）。
+        threads = int((profile or {}).get("threads") or 0) or max(1, os.cpu_count() or 4)
         kwargs = {
             "encoder": self._pick(found, directory, "encoder"),
             "decoder": self._pick(found, directory, "decoder"),
