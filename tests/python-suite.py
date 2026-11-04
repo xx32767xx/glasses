@@ -1589,6 +1589,16 @@ def main():
               and rows[0]["normalizedRate"] == 0.0, str(rows))
         check("重打分不需要 --set / 音频 / 模型（这次就只给了 dump）",
               rows[0]["segmentsProcessed"] == 2, str(rows[0]))
+        check("重打分把 S/D/I 也拆出来（只给一个错误率说不出该修哪一层）",
+              (rows[0]["substitutions"], rows[0]["deletions"], rows[0]["insertions"]) == (2, 1, 0),
+              str(rows[0]))
+        worst = _seg.worst_segments(runs[0], "word", 1)
+        check("最差片段清单：能挑出最差的那条，并给出逐项差异",
+              len(worst) == 1 and worst[0]["rate"] > 0
+              and worst[0]["reference"] == "he is twenty three"
+              and "three→23" in "、".join(worst[0]["diffs"]), str(worst))
+        check("最差片段清单的首行带 ERROR（日志里能直接筛）",
+              _seg.format_problem_samples(worst).splitlines()[0].startswith("ERROR"))
         bogus = workdir / "bogus.json"
         bogus.write_text('{"hello": "world"}', encoding="utf-8")
         message = _exit_message_of(lambda: _seg.run_rescore(bogus))

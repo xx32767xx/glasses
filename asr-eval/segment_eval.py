@@ -78,6 +78,7 @@ sys.path.insert(0, str(HERE))                   # 同层的兄弟模块（asr_ev
 sys.path.insert(0, str(ROOT / "bridge"))
 
 from asr_score import (NORMALIZED_RULES_VERSION, SCORING_RULES_VERSION,          # noqa: E402
+                       error_rate, format_problem_samples, problem_samples,
                        score_segment_run)
 from whisper_stream import UtteranceSegmenter, force_utf8_stdio                 # noqa: E402
 
@@ -539,11 +540,18 @@ def print_recognize_legend():
 
 def print_recognize_header(unit):
     print(f"{'静音判定':>10} {'句间停顿':>9} {'片段数':>7} {'逐段严格':>10} {'逐段规范':>10} "
-          f"{'整段严格':>10} {'整段规范':>10} {'写法差':>8} {'疑似繁体':>9} {'识别耗时':>9} "
+          f"{'整段严格':>10} {'整段规范':>10} {'写法差':>8} "
+          f"{'S':>5} {'D':>5} {'I':>5} {'疑似繁体':>9} {'识别耗时':>9} "
           f"{'漏掉' + ('字' if unit == 'char' else '词'):>9}")
 
 
 def print_recognize_row(silence_ms, gap_ms, outcome, unit, elapsed_s):
+    """一行 = 一个配置。⚠️ S/D/I 是**严格口径、逐段汇总**的拆分。
+
+    为什么要这三列：错误率只说"错了多少"，说不出"错在哪"。
+    删除多 → 被切掉/被吃掉（切句或 VAD 的锅）；替换多 → 听错了（声学/模型）；
+    插入多 → 幻听/重复循环。三种病三个方子，混在一个数里永远查不下去。
+    """
     if not outcome["segments"] or not outcome["strict"]["units"]:
         print(f"{silence_ms:>8}ms {gap_ms:>7}ms   没有可识别的片段")
         return None
@@ -554,15 +562,40 @@ def print_recognize_row(silence_ms, gap_ms, outcome, unit, elapsed_s):
           f"{strict * 100:>10.1f}% {norm * 100:>10.1f}% "
           f"{outcome['joined_strict']['rate'] * 100:>10.1f}% "
           f"{outcome['joined_normalized']['rate'] * 100:>10.1f}% "
-          f"{delta:>7.1f}pp {outcome['traditional']:>9} {elapsed_s:>8.1f}s "
+          f"{delta:>7.1f}pp {outcome['strict']['substitutions']:>5} "
+          f"{outcome['strict']['deletions']:>5} {outcome['strict']['insertions']:>5} "
+          f"{outcome['traditional']:>9} {elapsed_s:>8.1f}s "
           f"{outcome['missed']['strict']:>9}")
     return {"silenceMs": silence_ms, "gapMs": gap_ms, "segments": outcome["segments"],
             "strictRate": strict, "normalizedRate": norm,
             "joinedStrictRate": outcome["joined_strict"]["rate"],
             "joinedNormalizedRate": outcome["joined_normalized"]["rate"],
             "traditional": outcome["traditional"], "elapsedS": elapsed_s,
+            "substitutions": outcome["strict"]["substitutions"],
+            "deletions": outcome["strict"]["deletions"],
+            "insertions": outcome["strict"]["insertions"],
             "missedStrict": outcome["missed"]["strict"],
             "missedNormalized": outcome["missed"]["normalized"]}
+
+
+def worst_segments(run, unit, limit):
+    """从一次配置里挑出**最差的那些片段**（严格口径，最差排最前）。
+
+    为什么需要：一个 14.3% 的整体错误率可以是"普遍小错"，也可以是"少数几条崩了"，
+    这两种情况的修法完全不同，而汇总数字分不出来。清单里每条都带参考/识别/逐项差异
+    （`漏X` / `多X` / `A→B`），照着听就能定性。
+    """
+    rows = []
+    for index, item in enumerate(run.get("records", [])):
+        score = error_rate(item["reference"], item["hypothesis"], unit)
+        rows.append({"file": f"{run.get('silenceMs')}ms-seg{index}",
+                     "seconds": round(float(item.get("endS", 0)) - float(item.get("startS", 0)), 2),
+                     "rate": score["rate"], "units": score["units"],
+                     "substitutions": score["substitutions"],
+                     "deletions": score["deletions"], "insertions": score["insertions"],
+                     "reference": item["reference"], "hypothesis": item["hypothesis"]})
+    # threshold=0.0 → 只要错了一点就进清单（limit 控制条数）
+    return problem_samples(rows, threshold=0.0, unit=unit, limit=limit)
 
 
 def write_dump(path, clips, unit, args, runs):
@@ -592,8 +625,13 @@ def write_dump(path, clips, unit, args, runs):
     return target
 
 
-def run_rescore(path, json_out=None):
-    """只重打分：读 dump、按**当前**判据重算两条口径，不载模型、不需要音频。"""
+def run_rescore(path, json_out=None, worst=0):
+    """只重打分：读 dump、按**当前**判据重算两条口径，不载模型、不需要音频。
+
+    `worst=N`：每个配置再打出最差的 N 段（参考/识别/逐项差异，首行以 `ERROR` 开头，
+    可以直接 `Select-String ERROR`）。整体错误率**说不出**这错是普遍小错还是少数几条崩了，
+    而这两种情况的修法完全不同 —— 所以这个清单是下一步排查的入口，不是装饰。
+    """
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if payload.get("kind") != "segment-eval-dump":
         sys.exit(f"{path} 不是 --dump 写出来的文件（kind={payload.get('kind')!r}，"
@@ -627,6 +665,24 @@ def run_rescore(path, json_out=None):
         deltas = [(row["strictRate"] - row["normalizedRate"]) * 100 for row in rows]
         print(f"\n  写法差异（严格 − 规范）逐段平均 {sum(deltas) / len(deltas):.1f} 个百分点"
               f"（最大 {max(deltas):.1f}pp）—— 这部分不是听错，是数字/单位写法不同")
+        totals = {key: sum(row[key] for row in rows) for key in
+                  ("substitutions", "deletions", "insertions")}
+        grams = totals["substitutions"] + totals["deletions"] + totals["insertions"]
+        if grams:
+            print(f"  严格口径的错由什么组成（全部配置合计）：替换 {totals['substitutions']} "
+                  f"({totals['substitutions'] / grams * 100:.0f}%)、"
+                  f"删除 {totals['deletions']} ({totals['deletions'] / grams * 100:.0f}%)、"
+                  f"插入 {totals['insertions']} ({totals['insertions'] / grams * 100:.0f}%)")
+            print("    删除多 → 切掉/被吃掉（切句或 VAD 的锅）；替换多 → 真听错；"
+                  "插入多 → 幻听/重复循环")
+    if worst:
+        for run in runs:
+            picked = worst_segments(run, unit, worst)
+            if not picked:
+                continue
+            print(f"\n  ⚠️ 最差的 {len(picked)} 段（静音 {run.get('silenceMs')}ms / "
+                  f"句间 {run.get('gapMs')}ms，严格口径）：")
+            print(format_problem_samples(picked, line_prefix="ERROR"))
     if json_out:
         target = Path(json_out)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -662,6 +718,9 @@ def parse_args(argv=None):
                              "评分规则一改（如 asr-norm-v2 补英语数字词）就用它，不必重跑模型")
     parser.add_argument("--json", dest="json_out", default=None,
                         help="把重打分的结果也写成 JSON（配 --rescore 用）")
+    parser.add_argument("--worst", type=int, default=0,
+                        help="配 --rescore：每个配置再列出最差的 N 段（参考/识别/逐项差异，"
+                             "首行 ERROR，可直接筛）。缺省 0 = 不列")
     parser.add_argument("--model", default="large-v3")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--compute-type", default="float16")
@@ -721,7 +780,7 @@ def main(argv=None):
     args = parse_args(argv)
     # --rescore 走这条路：不载模型、不读音频 —— 见 run_rescore 里为什么重要
     if args.rescore:
-        return run_rescore(args.rescore, args.json_out)
+        return run_rescore(args.rescore, args.json_out, args.worst)
     if not args.wavset:
         sys.exit("缺 --set：切句基准要一个测试集目录（只有 --rescore 不需要）")
     if args.json_out and not args.rescore:
