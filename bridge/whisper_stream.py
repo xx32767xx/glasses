@@ -1431,12 +1431,34 @@ class TencentEngine(AsrEngine):
     ENV_ID = "TENCENT_ASR_SECRET_ID"
     ENV_KEY = "TENCENT_ASR_SECRET_KEY"
     ENV_REGION = "TENCENT_ASR_REGION"
+    # 5.76：也可以把密钥放**文件**里（JSON 或腾讯控制台导出的 CSV），再用这个变量指过去。
+    # 为什么需要：环境变量会进 shell history / systemd 单元文件；把密钥放一个 chmod 600 的
+    # 文件里更安全，也更不容易在 ps 里被看到。
+    ENV_FILE = "TENCENT_ASR_SECRET_FILE"
 
     def __init__(self, model_class, args):
         self.args = args
 
     def describe(self, profile):
         return f"tencent:{self.engine_code(profile, 'en-US')}"
+
+    def read_secret_file(self):
+        """从 `TENCENT_ASR_SECRET_FILE` 读 SecretId/SecretKey（JSON 或带表头的 CSV）。"""
+        path = os.environ.get(self.ENV_FILE, "").strip()
+        if not path:
+            return {}
+        text = open(path, encoding="utf-8-sig").read()
+        stripped = text.strip()
+        if stripped.startswith("{"):
+            data = json.loads(stripped)
+            return {key.lower(): str(value).strip() for key, value in data.items()}
+        rows = [line.split(",") for line in stripped.splitlines() if line.strip()]
+        if len(rows) >= 2:
+            header = [name.strip().lower() for name in rows[0]]
+            return dict(zip(header, [value.strip() for value in rows[1]]))
+        raise RuntimeError(
+            f"密钥文件 {path} 的格式不认识：要 JSON（键是 SecretId / SecretKey）"
+            f"或带表头的 CSV（SecretId,SecretKey）")
 
     def engine_code(self, profile, language):
         """这一段用哪个引擎编码：策略的 `model` 直接写编码就覆盖语言默认值。"""
@@ -1454,15 +1476,31 @@ class TencentEngine(AsrEngine):
     def load(self, profile, device):
         secret_id = os.environ.get(self.ENV_ID, "").strip()
         secret_key = os.environ.get(self.ENV_KEY, "").strip()
+        region = os.environ.get(self.ENV_REGION, "").strip()
+        if not secret_id or not secret_key:
+            # 环境变量没给就试密钥文件（5.76：更安全，也不会在 ps 里露出来）
+            try:
+                from_file = self.read_secret_file()
+            except RuntimeError:
+                raise
+            except Exception as error:                              # noqa: BLE001
+                raise RuntimeError(
+                    f"读密钥文件失败（{self.ENV_FILE}={os.environ.get(self.ENV_FILE)}）："
+                    f"{type(error).__name__}: {error}") from error
+            secret_id = secret_id or from_file.get("secretid", "")
+            secret_key = secret_key or from_file.get("secretkey", "")
+            region = region or from_file.get("region", "")
         if not secret_id or not secret_key:
             # ⚠️ 这里**不**退回到 whisper：静默换引擎会让 A/B 结论作废
             raise RuntimeError(
-                f"腾讯云引擎缺少密钥：请设置环境变量 {self.ENV_ID} / {self.ENV_KEY}"
-                f"（可选 {self.ENV_REGION}，缺省 ap-shanghai）。密钥只从环境变量读，不写进仓库。")
+                f"腾讯云引擎缺少密钥：设置环境变量 {self.ENV_ID} / {self.ENV_KEY}，"
+                f"或者把密钥放进文件再用 {self.ENV_FILE} 指向它"
+                f"（JSON 或带表头 SecretId,SecretKey 的 CSV；可选 {self.ENV_REGION}，缺省 ap-shanghai）。"
+                "密钥只从环境变量/文件读，不写进仓库。")
         return {
             "secret_id": secret_id,
             "secret_key": secret_key,
-            "region": os.environ.get(self.ENV_REGION, "").strip() or "ap-shanghai",
+            "region": region or "ap-shanghai",
         }
 
     def transcribe(self, handle, audio, language, profile=None):

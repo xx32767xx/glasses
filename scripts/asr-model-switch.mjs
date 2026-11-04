@@ -16,28 +16,33 @@
  *   node scripts/asr-model-switch.mjs --data-dir /var/lib/leion/test --model tiny
  *   node scripts/asr-model-switch.mjs --data-dir /var/lib/leion/test --lang pt-BR --model small
  *   node scripts/asr-model-switch.mjs --data-dir /var/lib/leion/test --model ""     # 还原成表里的默认
+ *   node scripts/asr-model-switch.mjs --data-dir /var/lib/leion/test --strategy en-parakeet
+ *       ↑ 换**引擎/整套策略**（parakeet、tencent 这些只能这样切；--model 只换模型名）
  *   node scripts/asr-model-switch.mjs --data-dir /var/lib/leion/test --room room-xxx --model tiny
- *       ↑ 只影响这一场（写房间侧车，不改表）
  *   node scripts/asr-model-switch.mjs --data-dir /var/lib/leion/test              # 只看现在是什么
  */
 
 import { copyFileSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { ENGINE_LANGUAGES, loadStrategyTable, parseJsonLoose, setLanguageModel } from '../lib/asr-engines.mjs'
+import {
+  ENGINE_LANGUAGES, loadStrategyTable, parseJsonLoose, resolveProfile, setLanguageModel,
+} from '../lib/asr-engines.mjs'
 
-const MODEL_NAME = /^[A-Za-z0-9._/-]{1,120}$/
+const MODEL_NAME = /^[A-Za-z0-9._/:-]{1,160}$/
+const STRATEGY_NAME = /^[a-z0-9_-]{1,32}$/
 
 function parseArgs(argv) {
-  const args = { dataDir: '', lang: 'en-US', model: null, room: '' }
+  const args = { dataDir: '', lang: 'en-US', model: null, strategy: null, room: '' }
   for (let index = 0; index < argv.length; index += 1) {
     const item = argv[index]
     if (item === '--data-dir') args.dataDir = argv[index += 1] ?? ''
     else if (item === '--lang') args.lang = argv[index += 1] ?? ''
     else if (item === '--model') args.model = argv[index += 1] ?? ''
+    else if (item === '--strategy') args.strategy = argv[index += 1] ?? ''
     else if (item === '--room') args.room = argv[index += 1] ?? ''
     else if (item === '--help' || item === '-h') {
       console.log('用法：node scripts/asr-model-switch.mjs --data-dir <目录> '
-        + '[--lang en-US|zh-CN|pt-BR] [--model <名字>|""] [--room <房间id>]')
+        + '[--lang en-US|zh-CN|pt-BR] [--model 名字] [--strategy 策略名] [--room 房间id]')
       process.exit(0)
     } else {
       console.error(`不认识的参数：${item}`)
@@ -52,8 +57,12 @@ function parseArgs(argv) {
     console.error(`--lang 只能是 ${ENGINE_LANGUAGES.join(' / ')}`)
     process.exit(2)
   }
+  if (args.strategy !== null && !STRATEGY_NAME.test(args.strategy)) {
+    console.error('--strategy 只能是 [a-z0-9_-]（表里 strategies 的名字）')
+    process.exit(2)
+  }
   if (args.model !== null && args.model !== '' && !MODEL_NAME.test(args.model)) {
-    console.error('--model 名字不合法（只允许字母数字 . _ / -）')
+    console.error('--model 名字不合法（只允许字母数字 . _ / : -）')
     process.exit(2)
   }
   return args
@@ -92,33 +101,73 @@ function main() {
   }
   const table = loaded.table ?? {}
 
-  // 没给 --model：只报告现状
-  if (args.model === null) {
-    const entry = table.languages?.[args.lang]
-    const pinned = typeof entry === 'object' && entry !== null ? entry.model : entry
+  // 没给 --model 也没给 --strategy：只报告现状
+  if (args.model === null && args.strategy === null) {
     console.log(`数据目录 ${root}`)
-    console.log(`表里 ${args.lang} 现在：${pinned ? `模型 ${pinned}` : '（没有单独钉模型，按策略表/default）'}`)
     for (const lang of ENGINE_LANGUAGES) {
-      const one = table.languages?.[lang]
-      const model = typeof one === 'object' && one !== null ? one.model : one
-      console.log(`  · ${lang}：${model ? `${model}` : '（按策略表/default）'}`)
+      const entry = table.languages?.[lang]
+      const named = typeof entry === 'object' && entry !== null ? entry.strategy : ''
+      const model = typeof entry === 'object' && entry !== null ? entry.model : entry
+      const profile = resolveProfile(table, lang, named || 'default')
+      const parts = [
+        named ? `策略 ${named}` : '策略 default',
+        `引擎 ${profile.engine}/${profile.model || '默认'}`,
+        model ? `（直接钉了模型 ${model}）` : '',
+      ].filter(Boolean)
+      console.log(`  · ${lang}：${parts.join('，')}`)
     }
-    console.log('\n切换：加 --model tiny（要还原就 --model ""）')
+    const strategies = Object.keys(table.strategies ?? {})
+    if (strategies.length > 0) console.log(`\n可选策略：${strategies.join(' / ')}`)
+    console.log('\n换模型：--model tiny（还原：--model ""）'
+      + '\n换引擎：--strategy en-parakeet（parakeet / tencent 这类只能这样切）')
     return 0
   }
 
-  const result = setLanguageModel(table, args.lang, args.model)
+  let next = table
+  const reports = []
+
+  // ① 换策略（引擎 + 模型 + 切句整套）
+  if (args.strategy !== null) {
+    const strategies = table.strategies ?? {}
+    if (strategies[args.strategy] === undefined) {
+      // ⚠️ 写一个不存在的策略名不会报错，识别侧会悄悄按 default 跑 —— 所以这里必须拦住
+      console.error(`表里没有策略 ${args.strategy}。可选：${Object.keys(strategies).join(' / ') || '（一个都没有）'}`)
+      return 2
+    }
+    const languages = { ...(next.languages ?? {}) }
+    const entry = languages[args.lang]
+    const asObject = entry && typeof entry === 'object' && !Array.isArray(entry)
+      ? { ...entry }
+      : (typeof entry === 'string' ? { model: entry } : {})
+    asObject.strategy = args.strategy
+    // ⚠️ 策略已经决定引擎与模型，所以把"直接钉的模型"删掉 —— 否则它仍会压过策略，
+    //    用户以为换成了 parakeet，实际还在跑那个钉住的 whisper 模型。
+    delete asObject.model
+    languages[args.lang] = asObject
+    next = { ...next, languages }
+    reports.push(`${args.lang} 的策略 → ${args.strategy}（该策略里的引擎/模型生效，原先直接钉的模型已清除）`)
+  }
+
+  // ② 换模型（只改模型名，不动策略与引擎）
+  if (args.model !== null) {
+    const pinned = setLanguageModel(next, args.lang, args.model)
+    next = pinned.table
+    reports.push(`${args.lang} 的模型：${pinned.before || '（按策略表/default）'} → `
+      + `${pinned.after || '（还原成策略表/default）'}`)
+  }
+
   if (existsSync(tablePath)) {
     const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)
     copyFileSync(tablePath, `${tablePath}.bak-${stamp}`)
   } else {
     console.log(`（${tablePath} 原来不存在，会新建一份）`)
   }
-  writeFileSync(tablePath, JSON.stringify(result.table, null, 2), 'utf-8')
-  console.log(`${args.lang}：${result.before || '（按策略表/default）'} → `
-    + `${result.after || '（还原成策略表/default）'}`)
+  writeFileSync(tablePath, JSON.stringify(next, null, 2), 'utf-8')
+  for (const line of reports) console.log(line)
+  const after = resolveProfile(next, args.lang, next.languages?.[args.lang]?.strategy || 'default')
+  console.log(`现在这一路会跑：引擎 ${after.engine} / 模型 ${after.model || '默认'}`)
   console.log(`已写 ${tablePath}（识别侧按 mtime 热读，**不用重启**）`)
-  console.log('验证：日志里出现 `[识别] 房间 … 策略 …（模型 ' + (result.after || 'default') + '…）`')
+  console.log('验证：日志里出现 `[识别] 加载 <引擎>:<模型>` 与 `（引擎 <引擎>）`')
   console.log('⚠️ 只在 App 里没给这场选过模型时才生效（房间侧车优先级更高）。')
   return 0
 }

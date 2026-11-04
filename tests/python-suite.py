@@ -2640,6 +2640,38 @@ def main():
     check("策略里的 model 直接写编码就覆盖语言默认值",
           engines["tencent"].engine_code({"model": "16k_zh"}, "en-US") == "16k_zh")
 
+    # 5.76：密钥也可以放文件（比环境变量安全，不会在 ps / shell history 里露出来）
+    secret_dir = Path(ROOT / "var" / "test" / "secret")
+    secret_dir.mkdir(parents=True, exist_ok=True)
+    csv_secret = secret_dir / "SecretKey.csv"
+    csv_secret.write_text("SecretId,SecretKey\nAKIDfakeid,fakesecret\n", encoding="utf-8")
+    os.environ["TENCENT_ASR_SECRET_FILE"] = str(csv_secret)
+    os.environ.pop("TENCENT_ASR_SECRET_ID", None)
+    os.environ.pop("TENCENT_ASR_SECRET_KEY", None)
+    from_file = engines["tencent"].load({}, "cpu")
+    check("密钥能从 CSV 文件读（SecretId/SecretKey 表头）",
+          from_file["secret_id"] == "AKIDfakeid" and from_file["secret_key"] == "fakesecret",
+          str(from_file))
+    json_secret = secret_dir / "tencent.json"
+    json_secret.write_text('{"SecretId": "AKIDjson", "SecretKey": "jsonsecret", "Region": "ap-beijing"}',
+                           encoding="utf-8")
+    os.environ["TENCENT_ASR_SECRET_FILE"] = str(json_secret)
+    from_json = engines["tencent"].load({}, "cpu")
+    check("密钥也能从 JSON 文件读（顺带支持 Region）",
+          from_json["secret_id"] == "AKIDjson" and from_json["region"] == "ap-beijing", str(from_json))
+    weird = secret_dir / "weird.txt"
+    weird.write_text("这不是密钥\n", encoding="utf-8")
+    os.environ["TENCENT_ASR_SECRET_FILE"] = str(weird)
+    weird_error = ""
+    try:
+        engines["tencent"].load({}, "cpu")
+    except RuntimeError as error:
+        weird_error = str(error)
+    check("密钥文件格式不认识时明确说清（不静默当成没有密钥）",
+          "格式不认识" in weird_error, weird_error)
+    os.environ.pop("TENCENT_ASR_SECRET_FILE", None)
+    shutil.rmtree(secret_dir, ignore_errors=True)
+
     # 签名：算法有三段派生密钥，漏一段就永远对不上，而报错只会说"签名失败"
     headers, body = whisper_stream.tencent_tc3_headers(
         "AKIDtest", "secret", {"EngSerViceType": "16k_en"}, timestamp=1700000000)
