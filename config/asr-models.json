@@ -63,11 +63,17 @@
     },
     "en-distil": {
       "note": "英语候选（5.58）：distil-large-v3（纯英文蒸馏版，约 756M）。同样是只改模型。",
-      "model": "distil-large-v3"
+      "model": "distil-large-v3",
+      "langs": ["en-US"]
+    },
+    "en-tiny": {
+      "note": "**验收用的对照**（5.61）：tiny 故意很差，选它以后字幕会一眼看出变烂 —— 用它证明「切换真的生效」，不要用它做业务。约 75MB，几十秒下完。",
+      "model": "tiny"
     },
     "en-buzzasr": {
       "note": "英语候选（5.58）：BuzzASR 英文微调（外部报告里 WER 2.86%）。⚠️ 这是本地目录，没搬进来就选不了 —— 清单里会标 missing。",
-      "model": "/var/lib/leion/models/buzzasr-en-ct2"
+      "model": "/var/lib/leion/models/buzzasr-en-ct2",
+      "langs": ["en-US"]
     },
     "zh-steady": {
       "note": "中文：与产线一致（留个名字，方便在日志里一眼看出这场走的是哪套）"

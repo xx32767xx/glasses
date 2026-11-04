@@ -405,6 +405,31 @@ export async function runOrgApiSuite({ it, check, assert }) {
     check('普通用户能调（换模型属于配置自己的会议）', (await call({
       method: 'GET', path: '/org/asr/engines?lang=en-US', user: 'alice@example.com', role: 'user',
     })).status === 200)
+
+    // `langs`：纯英文模型不许出现在中文那一栏（否则用户一选就是满屏乱码）
+    writeFileSync(join(root, 'asr-models.json'), JSON.stringify({
+      default: { model: 'large-v3' },
+      strategies: {
+        'en-distil': { model: 'distil-large-v3', langs: ['en-US'] },
+        'any-tiny': { model: 'tiny' },
+      },
+    }, null, 2), 'utf-8')
+    const forEnglish = await call({
+      method: 'GET', path: '/org/asr/engines?lang=en-US', user: 'boss@example.com', role: 'admin',
+    })
+    const forChinese = await call({
+      method: 'GET', path: '/org/asr/engines?lang=zh-CN', user: 'boss@example.com', role: 'admin',
+    })
+    check('英文栏里有纯英文模型', forEnglish.json.options.some((one) => one.model === 'distil-large-v3'),
+      JSON.stringify(forEnglish.json.options.map((one) => one.model)))
+    check('中文栏里**没有**纯英文模型（选了就是乱码）',
+      !forChinese.json.options.some((one) => one.model === 'distil-large-v3'),
+      JSON.stringify(forChinese.json.options.map((one) => one.model)))
+    check('而且会说明"这些因为语种被跳过了"（不是悄悄消失）',
+      (forChinese.json.skippedByLang ?? []).includes('en-distil'),
+      JSON.stringify(forChinese.json.skippedByLang))
+    check('没写 langs 的多语模型两边都在', forChinese.json.options.some((one) => one.model === 'tiny')
+      && forEnglish.json.options.some((one) => one.model === 'tiny'))
   })
 
   await it('房间侧车能同时记下引擎与模型（手机选的才真到得了识别进程）', () => {

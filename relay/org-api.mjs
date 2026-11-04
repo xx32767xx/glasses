@@ -190,6 +190,9 @@ export async function handleOrg(input) {
         tableProblem: loaded.problem,
         current: listed.current,
         options: listed.options,
+        // 因为 `langs` 不匹配而被跳过的策略名（纯英文模型出现在中文栏那种事，
+        // 要能解释"为什么没看到"，而不是让人以为服务器没配）
+        skippedByLang: listed.skippedByLang ?? [],
       },
     }
   }
