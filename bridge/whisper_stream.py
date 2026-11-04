@@ -1662,8 +1662,12 @@ class TencentEngine(AsrEngine):
 #   → 收若干 result-generated（payload.output.sentence.text）→ task-finished
 # ⚠️ 所有字段名都集中在这一处；第一次真调用若报错，把 DashScope 的原文贴出来改这里就够。
 DASHSCOPE_WS_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
-DASHSCOPE_MODEL_BY_LANG = {"pt-BR": "fun-asr-realtime", "zh-CN": "fun-asr-realtime",
-                           "en-US": "fun-asr-realtime"}
+# ⚠️ 不同账号「模型广场」里可见的 ASR 模型**不一样**（实测：某个账号能看到
+# `fun-asr-flash-2026-06-15` / `qwen3-asr-flash-realtime` / `qwen-audio-3.0-asr-flash`，
+# 却**没有** `fun-asr-realtime`）。所以这里**不给默认值**：模型 ID 必须写在策略表里，
+# 代码不猜 —— 猜错的表现是"连接成功但 task-failed"，比缺参数更难查。
+DASHSCOPE_MODEL_HINTS = ("fun-asr-flash-2026-06-15", "qwen3-asr-flash-realtime",
+                         "fun-asr-realtime", "paraformer-realtime-v2")
 
 
 class FunAsrEngine(AsrEngine):
@@ -1677,7 +1681,7 @@ class FunAsrEngine(AsrEngine):
         self.args = args
 
     def describe(self, profile):
-        return f"funasr:{profile.get('model') or DASHSCOPE_MODEL_BY_LANG['pt-BR']}"
+        return f"funasr:{profile.get('model') or '(未指定模型)'}"
 
     def load(self, profile, device):
         try:
@@ -1692,7 +1696,14 @@ class FunAsrEngine(AsrEngine):
             raise RuntimeError(
                 f"funasr 缺少 API Key：请设置环境变量 {self.ENV_KEY}"
                 "（DashScope 控制台里创建；只从环境变量读，不写进仓库）")
-        return {"api_key": api_key}
+        model = str((profile or {}).get("model") or "").strip()
+        if not model:
+            # ⚠️ 不给默认模型：账号之间可用模型不同，猜错只会得到 task-failed
+            raise RuntimeError(
+                "funasr 的模型 ID 必须写在策略表里（`\"model\": \"…\"`）—— 不同账号「模型广场」"
+                f"里可见的 ASR 模型不同，代码不猜。常见候选：{'、'.join(DASHSCOPE_MODEL_HINTS)}；"
+                "以你那台账号控制台里显示的名称为准")
+        return {"api_key": api_key, "model": model}
 
     def transcribe(self, handle, audio, language, profile=None):
         """一句话一条连接：run-task → 音频 → finish-task → 收最终文本。
@@ -1704,8 +1715,7 @@ class FunAsrEngine(AsrEngine):
         import json as _json
         from websockets.sync.client import connect
 
-        model = str((profile or {}).get("model") or "").strip() \
-            or DASHSCOPE_MODEL_BY_LANG.get(language_tag(language) or "", "fun-asr-realtime")
+        model = handle["model"]
         task_id = f"leion-{int(time.time() * 1000)}"
         run_task = {
             "header": {"action": "run-task", "task_id": task_id, "streaming": "duplex"},

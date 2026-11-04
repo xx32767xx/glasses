@@ -2796,7 +2796,10 @@ def main():
 
     # 5.84：葡语走 DashScope Fun-ASR —— 缺 websockets / 缺 key 都必须大声报错
     funasr = engines["funasr"]
-    check("funasr 的 describe 带模型名", "fun-asr" in funasr.describe({}), funasr.describe({}))
+    check("funasr 的 describe 带模型名（没写时如实说未指定，不编一个）",
+          "fun-asr-flash" in funasr.describe({"model": "fun-asr-flash-2026-06-15"})
+          and "未指定" in funasr.describe({}),
+          f"{funasr.describe({'model': 'fun-asr-flash-2026-06-15'})} / {funasr.describe({})}")
     stub_modules = {}
     for name in ("websockets", "websockets.sync", "websockets.sync.client"):
         stub_modules[name] = sys.modules.get(name)
@@ -2813,7 +2816,17 @@ def main():
               "DASHSCOPE_API_KEY" in no_key, no_key)
         os.environ["DASHSCOPE_API_KEY"] = "sk-fake"
         check("给了 key 就能载入（把 key 收进句柄，不外泄到日志）",
-              funasr.load({}, "cpu")["api_key"] == "sk-fake")
+              funasr.load({"model": "fun-asr-flash-2026-06-15"}, "cpu")["api_key"] == "sk-fake")
+        # ⚠️ 不同账号可见的 ASR 模型不同（实测：某账号没有 fun-asr-realtime）——
+        #    所以模型 ID 必须由策略给，代码**不许**自己猜一个默认值
+        no_model = ""
+        try:
+            funasr.load({}, "cpu")
+        except RuntimeError as error:
+            no_model = str(error)
+        check("没写模型 ID 时报错并给出候选（不猜默认值，猜错只会得到 task-failed）",
+              "模型 ID 必须写在策略表里" in no_model
+              and "fun-asr-flash-2026-06-15" in no_model, no_model)
         os.environ.pop("DASHSCOPE_API_KEY", None)
     finally:
         for name, module in stub_modules.items():
