@@ -2936,6 +2936,61 @@ def main():
           failed_result["empty"] is True and "task-failed" in (failed_result["reason"] or ""),
           str(failed_result))
 
+    # 5.96：实机遇到过「收到 result-generated 却等不到 task-finished」（TimeoutError 29.7s），
+    # 原实现把**已经拿到的文本**当失败丢掉 —— 用户看到的是"没字幕"，其实识别已完成。
+    def _run_timeout(scripted, raise_at):
+        import types as _types
+
+        class FakeWS:
+            def __init__(self):
+                self.script = list(scripted)
+                self.reads = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def send(self, payload):
+                pass
+
+            def recv(self, timeout=None):
+                self.reads += 1
+                if self.reads >= raise_at:
+                    raise TimeoutError("timed out in 29.7s")
+                return self.script.pop(0)
+
+        fake = _types.ModuleType("websockets")
+        sync = _types.ModuleType("websockets.sync")
+        client = _types.ModuleType("websockets.sync.client")
+        client.connect = lambda *args, **kwargs: FakeWS()
+        sync.client = client
+        fake.sync = sync
+        saved = {name: sys.modules.get(name) for name in
+                 ("websockets", "websockets.sync", "websockets.sync.client")}
+        sys.modules["websockets"] = fake
+        sys.modules["websockets.sync"] = sync
+        sys.modules["websockets.sync.client"] = client
+        try:
+            engine = whisper_stream.FunAsrEngine(None, None)
+            return engine.transcribe({"api_key": "k", "model": "m"},
+                                     np.zeros(1600, dtype=np.float32), "pt-BR", {"model": "m"})
+        finally:
+            for name, module in saved.items():
+                if module is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
+
+    kept = _run_timeout([_event("task-started"),
+                         _event("result-generated", {"sentence_id": 1, "text": "olá, tudo bem?"})], 3)
+    check("超时但已经收到文本 → 照样返回文字（不把识别结果丢掉）",
+          kept["empty"] is False and kept["text"] == "olá, tudo bem?", str(kept))
+    nothing = _run_timeout([], 1)
+    check("什么都没收到时仍然是失败（不能凭空造一句）",
+          nothing["empty"] is True and "TimeoutError" in (nothing["reason"] or ""), str(nothing))
+
     # 表坏了：保留旧表，绝不能"读到半张表就当没有"
     broken_dir = Path(ROOT / "var" / "test" / "asr-model-map")
     broken_dir.mkdir(parents=True, exist_ok=True)

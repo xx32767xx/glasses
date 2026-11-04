@@ -1803,6 +1803,12 @@ class FunAsrEngine(AsrEngine):
                 return "", {}
             return str((event.get("header") or {}).get("event") or ""), event
 
+        def joined_text():
+            """把按 sentence_id 存下的最新文本拼成一句。成功与超时两条路都用它。"""
+            parts = [sentences[key].strip() for key in order if sentences[key].strip()]
+            # 句间分隔：中日韩不加空格，其余加一个空格
+            return ("" if has_cjk(" ".join(parts)) else " ").join(parts).strip()
+
         def collect(event):
             """result-generated → 按 sentence_id 记住这句的**最新**文本。"""
             sentence = (((event.get("payload") or {}).get("output") or {}).get("sentence") or {})
@@ -1872,13 +1878,18 @@ class FunAsrEngine(AsrEngine):
                                           + _describe_header(event.get("header") or {}),
                                 "resolved_language": language}
         except Exception as error:                                  # noqa: BLE001
+            # ⚠️ 5.96：实测遇到过「收到了 result-generated，却等不到 task-finished」
+            #    （TimeoutError after 29.7s）。那时**文字已经拿到了**，当失败丢掉是最坑的选择
+            #    —— 用户看到的是"没字幕"，而实际上识别已经完成了。
+            partial = joined_text()
+            if partial:
+                return {"text": partial, "empty": False, "reason": None,
+                        "resolved_language": language}
             return {"text": "", "empty": True,
                     "reason": (f"DashScope 请求失败：{type(error).__name__}: {error}"
                                f"（最后收到的事件：{last_event or '无'}）"),
                     "resolved_language": language}
-        parts = [sentences[key].strip() for key in order if sentences[key].strip()]
-        # 句间分隔：中日韩不加空格（加了会变成「第一句 第二句」），其余加一个空格
-        text = ("" if has_cjk(" ".join(parts)) else " ").join(parts).strip()
+        text = joined_text()
         return {"text": text, "empty": text == "",
                 "reason": None if text else "Fun-ASR 没出字", "resolved_language": language}
 

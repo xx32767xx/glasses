@@ -418,6 +418,28 @@ export async function runOrgApiSuite({ it, check, assert }) {
       JSON.stringify([again.added, again.unchanged]))
     check('没有策略表时也能合（整份创建）',
       mergeStrategies(null, additions).added.length === 2)
+    // 5.96：我们自己改过示例表里的模型名（fun-asr-flash-* → fun-asr-realtime），
+    // 而默认合并只加不覆盖 ⇒ 服务器上一直跑着**旧模型名**，报的错却像"参数不对"。
+    check('不带 replace 时同名条目仍只报告、不覆盖（默认保守）',
+      merged.table.strategies['zh-steady'].note === '本地调过的切句'
+      && merged.replaced.length === 0, JSON.stringify(merged.replaced))
+    const replaced = mergeStrategies(existing, additions, { replace: true })
+    check('--replace：同名不同内容整条换成新表',
+      JSON.stringify(replaced.table.strategies['zh-steady']) === JSON.stringify(additions.strategies['zh-steady']),
+      JSON.stringify(replaced.table.strategies['zh-steady']))
+    check('--replace 也要留痕（replaced 里点名，不是悄悄改）',
+      replaced.replaced.includes('zh-steady') && replaced.conflict.length === 0,
+      JSON.stringify([replaced.replaced, replaced.conflict]))
+    check('--replace 时新策略仍然是新增（add 与 replace 分开报）',
+      replaced.added.includes('en-turbo') && !replaced.replaced.includes('en-turbo'),
+      JSON.stringify([replaced.added, replaced.replaced]))
+    check('--replace 也只加不删：表里别的策略原样保留',
+      replaced.table.languages['en-US'].strategy === 'default'
+      && JSON.stringify(replaced.table.default) === JSON.stringify(existing.default))
+    check('内容相同的条目不会被当成替换', mergeStrategies(
+      { strategies: { 'en-turbo': { model: 'large-v3-turbo' } } },
+      { strategies: { 'en-turbo': { model: 'large-v3-turbo' } } },
+      { replace: true }).replaced.length === 0)
     // ⚠️ Windows 编辑器会写 BOM，JSON.parse 直接整份失败 —— 容错读并如实报告
     const parsed = parseJsonLoose('\uFEFF{"a": 1}')
     check('带 BOM 的 JSON 能读，而且会告诉你它带 BOM', parsed.value.a === 1 && parsed.hadBom === true)

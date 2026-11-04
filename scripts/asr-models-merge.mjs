@@ -19,6 +19,8 @@
  *   node scripts/asr-models-merge.mjs --data-dir /var/lib/leion/test
  *   node scripts/asr-models-merge.mjs --data-dir /var/lib/leion/test --write
  *   node scripts/asr-models-merge.mjs --data-dir ... --only en-turbo,en-distil --write
+ *   node scripts/asr-models-merge.mjs --data-dir ... --only pt-funasr --replace --write
+ *       └ 我们改过示例表里的模型名时用它：默认只加不覆盖，旧名字会一直留在服务器上
  */
 
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
@@ -26,15 +28,16 @@ import { join } from 'node:path'
 import { mergeStrategies, parseJsonLoose } from '../lib/asr-engines.mjs'
 
 function parseArgs(argv) {
-  const args = { dataDir: '', write: false, source: 'config/asr-models.json', only: [] }
+  const args = { dataDir: '', write: false, source: 'config/asr-models.json', only: [], replace: false }
   for (let index = 0; index < argv.length; index += 1) {
     const item = argv[index]
     if (item === '--data-dir') args.dataDir = argv[index += 1] ?? ''
     else if (item === '--source') args.source = argv[index += 1] ?? args.source
     else if (item === '--only') args.only = String(argv[index += 1] ?? '').split(',').map((one) => one.trim()).filter(Boolean)
     else if (item === '--write') args.write = true
+    else if (item === '--replace') args.replace = true
     else if (item === '--help' || item === '-h') {
-      console.log('用法：node scripts/asr-models-merge.mjs --data-dir <目录> [--source <示例表>] [--only a,b] [--write]')
+      console.log('用法：node scripts/asr-models-merge.mjs --data-dir <目录> [--source <示例表>] [--only a,b] [--replace] [--write]')
       process.exit(0)
     } else {
       console.error(`不认识的参数：${item}`)
@@ -89,26 +92,36 @@ function main() {
     console.log(`${target} 不存在，会按示例表整份创建`)
   }
 
-  const merged = mergeStrategies(current, incoming)
+  // 5.96：`--replace` 把"同名但内容不同"的条目按示例表覆盖。
+  // 为什么需要：我们改过示例表里的模型名（fun-asr-flash-* -> fun-asr-realtime），
+  // 而服务器上的表是**只加不覆盖**——于是它一直跑着旧模型名，报的错却像"参数不对"。
+  const merged = mergeStrategies(current, incoming, { replace: args.replace })
   console.log(`目标：${target}`)
+  if (args.replace && merged.replaced.length > 0) {
+    for (const name of merged.replaced) {
+      const layer = merged.table.strategies[name]
+      console.log(`  ~ ${name}：覆盖成 ${layer.model ?? '（继承默认模型）'}${layer.note ? `  — ${layer.note}` : ''}`)
+    }
+  }
   if (merged.added.length > 0) {
     for (const name of merged.added) {
       const layer = merged.table.strategies[name]
       console.log(`  + ${name}：${layer.model ?? '（继承默认模型）'}${layer.note ? `  — ${layer.note}` : ''}`)
     }
-  } else {
-    console.log('  （没有需要新增的策略）')
+  }
+  if (merged.added.length === 0 && merged.replaced.length === 0) {
+    console.log('  （没有需要新增或覆盖的策略）')
   }
   for (const name of merged.unchanged) console.log(`  = ${name}：已存在且内容相同`)
   for (const name of merged.conflict) {
-    console.log(`  ! ${name}：表里已有**不同内容**的同名策略，没有覆盖 —— 要替换请手工改`)
+    console.log(`  ! ${name}：表里已有**不同内容**的同名策略，没有覆盖 —— 要替换请加 --replace`)
   }
 
   if (!args.write) {
     console.log('\n这是预览（dry-run）。确认无误后加 --write 落盘（会先备份原文件）。')
     return 0
   }
-  if (merged.added.length === 0) {
+  if (merged.added.length === 0 && merged.replaced.length === 0) {
     console.log('\n没有新增项，不写文件。')
     return 0
   }
