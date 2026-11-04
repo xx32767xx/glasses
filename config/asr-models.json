@@ -75,6 +75,18 @@
       "model": "/var/lib/leion/models/buzzasr-en-ct2",
       "langs": ["en-US"]
     },
+    "en-parakeet": {
+      "note": "英语本地首选（5.75）：NVIDIA Parakeet TDT 0.6B v2 的 ONNX 导出，走 sherpa-onnx（CPU int8，不需要 torch）。外部报告：总体 WER 2.13%、美音 0.93%、巴西口音英语 2.52%。model 写的是**模型目录**。",
+      "engine": "parakeet",
+      "model": "/opt/leion/models/parakeet-tdt-0.6b-v2",
+      "langs": ["en-US"]
+    },
+    "en-tencent": {
+      "note": "英语云端候选（5.75）：腾讯云一句话识别。model 写的是它的**引擎编码**（16k_en）。需要环境变量 TENCENT_ASR_SECRET_ID / TENCENT_ASR_SECRET_KEY。",
+      "engine": "tencent",
+      "model": "16k_en",
+      "langs": ["en-US"]
+    },
     "zh-steady": {
       "note": "中文：与产线一致（留个名字，方便在日志里一眼看出这场走的是哪套）"
     }

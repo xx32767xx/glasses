@@ -197,6 +197,59 @@ function main() {
     }
   }
 
+  // ── 4.5 引擎就绪度：每个引擎缺什么，一次说清（5.75）───────────────────────
+  //
+  // 为什么单列这一节：缺依赖 / 缺密钥的表现都是"这一段没有字幕"，
+  // 而它和"识别不准"完全是两件事。这里把三件事分开报：包装了没有、模型在不在、密钥有没有。
+  console.log('\n【引擎就绪度】')
+  const packages = report.python?.packages ?? {}
+  const hasModule = (name) => {
+    const version = packages[name]
+    return typeof version === 'string' && !version.startsWith('缺失')
+  }
+  const paraEnv = (process.env.PARAKEET_MODEL_DIR ?? '').trim()
+  const paraCandidates = [
+    paraEnv,
+    join(dataDir, 'models', 'parakeet-tdt-0.6b-v2'),
+    '/opt/leion/models/parakeet-tdt-0.6b-v2',
+  ].filter((one) => one !== '')
+  const paraDir = paraCandidates.find((one) => existsSync(one)) ?? ''
+  const engines = [
+    {
+      name: 'whisper',
+      ready: hasModule('faster_whisper'),
+      needs: hasModule('faster_whisper') ? '' : '没装 faster-whisper',
+      detail: '本地·CTranslate2',
+    },
+    {
+      name: 'parakeet',
+      ready: hasModule('sherpa_onnx') && paraDir !== '',
+      needs: [hasModule('sherpa_onnx') ? '' : '没装 sherpa-onnx（pip install sherpa-onnx，不需要 torch）',
+        paraDir === '' ? `模型目录没找到（找过 ${paraCandidates.join(' / ')}）` : `模型在 ${paraDir}`]
+        .filter((one) => one !== '').join('；'),
+      detail: '本地·ONNX int8/CPU',
+    },
+    {
+      name: 'tencent',
+      ready: Boolean(process.env.TENCENT_ASR_SECRET_ID && process.env.TENCENT_ASR_SECRET_KEY),
+      // ⚠️ 只说"有没有设置"，**绝不打印密钥**
+      needs: [
+        process.env.TENCENT_ASR_SECRET_ID ? 'secretId 已设置' : '缺 TENCENT_ASR_SECRET_ID',
+        process.env.TENCENT_ASR_SECRET_KEY ? 'secretKey 已设置' : '缺 TENCENT_ASR_SECRET_KEY',
+        `region=${process.env.TENCENT_ASR_REGION ?? 'ap-shanghai（缺省）'}`,
+      ].join('；'),
+      detail: '云端·一句话识别',
+    },
+  ]
+  for (const engine of engines) {
+    console.log(`  ${engine.ready ? '✓' : '✗'} ${engine.name.padEnd(9)} ${engine.detail}`
+      + `${engine.needs ? `　${engine.needs}` : ''}`)
+  }
+  report.engines = engines
+  for (const engine of engines) {
+    if (!engine.ready) report.problems.push(`引擎 ${engine.name} 没就绪：${engine.needs}`)
+  }
+
   // ── 5. 结论 ───────────────────────────────────────────────────────────────
   console.log('\n【结论】')
   const present = Object.values(listing)

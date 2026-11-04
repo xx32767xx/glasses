@@ -1226,15 +1226,302 @@ class WhisperEngine(AsrEngine):
                 "resolved_language": resolved_language}
 
 
+class ParakeetEngine(AsrEngine):
+    """NVIDIA Parakeet TDT 0.6B v2，**本地 ONNX + sherpa-onnx（CPU int8）**（5.75）。
+
+    <p>为什么不是官方那条 NeMo 路线：部署文档写的推理框架是 NeMo 2.2（`pip install
+    nemo_toolkit[asr]`，要 torch + cuDNN，几个 GB），而官方的 0.13 秒/条是 **RTX 3060
+    FP16** 的成绩；我们这台是 **Tesla P40（Pascal，没有 FP16 张量核心）**，
+    照抄官方配置只会慢，还会把"模型的锅"和"硬件的锅"混在一起。
+    sherpa-onnx 这条路只依赖 onnxruntime（这台机器已经装了），因此可以先用 CPU 把
+    **识别质量**量准，再谈硬件。
+
+    <p><b>缺依赖时大声报错、不静默回退</b>：`load()` 里没有 try/except 兜底到 whisper ——
+    悄悄换模型会让"我在测 Parakeet"变成一句假话。
+
+    <p>模型目录（三选一，按顺序）：策略里的 `model`（就是目录路径）→ 环境变量
+    `PARAKEET_MODEL_DIR` → 数据目录下的 `models/parakeet-tdt-0.6b-v2`。
+    """
+
+    key = "parakeet"
+    display = "本地 parakeet(ONNX)"
+    ENV_DIR = "PARAKEET_MODEL_DIR"
+    REQUIRED_SUFFIXES = ("tokens.txt",)
+    REQUIRED_PREFIXES = ("encoder", "decoder", "joiner")
+
+    def __init__(self, model_class, args):
+        self.args = args
+
+    def describe(self, profile):
+        return f"parakeet:{profile.get('model') or self.ENV_DIR}"
+
+    def model_dir(self, profile):
+        """这一份 parakeet 的模型目录（找不到就抛出**能照着做**的报错）。"""
+        candidates = []
+        wanted = str((profile or {}).get("model") or "").strip()
+        if wanted:
+            candidates.append(wanted)
+        env_dir = os.environ.get(self.ENV_DIR, "").strip()
+        if env_dir:
+            candidates.append(env_dir)
+        data_dir = getattr(self.args, "data_dir", None)
+        if data_dir:
+            candidates.append(os.path.join(str(data_dir), "models", "parakeet-tdt-0.6b-v2"))
+        for path in candidates:
+            if os.path.isdir(path):
+                return path
+        raise RuntimeError(
+            "parakeet 的模型目录找不到。试过这些位置："
+            + "、".join(candidates or ["（策略里没写 model，也没有 PARAKEET_MODEL_DIR）"])
+            + "。把 ONNX 目录放好，或用策略表的 model 字段指过去（目录里应有 "
+            + "tokens.txt + encoder*.onnx + decoder*.onnx + joiner*.onnx）")
+
+    def load(self, profile, device):
+        # 1) 依赖：sherpa-onnx（这台机器上目前没装，那就直接说清楚，别在段上反复失败）
+        try:
+            import sherpa_onnx                                     # noqa: F401
+        except ImportError as error:
+            raise RuntimeError(
+                "parakeet 需要 sherpa-onnx（它只依赖 onnxruntime，不需要 torch）。"
+                f"当前环境导入失败：{type(error).__name__}: {error}。"
+                "装法（**由部署方执行**）：pip install sherpa-onnx") from error
+        directory = self.model_dir(profile)
+        found = set(os.listdir(directory))
+        missing = [suffix for suffix in self.REQUIRED_SUFFIXES if suffix not in found]
+        for prefix in self.REQUIRED_PREFIXES:
+            if not any(name.startswith(prefix) and name.endswith(".onnx") for name in found):
+                missing.append(f"{prefix}*.onnx")
+        if missing:
+            raise RuntimeError(
+                f"parakeet 模型目录 {directory} 里缺文件：{'、'.join(missing)}。"
+                "（sherpa-onnx 的 NeMo transducer 模型需要 encoder/decoder/joiner 三个 onnx + tokens.txt）")
+        threads = int((profile or {}).get("beam_size") or 0) or max(1, (os.cpu_count() or 4) // 2)
+        kwargs = {
+            "encoder": self._pick(found, directory, "encoder"),
+            "decoder": self._pick(found, directory, "decoder"),
+            "joiner": self._pick(found, directory, "joiner"),
+            "tokens": os.path.join(directory, "tokens.txt"),
+            "num_threads": threads,
+            "sample_rate": 16000,
+            "feature_dim": 80,
+            "decoding_method": "greedy_search",
+            "provider": "cpu",
+            # Parakeet 是 NeMo 导出的 transducer；sherpa-onnx 用这个值区分模型家族
+            "model_type": str((profile or {}).get("model_type") or "nemo_transducer"),
+        }
+        try:
+            recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(**kwargs)
+        except Exception as error:                                  # noqa: BLE001
+            raise RuntimeError(
+                f"parakeet 加载失败（目录 {directory}，参数 {sorted(kwargs)}）："
+                f"{type(error).__name__}: {error}。"
+                "常见原因：onnx 与 sherpa-onnx 版本不匹配，或这份导出不是 NeMo transducer"
+                "（那样要在策略里把 model_type 改对）") from error
+        return {"recognizer": recognizer, "dir": directory, "threads": threads}
+
+    @staticmethod
+    def _pick(found, directory, prefix):
+        for name in sorted(found):
+            if name.startswith(prefix) and name.endswith(".onnx"):
+                return os.path.join(directory, name)
+        return os.path.join(directory, f"{prefix}.onnx")      # 走不到（前面已校验），留着防呆
+
+    def transcribe(self, handle, audio, language, profile=None):
+        tag = language_tag(language) or ""
+        if not tag.startswith("en"):
+            # ⚠️ 不"尽力而为"：英文模型喂中文不会报错，只会吐乱码 —— 那种结果比空更好骗人。
+            return {"text": "", "empty": True,
+                    "reason": f"parakeet 只支持英语（这一段是 {tag or '未知语种'}）→ 跳过，"
+                              f"要识别这种语言请给那个语种配 whisper/云端引擎",
+                    "resolved_language": language}
+        recognizer = handle["recognizer"]
+        stream = recognizer.create_stream()
+        stream.accept_waveform(16000, audio)
+        recognizer.decode_stream(stream)
+        text = str(stream.result.text or "").strip()
+        return {"text": text, "empty": text == "", "reason": None if text else "parakeet 没出字",
+                "resolved_language": "en"}
+
+
+# ── 腾讯云一句话识别（5.75）─────────────────────────────────────────────────
+#
+# 为什么走"一句话识别"（SentenceRecognition，REST）而不是它的实时流式：
+#   · 我们的管线本身就是**按句切好**再送的（段长 0.6–20 秒），一句话接口正对形状；
+#   · REST 只要标准库（urllib + hmac），不需要装腾讯 SDK —— 这台机器不许装东西；
+#   · 流式要维持长连接、处理 part/final 事件，只有在"边说边出字"才划算。
+# ⚠️ 参数名以腾讯文档为准，全部集中在下面 `SentenceRecognition` 的那一处；
+#    第一次真调用如果报参数错，把腾讯返回的原文贴出来即可，改一处就够。
+TENCENT_ENDPOINT = "asr.tencentcloudapi.com"
+TENCENT_SERVICE = "asr"
+TENCENT_VERSION = "2019-06-14"
+TENCENT_ACTION = "SentenceRecognition"
+# 各语种默认用哪个引擎编码；策略里的 `model` 字段会覆盖它（直接把编码写进 model）
+TENCENT_ENGINE_BY_LANG = {"en-US": "16k_en", "zh-CN": "16k_zh", "pt-BR": "16k_pt"}
+
+
+def tencent_tc3_headers(secret_id, secret_key, payload, timestamp=None,
+                        region="ap-shanghai", action=TENCENT_ACTION,
+                        version=TENCENT_VERSION, service=TENCENT_SERVICE,
+                        host=TENCENT_ENDPOINT):
+    """生成 TC3-HMAC-SHA256 签名头（**纯函数**，可离线测）。
+
+    <p>单独成函数只为一个理由：签名错的表现是 `AuthFailure.SignatureFailure`，
+    而它和"密钥错""时间漂移"长得一模一样 —— 没法在函数外一眼看出是谁的锅。
+    拆出来以后可以拿固定输入钉住每一步（docs 里的算法有三段派生密钥，容易写漏一段）。
+    """
+    import hashlib
+    import hmac
+
+    stamp = int(timestamp if timestamp is not None else time.time())
+    date = time.strftime("%Y-%m-%d", time.gmtime(stamp))
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    content_type = "application/json; charset=utf-8"
+    # 1) 规范请求（CanonicalRequest）：方法 / 路径 / 查询串 / 头 / 签名头 / 载荷哈希
+    signed_headers = "content-type;host"
+    canonical_headers = f"content-type:{content_type}\nhost:{host}\n"
+    hashed_payload = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    canonical_request = "\n".join(["POST", "/", "", canonical_headers, signed_headers, hashed_payload])
+    # 2) 待签字符串
+    scope = f"{date}/{service}/tc3_request"
+    string_to_sign = "\n".join(["TC3-HMAC-SHA256", str(stamp), scope,
+                                hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()])
+    # 3) 三段派生密钥（secret_key → date → service → signing）——漏一段就永远对不上
+    def _hmac(key, message):
+        return hmac.new(key, message.encode("utf-8"), hashlib.sha256).digest()
+
+    secret_date = _hmac(("TC3" + secret_key).encode("utf-8"), date)
+    secret_service = _hmac(secret_date, service)
+    secret_signing = _hmac(secret_service, "tc3_request")
+    signature = hmac.new(secret_signing, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+    return {
+        "Authorization": (f"TC3-HMAC-SHA256 Credential={secret_id}/{scope}, "
+                          f"SignedHeaders={signed_headers}, Signature={signature}"),
+        "Content-Type": content_type,
+        "Host": host,
+        "X-TC-Action": action,
+        "X-TC-Timestamp": str(stamp),
+        "X-TC-Version": version,
+        "X-TC-Region": region,
+    }, body
+
+
+def pcm16_wav_bytes(audio, rate=16000):
+    """float32 [-1,1] → 16-bit 单声道 WAV 字节串（云端接口要的是音频文件，不是裸 PCM）。"""
+    import io
+    import wave
+
+    import numpy as np
+
+    samples = np.clip(np.asarray(audio, dtype=np.float32), -1.0, 1.0)
+    pcm = (samples * 32767.0).astype("<i2").tobytes()
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(pcm)
+    return buffer.getvalue()
+
+
+class TencentEngine(AsrEngine):
+    """腾讯云一句话识别（云端，按句调用）。**密钥从环境变量读，不进仓库。**"""
+
+    key = "tencent"
+    display = "腾讯云一句话识别"
+    ENV_ID = "TENCENT_ASR_SECRET_ID"
+    ENV_KEY = "TENCENT_ASR_SECRET_KEY"
+    ENV_REGION = "TENCENT_ASR_REGION"
+
+    def __init__(self, model_class, args):
+        self.args = args
+
+    def describe(self, profile):
+        return f"tencent:{self.engine_code(profile, 'en-US')}"
+
+    def engine_code(self, profile, language):
+        """这一段用哪个引擎编码：策略的 `model` 直接写编码就覆盖语言默认值。"""
+        wanted = str((profile or {}).get("model") or "").strip()
+        if wanted:
+            return wanted
+        tag = language_tag(language) or ""
+        code = TENCENT_ENGINE_BY_LANG.get(tag)
+        if code is None:
+            raise RuntimeError(
+                f"腾讯云引擎不知道怎么处理语种 {tag or '未知'}：已知 {sorted(TENCENT_ENGINE_BY_LANG)}。"
+                "要加就改 TENCENT_ENGINE_BY_LANG，或在策略里把 model 写成引擎编码（例如 16k_en）")
+        return code
+
+    def load(self, profile, device):
+        secret_id = os.environ.get(self.ENV_ID, "").strip()
+        secret_key = os.environ.get(self.ENV_KEY, "").strip()
+        if not secret_id or not secret_key:
+            # ⚠️ 这里**不**退回到 whisper：静默换引擎会让 A/B 结论作废
+            raise RuntimeError(
+                f"腾讯云引擎缺少密钥：请设置环境变量 {self.ENV_ID} / {self.ENV_KEY}"
+                f"（可选 {self.ENV_REGION}，缺省 ap-shanghai）。密钥只从环境变量读，不写进仓库。")
+        return {
+            "secret_id": secret_id,
+            "secret_key": secret_key,
+            "region": os.environ.get(self.ENV_REGION, "").strip() or "ap-shanghai",
+        }
+
+    def transcribe(self, handle, audio, language, profile=None):
+        import base64
+        import urllib.error
+        import urllib.request
+
+        code = self.engine_code(profile, language)
+        wav = pcm16_wav_bytes(audio)
+        payload = {
+            "EngSerViceType": code,
+            "SourceType": 1,               # 1 = 音频数据（0 是音频 URL）
+            "VoiceFormat": "wav",
+            "Data": base64.b64encode(wav).decode("ascii"),
+            "DataLen": len(wav),           # 原始字节数（**不是** base64 之后的长度）
+            "UsrAudioKey": "leion-live",   # 腾讯要求调用方给的一句话标识
+        }
+        headers, body = tencent_tc3_headers(handle["secret_id"], handle["secret_key"], payload,
+                                           region=handle["region"])
+        request = urllib.request.Request(
+            f"https://{TENCENT_ENDPOINT}", data=body.encode("utf-8"), headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                reply = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", "replace")[:400]
+            return {"text": "", "empty": True,
+                    "reason": f"腾讯云 HTTP {error.code}：{detail}", "resolved_language": language}
+        except Exception as error:                                  # noqa: BLE001
+            return {"text": "", "empty": True,
+                    "reason": f"腾讯云请求失败：{type(error).__name__}: {error}",
+                    "resolved_language": language}
+        response = (reply or {}).get("Response") or {}
+        problem = response.get("Error")
+        if problem:
+            # 把腾讯自己的错误原样带出来：参数名错了、密钥错了、欠费了，都能从这句看出来
+            return {"text": "", "empty": True,
+                    "reason": "腾讯云返回错误：" + json.dumps(problem, ensure_ascii=False),
+                    "resolved_language": language}
+        text = str(response.get("Result") or "").strip()
+        return {"text": text, "empty": text == "", "reason": None if text else "腾讯云没出字",
+                "resolved_language": language}
+
+
 def build_engines(model_class, args):
     """引擎注册表。**加一个新引擎 = 在这里加一行 + 写一个 AsrEngine 子类。**
 
     <p>注意：这里刻意没有"缺省引擎兜底"的逻辑。策略里写了不认识的 engine，
     {@link resolve_engine} 会直接报错并列出已知引擎 —— 悄悄用 whisper 顶上，
     等于让人以为在测新引擎。
+
+    <p>5.75 起多了两个**依赖/密钥没到位就会大声报错**的引擎：`parakeet`（本地 ONNX）
+    与 `tencent`（云端一句话识别）。它们**不会**在缺依赖时静默退回 whisper ——
+    那会让"我在测 Parakeet"变成"其实一直在测 whisper"，正是这套实验最怕的事。
     """
     return {
         WhisperEngine.key: WhisperEngine(model_class, args),
+        ParakeetEngine.key: ParakeetEngine(model_class, args),
+        TencentEngine.key: TencentEngine(model_class, args),
     }
 
 

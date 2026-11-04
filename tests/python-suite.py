@@ -2590,6 +2590,82 @@ def main():
           "not-registered" in unknown_engine_error and "fake" in unknown_engine_error,
           unknown_engine_error)
 
+    # ── 5.75：新引擎（parakeet / tencent）的"缺东西必须大声报错"契约 ────────────
+    #
+    # 这两个引擎的共同风险不是"跑不起来"，而是**跑不起来时悄悄退回 whisper**：
+    # 那会让"我在测 Parakeet"变成一句假话，A/B 结论全废。所以这里逐条钉住报错。
+    heading("新引擎（5.75）：parakeet / tencent —— 缺依赖、缺密钥、缺目录都要大声说")
+    class _Args:
+        data_dir = None
+    engines = whisper_stream.build_engines(None, _Args())
+    check("注册表里有 whisper / parakeet / tencent",
+          set(engines) == {"whisper", "parakeet", "tencent"}, str(sorted(engines)))
+
+    missing_sherpa = ""
+    try:
+        engines["parakeet"].load({"engine": "parakeet", "model": "/nope"}, "cpu")
+    except RuntimeError as error:
+        missing_sherpa = str(error)
+    check("parakeet 缺 sherpa-onnx 时明确报缺哪个包（并说明不需要 torch）",
+          "sherpa-onnx" in missing_sherpa and "不需要 torch" in missing_sherpa, missing_sherpa)
+    check("报错里给出装法，但不自己装", "pip install sherpa-onnx" in missing_sherpa)
+
+    missing_key = ""
+    saved = {name: os.environ.pop(name, None) for name in
+             ("TENCENT_ASR_SECRET_ID", "TENCENT_ASR_SECRET_KEY")}
+    try:
+        engines["tencent"].load({"engine": "tencent", "model": "16k_en"}, "cpu")
+    except RuntimeError as error:
+        missing_key = str(error)
+    finally:
+        for name, value in saved.items():
+            if value is not None:
+                os.environ[name] = value
+    check("tencent 缺密钥时报出两个环境变量名（而不是静默退回 whisper）",
+          "TENCENT_ASR_SECRET_ID" in missing_key and "TENCENT_ASR_SECRET_KEY" in missing_key,
+          missing_key)
+
+    class _ExplodingRecognizer:
+        def create_stream(self):
+            raise AssertionError("非英语不该进 parakeet 模型")
+    off_language = engines["parakeet"].transcribe(
+        {"recognizer": _ExplodingRecognizer()}, None, "zh", {})
+    check("parakeet 收到非英语**不进模型**、返回空并说明原因（不是吐乱码）",
+          off_language["empty"] is True and "只支持英语" in (off_language["reason"] or ""),
+          str(off_language))
+
+    check("腾讯的引擎编码按语种取（en→16k_en、pt→16k_pt）",
+          engines["tencent"].engine_code({}, "en-US") == "16k_en"
+          and engines["tencent"].engine_code({}, "pt-BR") == "16k_pt")
+    check("策略里的 model 直接写编码就覆盖语言默认值",
+          engines["tencent"].engine_code({"model": "16k_zh"}, "en-US") == "16k_zh")
+
+    # 签名：算法有三段派生密钥，漏一段就永远对不上，而报错只会说"签名失败"
+    headers, body = whisper_stream.tencent_tc3_headers(
+        "AKIDtest", "secret", {"EngSerViceType": "16k_en"}, timestamp=1700000000)
+    check("签名头齐全（Authorization/Host/X-TC-*）",
+          set(headers) == {"Authorization", "Content-Type", "Host", "X-TC-Action",
+                           "X-TC-Timestamp", "X-TC-Version", "X-TC-Region"}, str(sorted(headers)))
+    check("Authorization 是 TC3-HMAC-SHA256 的三段结构",
+          headers["Authorization"].startswith("TC3-HMAC-SHA256 Credential=AKIDtest/")
+          and "SignedHeaders=content-type;host" in headers["Authorization"]
+          and "Signature=" in headers["Authorization"], headers["Authorization"])
+    check("日期段跟在凭据后面（UTC 日期，不是本地时间）",
+          "/asr/tc3_request" in headers["Authorization"], headers["Authorization"])
+    check("同样的输入签名稳定（可复现）",
+          whisper_stream.tencent_tc3_headers("AKIDtest", "secret", {"EngSerViceType": "16k_en"},
+                                            timestamp=1700000000)[0]["Authorization"]
+          == headers["Authorization"])
+    check("payload 是紧凑 JSON（签名算的是这份字节）", body == '{"EngSerViceType":"16k_en"}', body)
+    check("换密钥签名必然变（不是常量）",
+          whisper_stream.tencent_tc3_headers("AKIDtest", "other", {"EngSerViceType": "16k_en"},
+                                            timestamp=1700000000)[0]["Authorization"]
+          != headers["Authorization"])
+    wav = whisper_stream.pcm16_wav_bytes(np.zeros(1600, dtype=np.float32))
+    check("wav 封装是 16k 单声道 16bit（云端要的是音频文件不是裸 PCM）",
+          wav[:4] == b"RIFF" and wav[8:12] == b"WAVE" and int.from_bytes(wav[24:28], "little") == 16000,
+          wav[:16])
+
     # 表坏了：保留旧表，绝不能"读到半张表就当没有"
     broken_dir = Path(ROOT / "var" / "test" / "asr-model-map")
     broken_dir.mkdir(parents=True, exist_ok=True)
