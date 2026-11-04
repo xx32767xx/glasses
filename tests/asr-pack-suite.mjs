@@ -335,4 +335,77 @@ export async function runAsrPackSuite({ it, check }) {
     check('而且评测层确实在复用产线的分段器（不是复制一份）',
       /from whisper_stream import .*UtteranceSegmenter/.test(segEval), '没找到 UtteranceSegmenter')
   })
+
+  // ── 7. 识别结果的 dump 与「只重打分」（改判据不必重跑模型）──────────────────
+  //
+  // 为什么这条值得一个**真跑一次 CLI**的测试：判据会改（`asr-norm-v2` 补英语数字词就是
+  // 这么来的），而识别是最贵的一步。如果 dump/重打分坏了，发现它的方式会是"某人改了判据、
+  // 重跑半小时模型、拿到一个和上次对不上的数" —— 那时候已经说不清是谁的错。
+  // 所以这里造一份最小的 dump，跑真实的 `--rescore`，钉住三件事：
+  //   ① 不需要 --set / 音频 / 模型就能重打分；
+  //   ② 两条口径的差真的会出现在结果里（数字写法只影响严格口径）；
+  //   ③ 不是 dump 的文件要**明确报错**，不能当成空结果默默跑过去。
+  await it('dump 重打分：不载模型也能把两条口径重算出来', () => {
+    const workdir = mkdtempSync(join(tmpdir(), 'dsh-rescore-'))
+    const dumpPath = join(workdir, 'dump.json')
+    const outPath = join(workdir, 'rescore.json')
+    writeFileSync(dumpPath, JSON.stringify({
+      kind: 'segment-eval-dump', version: 1, unit: 'word',
+      scoringRules: 'asr-score-v1', normalizedRules: 'asr-norm-v1',
+      config: { set: 'synthetic', count: 2, model: 'large-v3' },
+      clips: [{ file: 'a.wav', reference: 'i have six spoons', seconds: 3 },
+        { file: 'b.wav', reference: 'he is twenty three', seconds: 3 }],
+      runs: [{
+        silenceMs: 800, gapMs: 900, segments: 2, merged: 0, split: 0,
+        maxMergeS: 0, offsetMs: 0, elapsedS: 1.5, reached: [0, 1],
+        records: [
+          { reference: 'i have six spoons', hypothesis: 'i have 6 spoons', startS: 0, endS: 3 },
+          { reference: 'he is twenty three', hypothesis: 'he is 23', startS: 3, endS: 6 },
+        ],
+      }],
+    }), 'utf8')
+    let failure = null
+    try {
+      execFileSync('python', [join(ROOT, 'asr-eval', 'segment_eval.py'),
+        '--rescore', dumpPath, '--json', outPath], { cwd: ROOT, encoding: 'utf8' })
+    } catch (error) {
+      failure = error
+    }
+    if (failure) {
+      // 拉不起 python（没装 / 沙箱不许管道）→ 跳过；python 真跑起来但报错 → 那是真失败
+      const blocked = /EPERM|ENOENT|not recognized|No module named/i
+        .test(`${failure.code || ''} ${failure.message || ''}`)
+      check(blocked ? '拉不起 python → 跳过这一节（本机没装或沙箱不许管道）' : '重打分 CLI 跑得起来',
+        blocked, String(failure.stderr || failure.message).slice(0, 300))
+      rmSync(workdir, { recursive: true, force: true })
+      return
+    }
+    const payload = JSON.parse(readFileSync(outPath, 'utf8'))
+    const run = payload.rows[0]
+    check('重打分只吃 dump：结果里两条口径都在', Boolean(run)
+      && typeof run.strictRate === 'number' && typeof run.normalizedRate === 'number',
+    JSON.stringify(run))
+    check('严格口径把「数字写法」算成错（>0）', run.strictRate > 0, String(run.strictRate))
+    check('规范口径把它算成一致（=0）—— 两个数之差就是写法差异', run.normalizedRate === 0,
+      String(run.normalizedRate))
+    check('结果里写着用的是哪一版判据（不能只给数不给口径）',
+      payload.scoringRules === 'asr-score-v1' && /^asr-norm-v\d+$/.test(payload.normalizedRules),
+      `${payload.scoringRules} / ${payload.normalizedRules}`)
+    check('片段数按 dump 里的识别记录算', run.segments === 2, String(run.segments))
+
+    // ③ 不是 dump 的文件必须明确报错
+    const bogus = join(workdir, 'bogus.json')
+    writeFileSync(bogus, JSON.stringify({ hello: 'world' }), 'utf8')
+    let threw = null
+    try {
+      execFileSync('python', [join(ROOT, 'asr-eval', 'segment_eval.py'), '--rescore', bogus],
+        { cwd: ROOT, encoding: 'utf8', stdio: 'pipe' })
+    } catch (error) {
+      threw = error
+    }
+    check('不是 dump 的文件要报错（不许当成空结果跑过去）',
+      threw !== null && /segment-eval-dump/.test(String(threw.stderr || threw.message)),
+    threw ? String(threw.stderr || threw.message).slice(0, 160) : '没有报错')
+    rmSync(workdir, { recursive: true, force: true })
+  })
 }

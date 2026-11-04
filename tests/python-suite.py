@@ -62,10 +62,11 @@ from asr_eval import (   # noqa: E402
     count_traditional, detect_unit, error_rate, looks_chinese,
 )
 from asr_score import (                                                  # noqa: E402
-    NORMALIZED_RULES_VERSION, SCORING_RULES_VERSION, VARIANT_TO_SIMPLIFIED, TRADITIONAL_ONLY,
-    align, align_ops, chinese_numeral_value, error_rate, format_problem_samples,
-    is_variant_pair, negation_flags, normalize, normalize_for_scoring, normalized_error_rate,
-    numeric_report, portuguese_number_value, problem_samples,
+    EN_NUMBER_WORDS, NORMALIZED_RULES_VERSION, SCORING_RULES_VERSION, VARIANT_TO_SIMPLIFIED,
+    TRADITIONAL_ONLY, aggregate_tracks, align, align_ops, chinese_numeral_value,
+    english_number_value, error_rate, format_problem_samples, is_variant_pair, negation_flags,
+    normalize, normalize_for_scoring, normalized_error_rate, numeric_report,
+    portuguese_number_value, problem_samples, score_segment_run, track_scores,
 )
 
 passed = 0
@@ -1336,7 +1337,7 @@ def main():
     check("葡语重音不被当成繁体字（那是两回事）",
           count_traditional("A reunião é às três") == 0)
 
-    # ── 规范化口径 asr-norm-v1（评审要求的"双评分"）──────────────────────────
+    # ── 规范化口径 asr-norm-v2（评审要求的"双评分"）──────────────────────────
     #
     # 评审指出的核心问题：原来的做法是"从严格错误率里扣掉几个分类桶，把剩下的叫
     # 声学错误率"—— 那个数**既不是严格分也不是规范分**，却看起来像个分数。
@@ -1344,9 +1345,9 @@ def main():
     #   ① 规范化只统一"同一个东西的写法"，且每类都必须**验证**等价；
     #   ② 两边算分走的是同一个对齐函数（只是比较文本不同）；
     #   ③ 不许出现"扣桶"式的第三条路径。
-    heading("规范化口径 · asr-norm-v1（与严格口径并列，不是替换）")
+    heading("规范化口径 · asr-norm-v2（与严格口径并列，不是替换）")
     check("规范化有自己的版本号（规则变了历史才说得清）",
-          NORMALIZED_RULES_VERSION == "asr-norm-v1", NORMALIZED_RULES_VERSION)
+          NORMALIZED_RULES_VERSION == "asr-norm-v2", NORMALIZED_RULES_VERSION)
     check("严格口径的版本号没动（历史数字必须可比）",
           SCORING_RULES_VERSION == "asr-score-v1", SCORING_RULES_VERSION)
 
@@ -1479,6 +1480,120 @@ def main():
     check("葡语小数与千分位在标点处理里不会被切碎（1.234,56 仍是同一个数）",
           normalize_for_scoring("1.234,56 reais", "word") == normalize_for_scoring("1234,56 reais", "word"),
           f"{normalize_for_scoring('1.234,56 reais', 'word')!r}")
+
+    # ⑨b 英语数字词 ↔ 阿拉伯数字（`asr-norm-v2` 补的那一条）
+    #
+    # 为什么补：英文朗读语料的参考转写写单词（`six spoons`），Whisper 家族写阿拉伯数字
+    # （`6 spoons`），**念出来完全一样**。10 月那份三模型报告 §3.2 量到：把数字写法统一后
+    # Whisper Small 从 3.80% 降到 3.02%（168 个替换是写法差异），Parakeet 只动 0.04 个百分点。
+    # 也就是说**写法差异足以决定"选哪个引擎"**，所以英文成绩必须两个数一起看。
+    heading("规范化口径 · 英语数字词（asr-norm-v2 新增）")
+    check("six ↔ 6 等价（同一个值）",
+          normalize_for_scoring("six spoons", "word") == normalize_for_scoring("6 spoons", "word"),
+          f"{normalize_for_scoring('six spoons', 'word')!r}")
+    check("twenty three ↔ 23 等价（合成数；连字符先被标点规则拆成两个词）",
+          normalize_for_scoring("twenty-three years", "word")
+          == normalize_for_scoring("23 years", "word"))
+    check("one hundred and twenty ↔ 120（英式带 and）",
+          normalize_for_scoring("one hundred and twenty reais", "word")
+          == normalize_for_scoring("120 reais", "word"),
+          f"{normalize_for_scoring('one hundred and twenty reais', 'word')!r}")
+    check("one hundred twenty ↔ 120（美式不带 and）",
+          normalize_for_scoring("one hundred twenty", "word") == "120")
+    check("two thousand and five ↔ 2005、three million two hundred thousand ↔ 3200000",
+          normalize_for_scoring("two thousand and five", "word") == "2005"
+          and normalize_for_scoring("three million two hundred thousand", "word") == "3200000")
+    check("six ≠ seven（值不同就是听错，不许算写法差异）",
+          normalize_for_scoring("six", "word") != normalize_for_scoring("7", "word"))
+    check("one two / one and two **不许**合成一个数（那是两个数）",
+          english_number_value(["one", "two"]) is None
+          and english_number_value(["one", "and", "two"]) is None
+          and normalize_for_scoring("one and two", "word") != normalize_for_scoring("3", "word"))
+    check("序数词与复数概数不参与（first / millions 原样留着）",
+          "first" not in EN_NUMBER_WORDS and "millions" not in EN_NUMBER_WORDS
+          and normalize_for_scoring("millions of people", "word") == "millions of people")
+
+    # ⑨c 两条口径**同时**算（写法差异 = 严格 − 规范），以及"改判据不必重跑模型"的算法
+    #
+    # 只有两个数一起报，读者才分得清"模型听错了"和"写法不同"；
+    # 而 `--rescore` 能成立，靠的是这里的 `score_segment_run` 是纯文本函数。
+    heading("双轨打分 · track_scores / score_segment_run（改判据不必重跑模型）")
+    pair = track_scores("i have six spoons", "i have 6 spoons", "word")
+    check("同一对文本：严格算错（0.25）、规范算对（0）",
+          abs(pair["strict"]["rate"] - 0.25) < 1e-9 and pair["normalized"]["rate"] == 0.0,
+          f"{pair['strict']['rate']} / {pair['normalized']['rate']}")
+    tracks = aggregate_tracks([pair, track_scores("six", "6", "word")])
+    check("汇总按总错误数 ÷ 总单位数（不取每句百分比的平均）",
+          abs(tracks["strict"]["rate"] - (2 / 5)) < 1e-9 and tracks["normalized"]["rate"] == 0.0,
+          str(tracks["strict"]))
+    run = score_segment_run(
+        clips=[{"reference": "i have six spoons"},
+               {"reference": "he is twenty three"},
+               {"reference": "never heard"}],
+        records=[{"reference": "i have six spoons", "hypothesis": "i have 6 spoons"},
+                 {"reference": "he is twenty three", "hypothesis": "he is 23"}],
+        reached={0, 1}, unit="word")
+    check("逐段两条口径、整段两条口径都在",
+          abs(run["strict"]["rate"] - 3 / 8) < 1e-9 and run["normalized"]["rate"] == 0.0
+          and abs(run["joined_strict"]["rate"] - 3 / 8) < 1e-9
+          and run["joined_normalized"]["rate"] == 0.0,
+          f"{run['strict']['rate']} / {run['normalized']['rate']}")
+    check("没进过模型的句子计入漏掉（两条口径各按自己的单位数）",
+          run["missed"] == {"strict": 2, "normalized": 2}, str(run["missed"]))
+    check("片段数按真正送进模型的条数算（不是切句器报的段数）", run["segments"] == 2)
+
+    # ⑨d dump 与 `--rescore`：判据改了要能**只重算**，不必重跑模型
+    #
+    # 这条是 `asr-norm-v2` 能不能落地的关键：识别一轮几十分钟，判据一改就得重跑的话，
+    # 现实结果不是"重跑"，而是"判据一直错下去"。所以 dump（文本）与重打分必须真的能跑通，
+    # 而且要能用**当前**判据、在 dump 里的判据版本不一致时明确警告。
+    heading("识别结果 dump / --rescore（改判据不必重跑模型）")
+    try:
+        import argparse as _argparse
+        import contextlib as _contextlib
+        import io as _io
+        import json as _json
+        import segment_eval as _seg
+    except ImportError as error:            # 缺 numpy 之类的机器：明确跳过，不假装通过
+        check(f"这台机器起不来 segment_eval（{error}）→ 跳过", True)
+        _seg = None
+    if _seg is not None:
+        # ⚠️ 和本节别处一样用仓库里的 var/test，不用系统临时目录（受限沙箱写不进去）
+        workdir = ROOT / "var" / "test" / "rescore"
+        workdir.mkdir(parents=True, exist_ok=True)
+        dump_path, out_path = workdir / "dump.json", workdir / "out.json"
+        clips = [{"name": "a.wav", "reference": "i have six spoons", "audio": np.zeros(16000)},
+                 {"name": "b.wav", "reference": "he is twenty three", "audio": np.zeros(16000)}]
+        runs = [{"silenceMs": 800, "gapMs": 900, "segments": 2, "merged": 0, "split": 0,
+                 "maxMergeS": 0.0, "offsetMs": 0, "elapsedS": 1.5, "reached": [0, 1],
+                 "records": [{"reference": "i have six spoons", "hypothesis": "i have 6 spoons",
+                              "startS": 0.0, "endS": 3.0},
+                             {"reference": "he is twenty three", "hypothesis": "he is 23",
+                              "startS": 3.0, "endS": 6.0}]}]
+        dump_args = _argparse.Namespace(wavset="synthetic", count=2, model="large-v3",
+                                        device="cpu", compute_type="int8", language="en",
+                                        beam_size=5, initial_prompt=None)
+        with _contextlib.redirect_stdout(_io.StringIO()):
+            _seg.write_dump(dump_path, clips, "word", dump_args, runs)
+            _seg.run_rescore(dump_path, out_path)
+        dump = _json.loads(dump_path.read_text(encoding="utf-8"))
+        check("dump 里带判据版本（否则重算出来的数和当时那份报告没法对账）",
+              dump["scoringRules"] == SCORING_RULES_VERSION
+              and dump["normalizedRules"] == NORMALIZED_RULES_VERSION,
+              f"{dump['scoringRules']} / {dump['normalizedRules']}")
+        check("dump 只存文本与时间（音频不进去，文件才小到能带走）",
+              set(dump["clips"][0]) == {"file", "reference", "seconds"}, str(dump["clips"][0]))
+        rows = _json.loads(out_path.read_text(encoding="utf-8"))["rows"]
+        check("重打分给的是两条口径两个数（严格 > 0、规范 = 0）",
+              len(rows) == 1 and rows[0]["strictRate"] > 0
+              and rows[0]["normalizedRate"] == 0.0, str(rows))
+        check("重打分不需要 --set / 音频 / 模型（这次就只给了 dump）",
+              rows[0]["segmentsProcessed"] == 2, str(rows[0]))
+        bogus = workdir / "bogus.json"
+        bogus.write_text('{"hello": "world"}', encoding="utf-8")
+        message = _exit_message_of(lambda: _seg.run_rescore(bogus))
+        check("不是 dump 的文件要明确报错（不许当成空结果跑过去）",
+              "segment-eval-dump" in message, message)
 
     # ⑩ 问题样本清单（用户要的"日志里带 ERROR，方便筛"）
     #

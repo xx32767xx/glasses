@@ -159,7 +159,7 @@ CORAA 只有一句一条的片段（中位 3.04 秒），元数据没有时间�
 | `test-asr.mjs` | **入口**：模型横评 / 切句实验 / 上下文实验（见上表） | `node asr-eval/test-asr.mjs --list` |
 | `asr_pack.py` | **切测试包**：从公开语料切出固定、可复现、可审计的测试包；查切分卫生 | `python asr-eval/asr_pack.py --list` |
 | `asr_eval.py` | **跑一次评测**：加载模型、逐条识别、算错误率与延迟 | 由 `test-asr.mjs --set` 调；也可直接跑（参数更多） |
-| `asr_score.py` | **评分规则本身**：严格口径 `asr-score-v1` + 规范化口径 `asr-norm-v1` | 被 import，不单独跑 |
+| `asr_score.py` | **评分规则本身**：严格口径 `asr-score-v1` + 规范化口径 `asr-norm-v2` | 被 import，不单独跑 |
 | `asr_error_analysis.py` | **两套口径对照 + 错因归因 + 关键内容检查 + 抽查** | `python asr-eval/asr_error_analysis.py <结果.json>` / `--table` |
 | `segment_eval.py` | **切句基准**：量"停顿多久算说完一句"（用的是产线那个分段器） | `python asr-eval/segment_eval.py --set var/asr-eval/packs/zh-eval --pauses` |
 | `context_eval.py` | **切句代价引擎**：整段 / 逐句切 / 产线切句参数扫描 | 由 `test-asr.mjs --cut` 调 |
@@ -241,7 +241,7 @@ python asr-eval/asr_pack.py --build all
 python asr-eval/asr_pack.py --verify        # 查切分卫生 + 覆盖率
 
 # ③ 跑一轮基线（产品场景是"口语"，调参也应该在口语包上做）
-#    这一跑会**同时**算出两套口径的分数：严格 asr-score-v1 与规范化 asr-norm-v1
+#    这一跑会**同时**算出两套口径的分数：严格 asr-score-v1 与规范化 asr-norm-v2
 node asr-eval/test-asr.mjs --set zh-speech-dev --model large-v3 --language zh --count 0
 
 # ④ 看"错在什么上"（整体错误率只说错得多不多，说不出错在哪）
@@ -295,12 +295,34 @@ node asr-eval/test-asr.mjs --set zh-speech-dev --errors-above 0.2
 > 原来的报告只有"随机看 N 条对照"—— **随机看对排查没有用**（多半是好的）。
 > 这个清单是用户提出来的，改法也按他要的来：日志里能一眼筛。
 
+### 切句基准的识别结果可以「只重打分」（`--dump` / `--rescore`）
+
+`segment_eval.py` 的阶段三最贵（要载模型、几分钟到几十分钟），而**判据会改**
+（`asr-norm-v2` 补英语数字词就是这么来的）。所以它能把「参考/假设」写成 JSON，
+之后判据怎么改都只重算，不再碰音频与模型：
+
+```powershell
+# 有模型的机器（服务器）：跑识别时顺手把文本写下来，一次就好
+python asr-eval/segment_eval.py --set var/asr-eval/packs/en-read-dev --count 60 `
+  --gap-ms 900 --silence-ms 800,750,650,1000 --recognize --language en `
+  --model large-v3 --compute-type int8_float32 `
+  --dump var/asr-eval/reports/en-fleurs60.json
+
+# 任何装了 numpy 的机器（不需要 --set / 音频 / 模型）：
+python asr-eval/segment_eval.py --rescore var/asr-eval/reports/en-fleurs60.json `
+  --json var/asr-eval/reports/en-fleurs60-rescore.json
+```
+
+每个配置一行给出**四个数**（逐段严格 / 逐段规范 / 整段严格 / 整段规范）+ 一列
+「写法差」（= 逐段严格 − 逐段规范，百分点）。dump 里记着**当时**用的判据版本，
+与本机判据不一致时会打印警告 —— 不许拿新规则算出的数冒充旧报告的结论。
+
 ### 两套评分口径（**必须并列读，不许相减**）
 
 | 口径 | 版本 | 规则 | 用途 |
 |---|---|---|---|
 | 严格 | `asr-score-v1` | 标点/大小写/空白归一，其余都算错 | **与历史结果可比** |
-| 规范化 | `asr-norm-v1` | 只统一"同一个东西的写法"：标点 + **成对**繁简 + **数值与单位等价**的数字写法 | 减少确定的写法差异干扰 |
+| 规范化 | `asr-norm-v2` | 只统一"同一个东西的写法"：标点 + **成对**繁简 + **数值与单位等价**的数字写法（中/葡/英；英文 `six`↔`6` 是 v2 补的，见 `docs/14` §6.10） | 减少确定的写法差异干扰 |
 
 ⚠️ **规范化分数是"换文本重新对齐算出来的"，不是"从严格分里扣掉几个分类桶"。**
 这一条是评审明确要求的，也是这个仓库返工过的地方：曾经输出过

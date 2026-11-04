@@ -14,7 +14,8 @@ asr_score.py —— 识别评分的**判据本身**（冻结、版本化、纯�
 
 评分规则（v1，改动必须升版本号）
 --------------------------------------------------------------------------------
-单位：中文按**字**（CER），巴葡按**词**（WER）。两者的"词"定义不同，不混用。
+单位：中文按**字**（CER），巴葡与英语按**词**（WER）。三者混用会算错，所以由调用方
+（`detect_unit`）先定单位，评分函数自己不猜。
 归一化（比较前）—— **v1 刻意与既有 asr_eval.py 的实现逐字一致**：
   · 统一小写；弯引号 `’` 折成 `'`
   · 中文按字：`re.sub(r"[^\w]", "", text)` —— 标点**与空白**一起去掉
@@ -353,7 +354,7 @@ def key_term_candidates(reference):
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# v2：**规范化口径**（`asr-norm-v1`）—— 与严格口径并列，不是替换它
+# 第二轨：**规范化口径**（`asr-norm-v2`）—— 与严格口径并列，不是替换它
 # ════════════════════════════════════════════════════════════════════════════════
 #
 # 为什么要有第二套口径：严格口径里有一部分"错"**不是听错**（同一个值写成阿拉伯
@@ -370,7 +371,9 @@ def key_term_candidates(reference):
 #   2. 繁简对应字                —— **只按下面那张按实测字写成的表**转换，表外的繁体字
 #                                  一律当错字（评审指出：`我 → 國` 曾被错误地当字形差异）
 #   3. 数值+单位等价             —— 必须**数值相等且单位相同**才统一
-#                                  （`一 → 9` 不是等价，是听错）
+#                                  （`一 → 9` 不是等价，是听错）；三种语言同一套：
+#                                  中 `一百元 ↔ 100元`、葡 `vinte anos ↔ 20 anos`、
+#                                  英 `six ↔ 6`（英语这一条 v2 才补上，见下面的版本变更）
 #   4. 紧邻的重复（口吃）        —— 只折叠**紧挨着**的重复，不做全局去重
 #   5. 纯感叹词（可选，默认**关**）—— `嗯/呃/哦/唉/哈/欸`；`吧呢嘛啊呀` **不算**，
 #                                  它们带语气与疑问，评审明确要求保留
@@ -381,7 +384,19 @@ def key_term_candidates(reference):
 #   · 不因为删除片段"含拉丁字母或数字"就当成没念（产品型号、金额可能真的被漏掉）
 #   · 不动人名、型号、金额、否定词
 #   —— 也就是说：**规范化只改"同一个东西的写法"，不删内容、不改数值、不动极性**。
-NORMALIZED_RULES_VERSION = "asr-norm-v1"
+#
+# 版本变更（改规则必须在这里留一行，说明"影响谁、不影响谁"）
+#   · `asr-norm-v1`：标点 + **成对**繁简 + 中文数字/单位 + 葡语数字词。
+#   · `asr-norm-v2`：补上**英语数字词**（`six ↔ 6`、`twenty three ↔ 23`、
+#     `one hundred and twenty ↔ 120`）。为什么升版本而不是悄悄加：同样一段英文识别文本，
+#     在 v1 下"数字写成词还是写成数字"要算错，在 v2 下不算错 —— **同一批音频会给出两个数**，
+#     所以口径必须能区分。影响范围：只有含英文数字词的文本；中文（char 模式根本不走这条）
+#     与葡语（英语词表里没有葡语词）结果与 v1 逐字一致，钉了测试。
+#     ⚠️ 实测依据：`docs/06` §8 的 FLEURS 英文包此前只跑了**严格口径**（14.3%），
+#     而 10 月那份三模型报告 §3.2 量到"Whisper 家族的阿拉伯数字写法"单独贡献 168 个替换
+#     （3.80% → 3.02%，-0.78 个百分点）。补上这条是为了让英文成绩有一个"去掉写法差异"的数，
+#     而不是拿写法差异去换识别引擎。
+NORMALIZED_RULES_VERSION = "asr-norm-v2"
 
 # 繁 → 简。**按实测出现过的字一条条写的**，不是从别处抄的大表：
 #   抄来的表错了没人能发现；这张表每一项都能对着数据复核
@@ -610,35 +625,113 @@ def portuguese_number_value(words):
     return total + current
 
 
-def canonicalize_number_words(text):
-    """把葡语的数字词换成阿拉伯数字（`vinte anos` → `20 anos`）。
+# ── 英语的"数字词"（six / twenty-three / one hundred and twenty）──────────────
+#
+# 为什么需要（`asr-norm-v2` 补的那一条）：英文识别里**同一个值有两种写法**是常态 ——
+# FLEURS 等朗读语料的参考转写写单词（`six spoons`），而 Whisper 家族倾向写阿拉伯数字
+# （`6 spoons`），念出来一模一样。10 月那份三模型对比报告 §3.2 量到：把数字写法统一后
+# Whisper Small 的 WER 从 3.80% 降到 3.02%（168 个替换是写法差异，不是听错），
+# 而 Parakeet 只降 0.04 个百分点 —— 也就是说**不统一写法，会系统性地冤屈某一类模型**。
+#
+# ⚠️ 只收"读音就是这个数"的词，且**结构解析不出来就返回 None**（和葡语同一套纪律）：
+#    `one two`（两个数）、`one and two`（一和二）都不是一个数，不能被合成 `3`
+#    —— 那会把"听错了"洗成"对了"。
+# ⚠️ 不收 `millions / hundreds`（复数 = 概数，不是确定值）与序数词（first/second）。
+EN_NUMBER_WORDS = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+    "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16,
+    "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20, "thirty": 30,
+    "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80,
+    "ninety": 90, "hundred": 100, "thousand": 1000, "million": 10 ** 6,
+    "billion": 10 ** 9,
+}
 
-    只替换**整段都是数字词**（中间最多夹一个合法的 `e`）的连续片段；
+
+def english_number_value(words):
+    """一串英语数字词 → 数值；**结构不合法就返回 None**（不猜）。
+
+    支持美式（`one hundred twenty`）与英式（`one hundred and twenty`）两种念法，
+    以及 `two thousand and five`、`three million two hundred thousand` 这类组合。
+
+    ⚠️ `and` 的放行条件故意很窄：**只有已累加到整百以上、或已有一个更大的量词**
+    （`two thousand and five` 里的 `and`）才允许连接。否则 `one and two`
+    （一和二，两个东西）会被算成 3 —— 那是把真错洗掉，比不算危险得多。
+    """
+    total, current, seen = 0, 0, False
+    for word in words:
+        if word == "and":
+            if current == 0 and total == 0:
+                return None                              # `and five`：不是数
+            if 0 < current < 100:
+                return None                              # `one and two` / `five and twenty`
+            continue
+        value = EN_NUMBER_WORDS.get(word)
+        if value is None:
+            return None                                  # 有不认识的词 → 整串不猜
+        seen = True
+        if value >= 1000:
+            if current == 0 and total > 0:
+                return None                              # `one thousand thousand`
+            current = (current or 1) * value
+            total += current
+            current = 0
+        elif value >= 100:
+            if current >= 100 and current % 100 != 0:
+                return None                              # `one hundred fifty hundred`
+            current = (current or 1) * value
+        elif current == 0:
+            current = value
+        elif current % 100 == 0:
+            current += value                             # `one hundred five` → 105
+        elif current < 100 and current % 10 == 0:
+            current += value                             # `twenty three` → 23
+        else:
+            return None                                  # `one two` / `twenty three five`
+    if seen is False:
+        return None
+    return total + current
+
+
+def canonicalize_number_words(text):
+    """把葡语/英语的数字词换成阿拉伯数字（`vinte anos` → `20 anos`，`six` → `6`）。
+
+    只替换**整段都是数字词**（中间最多夹一个合法的连接词）的连续片段；
     任何一段解析不出来就**原样保留** —— 宁可不算，也不猜。
 
-    ⚠️ 单个乘数词（`milhões`）**紧跟在一个数字后面时不转换**：那是 `3 milhões` 这种
-    "数字 + 单位"写法，交给 `canonicalize_numbers` 一起处理成 `3milhões`。
+    ⚠️ 单个乘数词（`milhões` / `million`）**紧跟在一个数字后面时不转换**：那是 `3 milhões`
+    这种"数字 + 单位"写法，交给 `canonicalize_numbers` 一起处理成 `3milhões`。
     不这么做的话 `3 milhões` 会变成 `3 1000000`，反而和 `3milhões` 对不上（实测踩过）。
+
+    ⚠️ 两种语言**同一个函数、两遍扫**（葡语先、英语后），因为规范化不区分语种：
+    词表之间没有交集（`PT_NUMBER_WORDS` 里没有英语词，反之亦然），所以第二遍
+    对葡语文本是空操作。这也是"不怀疑自己是不是判错了语种"的写法 —— 不用先检测语种。
     """
+    value = _canonicalize_number_words(text, PT_NUMBER_WORDS, portuguese_number_value, "e")
+    return _canonicalize_number_words(value, EN_NUMBER_WORDS, english_number_value, "and")
+
+
+def _canonicalize_number_words(text, words, value_function, connector):
+    """`canonicalize_number_words` 的单一语言版本（两种语言共用这一份实现）。"""
     tokens = str(text).split()
     out = []
     index = 0
     while index < len(tokens):
-        if tokens[index] in PT_NUMBER_WORDS:
+        if tokens[index] in words:
             end = index
             candidate = []
-            while end < len(tokens) and (tokens[end] in PT_NUMBER_WORDS or tokens[end] == "e"):
+            while end < len(tokens) and (tokens[end] in words or tokens[end] == connector):
                 candidate.append(tokens[end])
                 end += 1
-            while candidate and candidate[-1] == "e":
+            while candidate and candidate[-1] == connector:
                 candidate.pop()
                 end -= 1
             single_multiplier = (len(candidate) == 1
-                                 and PT_NUMBER_WORDS[candidate[0]] >= 1000
+                                 and words[candidate[0]] >= 1000
                                  and out and out[-1].isdigit())
-            value = portuguese_number_value(candidate) if candidate else None
-            if value is not None and candidate and single_multiplier is False:
-                out.append(str(value))
+            parsed = value_function(candidate) if candidate else None
+            if parsed is not None and candidate and single_multiplier is False:
+                out.append(str(parsed))
                 index = end
                 continue
         out.append(tokens[index])
@@ -751,7 +844,7 @@ def collapse_consecutive_repeats(text, unit_mode):
 
 
 def normalize_for_scoring(text, unit="word", drop_interjections=False, collapse_repeats=False):
-    """v2 规范化口径的归一化（`asr-norm-v1`）。规则见本段开头的清单。
+    """规范化口径的归一化（`asr-norm-v2`）。规则见本段开头的清单。
 
     顺序很重要：**先把单位并到数字上、再规范化数字、最后才按单位做标点处理** ——
     反过来小数点和千分位逗号会先被标点规则吃掉（`3.5` 变成 `35`）。
@@ -785,6 +878,73 @@ def normalized_error_rate(reference, hypothesis, unit="word", drop_interjections
                                      collapse_repeats=collapse_repeats)
 
     return error_rate(reference, hypothesis, unit, normalizer=normalizer)
+
+
+def track_scores(reference, hypothesis, unit="word", drop_interjections=False,
+                 collapse_repeats=False):
+    """**同一对文本、两条口径一起算** → `{"strict": …, "normalized": …}`。
+
+    为什么要一个函数同时给两条：单独算一条口径很容易"只报对自己有利的那个"，
+    而两条的差值本身就是一个信息（差值大 = 这条样本的错主要是写法差异，
+    不是听错）。采样集上一个数、整段上另一个数，也必须同源算出来才对得上。
+    """
+    return {"strict": error_rate(reference, hypothesis, unit),
+            "normalized": normalized_error_rate(reference, hypothesis, unit,
+                                                drop_interjections=drop_interjections,
+                                                collapse_repeats=collapse_repeats)}
+
+
+def aggregate_tracks(scores):
+    """把 `track_scores` 的列表汇总成两条口径的整体错误率（长度加权，不取均值）。
+
+    返回 `{track: {"rate", "units", "distance", "substitutions", "deletions", "insertions"}}`，
+    与 `error_rate` 的字段一致，便于直接打印／写进报告。
+    """
+    out = {}
+    for track in ("strict", "normalized"):
+        rows = [item[track] for item in scores]
+        rate, units, distance, (subs, dels, inss) = overall_rate(rows)
+        out[track] = {"rate": rate, "units": units, "distance": distance,
+                      "substitutions": subs, "deletions": dels, "insertions": inss}
+    return out
+
+
+def score_segment_run(clips, records, reached, unit="word"):
+    """给「一次切句配置下的识别结果」同时算两条口径的分数（逐段 + 整段 + 漏掉）。
+
+    `clips`：参考句子列表（每项要有 `reference`）；`records`：实际送进模型的片段
+    （每项要有 `reference` 与 `hypothesis`）；`reached`：音频真的进过模型的句号集合。
+
+    ⚠️ 为什么放在 `asr_score` 而不是评测脚本里：**这是判据，不是流程**。
+       放在脚本里的话，改判据就得重跑模型才能看到新数（识别是最贵的一步），
+       实际后果是"没人愿意改判据"。抽成纯函数以后，`segment_eval --rescore`
+       只用 dump 里的文本就能重算，测试也能直接钉住这两个数的算法。
+    """
+    scores = [track_scores(item["reference"], item["hypothesis"], unit) for item in records]
+    totals = aggregate_tracks(scores) if scores else {
+        track: {"rate": float("nan"), "units": 0, "distance": 0,
+                "substitutions": 0, "deletions": 0, "insertions": 0}
+        for track in ("strict", "normalized")}
+    joined_reference = " ".join(clips[j]["reference"] for j in sorted(reached))
+    joined_hypothesis = " ".join(item["hypothesis"] for item in records)
+    joined = track_scores(joined_reference, joined_hypothesis, unit)
+    # 漏掉多少：一次都没进过模型的句子。切得太碎时碎片会被 min_speech_ms 丢掉，
+    # 那些内容就是**无声地消失**了 —— 比识别错更严重，所以单独报一个数。
+    missed = {"strict": 0, "normalized": 0}
+    for index in range(len(clips)):
+        if index in reached:
+            continue
+        empty = track_scores(clips[index]["reference"], "", unit)
+        for track in missed:
+            missed[track] += empty[track]["units"]
+    return {
+        "segments": len(records),
+        "strict": totals["strict"], "normalized": totals["normalized"],
+        "joined_strict": joined["strict"], "joined_normalized": joined["normalized"],
+        "missed": missed,
+        "traditional": sum(count_traditional(item["hypothesis"]) for item in records),
+        "records": records, "reached": sorted(reached),
+    }
 
 
 # ── 关键内容检查（评审要求：专名单独查、数字核对值与单位、否定结合上下文）──────

@@ -61,6 +61,7 @@ segment_eval.py —— 切句基准：把「停顿多久算说完一句」从拍
 """
 
 import argparse
+import json
 import sys
 import time
 import wave
@@ -76,8 +77,13 @@ sys.path.insert(0, str(HERE))                   # 同层的兄弟模块（asr_ev
 #    评测层依赖 bridge/，bridge/ 永远不依赖评测层。
 sys.path.insert(0, str(ROOT / "bridge"))
 
-from asr_eval import detect_unit, error_rate, read_manifest, TRADITIONAL_ONLY   # noqa: E402
+from asr_score import (NORMALIZED_RULES_VERSION, SCORING_RULES_VERSION,          # noqa: E402
+                       score_segment_run)
 from whisper_stream import UtteranceSegmenter, force_utf8_stdio                 # noqa: E402
+
+# ⚠️ `asr_eval` 是**故意晚 import 的**（在用到它的两个函数里）：它依赖 pyarrow，
+#    而 `--rescore`（只重打分、不碰音频与模型）不需要 pyarrow —— 把依赖留在模块顶层，
+#    会让"只想重算一遍分数"这一步在一台没装 pyarrow 的服务器上直接起不来。
 
 force_utf8_stdio()          # 中文输出必须走 UTF-8（见 whisper_stream 里的说明）
 
@@ -459,6 +465,22 @@ def load_model(rate, args):
     return model
 
 
+def score_records(clips, records, reached, unit):
+    """纯文本打分：把「参考/假设」对**同时按两条口径**算出来（严格 + 规范化）。
+
+    为什么单独抽成一个函数：识别是最贵的一步（几分钟），而**评分规则会变**
+    （`asr-norm-v2` 补英语数字词就是这么来的）。抽出来以后，dump 下来的结果可以
+    `--rescore` 只重打分、不重跑模型 —— 否则每次改判据都要把模型再跑一遍，
+    实际后果是"没人愿意改判据"。
+
+    ⚠️ 两条口径必须是**同一份对齐算法、同一批单位计数**，只是比较文本不同
+    （见 `asr_score.error_rate` 的说明）。差值才有意义：它回答"这些错里有多少是写法差异"。
+    ⚠️ 算法本体在 `asr_score.score_segment_run`（判据必须在判据模块里）；这里只是入口名，
+       别让它悄悄长出第二份实现。
+    """
+    return score_segment_run(clips, records, reached, unit)
+
+
 def recognize(clips, result, rate, args, unit, model):
     """把片段真的送进模型，按片段覆盖的参考文本算错误率。
 
@@ -475,12 +497,14 @@ def recognize(clips, result, rate, args, unit, model):
         它衡量的是**观众最终拿到的文字对不对**（有没有丢内容、有没有胡话）。
 
     两个数的差，正好告诉我们：切碎是"伤在字幕分段"还是"真的丢了内容"。
+
+    再往上一层，每条口径又各有**严格**与**规范化**两个数（`asr_score` 里的两条轨）：
+    这两个数的差回答的是"这些错里有多少只是写法差异（数字写成词 vs 写成阿拉伯数字）"。
     """
     stream, spans = result["stream"], result["spans"]
-    distance = units = traditional = kept = 0
     elapsed = 0.0
     reached = set()          # 哪些句子的音频真的进了模型
-    texts = []
+    records = []
     for seg in result["segment_spans"]:
         audio = stream[seg[0]:seg[1]]
         covered = [j for j, (a, b) in enumerate(spans) if overlap(seg[0], seg[1], a, b) > 0]
@@ -496,25 +520,124 @@ def recognize(clips, result, rate, args, unit, model):
         )
         text = "".join(p.text for p in pieces).strip()
         elapsed += time.perf_counter() - start
-        # error_rate 现在返回一个 dict（多了替换/删除/插入三项），
-        # 从 asr_score 统一提供，见那个模块头部冻结的评分规则。
-        score = error_rate(reference, text, unit)
-        units += score["units"]
-        distance += score["distance"]
-        traditional += sum(1 for c in text if c in TRADITIONAL_ONLY)
-        texts.append(text)
-        kept += 1
+        records.append({"reference": reference, "hypothesis": text,
+                        "startS": round(seg[0] / rate, 3), "endS": round(seg[1] / rate, 3)})
+    outcome = score_records(clips, records, reached, unit)
+    outcome["elapsed"] = elapsed
+    return outcome
 
-    # 漏掉多少字：一次都没进过模型的句子。切得太碎时碎片会被 min_speech_ms 丢掉，
-    # 那些内容就是**无声地消失**了 —— 比识别错更严重，所以单独报一个数。
-    missed = sum(error_rate(clips[j]["reference"], "", unit)["units"]
-                 for j in range(len(clips)) if j not in reached)
-    joined_reference = " ".join(clips[j]["reference"] for j in sorted(reached))
-    joined = error_rate(joined_reference, " ".join(texts), unit)
-    return {"rate": distance / units if units else float("nan"), "units": units,
-            "joined": joined["rate"], "joined_units": joined["units"],
-            "traditional": traditional, "elapsed": elapsed, "segments": kept,
-            "missed": missed}
+
+
+# ── 阶段三的输出、dump 与重打分 ───────────────────────────────────────────────
+
+def print_recognize_legend():
+    print("  逐段 = 每条字幕自己是否是完整翻译单位（偏高，切碎会推高它）")
+    print("  整段 = 把所有字幕文字按顺序拼起来对不对（切碎但不丢字时不会变差）")
+    print(f"  严格 = {SCORING_RULES_VERSION}（数字写成词 ≠ 写成阿拉伯数字）")
+    print(f"  规范 = {NORMALIZED_RULES_VERSION}（同一个值的两种写法算一致 —— 两者之差就是「写法差异」）")
+
+
+def print_recognize_header(unit):
+    print(f"{'静音判定':>10} {'句间停顿':>9} {'片段数':>7} {'逐段严格':>10} {'逐段规范':>10} "
+          f"{'整段严格':>10} {'整段规范':>10} {'写法差':>8} {'疑似繁体':>9} {'识别耗时':>9} "
+          f"{'漏掉' + ('字' if unit == 'char' else '词'):>9}")
+
+
+def print_recognize_row(silence_ms, gap_ms, outcome, unit, elapsed_s):
+    if not outcome["segments"] or not outcome["strict"]["units"]:
+        print(f"{silence_ms:>8}ms {gap_ms:>7}ms   没有可识别的片段")
+        return None
+    strict = outcome["strict"]["rate"]
+    norm = outcome["normalized"]["rate"]
+    delta = (strict - norm) * 100                       # 百分点：写法差异吃掉了多少
+    print(f"{silence_ms:>8}ms {gap_ms:>7}ms {outcome['segments']:>7} "
+          f"{strict * 100:>10.1f}% {norm * 100:>10.1f}% "
+          f"{outcome['joined_strict']['rate'] * 100:>10.1f}% "
+          f"{outcome['joined_normalized']['rate'] * 100:>10.1f}% "
+          f"{delta:>7.1f}pp {outcome['traditional']:>9} {elapsed_s:>8.1f}s "
+          f"{outcome['missed']['strict']:>9}")
+    return {"silenceMs": silence_ms, "gapMs": gap_ms, "segments": outcome["segments"],
+            "strictRate": strict, "normalizedRate": norm,
+            "joinedStrictRate": outcome["joined_strict"]["rate"],
+            "joinedNormalizedRate": outcome["joined_normalized"]["rate"],
+            "traditional": outcome["traditional"], "elapsedS": elapsed_s,
+            "missedStrict": outcome["missed"]["strict"],
+            "missedNormalized": outcome["missed"]["normalized"]}
+
+
+def write_dump(path, clips, unit, args, runs):
+    """把识别结果写下来。**这是 `--rescore` 的唯一输入**，所以格式要带版本与判据版本。
+
+    为什么非写不可：识别一轮要几分钟到几十分钟，而判据会改。没有 dump 的话，
+    "改判据 → 重新看结论"这一步的成本高到没人愿意做，判据就会一直错下去。
+    """
+    payload = {
+        "kind": "segment-eval-dump",
+        "version": 1,
+        "unit": unit,
+        "scoringRules": SCORING_RULES_VERSION,
+        "normalizedRules": NORMALIZED_RULES_VERSION,
+        "config": {"set": str(args.wavset), "count": args.count, "model": args.model,
+                   "device": args.device, "computeType": args.compute_type,
+                   "language": args.language, "beamSize": args.beam_size,
+                   "initialPrompt": args.initial_prompt},
+        "clips": [{"file": clip["name"], "reference": clip["reference"],
+                   "seconds": round(len(clip["audio"]) / DEFAULT_RATE, 3)} for clip in clips],
+        "runs": runs,
+    }
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"\n已写 {target}（--rescore {target} 可以只重打分，不再载模型）")
+    return target
+
+
+def run_rescore(path, json_out=None):
+    """只重打分：读 dump、按**当前**判据重算两条口径，不载模型、不需要音频。"""
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if payload.get("kind") != "segment-eval-dump":
+        sys.exit(f"{path} 不是 --dump 写出来的文件（kind={payload.get('kind')!r}，"
+                 f"应该是 'segment-eval-dump'）")
+    unit = payload.get("unit") or "word"
+    clips = [{"name": item.get("file", ""), "reference": item["reference"]}
+             for item in payload.get("clips", [])]
+    runs = payload.get("runs", [])
+    if not clips or not runs:
+        sys.exit(f"{path} 里没有可重打分的片段（clips={len(clips)} runs={len(runs)}）")
+    print(f"重打分 {path}：{len(clips)} 条、{len(runs)} 组配置；"
+          f"错误率按**{'字' if unit == 'char' else '词'}**算")
+    print(f"  dump 记录：严格 {payload.get('scoringRules')} / 规范 {payload.get('normalizedRules')}")
+    print(f"  本次打分：严格 {SCORING_RULES_VERSION} / 规范 {NORMALIZED_RULES_VERSION}")
+    if payload.get("normalizedRules") != NORMALIZED_RULES_VERSION:
+        print("  ⚠️ 规范口径版本不同 —— 下面是**按当前判据重算**的数，"
+              "不能直接当成当时那份报告的结论")
+    print("")
+    print_recognize_legend()
+    print_recognize_header(unit)
+    rows = []
+    for run in runs:
+        outcome = score_records(clips, run.get("records", []),
+                                set(run.get("reached", [])), unit)
+        row = print_recognize_row(run.get("silenceMs"), run.get("gapMs"), outcome, unit,
+                                  float(run.get("elapsedS") or 0.0))
+        if row:
+            row["segmentsProcessed"] = run.get("segments")
+            rows.append(row)
+    if rows:
+        deltas = [(row["strictRate"] - row["normalizedRate"]) * 100 for row in rows]
+        print(f"\n  写法差异（严格 − 规范）逐段平均 {sum(deltas) / len(deltas):.1f} 个百分点"
+              f"（最大 {max(deltas):.1f}pp）—— 这部分不是听错，是数字/单位写法不同")
+    if json_out:
+        target = Path(json_out)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps({"kind": "segment-eval-rescore", "version": 1,
+                                      "source": str(path), "unit": unit,
+                                      "scoringRules": SCORING_RULES_VERSION,
+                                      "normalizedRules": NORMALIZED_RULES_VERSION,
+                                      "rows": rows}, ensure_ascii=False, indent=1),
+                          encoding="utf-8")
+        print(f"已写 {target}")
+    return 0
 
 
 # ── 主流程 ───────────────────────────────────────────────────────────────────
@@ -522,8 +645,8 @@ def recognize(clips, result, rate, args, unit, model):
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="切句基准：量一量「停顿多久算说完一句」，以及这样切会不会把句子切碎")
-    parser.add_argument("--set", dest="wavset", required=True,
-                        help="测试集目录（asr_eval.py --extract 抽出来的那个）")
+    parser.add_argument("--set", dest="wavset", default=None,
+                        help="测试集目录（asr_eval.py --extract 抽出来的那个）。--rescore 时不需要")
     parser.add_argument("--count", type=int, default=12, help="用多少条（缺省 12，够看分布）")
     parser.add_argument("--silence-ms", default="500,700,1000,1200",
                         help="要对比的静音判定时长，逗号分隔（缺省 500,700,1000,1200）")
@@ -532,6 +655,13 @@ def parse_args(argv=None):
                         help="只打印停顿分布（句内自然停顿 vs 句间静音），不跑切句")
     parser.add_argument("--recognize", action="store_true", help="连识别一起量（慢，需要模型）")
     parser.add_argument("--unit", default="auto", choices=["auto", "char", "word"])
+    parser.add_argument("--dump", default=None,
+                        help="把「参考/假设」对写成 JSON（识别很贵，写下来以后可以只重打分）")
+    parser.add_argument("--rescore", default=None,
+                        help="只重打分：读 --dump 写出来的 JSON，不载模型、不需要音频。"
+                             "评分规则一改（如 asr-norm-v2 补英语数字词）就用它，不必重跑模型")
+    parser.add_argument("--json", dest="json_out", default=None,
+                        help="把重打分的结果也写成 JSON（配 --rescore 用）")
     parser.add_argument("--model", default="large-v3")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--compute-type", default="float16")
@@ -574,6 +704,7 @@ def parse_args(argv=None):
 
 
 def load_clips(args):
+    from asr_eval import read_manifest       # 晚 import：见文件头部关于 pyarrow 的说明
     wavset, items = read_manifest(args.wavset)
     clips = []
     for item in items[: args.count]:
@@ -588,8 +719,21 @@ def load_clips(args):
 
 def main(argv=None):
     args = parse_args(argv)
+    # --rescore 走这条路：不载模型、不读音频 —— 见 run_rescore 里为什么重要
+    if args.rescore:
+        return run_rescore(args.rescore, args.json_out)
+    if not args.wavset:
+        sys.exit("缺 --set：切句基准要一个测试集目录（只有 --rescore 不需要）")
+    if args.json_out and not args.rescore:
+        sys.exit("--json 只配 --rescore 用（识别那一步的报告已经在屏幕上，dump 用 --dump）")
+    if args.dump and not args.recognize:
+        sys.exit("--dump 只在 --recognize 时才有内容（要写下来的是识别结果）")
     clips = load_clips(args)
-    unit = args.unit if args.unit != "auto" else detect_unit([c["reference"] for c in clips])
+    if args.unit == "auto":
+        from asr_eval import detect_unit     # 晚 import：见文件头部关于 pyarrow 的说明
+        unit = detect_unit([c["reference"] for c in clips])
+    else:
+        unit = args.unit
     label = "字" if unit == "char" else "词"
     total_s = sum(len(c["audio"]) for c in clips) / DEFAULT_RATE
 
@@ -648,22 +792,29 @@ def main(argv=None):
     # ── 阶段三 ──
     if args.recognize:
         print("阶段三：片段真的送进模型。两个口径都报 —— 见 recognize() 里的说明")
-        print("  逐段 = 每条字幕自己是否是完整翻译单位（偏高，切碎会推高它）")
-        print("  整段 = 把所有字幕文字按顺序拼起来对不对（切碎但不丢字时不会变差）")
-        print(f"{'静音判定':>10} {'句间停顿':>9} {'片段数':>7} {'逐段错误率':>11} {'整段错误率':>11} "
-              f"{'疑似繁体':>9} {'识别耗时':>9} {'漏掉字数':>9}")
+        print_recognize_legend()
+        print_recognize_header(unit)
         model = load_model(DEFAULT_RATE, args)
+        runs = []
+        deltas = []
         for gap_ms in gaps:
             for silence_ms in silences:
-                outcome = recognize(clips, results[(gap_ms, silence_ms)], DEFAULT_RATE,
-                                    args, unit, model)
-                if not outcome["units"]:
-                    print(f"{silence_ms:>8}ms {gap_ms:>7}ms   没有可识别的片段")
+                result = results[(gap_ms, silence_ms)]
+                outcome = recognize(clips, result, DEFAULT_RATE, args, unit, model)
+                row = print_recognize_row(silence_ms, gap_ms, outcome, unit, outcome["elapsed"])
+                if not row:
                     continue
-                print(f"{silence_ms:>8}ms {gap_ms:>7}ms {outcome['segments']:>7} "
-                      f"{outcome['rate'] * 100:>10.1f}% {outcome['joined'] * 100:>10.1f}% "
-                      f"{outcome['traditional']:>9} {outcome['elapsed']:>8.1f}s "
-                      f"{outcome['missed']:>9}")
+                deltas.append((row["strictRate"] - row["normalizedRate"]) * 100)
+                runs.append({"silenceMs": silence_ms, "gapMs": gap_ms,
+                             "segments": result["segments"], "merged": result["merged"],
+                             "split": result["split"], "maxMergeS": result["max_merge_s"],
+                             "offsetMs": result["offset_ms"], "elapsedS": outcome["elapsed"],
+                             "records": outcome["records"], "reached": outcome["reached"]})
+        if deltas:
+            print(f"\n  写法差异（严格 − 规范）逐段平均 {sum(deltas) / len(deltas):.1f} 个百分点"
+                  f"（最大 {max(deltas):.1f}pp）—— 这部分不是听错，是数字/单位写法不同")
+        if args.dump and runs:
+            write_dump(args.dump, clips, unit, args, runs)
     return 0
 
 

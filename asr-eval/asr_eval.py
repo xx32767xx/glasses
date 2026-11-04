@@ -114,7 +114,7 @@ def parse_args(argv=None):
                         help="--errors-above 最多列几条（缺省 0 = 不限制，全列）")
     parser.add_argument("--errors-file", default=None,
                         help="问题样本清单写到哪（缺省：与 --out-json 同名的 .errors.txt）")
-    # 规范化口径（asr-norm-v1）**始终**与严格口径一起算（两条一起报才有意义），
+    # 规范化口径（asr-norm-v2）**始终**与严格口径一起算（两条一起报才有意义），
     # 这两个开关只决定"要不要额外放宽"——默认都不开，因为两条规则都不安全：
     #   · 删感叹词：`嗯/呃` 漏掉用户是听得出来的（字幕变硬），而且 `啊/呀/吧/呢/嘛` 带语气；
     #   · 折叠重复：中文里 `看看` `说说` `慢慢` 是**正常词**，折叠会把真漏字盖掉。
@@ -436,7 +436,7 @@ def main():
             "substitutions": score["substitutions"],
             "deletions": score["deletions"],
             "insertions": score["insertions"],
-            # ── 规范化口径（asr-norm-v1）：同一段识别输出换文本重新对齐 ──
+            # ── 规范化口径（asr-norm-v2）：同一段识别输出换文本重新对齐 ──
             "normalized_rate": normalized["rate"],
             "normalized_units": normalized["units"],
             "normalized_distance": normalized["distance"],
@@ -616,7 +616,7 @@ def main():
             "insertions": sum_i,
             "totalUnits": total_units,
             "totalDistance": total_distance,
-            # ── 规范化口径（asr-norm-v1）：同一批识别输出换文本重新对齐 ──
+            # ── 规范化口径（asr-norm-v2）：同一批识别输出换文本重新对齐 ──
             "normalizedRules": NORMALIZED_RULES_VERSION,
             "normalizedRate": None if np.isnan(norm_weighted) else float(norm_weighted),
             "normalizedSubstitutions": norm_s,
