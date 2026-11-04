@@ -61,6 +61,7 @@ import argparse
 import json
 import os
 import queue
+import re
 import sys
 import time
 from pathlib import Path
@@ -1352,6 +1353,8 @@ def run_queue_consumer(args, np, pool):
     room_cache = {}
     # 侧车「对这一段的含义」只在变化时打一行（见 describe_room_profile）
     room_notes = {}
+    # 连丢几段「电平偏低」就喊一次（见 LevelWatch）
+    level_watch = LevelWatch(getattr(args, "silence_skip_level", SILENCE_SKIP_RMS))
     while True:
         # 模型表热加载：每轮看一眼 mtime，变了就重读 —— "插拔接口"要真的是插拔
         if args.model_map:
@@ -1443,7 +1446,12 @@ def run_queue_consumer(args, np, pool):
             if empty:
                 print(f"  [丢弃 {seconds:.1f}s，房间 {meta.get('room')}：{reason or '没有内容'}]",
                       file=sys.stderr, flush=True)
+                # 5.72：连丢到第 3 段就喊一次（只在"电平偏低"那种上喊，见 LevelWatch）
+                advisory = level_watch.note(meta.get("room"), reason)
+                if advisory:
+                    print(f"[识别] {advisory}", file=sys.stderr, flush=True)
             else:
+                level_watch.reset(meta.get("room"))
                 # ⚠️ 每行都带 room：下游（asr-worker）靠它把文字送回**这一场**的收件箱。
                 # 队列模式与"一个收件箱"的旧模式差别就在这里 —— 归属是**数据自带的**，不靠猜。
                 #
@@ -1881,6 +1889,71 @@ def looks_like_hallucination(text: str) -> bool:
 # 阈值取 0.02 = 与 SPEECH_RMS_FLOOR **同一个数**（人声门槛）。
 # 判据用**归一化之前**的电平 —— 归一化之后就没有"安静"可言了。
 SILENCE_SKIP_RMS = 0.02
+
+
+class LevelWatch:
+    """盯「因为电平太低而连丢好几段」—— 这是这次实机最贵的一个坑（5.72）。
+
+    <p>每段丢弃时日志里那句 `[丢弃 … 电平偏低 … 调到 0.0105 就能救回]` **太安静了**：
+    它埋在几十行里，而现象是"一句字幕都没有"，人第一反应是"识别坏了"。
+    实机上就这么查了三轮才回到电平上 —— 所以这里改成**连丢到第 3 段就喊一次**：
+    一条包含"连丢几段 / 电平范围 / 建议门槛"的醒目提示，每个房间每次进程只喊一次。
+
+    <p>⚠️ 只统计 `电平偏低`（接近门槛那种）。`近乎静音` 不进来 —— 那是"真的没有声音"，
+    对这类也喊"调低门槛"会把人引去把静音送去识别（更糟）。
+    """
+
+    WARN_AFTER = 3
+
+    def __init__(self, threshold):
+        self.threshold = threshold
+        self.counts = {}
+        self.levels = {}
+        self.warned = set()
+
+    def reset(self, room):
+        """有段成功出字 → 说明门槛没挡住正常说话，重新计数。"""
+        if room is None:
+            return
+        self.counts.pop(room, None)
+        self.levels.pop(room, None)
+
+    def note(self, room, reason):
+        """记一次丢弃；到阈值返回提示文本（已提示过就返回 None）。"""
+        if room is None or not isinstance(reason, str):
+            return None
+        if not reason.startswith("电平偏低"):
+            return None
+        level = _level_from_reason(reason)
+        self.counts[room] = self.counts.get(room, 0) + 1
+        if level is not None:
+            self.levels.setdefault(room, []).append(level)
+        if self.counts[room] < self.WARN_AFTER or room in self.warned:
+            return None
+        self.warned.add(room)
+        levels = self.levels.get(room) or []
+        span = ""
+        if levels:
+            span = f"电平 {min(levels):.4f}~{max(levels):.4f}"
+        suggested = None
+        if levels:
+            suggested = max(0.004, round(min(levels) * 0.8, 4))
+        return (f"房间 {room} 已经连丢 {self.counts[room]} 段（{span}，门槛 {self.threshold}）—— "
+                f"⚠️ 这几乎不是「识别坏了」，而是**麦克风偏轻**："
+                + (f"把 --silence-skip-level 调到 {suggested} 左右再看"
+                   if suggested is not None else "把 --silence-skip-level 调低一点再看")
+                + "（这条提示每个房间只出现一次）")
+
+
+def _level_from_reason(reason):
+    """从 `silence_skip_reason` 的文本里取回原始电平（取不到就返回 None，不猜）。"""
+    match = re.search(r"原始(?:电平)?\s*([\d.]+)", reason)
+    if match is None:
+        return None
+    try:
+        return float(match.group(1))
+    except (TypeError, ValueError):
+        return None
 
 
 def silence_skip_reason(audio, threshold=SILENCE_SKIP_RMS) -> str | None:

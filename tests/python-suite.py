@@ -2802,6 +2802,31 @@ def main():
           "近乎静音" in whisper_stream.silence_skip_reason(quiet),
           whisper_stream.silence_skip_reason(quiet)[:80])
 
+    # 5.72：单段那行太安静 —— 实机上"一句字幕都没有"是**连丢好几段**造成的，
+    # 而人第一反应是"识别坏了"。所以连丢到第 3 段要喊一次，并说明这是麦克风偏轻。
+    watch = whisper_stream.LevelWatch(0.02)
+    near_reason = whisper_stream.silence_skip_reason(near, 0.02)
+    firsts = [watch.note("room-x", near_reason) for _ in range(2)]
+    check("前两段不喊（避免噪声）", all(item is None for item in firsts), str(firsts))
+    advisory = watch.note("room-x", near_reason)
+    check("第 3 段喊一次，并说清「不是识别坏了，是麦克风偏轻」",
+          advisory is not None and "连丢 3 段" in advisory and "麦克风偏轻" in advisory,
+          str(advisory))
+    check("提示里带着可直接抄的门槛值", advisory is not None and "--silence-skip-level" in advisory,
+          str(advisory)[:140])
+    check("同一房间只喊一次", watch.note("room-x", near_reason) is None)
+    check("近乎静音**不**触发这条提示（那是真的没有声音，喊了会把人引错方向）",
+          watch.note("room-quiet", "近乎静音（原始电平 0.0010 < 0.02）→ 解码前丢弃") is None)
+    check("换成别的房间会各自计数", watch.note("room-y", near_reason) is None
+          and watch.counts.get("room-y") == 1)
+    watch.reset("room-z")
+    for _ in range(2):
+        watch.note("room-z", near_reason)
+    watch.reset("room-z")          # 出字了 → 说明门槛没挡住正常说话，重新计数
+    check("有段正常出字就重置计数（不会因为累计旧账误报）",
+          watch.note("room-z", near_reason) is None and watch.counts.get("room-z") == 1,
+          str(watch.counts.get("room-z")))
+
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
     if failures:
         print("")
