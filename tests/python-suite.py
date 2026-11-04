@@ -3055,6 +3055,35 @@ def main():
     check("describe_strategies 摊出策略名与语种指向",
           "en-fast" in described_strategies and "en-US" in described_strategies, described_strategies)
 
+    # ⚠️ 5.97 现场事故：启动那行「模型表：…」只打印 languages[语种].model，
+    #    于是"语种里钉的是**策略**"（pt-BR → pt-funasr）被显示成 `pt-BR=（沿用 default）`。
+    #    用户看着这行以为葡语云端配置没了 —— 日志说错话比不打印更糟，它把人支到错误方向。
+    engine_table = {
+        "default": {"model": "large-v3"},
+        "strategies": {
+            "pt-funasr": {"engine": "funasr", "model": "fun-asr-realtime", "langs": ["pt-BR"]},
+            "en-parakeet": {"engine": "parakeet", "runtime": "onnx", "model": "/opt/leion/models/pk"},
+        },
+        "languages": {"pt-BR": {"strategy": "pt-funasr"},
+                      "en-US": {"strategy": "en-parakeet"},
+                      "zh-CN": {"strategy": "zh-steady"}},
+    }
+    banner = whisper_stream.describe_asr_table(engine_table, cli5)
+    check("语种钉的是策略时，日志里看得到策略名与引擎（不再是「沿用 default」）",
+          "pt-BR=pt-funasr → funasr/fun-asr-realtime" in banner, banner)
+    check("同一行也看得到英语那一路走的是 Parakeet",
+          "en-US=en-parakeet → parakeet/" in banner, banner)
+    check("默认那一行也带引擎（default=whisper/large-v3）",
+          "default=whisper/large-v3" in banner, banner)
+    check("策略名写错时当场喊出来（不安静地按继承层跑）",
+          "表里没有策略 'zh-steady'" in banner, banner)
+    check("真机那份示例表：pt-BR 现在就解析成 default（说明表里没有钉策略）",
+          "pt-BR=default → whisper/large-v3"
+          in whisper_stream.describe_asr_table(
+              json.loads((ROOT / "config" / "asr-models.json").read_text(encoding="utf-8")), cli5))
+    check("没有表时那行仍是人话（不退化成空串）",
+          "没有模型表" in whisper_stream.describe_asr_table({}, cli5))
+
     # 切出来的段必须把**策略名**写进 meta —— 这是"策略随数据往下走"的第一步
     queue_dir = Path(ROOT / "var" / "test" / "queue-strategy")
     shutil.rmtree(queue_dir, ignore_errors=True)

@@ -2041,7 +2041,7 @@ def run_queue_consumer(args, np, pool):
                     print(f"[识别] 模型表更新失败，继续用上一份：{problem}", file=sys.stderr, flush=True)
                 else:
                     args.asr_table = table
-                    print(f"[识别] 模型表已重新加载：{describe_asr_table(table)}",
+                    print(f"[识别] 模型表已重新加载：{describe_asr_table(table, _cli_profile(args))}",
                           file=sys.stderr, flush=True)
         bases = _pending_segments(args.queue_dir)
         if not bases:
@@ -2058,13 +2058,8 @@ def run_queue_consumer(args, np, pool):
             # 切句那半边是切句进程用的，这里只取模型这半边，但**名字要一路带下去**。
             room_profile = read_room_asr_profile(args.data_dir, meta.get("room"), room_cache)
             _note_room_profile(meta.get("room"), language, room_profile, room_notes)
-            strategy = resolve_strategy(language, {
-                # 命令行的"缺省档案"用**启动时真正加载的那一份**（可能来自表的 default），
-                # 否则 A/B 时会拿旧命令行值把表的结论盖掉
-                "model": getattr(args, "startup_model", None) or args.model,
-                "compute_type": getattr(args, "resolved_compute", None) or args.compute_type,
-                "beam_size": args.beam_size,
-            }, getattr(args, "asr_table", None), room_profile)
+            strategy = resolve_strategy(language, _cli_profile(args),
+                                        getattr(args, "asr_table", None), room_profile)
             # 切句那边已经给这一段起过名字（meta["strategy"]）；没给就用这份策略算出来的名字。
             cutStrategy = meta.get("strategy")
             strategyName = str(cutStrategy) if isinstance(cutStrategy, str) and cutStrategy.strip() else strategy["strategy"]
@@ -2186,19 +2181,56 @@ def _stamp_of(path):
         return None
 
 
-def describe_asr_table(table):
-    """把模型表摊成一行（启动日志与热加载日志都用它）。"""
+def _cli_profile(args):
+    """命令行那组"缺省档案"，与队列消费者里 resolve_strategy 的 base **同一口径**。
+
+    <p>口径必须只有一份：日志按一套算、实际按另一套算，就是"日志和现场对不上"的根源。
+    这里刻意用**启动时真正加载的那一份**（`startup_model` / `resolved_compute`）——
+    表的 `default` 可能已经把它们改过，用旧命令行值会把表的结论盖掉。
+    """
+    return {
+        "model": getattr(args, "startup_model", None) or getattr(args, "model", None),
+        "compute_type": getattr(args, "resolved_compute", None) or getattr(args, "compute_type", None),
+        "beam_size": getattr(args, "beam_size", None),
+        "engine": getattr(args, "engine", None),
+    }
+
+
+def describe_asr_table(table, cli=None):
+    """把模型表摊成一行（启动日志与热加载日志都用它）。
+
+    <p>⚠️ 5.97：原来这里只打印 `languages[语种].model`，于是"语种里钉的是**策略**"
+    （`{"pt-BR": {"strategy": "pt-funasr"}}`）在日志里被显示成 `pt-BR=（沿用 default）`。
+    现场看到的就是"我的葡语云端配置怎么没了"，而实际上 Fun-ASR 一直在用。
+    **日志说错话比不打印更糟** —— 它会把人支到错误的方向上去查。
+
+    现在按**实际解析出来的结果**打印 `语种=策略名 → 引擎/模型`；策略名在表里根本不存在
+    时（拼错、或者表是别人手改的）也当场喊出来，而不是安静地按继承的层跑。
+
+    @param cli 命令行那组缺省（模型/精度/引擎）。不传就只按表算 ——
+               启动日志里传了才能看出"这个值到底来自哪一层"。
+    """
     if not isinstance(table, dict) or not table:
         return "（没有模型表，所有语种都用命令行那一个模型）"
+    cli = cli or {}
+    strategies = table.get("strategies") if isinstance(table.get("strategies"), dict) else {}
     parts = []
     default = _profile_of(table.get("default"), {})
     if default.get("model"):
-        parts.append(f"default={default['model']}")
+        default_engine = str(default.get("engine") or DEFAULT_ENGINE)
+        parts.append(f"default={default_engine}/{default['model']}")
     languages = table.get("languages")
     if isinstance(languages, dict):
         for key in sorted(languages):
-            one = _profile_of(languages[key], {})
-            parts.append(f"{key}={one.get('model') or '（沿用 default）'}")
+            # 用真的解析器算，别自己猜层级 —— 猜出来的日志迟早和实际行为对不上
+            profile = resolve_strategy(key, cli, table)
+            name = str(profile.get("strategy") or "default")
+            engine = str(profile.get("engine") or DEFAULT_ENGINE)
+            model = profile.get("model") or "（引擎缺省）"
+            label = f"{key}={name} → {engine}/{model}"
+            if name != "default" and name not in strategies:
+                label += f"（⚠️ 表里没有策略 '{name}'，实际走的是它继承的那几层）"
+            parts.append(label)
     return "；".join(parts) if parts else "（表是空的）"
 
 
@@ -3606,7 +3638,7 @@ def main():
     args.startup_model = startup_model
     args.resolved_compute = startup_compute
     if args.model_map and args.asr_table:
-        print(f"[whisper_stream] 模型表：{describe_asr_table(args.asr_table)}"
+        print(f"[whisper_stream] 模型表：{describe_asr_table(args.asr_table, _cli_profile(args))}"
               f"（启动先加载 {startup_model}，来源：{startup.get('source')}）", file=sys.stderr)
 
     # 5.86：先建引擎注册表并解析出**这一路是哪个引擎**，再决定要不要做"本地模型"检查。
