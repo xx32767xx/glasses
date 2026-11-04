@@ -3387,7 +3387,11 @@ def main():
         print(f"[whisper_stream] ✗ {error}", file=sys.stderr)
         return 2
     try:
-        handle = startup_engine.load(startup, args.device)
+        # ⚠️ 5.81：这个变量**不能**叫 `handle`
+        # —— 后面 `def handle(utterance)` 会在同一作用域重新绑定它，
+        # 于是引擎句柄变成函数对象（实测：预热能过、第一段就崩
+        # `AttributeError: 'function' object has no attribute 'get'`）。
+        startup_handle = startup_engine.load(startup, args.device)
     except Exception as error:  # noqa: BLE001
         # 真事故（搬迁服务器后）：模型不在本地缓存，于是 faster-whisper 去 HuggingFace 拉，
         # 而新机器出网被掐 -> httpcore.RemoteProtocolError: Server disconnected without sending
@@ -3418,7 +3422,7 @@ def main():
         seeded = {"engine": startup_engine.key, "model": startup_model,
                   "compute_type": startup_compute, "beam_size": args.beam_size,
                   "source": startup.get("source")}
-        pool.models[ModelPool.key_of(seeded)] = handle
+        pool.models[ModelPool.key_of(seeded)] = startup_handle
         pool.order.append(ModelPool.key_of(seeded))
         return run_queue_consumer(args, np, pool)
 
@@ -3450,7 +3454,7 @@ def main():
                 do_normalize=not args.no_normalize,
                 candidates=args.lang_candidates,
             )
-        outcome = startup_engine.transcribe(handle, sample, language, startup)
+        outcome = startup_engine.transcribe(startup_handle, sample, language, startup)
         return (outcome.get("text", ""), bool(outcome.get("empty", False)),
                 outcome.get("reason"), False, "", outcome.get("resolved_language"))
 

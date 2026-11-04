@@ -2673,6 +2673,16 @@ def main():
     check("不给 --engine 时仍是 whisper（老行为不变）",
           whisper_stream.resolve_strategy("en-US", {"model": "large-v3"}, {})["engine"] == "whisper")
 
+    # 5.81：`main()` 里还有个 `def handle(utterance)` —— 加载得到的引擎句柄若也叫 handle，
+    # 会被那个 def 覆盖成函数对象（实测：预热能过、第一段崩
+    # AttributeError: 'function' object has no attribute 'get'）。这条用源码断言钉住。
+    main_src = inspect.getsource(whisper_stream.main)
+    check("引擎句柄变量叫 startup_handle（不与 def handle 撞名）",
+          "startup_handle = startup_engine.load(" in main_src
+          and "def handle(utterance)" in main_src, "名字又撞上了")
+    check("引擎分派用的是 startup_handle，而不是被覆盖的 handle",
+          "startup_engine.transcribe(startup_handle," in main_src)
+
     missing_sherpa = ""
     try:
         engines["parakeet"].load({"engine": "parakeet", "model": "/nope"}, "cpu")
