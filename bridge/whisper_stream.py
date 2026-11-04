@@ -1715,6 +1715,10 @@ DASHSCOPE_MODEL_HINTS = ("fun-asr-flash-2026-06-15", "qwen3-asr-flash-realtime",
 CLOUD_QUIET_FLUSH_S = 1.2
 # 一个字都没收到时最多等多久（这是"服务端彻底不给东西"的上限，不是常态等待）
 CLOUD_RESULT_WAIT_S = 30.0
+# ⚠️ 5.103：关闭握手的等待上限。websockets 默认 10 秒，而我们对端常常不回关闭帧 ——
+#   于是**每段白等 10 秒**（识别 1 秒、退出 10 秒）。这里压到 1 秒：少等一会儿并不丢数据，
+#   文本在关闭之前就已经收在手里了。
+CLOUD_CLOSE_TIMEOUT_S = 1.0
 
 
 def _mask_secret(value):
@@ -1950,7 +1954,14 @@ class FunAsrEngine(AsrEngine):
             return payload
 
         try:
+            # ⚠️ 5.103：**`close_timeout` 必须显式给**。默认 10 秒 —— 而且它不是"最多等 10 秒"，
+            #    实测服务端不回应关闭握手时它是**真的等满约 10 秒**。
+            #    分阶段计时一看就清楚了：连接 0.14 + 等开始 0.03 + 送音频 0.03 + 收结果 1.00 =
+            #    1.2 秒，而总耗时 11.2 秒 —— 那 10 秒全花在 `with` 退出（ws.close()）上，
+            #    也就是**识别早就做完了，我们在等一个礼貌的再见**。
+            #    每段白搭 10 秒，队列必然越积越深 —— 现场表现就是"一直没有输出"。
             with connect(self.ws_url(), max_size=None, open_timeout=10,
+                         close_timeout=CLOUD_CLOSE_TIMEOUT_S,
                          additional_headers={"Authorization": f"bearer {handle['api_key']}"}) as ws:
                 # (连上了就把实际用的端点记下来；出错时能分辨是不是连错地方)
                 timings["connect"] = round(time.perf_counter() - _t0, 3)
@@ -2046,6 +2057,10 @@ class FunAsrEngine(AsrEngine):
                                           + _describe_header(event.get("header") or {}),
                                 "resolved_language": language})
                 timings["collect"] = round(time.perf_counter() - send_at - timings.get("send_audio", 0.0), 3)
+                close_started = time.perf_counter()
+            # `with` 退出 = 关闭握手。这一段的耗时以前**完全看不见**，
+            # 而它一度占了一次调用 11.2 秒里的 10 秒（见上面 close_timeout 的说明）。
+            timings["close"] = round(time.perf_counter() - close_started, 3)
         except Exception as error:                                  # noqa: BLE001
             # ⚠️ 5.96：实测遇到过「收到了 result-generated，却等不到 task-finished」
             #    （TimeoutError after 29.7s）。那时**文字已经拿到了**，当失败丢掉是最坑的选择
@@ -2301,6 +2316,23 @@ def run_queue_consumer(args, np, pool):
                 pass            # whisper 句柄：(model, 实际精度)，beam 由引擎从 args 读
             _ = override_beam
             seconds = len(audio) / float(meta.get("rate") or args.samplerate)
+            # ⚠️ 5.103：**慢了要说出慢在哪**。曾经一次调用 11.2 秒里有 10 秒既不在连接、
+            # 也不在收结果 —— 因为那 10 秒是关闭握手且**完全没被计时**，于是"为什么没字幕"
+            # 查了两轮。现在只要明显慢于音频长度，就把分阶段摊在日志里。
+            if elapsed > max(2.0, seconds * 1.5):
+                segment_timings = outcome.get("timings") if isinstance(outcome.get("timings"), dict) else {}
+                if segment_timings:
+                    covered = sum(value for value in segment_timings.values()
+                                  if isinstance(value, (int, float)))
+                    print("[识别] 这一段慢（耗时 "
+                          f"{elapsed:.2f}s / 音频 {seconds:.2f}s）："
+                          + " / ".join(f"{label} {segment_timings.get(key, 0):.2f}s"
+                                       for key, label in (("connect", "连接"), ("wait_started", "等开始"),
+                                                          ("send_audio", "送音频"), ("collect", "收结果"),
+                                                          ("close", "断开"))
+                                       if key in segment_timings)
+                          + (f" / 其他 {elapsed - covered:.2f}s" if elapsed - covered > 0.05 else ""),
+                          file=sys.stderr, flush=True)
             if empty:
                 print(f"  [丢弃 {seconds:.1f}s，房间 {meta.get('room')}：{reason or '没有内容'}"
                       f"（耗时 {elapsed:.2f}s）]",
@@ -2642,12 +2674,19 @@ def run_try(args, np, engines):
         text = str(outcome.get("text") or "")
         timings = outcome.get("timings") if isinstance(outcome.get("timings"), dict) else {}
         if timings:
-            # 分阶段耗时：整体慢的时候，"慢在哪一段"是唯一有用的信息
+            # 分阶段耗时：整体慢的时候，"慢在哪一段"是唯一有用的信息。
+            # "其他"是**没有被这五段覆盖的部分**（模型加载、numpy 转换等）——
+            # 留着它不是洁癖：11 秒里曾经有 10 秒既不在连接也不在收结果，
+            # 正是因为那 10 秒没有名字，才查了两轮。
+            covered = sum(value for value in timings.values() if isinstance(value, (int, float)))
+            leftover = elapsed - covered
             print("[try]    分阶段：" + " / ".join(
                 f"{label} {timings.get(key, 0):.2f}s"
                 for key, label in (("connect", "连接"), ("wait_started", "等开始"),
-                                   ("send_audio", "送音频"), ("collect", "收结果"))
-                if key in timings), file=sys.stderr)
+                                   ("send_audio", "送音频"), ("collect", "收结果"),
+                                   ("close", "断开"))
+                if key in timings)
+                + (f" / 其他 {leftover:.2f}s" if leftover > 0.05 else ""), file=sys.stderr)
         if outcome.get("empty") or text.strip() == "":
             total["empty"] += 1
             print(f"[try] · 没出字（耗时 {elapsed:.2f}s，RTF {elapsed / seconds:.2f}）："

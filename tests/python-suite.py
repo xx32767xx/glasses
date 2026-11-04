@@ -3000,6 +3000,15 @@ def main():
     quiet_timings = kept.get("timings") or {}
     check("云端结果带分阶段耗时（连接/等开始/送音频/收结果）",
           {"connect", "wait_started", "send_audio"} <= set(quiet_timings), str(quiet_timings))
+    # ⚠️ 5.103：一次调用 11.2 秒里有 10 秒是**关闭握手**在干等（websockets 默认 close_timeout=10），
+    #    而那段以前根本不计时、也看不见。文本早就在手里了，等的是一句礼貌的再见。
+    funasr_src = inspect.getsource(whisper_stream.FunAsrEngine.transcribe)
+    check("连接时必须显式给 close_timeout（默认 10 秒，每段白等）",
+          "close_timeout" in funasr_src, "connect(...) 里没看到 close_timeout")
+    check("关闭握手也计入 timings（不然又会出现「10 秒不知去向」）",
+          "close" in quiet_timings, str(quiet_timings))
+    check("close_timeout 是秒级而不是沿用默认的 10 秒",
+          whisper_stream.CLOUD_CLOSE_TIMEOUT_S <= 2.0, str(whisper_stream.CLOUD_CLOSE_TIMEOUT_S))
     nothing = _run_timeout([], 1)
     check("什么都没收到时仍然是失败（不能凭空造一句）",
           nothing["empty"] is True and "task-started" in (nothing["reason"] or ""), str(nothing))
