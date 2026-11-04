@@ -3208,6 +3208,50 @@ def main():
     (failed_dir / "1793-room-T-000.json").write_text("{}", encoding="utf-8")
     check("queue/asr/failed/ 里有残留时也说出来（那是转写抛异常被挪出来的）",
           "failed" in "\n".join(whisper_stream.describe_try_sources(str(try_dir))))
+
+    # ⚠️ 5.101 实测：`--try-audio … --language pt-BR` 抛
+    #    `ValueError: 'pt-BR' is not a valid language code`，而且是在**模型加载完**
+    #    （39.8 秒）之后才抛 —— 现场看起来像"模型坏了"，其实是语种码写法不对。
+    #    faster-whisper 只认两字母码，标签（pt-BR）必须先归一化。
+    check("语种标签能换成 Whisper 码（pt-BR → pt）",
+          whisper_stream.whisper_language_code("pt-BR") == "pt"
+          and whisper_stream.whisper_language_code("zh-CN") == "zh"
+          and whisper_stream.whisper_language_code("EN-us") == "en",
+          str([whisper_stream.whisper_language_code(one)
+               for one in ("pt-BR", "zh-CN", "EN-us")]))
+    check("已经是 Whisper 码的原样通过（幂等）",
+          whisper_stream.whisper_language_code("pt") == "pt")
+    check("auto / 空串 → None（Whisper 里「自动判定」就是 None）",
+          whisper_stream.whisper_language_code("auto") is None
+          and whisper_stream.whisper_language_code("  ") is None
+          and whisper_stream.whisper_language_code(None) is None)
+
+    class _StrictWhisperModel:
+        """模仿 faster-whisper：**只认两字母码**，传标签就像真库那样抛 ValueError。"""
+
+        CODES = {"pt", "zh", "en"}
+
+        def __init__(self):
+            self.seen = []
+
+        def detect_language(self, data):
+            return "pt", 0.9, {"pt": 0.9, "zh": 0.05}
+
+        def transcribe(self, data, language=None, **kwargs):
+            self.seen.append(language)
+            if isinstance(language, str) and language not in self.CODES:
+                raise ValueError(f"'{language}' is not a valid language code")
+            seg = types.SimpleNamespace(text="bom dia", no_speech_prob=0.01,
+                                        avg_logprob=-0.2, compression_ratio=1.0)
+            return [seg], types.SimpleNamespace(language=language or "pt")
+
+    strict_model = _StrictWhisperModel()
+    typed_text, typed_empty, typed_reason, _ov, _kind, typed_lang = whisper_stream.transcribe(
+        strict_model, np.zeros(16000, dtype=np.float32) + 0.05, "pt-BR",
+        min_logprob=-1.0, no_speech_prob=0.9, silence_floor=0.0)
+    check("transcribe() 收到标签不再崩（模型看到的是 pt）",
+          strict_model.seen == ["pt"], str(strict_model.seen))
+    check("而且照常出字", typed_text == "bom dia" and typed_empty is False, typed_text)
     check("没有段的队列会说清楚（不是静默退出）",
           whisper_stream.run_try(_try_args(queue_dir=str(try_dir / "nope")), np, {"funasr": ok_engine}) == 3)
     _shutil.rmtree(try_dir, ignore_errors=True)

@@ -23,12 +23,13 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 function parseArgs(argv) {
   const args = {
-    dataDir: process.env.LEION_DATA_DIR || 'var/test',
+    dataDir: '',
+    dataDirExplicit: false,
     modelMap: '',
     lang: '',
     queue: '',
@@ -44,7 +45,10 @@ function parseArgs(argv) {
   }
   for (let index = 0; index < argv.length; index += 1) {
     const item = argv[index]
-    if (item === '--data-dir') args.dataDir = argv[index += 1] ?? args.dataDir
+    if (item === '--data-dir') {
+      args.dataDir = argv[index += 1] ?? ''
+      args.dataDirExplicit = args.dataDir !== ''
+    }
     else if (item === '--model-map') args.modelMap = argv[index += 1] ?? ''
     else if (item === '--lang') args.lang = argv[index += 1] ?? ''
     else if (item === '--queue') args.queue = argv[index += 1] ?? ''
@@ -84,10 +88,44 @@ function pickPython(explicit) {
   return process.platform === 'win32' ? 'python' : 'python3'
 }
 
+/**
+ * 定数据目录：`--data-dir` 最优先；其次是**从音频路径反推**（`<data>/audio/<房间>/x.pcm`）；
+ * 再其次 `$LEION_DATA_DIR`；最后才是默认值。
+ *
+ * <p>为什么要反推：实测第一次跑就踩了 —— 用户只给了 `--pcm /var/lib/leion/test/audio/...`，
+ * 而环境里 `LEION_DATA_DIR` 指向 **live**，于是模型表被去 `/var/lib/leion/live` 找，
+ * 找不到就按命令行默认（whisper/small），最后测的**根本不是要测的那个引擎**。
+ * 音频路径本身已经说明了它属于哪个数据目录，这个信号比环境变量可靠。
+ *
+ * @returns {{dataDir: string, from: string}}
+ */
+function resolveDataDir(args) {
+  if (args.dataDirExplicit) return { dataDir: args.dataDir, from: '--data-dir' }
+  const path = args.pcm || args.wav
+  if (path) {
+    const parts = String(path).replace(/\\/g, '/').split('/')
+    const index = parts.lastIndexOf('audio')
+    if (index > 0) {
+      return { dataDir: parts.slice(0, index).join('/') || '/', from: `音频路径反推（…/audio/… 的上两级）` }
+    }
+  }
+  const envDir = (process.env.LEION_DATA_DIR ?? '').trim()
+  if (envDir) return { dataDir: envDir, from: '$LEION_DATA_DIR' }
+  if (existsSync('/var/lib/leion/test')) return { dataDir: '/var/lib/leion/test', from: '默认（这台机器上有它）' }
+  return { dataDir: 'var/test', from: '默认' }
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2))
+  const resolved = resolveDataDir(args)
+  args.dataDir = resolved.dataDir
   const queueDir = args.queue || join(args.dataDir, 'queue', 'asr')
   const modelMap = args.modelMap || join(args.dataDir, 'asr-models.json')
+  console.log(`[try] 数据目录 ${args.dataDir}（来自 ${resolved.from}）`)
+  if (!existsSync(modelMap)) {
+    console.log(`[try] ⚠️ 这个数据目录里没有模型表 ${modelMap} —— 语种/引擎会退回命令行默认，`
+      + '测的可能不是你以为的那个引擎。用 --data-dir 指对，或 --model-map 直接给表')
+  }
 
   const command = [join('bridge', 'whisper_stream.py')]
   if (args.pcm) {
@@ -124,8 +162,25 @@ function main() {
   if (args.device) command.push('--device', args.device)
   if (args.engine) command.push('--engine', args.engine)
   if (args.model) command.push('--model', args.model)
-  if (existsSync(modelMap)) command.push('--model-map', modelMap)
-  else console.log(`[try] 没有模型表 ${modelMap}（就按命令行那套跑）`)
+  if (existsSync(modelMap)) {
+    console.log(`[try] 模型表 ${modelMap}`)
+    command.push('--model-map', modelMap)
+  } else {
+    console.log(`[try] 没有模型表 ${modelMap}（就按命令行那套跑）`)
+  }
+  if (args.pcm && !args.lang) {
+    // 分轨文件旁边有 `.lang` 旁文件（relay 写的），读它比自己猜语种可靠得多
+    const langSidecar = `${args.pcm}.lang`
+    if (existsSync(langSidecar)) {
+      try {
+        const tag = readFileSync(langSidecar, 'utf-8').trim()
+        if (tag) {
+          console.log(`[try] 语种取自旁文件 ${langSidecar}：${tag}`)
+          command.push('--language', tag)
+        }
+      } catch { /* 读不到就按自动判定 */ }
+    }
+  }
   command.push('--data-dir', args.dataDir)
   command.push('--no-warmup')
 

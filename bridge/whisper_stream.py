@@ -3451,6 +3451,28 @@ def pick_language(all_probs, candidates):
     return max(picks, key=lambda item: item[1])[0]
 
 
+def whisper_language_code(code):
+    """语种**标签** → Whisper **语种码**（`pt-BR` → `pt`）；认不出就原样返回。
+
+    <p>⚠️ 5.101 实测踩到：`--try-audio … --language pt-BR` 直接抛
+    `ValueError: 'pt-BR' is not a valid language code (accepted language codes: af, …)`。
+    更糟的是这条错误发生在**模型加载完之后**（那次加载花了 39.8 秒），
+    现场看到的是"模型坏了"，而不是"语种码写法不对"。
+
+    <p>`language_tag()` 是反方向（码 → 标签 `pt` → `pt-BR`）。两个方向都应该有名字：
+    只有一边的时候，另一边就会被人"顺手"传错 —— 而这两个字符串长得都像语种。
+    """
+    if not isinstance(code, str):
+        return code
+    text = code.strip()
+    if text == "":
+        return None
+    if text.lower() == "auto":
+        # Whisper 里"自动判定"就是 None；传 "auto" 同样会报 invalid language code
+        return None
+    return text.split("-")[0].lower()
+
+
 def transcribe(model, audio, language, min_logprob, no_speech_prob,
                beam_size=1, initial_prompt=None, do_normalize=True,
                speech_floor=SPEECH_RMS_FLOOR, candidates=None, context_text=None,
@@ -3471,6 +3493,9 @@ def transcribe(model, audio, language, min_logprob, no_speech_prob,
     **根本没有任何重复片段**，报的就是"用户自己重复用了几个字"。
     那在产线上就是**把一句真字幕吃掉**，而且日志上看不出原因。
     """
+    # ⚠️ 5.101：先把语种标签换成 Whisper 码（`pt-BR` → `pt`）。faster-whisper 只认两字母码，
+    #    传标签会抛 ValueError —— 而且在**模型已经加载完**之后才抛（几十秒白等）。
+    language = whisper_language_code(language)
     # ⚠️ 静音闸必须在 normalize_peak **之前**判：归一化会把近乎静音的段放大到正常电平，
     #    之后再判就没有"安静"可言了（实战中正是它把噪声喂成了「中文字幕志愿者 李宗盛」）。
     skip = silence_skip_reason(audio, silence_floor)
