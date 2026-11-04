@@ -90,9 +90,13 @@ def main(argv=None):
     audio = load_audio(args.file) if args.file else synthetic_audio()
     seconds = len(audio) / 16000.0
     print(f"音频 {seconds:.1f}s（{'文件 ' + args.file if args.file else '2 秒正弦占位'}）")
-    print(f"语种 {args.language}；候选 {len(args.model or DEFAULT_CANDIDATES)} 个\n")
+    print(f"语种 {args.language}；候选 {len(args.model or DEFAULT_CANDIDATES)} 个")
+    print(f"端点 {engine_url()}\n")
 
     engine = ws.FunAsrEngine(None, None)
+
+    def engine_url():
+        return engine.ws_url()
     good = []
     for model in (args.model or DEFAULT_CANDIDATES):
         try:
@@ -108,12 +112,13 @@ def main(argv=None):
         elif "ModelNotFound" in reason or "model not found" in reason.lower():
             print(f"  ✗ {model}：这个模型名不存在（ModelNotFound）")
         elif "task-failed" in reason:
-            print(f"  ✗ {model}：task-failed → {reason[:120]}")
-            good.append((model, "reached-服务端"))     # 名字存在但别的问题
+            # ⚠️ 不截断：错误码能定性，错误信息才说清哪个参数不对
+            print(f"  ~ {model}：名字存在，但请求被拒 → {reason}")
+            good.append((model, "名字存在"))
         elif "超时" in reason:
-            print(f"  ? {model}：{reason[:110]}")
+            print(f"  ? {model}：{reason}")
         else:
-            print(f"  ✗ {model}：{reason[:120]}")
+            print(f"  ✗ {model}：{reason}")
 
     print("")
     if good:

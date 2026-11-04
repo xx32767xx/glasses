@@ -1680,12 +1680,30 @@ class TencentEngine(AsrEngine):
 #   → 收若干 result-generated（payload.output.sentence.text）→ task-finished
 # ⚠️ 所有字段名都集中在这一处；第一次真调用若报错，把 DashScope 的原文贴出来改这里就够。
 DASHSCOPE_WS_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
+# ⚠️ 5.90：实时语音识别的端点往往是**账号/工作空间专属**的域名
+#   （百炼控制台示例：wss://ws-xxxx.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference）。
+# 连公共域名的表现是：**鉴权通过、但模型报 InvalidParameter**（不是 ModelNotFound）
+#   —— 看起来像"参数错"，实际是"连错了端点"。所以这里允许用环境变量覆盖。
+DASHSCOPE_ENV_WS_URL = "DASHSCOPE_WS_URL"
 # ⚠️ 不同账号「模型广场」里可见的 ASR 模型**不一样**（实测：某个账号能看到
 # `fun-asr-flash-2026-06-15` / `qwen3-asr-flash-realtime` / `qwen-audio-3.0-asr-flash`，
 # 却**没有** `fun-asr-realtime`）。所以这里**不给默认值**：模型 ID 必须写在策略表里，
 # 代码不猜 —— 猜错的表现是"连接成功但 task-failed"，比缺参数更难查。
 DASHSCOPE_MODEL_HINTS = ("fun-asr-flash-2026-06-15", "qwen3-asr-flash-realtime",
                          "fun-asr-realtime", "paraformer-realtime-v2")
+
+
+def _describe_header(header):
+    """把服务端返回的 header 读成一句话：**错误码 + 完整错误信息**。
+
+    <p>为什么要拆开写：实测里错误码（ModelNotFound / InvalidParameter）就能定性，
+    而错误信息里才有"哪个参数不对"。截断成 120 字符会把后半句切掉。
+    """
+    code = str(header.get("error_code") or "")
+    message = str(header.get("error_message") or header.get("message") or "")
+    if code or message:
+        return f"[{code or '?'}] {message}".strip()
+    return json.dumps(header, ensure_ascii=False)
 
 
 class FunAsrEngine(AsrEngine):
@@ -1703,6 +1721,10 @@ class FunAsrEngine(AsrEngine):
 
     def describe(self, profile):
         return f"funasr:{profile.get('model') or '(未指定模型)'}"
+
+    def ws_url(self):
+        """用哪个 WebSocket 端点：环境变量优先（账号专属域名）。"""
+        return os.environ.get(DASHSCOPE_ENV_WS_URL, "").strip() or DASHSCOPE_WS_URL
 
     def load(self, profile, device):
         try:
@@ -1789,8 +1811,10 @@ class FunAsrEngine(AsrEngine):
                 sentences[key] = piece
 
         try:
-            with connect(DASHSCOPE_WS_URL, max_size=None, open_timeout=10,
+            with connect(self.ws_url(), max_size=None, open_timeout=10,
                          additional_headers={"Authorization": f"bearer {handle['api_key']}"}) as ws:
+                # (连上了就把实际用的端点记下来；出错时能分辨是不是连错地方)
+                used_url = self.ws_url()
                 ws.send(_json.dumps(run_task, ensure_ascii=False))
                 # ① 等 task-started（这一步漏了就 1007）
                 started = False
@@ -1803,8 +1827,8 @@ class FunAsrEngine(AsrEngine):
                         started = True
                     elif name == "task-failed":
                         return {"text": "", "empty": True,
-                                "reason": "DashScope task-failed（还没开始送音频）："
-                                          + _json.dumps(event.get("header") or {}, ensure_ascii=False),
+                                "reason": "DashScope task-failed（还没开始送音频，端点 " + used_url + "）："
+                                          + _describe_header(event.get("header") or {}),
                                 "resolved_language": language}
                     elif name == "result-generated":
                         collect(event)
@@ -1832,8 +1856,8 @@ class FunAsrEngine(AsrEngine):
                         break
                     elif name == "task-failed":
                         return {"text": "", "empty": True,
-                                "reason": "DashScope task-failed：" + _json.dumps(
-                                    event.get("header") or {}, ensure_ascii=False),
+                                "reason": "DashScope task-failed（端点 " + used_url + "）："
+                                          + _describe_header(event.get("header") or {}),
                                 "resolved_language": language}
         except Exception as error:                                  # noqa: BLE001
             return {"text": "", "empty": True,
