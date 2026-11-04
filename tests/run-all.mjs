@@ -51,6 +51,7 @@ import { runAndroidOrderSuite } from './android-order-suite.mjs'
 import { runTtsSuite } from './tts-suite.mjs'
 import { runTranslateSuite } from './translate-suite.mjs'
 import { runAsrPackSuite } from './asr-pack-suite.mjs'
+import { runAsrLossSuite } from './asr-loss-suite.mjs'
 import { runLive } from './live/run.mjs'
 
 let passed = 0
@@ -337,6 +338,13 @@ await runDiscoverSuite(helpers)
 
 heading('识别测试包（语体标签与 --set-path）')
 await runAsrPackSuite(helpers)
+
+// ── 7f. 「丢掉了多少话」的报告口径 ──────────────────────────────────────────
+// 这个工具读的是**自由格式日志**，正则一歪就会「看起来对、其实漏一半」
+// （第一版就是这样：3 条丢弃只认出 1 条）。所以用实机日志原文当夹具，两种写法都钉住。
+
+heading('丢话报告（三种丢弃写法 / 碎片分开算 / 多房间不串 / 认不出不算）')
+await runAsrLossSuite(helpers)
 
 // ── 8. 真实 Cordis 组合（真实 ToolRuntime + 真实执行流水线） ─────────────────
 
