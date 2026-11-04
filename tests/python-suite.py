@@ -2530,6 +2530,25 @@ def main():
     check("房间没提这个语种就回落到表",
           whisper_stream.resolve_asr_profile("pt-BR", cli, table, room)["model"] == "large-v3")
 
+    # 侧车「对这一段意味着什么」必须能一句话说清（2026-11 实机排查：侧车有、键不对，
+    # 日志里和"没有侧车"长得一模一样，只能人工翻文件）
+    describe = whisper_stream.describe_room_profile
+    check("没有侧车时说明按模型表", "没有侧车" in describe(None, "en-US"))
+    check("侧车命中时把命中的字段打出来", "命中 en-US" in describe(room, "en-US")
+          and "model=small" in describe(room, "en-US"))
+    mismatched = describe({"byLang": {"zh-CN": {"model": "tiny"}}}, "en-US")
+    check("侧车有内容但键不对时**明说没匹配上**，并列出它有哪些键",
+          "没匹配上" in mismatched and "zh-CN" in mismatched and "en-US" in mismatched, mismatched)
+    check("Whisper 的短码也能命中（en → en-US 那格）",
+          "命中" in describe({"byLang": {"en-US": {"model": "tiny"}}}, "en"))
+    check("空侧车不等于没匹配（说的是「侧车是空的」）",
+          "空的" in describe({"byLang": {}}, "en-US"), describe({"byLang": {}}, "en-US"))
+    notes = {}
+    whisper_stream._note_room_profile("room-1", "en-US", {"byLang": {"zh-CN": {"model": "tiny"}}}, notes)
+    first = notes.get("room-1", "")
+    whisper_stream._note_room_profile("room-1", "en-US", {"byLang": {"zh-CN": {"model": "tiny"}}}, notes)
+    check("同一状态只记一次（每段都打会把日志淹掉）", first != "" and notes["room-1"] == first)
+
     # 模型池：超过上限要淘汰最久没用的（而不是无限加载，也不是一直重载同一个）
     # 5.50 起池子按「引擎 + 模型」取用，所以这里用一个假引擎来验 LRU（不碰 whisper）。
     loaded = []

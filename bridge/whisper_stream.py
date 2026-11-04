@@ -1070,6 +1070,39 @@ def resolve_asr_profile(language, cli, table=None, room_profile=None):
     return profile
 
 
+def describe_room_profile(profile, language):
+    """把「房间侧车对**这一段**意味着什么」说成人话（没有侧车/键不匹配/命中 三种）。"""
+    if not isinstance(profile, dict):
+        return "没有侧车 → 按模型表"
+    by_lang = profile.get("byLang") if isinstance(profile.get("byLang"), dict) else {}
+    tag = language_tag(language) or (language if isinstance(language, str) else "")
+    for key in (tag, language):
+        entry = by_lang.get(key) if key else None
+        if isinstance(entry, dict) and (entry.get("model") or entry.get("engine")):
+            bits = [f"{name}={entry[name]}" for name in MODEL_FIELDS if entry.get(name)]
+            return f"命中 {key} → " + ", ".join(bits)
+    if not by_lang:
+        return "侧车是空的 → 按模型表"
+    # ⚠️ 这一条是 2026-11 实机排查最需要的一句：侧车里明明有东西，就是没有这一段要的语种。
+    #    没有它，日志里"没命中"和"没侧车"长得一模一样，只能靠人工去翻文件。
+    keys = ", ".join(sorted(by_lang))
+    return f"侧车里只有 [{keys}]，这一段要的是 {tag or language} → **没匹配上**，按模型表"
+
+
+def _note_room_profile(room, language, profile, notes):
+    """侧车状态发生变化时才打一行（每段都打会淹掉日志）。
+
+    `notes` 是调用方持有的 dict：room → 上一次已报告的说明。
+    """
+    if notes is None or not room:
+        return
+    note = describe_room_profile(profile, language)
+    if notes.get(room) == note:
+        return
+    notes[room] = note
+    print(f"[识别] 房间 {room} 的模型请求：{note}", file=sys.stderr, flush=True)
+
+
 def read_room_asr_profile(data_dir, room, cache=None):
     """读"这个房间想用哪些模型"的侧车（relay 按手机上报写的）。
 
@@ -1317,6 +1350,8 @@ def run_queue_consumer(args, np, pool):
     waited_ms_max = 0
     map_stamp = _stamp_of(args.model_map)
     room_cache = {}
+    # 侧车「对这一段的含义」只在变化时打一行（见 describe_room_profile）
+    room_notes = {}
     while True:
         # 模型表热加载：每轮看一眼 mtime，变了就重读 —— "插拔接口"要真的是插拔
         if args.model_map:
@@ -1344,6 +1379,7 @@ def run_queue_consumer(args, np, pool):
             # default → 命令行（见 resolve_strategy）。策略里既有模型也有切句参数；
             # 切句那半边是切句进程用的，这里只取模型这半边，但**名字要一路带下去**。
             room_profile = read_room_asr_profile(args.data_dir, meta.get("room"), room_cache)
+            _note_room_profile(meta.get("room"), language, room_profile, room_notes)
             strategy = resolve_strategy(language, {
                 # 命令行的"缺省档案"用**启动时真正加载的那一份**（可能来自表的 default），
                 # 否则 A/B 时会拿旧命令行值把表的结论盖掉
