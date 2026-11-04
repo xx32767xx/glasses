@@ -33,6 +33,7 @@ import contextlib
 import inspect
 import io
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -2682,6 +2683,17 @@ def main():
           and "def handle(utterance)" in main_src, "名字又撞上了")
     check("引擎分派用的是 startup_handle，而不是被覆盖的 handle",
           "startup_engine.transcribe(startup_handle," in main_src)
+    # ⚠️ 5.82：上面那条改了一半就提交过一次 —— `model = handle[0]` 还留着，
+    # 于是 parakeet 一跑就 UnboundLocalError。所以这条盯的是"**给 handle 赋值**"和
+    # "把 handle 当句柄用"这两种写法，而不是全文出现"handle"三个字（`handle(utterance)`
+    # 是正常的函数调用，注释里也会提到这个名字）。
+    reassigned = re.search(r"^\s*handle\s*=", main_src, re.M) is not None
+    # ⚠️ 用 \b：`startup_handle[0]` 里也含 "handle[0]" 这一段，直接子串匹配会误报
+    used_as_handle = (re.search(r"\bhandle\[0\]", main_src) is not None
+                      or re.search(r"\bisinstance\(handle,", main_src) is not None)
+    check("main() 里不再给 handle 赋值、也不再把它当句柄用（否则改名只改了一半）",
+          not reassigned and not used_as_handle,
+          f"reassigned={reassigned} used_as_handle={used_as_handle}")
 
     missing_sherpa = ""
     try:

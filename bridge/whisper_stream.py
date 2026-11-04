@@ -3400,8 +3400,11 @@ def main():
         if os.environ.get("LEION_DEBUG") == "1":
             raise
         return 2
-    model = handle[0] if isinstance(handle, tuple) else handle
-    startup_compute = handle[1] if isinstance(handle, tuple) and len(handle) == 2 else startup_compute
+    # whisper 的句柄是 (model, 实际精度)；其它引擎的句柄是别的形状（dict 等），原样留着。
+    model = startup_handle[0] if isinstance(startup_handle, tuple) else startup_handle
+    startup_compute = (startup_handle[1]
+                       if isinstance(startup_handle, tuple) and len(startup_handle) == 2
+                       else startup_compute)
     args.resolved_compute = startup_compute
     print("[whisper_stream] 模型就绪", file=sys.stderr)
 
