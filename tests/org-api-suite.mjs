@@ -17,6 +17,7 @@ import { resolveDataDir } from '../lib/store.mjs'
 import { addCategory, emptyCategories, loadLibrary, listLibraries, loadCategories, saveCategories } from '../lib/libraries.mjs'
 import { loadRequests } from '../lib/requests.mjs'
 import { handleOrg, loadSelection, selectionPath, writeAsrProfileSidecar } from '../relay/org-api.mjs'
+import { mergeStrategies, parseJsonLoose } from '../lib/asr-engines.mjs'
 
 const BASE = join(VAR_DIR, 'test', 'org-api-suite')
 const ENTRY = (zh, pt) => ({ zh, pt })
@@ -432,6 +433,44 @@ export async function runOrgApiSuite({ it, check, assert }) {
       JSON.stringify(bad))
     check('全都非法时不写文件（不能让上一条配置被半个请求覆盖）',
       JSON.parse(readFileSync(path, 'utf-8')).byLang['pt-BR'].engine === 'parakeet')
+  })
+
+  await it('策略表合并（只加不覆盖）：运维手改过的配置不能被工具抹掉', () => {
+    const existing = {
+      version: 2,
+      default: { model: 'large-v3' },
+      strategies: { 'zh-steady': { note: '本地调过的切句' } },
+      languages: { 'en-US': { strategy: 'default' } },
+    }
+    const additions = {
+      strategies: {
+        'zh-steady': { note: '示例表里的另一份' },
+        'en-turbo': { model: 'large-v3-turbo' },
+      },
+    }
+    const merged = mergeStrategies(existing, additions)
+    check('新策略会被加进去', merged.added.includes('en-turbo'), JSON.stringify(merged.added))
+    check('同名但内容不同 → 不覆盖（只报告冲突）',
+      merged.conflict.includes('zh-steady') && !merged.added.includes('zh-steady'),
+      JSON.stringify(merged.conflict))
+    check('原表里那条自定义内容原样保留',
+      merged.table.strategies['zh-steady'].note === '本地调过的切句',
+      JSON.stringify(merged.table.strategies['zh-steady']))
+    check('languages 等其它字段一个不动',
+      JSON.stringify(merged.table.default) === JSON.stringify(existing.default)
+      && merged.table.languages['en-US'].strategy === 'default')
+    check('不修改传入的现有表（纯函数）',
+      Object.keys(existing.strategies).length === 1, JSON.stringify(Object.keys(existing.strategies)))
+    const again = mergeStrategies(merged.table, additions)
+    check('再跑一次是幂等的（没有新增，只报"已存在且相同"）',
+      again.added.length === 0 && again.unchanged.includes('en-turbo'),
+      JSON.stringify([again.added, again.unchanged]))
+    check('没有策略表时也能合（整份创建）',
+      mergeStrategies(null, additions).added.length === 2)
+    // ⚠️ Windows 编辑器会写 BOM，JSON.parse 直接整份失败 —— 容错读并如实报告
+    const parsed = parseJsonLoose('\uFEFF{"a": 1}')
+    check('带 BOM 的 JSON 能读，而且会告诉你它带 BOM', parsed.value.a === 1 && parsed.hadBom === true)
+    check('没有 BOM 时如实报没有', parseJsonLoose('{"a": 1}').hadBom === false)
   })
 
   await rm(BASE, { recursive: true, force: true })
