@@ -1693,6 +1693,86 @@ DASHSCOPE_MODEL_HINTS = ("fun-asr-flash-2026-06-15", "qwen3-asr-flash-realtime",
                          "fun-asr-realtime", "paraformer-realtime-v2")
 
 
+def _mask_secret(value):
+    """把密钥遮成 `sk-ws-…L74yg（56 字符）` —— 够认出来，又不至于被截图带走。"""
+    text = str(value or "")
+    if len(text) <= 10:
+        return f"（{len(text)} 字符）"
+    return f"{text[:6]}…{text[-4:]}（{len(text)} 字符）"
+
+
+def normalize_api_key(raw, env_name="DASHSCOPE_API_KEY"):
+    """把环境变量里的密钥整理成**能放进 HTTP 头**的字符串，整理不了就大声报错。
+
+    <p>⚠️ 5.98 真实事故：`websockets.exceptions.InvalidHeaderValue:
+    invalid Authorization header` —— 一条第三方 traceback，看不出任何线索。
+    真因是**密钥里混进了换行**（长 key 复制时被折成两行，或者从 Windows 文件里
+    带着 `\\r\\n` 贴进来）。而 `.strip()` 只去两头，中间那个换行会一路送到
+    `Authorization` 头上，被 HTTP 头校验拒掉。
+
+    <p>为什么是"清掉空白"而不是"报错"：API Key 里**不存在**有意义的空白字符，
+    把它当错误拒绝，只会让人对着一个看起来完全正确的字符串发愁。真正没法救的是
+    非 ASCII 或控制字符 —— 那种必须点名说出是哪个字符、在第几位。
+
+    <p>顺带收拾三种最常见的粘贴事故（都不静默，都会说一句）：
+      · 连 `export DASHSCOPE_API_KEY=` 一起贴进来；
+      · 带着成对的引号；
+      · 带着 `bearer ` 前缀（我们在请求里会再加，重复了就是错）。
+    另外：如果值看起来是 `wss://…`，那是**把两个变量接反了** —— 直接点出来。
+
+    @returns (key, notes) —— notes 是"清洗时动过什么"的人话列表（没有就是空表）
+    """
+    text = "" if raw is None else str(raw)
+    notes = []
+    # ① 连 `export XXX=` 一起贴进来（最常见的复制方式）
+    if "=" in text:
+        head, _, tail = text.partition("=")
+        if head.strip().endswith(env_name) or head.strip().endswith(env_name.split("_")[-1]):
+            text = tail
+            notes.append(f"值里带着 `{head.strip()}=` 前缀，已去掉")
+    text = text.strip()
+    # ② 成对引号
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        text = text[1:-1]
+        notes.append("值外面包了一层引号，已去掉")
+    # ③ 头部 `bearer ` / `Bearer `（请求里会再加一次）
+    lowered = text.lower()
+    for prefix in ("bearer ", "bearer:"):
+        if lowered.startswith(prefix):
+            text = text[len(prefix):].lstrip()
+            notes.append(f"值里带着 `{prefix.strip()}` 前缀，已去掉（请求头里会自动加）")
+            break
+    # ④ 任何位置的空白/控制字符（换行最常见）：API Key 里不可能有意义
+    cleaned = "".join(ch for ch in text if not (ch.isspace() or ord(ch) < 0x21 or ord(ch) == 0x7f))
+    if cleaned != text:
+        how_many = len(text) - len(cleaned)
+        notes.append(f"值里有 {how_many} 个空白/控制字符（换行最常见），已去掉 —— "
+                     "HTTP 头放不下它们，会报 InvalidHeaderValue")
+        text = cleaned
+    if not text:
+        raise RuntimeError(
+            f"{env_name} 是空的（去掉空白之后什么都不剩）。"
+            "DashScope 的密钥要从控制台复制**完整一行**再 export："
+            f"export {env_name}='sk-…'")
+    # ⑤ 两个变量接反了：值看着像端点
+    if text.lower().startswith(("wss://", "ws://", "https://", "http://")):
+        raise RuntimeError(
+            f"{env_name} 里填的是**端点地址**（{text[:24]}…），不是密钥 —— "
+            "多半是把 DASHSCOPE_API_KEY 和 DASHSCOPE_WS_URL 接反了")
+    # ⑥ 剩下的必须都是可见 ASCII；否则点名说是哪个字符
+    for index, ch in enumerate(text):
+        if ord(ch) > 0x7e or ord(ch) < 0x21:
+            raise RuntimeError(
+                f"{env_name} 第 {index + 1} 个字符是 {ch!r}（U+{ord(ch):04X}），"
+                "它放不进 HTTP 头。请重新复制**一整行**密钥"
+                f"（现在看到的是 {_mask_secret(text)}）")
+    if not text.startswith("sk-"):
+        # 不拦（有些代理网关的 key 不是这个前缀），但要说 —— 多半是拿错了变量
+        notes.append(f"这个值不是以 `sk-` 开头（{_mask_secret(text)}），"
+                     f"确认一下 {env_name} 填的是 DashScope 的密钥而不是别的服务")
+    return text, notes
+
+
 def _describe_header(header):
     """把服务端返回的 header 读成一句话：**错误码 + 完整错误信息**。
 
@@ -1734,7 +1814,12 @@ class FunAsrEngine(AsrEngine):
                 "funasr 需要 websockets 包（DashScope 的实时识别是 WebSocket 协议）。"
                 f"当前环境导入失败：{type(error).__name__}: {error}。"
                 "装法（**由部署方执行**）：pip install websockets") from error
-        api_key = os.environ.get(self.ENV_KEY, "").strip()
+        # ⚠️ 5.98：不能只 `.strip()`。实测密钥被折成两行贴进来时，中间那个换行会一路
+        #    送到 Authorization 头上，报的是第三方 traceback（InvalidHeaderValue），
+        #    看不出任何线索。normalize_api_key 会清掉空白并在真救不了时点名说是哪个字符。
+        api_key, key_notes = normalize_api_key(os.environ.get(self.ENV_KEY, ""), self.ENV_KEY)
+        for note in key_notes:
+            print(f"[whisper_stream] ⚠️ {self.ENV_KEY}：{note}", file=sys.stderr)
         if not api_key:
             raise RuntimeError(
                 f"funasr 缺少 API Key：请设置环境变量 {self.ENV_KEY}"
@@ -1885,9 +1970,16 @@ class FunAsrEngine(AsrEngine):
             if partial:
                 return {"text": partial, "empty": False, "reason": None,
                         "resolved_language": language}
+            # ⚠️ 5.98：握手阶段的头校验失败必须是**人话**。第三方原始 traceback
+            #    （`InvalidHeaderValue: invalid Authorization header`）连"是密钥的问题"
+            #    都没说出口，现场只能靠猜。
+            hint = ""
+            if "Header" in type(error).__name__ or "invalid Authorization" in str(error):
+                hint = ("—— 这是 **API Key 里有 HTTP 头放不下的字符**（换行/控制字符最常见，"
+                        f"长 key 复制时被折成两行就会这样）。重设一个干净的 {self.ENV_KEY} 即可")
             return {"text": "", "empty": True,
                     "reason": (f"DashScope 请求失败：{type(error).__name__}: {error}"
-                               f"（最后收到的事件：{last_event or '无'}）"),
+                               f"（最后收到的事件：{last_event or '无'}）{hint}"),
                     "resolved_language": language}
         text = joined_text()
         return {"text": text, "empty": text == "",

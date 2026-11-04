@@ -2991,6 +2991,75 @@ def main():
     check("什么都没收到时仍然是失败（不能凭空造一句）",
           nothing["empty"] is True and "TimeoutError" in (nothing["reason"] or ""), str(nothing))
 
+    # ⚠️ 5.98 实机事故：websockets 抛 `InvalidHeaderValue: invalid Authorization header`
+    #    —— 一条看不出线索的第三方 traceback。真因是密钥被折成两行贴进来，
+    #    中间那个换行一路送到了 Authorization 头上。`.strip()` 只管两头，救不了它。
+    heading("云端密钥的清洗与体检（5.98）：头里放不下换行，报错也不能是第三方 traceback")
+    folded = "sk-testkey00\n01abcdef"
+    cleaned_key, key_notes = whisper_stream.normalize_api_key(folded)
+    check("折成两行的密钥：换行被清掉", cleaned_key == "sk-testkey0001abcdef", repr(cleaned_key))
+    check("清掉东西了就要说一句（不静默）", bool(key_notes), str(key_notes))
+    check("说的是「HTTP 头放不下」这个关键点",
+          any("InvalidHeaderValue" in one or "HTTP 头" in one for one in key_notes), str(key_notes))
+    check("干净的值不被改动、也不多嘴",
+          whisper_stream.normalize_api_key("sk-testkey0001abcdef") == ("sk-testkey0001abcdef", []),
+          str(whisper_stream.normalize_api_key("sk-testkey0001abcdef")))
+    check("连 `export XXX=` 一起贴进来也能救",
+          whisper_stream.normalize_api_key("export DASHSCOPE_API_KEY=sk-testkey0001")[0]
+          == "sk-testkey0001")
+    check("外面包了一层引号能救", whisper_stream.normalize_api_key("'sk-testkey0001'")[0] == "sk-testkey0001")
+    check("带着 bearer 前缀能救（请求头里会再加一次）",
+          whisper_stream.normalize_api_key("Bearer sk-testkey0001")[0] == "sk-testkey0001")
+    check("CRLF 也能救（Windows 文件里粘出来的）",
+          whisper_stream.normalize_api_key("sk-testkey0001\r\n")[0] == "sk-testkey0001")
+
+    def _explains(raw):
+        try:
+            whisper_stream.normalize_api_key(raw)
+        except RuntimeError as error:
+            return str(error)
+        return ""
+
+    wrong_way = _explains("wss://ws-43h6h5ll.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference")
+    check("把端点填进密钥变量时，直接说「接反了」", "接反" in wrong_way, wrong_way)
+    bad_char = _explains("sk-testkey00\u202601")
+    # "sk-testkey00" 是 12 个字符，所以 U+2026 在第 13 位（1 起数）
+    check("真有放不下的字符时点名是哪个字符、在第几位",
+          "U+2026" in bad_char and "第 13 个字符" in bad_char, bad_char)
+    check("报错里不泄露整条密钥（只给头尾）",
+          "01abcdef" not in _explains("sk-testkey00\u202601abcdef"),
+          _explains("sk-testkey00\u202601abcdef"))
+    empty_key = _explains("   \n  ")
+    check("空的值给的是「怎么填」而不是「头非法」", "export" in empty_key, empty_key)
+
+    import os as _os
+    import types as _types
+    stub_ws = _types.ModuleType("websockets")
+    stub_sync = _types.ModuleType("websockets.sync")
+    stub_client = _types.ModuleType("websockets.sync.client")
+    stub_sync.client = stub_client
+    stub_ws.sync = stub_sync
+    saved_modules = {name: sys.modules.get(name) for name in
+                     ("websockets", "websockets.sync", "websockets.sync.client")}
+    saved_key = _os.environ.get("DASHSCOPE_API_KEY")
+    sys.modules.update({"websockets": stub_ws, "websockets.sync": stub_sync,
+                        "websockets.sync.client": stub_client})
+    _os.environ["DASHSCOPE_API_KEY"] = "sk-testkey00\n01abcdef"
+    try:
+        handle = whisper_stream.FunAsrEngine(None, None).load({"model": "m"}, "cpu")
+    finally:
+        if saved_key is None:
+            _os.environ.pop("DASHSCOPE_API_KEY", None)
+        else:
+            _os.environ["DASHSCOPE_API_KEY"] = saved_key
+        for name, module in saved_modules.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+    check("引擎拿到的密钥已经是干净的（换行不会流到 Authorization 头）",
+          handle["api_key"] == "sk-testkey0001abcdef", repr(handle["api_key"]))
+
     # 表坏了：保留旧表，绝不能"读到半张表就当没有"
     broken_dir = Path(ROOT / "var" / "test" / "asr-model-map")
     broken_dir.mkdir(parents=True, exist_ok=True)

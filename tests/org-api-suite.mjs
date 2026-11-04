@@ -17,7 +17,7 @@ import { resolveDataDir } from '../lib/store.mjs'
 import { addCategory, emptyCategories, loadLibrary, listLibraries, loadCategories, saveCategories } from '../lib/libraries.mjs'
 import { loadRequests } from '../lib/requests.mjs'
 import { handleOrg, loadSelection, selectionPath, writeAsrProfileSidecar } from '../relay/org-api.mjs'
-import { mergeStrategies, parseJsonLoose, setLanguageModel } from '../lib/asr-engines.mjs'
+import { mergeStrategies, parseJsonLoose, setLanguageModel, describeKeyShape } from '../lib/asr-engines.mjs'
 
 const BASE = join(VAR_DIR, 'test', 'org-api-suite')
 const ENTRY = (zh, pt) => ({ zh, pt })
@@ -444,6 +444,38 @@ export async function runOrgApiSuite({ it, check, assert }) {
     const parsed = parseJsonLoose('\uFEFF{"a": 1}')
     check('带 BOM 的 JSON 能读，而且会告诉你它带 BOM', parsed.value.a === 1 && parsed.hadBom === true)
     check('没有 BOM 时如实报没有', parseJsonLoose('{"a": 1}').hadBom === false)
+  })
+
+  await it('云端密钥的体检（5.98）：只看形状、绝不打印密钥 —— 换行会让请求头非法', () => {
+    // 真实事故：长 key 复制时被折成两行 → 中间的换行送到 Authorization 头上 →
+    // websockets 抛 InvalidHeaderValue（一句看不出线索的第三方 traceback）。
+    const folded = describeKeyShape('sk-testkey00\n01abcdef', { expectPrefix: 'sk-' })
+    check('中间带换行的密钥判为不可用（这就是 InvalidHeaderValue 的成因）',
+      folded.ok === false && folded.problems.some((one) => one.includes('InvalidHeaderValue')),
+      JSON.stringify(folded))
+    check('点名说是第几个字符、哪一种（不让人对着一串看似正确的字发呆）',
+      folded.problems[0].includes('第 13 个字符') && folded.problems[0].includes('U+000A'),
+      folded.problems.join(' | '))
+    check('只看长度与前缀，不泄露密钥本体',
+      folded.shape === '21 字符，以 sk- 开头' && !JSON.stringify(folded).includes('abcdef'),
+      JSON.stringify(folded))
+    check('干净的密钥通过', describeKeyShape('sk-testkey0001', { expectPrefix: 'sk-' }).ok === true)
+    check('首尾换行只算提醒（识别侧会 strip，不该拦人）', (() => {
+      const one = describeKeyShape('sk-testkey0001\r\n', { expectPrefix: 'sk-' })
+      return one.ok === true && one.notes.length === 1
+    })())
+    check('把端点地址填进密钥变量时直接说接反了',
+      describeKeyShape('wss://ws-x.example.com/api-ws/v1/inference').problems
+        .some((one) => one.includes('接反')), '')
+    check('全角/省略号这类非 ASCII 字符也要点名（复制聊天窗口最常见的污染）',
+      describeKeyShape('sk-testkey00\u202601').problems.some((one) => one.includes('U+2026')), '')
+    check('只有空白 = 没设置那样报，而不是"已设置"', (() => {
+      const one = describeKeyShape('   ')
+      return one.ok === false && one.problems[0].includes('只有空白')
+    })())
+    check('没给前缀要求时不瞎猜开头（腾讯云 SecretId 是 AKID，不是 sk-）',
+      describeKeyShape('AKIDtest0001', { expectPrefix: 'AKID' }).notes.length === 0
+      && describeKeyShape('AKIDtest0001').notes.length === 0)
   })
 
   await it('服务器端换模型（setLanguageModel）：改表就生效，别动别的字段', () => {

@@ -22,7 +22,7 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from '
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { ENGINE_LANGUAGES, listEngineOptions, loadStrategyTable } from '../lib/asr-engines.mjs'
+import { ENGINE_LANGUAGES, describeKeyShape, listEngineOptions, loadStrategyTable } from '../lib/asr-engines.mjs'
 
 function parseArgs(argv) {
   const args = { dataDir: '', json: '' }
@@ -235,6 +235,16 @@ function main() {
     '/opt/leion/models/parakeet-tdt-0.6b-v2',
   ].filter((one) => one !== '')
   const paraDir = paraCandidates.find((one) => existsSync(one)) ?? ''
+  // ⚠️ 5.98：密钥"设了"不等于"能用"。长 key 复制时被折成两行 → 中间那个换行会一路
+  //    送到 Authorization 头上，实机报的是第三方 traceback（InvalidHeaderValue），
+  //    看不出任何线索。这里在**启动前**就看形状，只说长度与问题类型，不打印密钥。
+  const dashscopeKey = describeKeyShape(process.env.DASHSCOPE_API_KEY, { expectPrefix: 'sk-' })
+  const tencentId = describeKeyShape(process.env.TENCENT_ASR_SECRET_ID, { expectPrefix: 'AKID' })
+  const tencentKey = describeKeyShape(process.env.TENCENT_ASR_SECRET_KEY)
+  /** 一个密钥的体检结论摊成几段字：没设置就说没设置，设置了就说形状与问题（不打印密钥）。 */
+  const keyBits = (label, shape) => (shape.present
+    ? [`${label} ${shape.shape}`, ...shape.problems, ...shape.notes]
+    : [`缺 ${label}`])
   const engines = [
     {
       name: 'whisper',
@@ -260,20 +270,20 @@ function main() {
     },
     {
       name: 'funasr',
-      ready: hasModule('websockets') && Boolean(process.env.DASHSCOPE_API_KEY),
+      ready: hasModule('websockets') && dashscopeKey.ok,
       needs: [
         hasModule('websockets') ? 'websockets 已装' : '没装 websockets（pip install websockets）',
-        process.env.DASHSCOPE_API_KEY ? 'DASHSCOPE_API_KEY 已设置' : '缺 DASHSCOPE_API_KEY',
+        ...keyBits('DASHSCOPE_API_KEY', dashscopeKey),
       ].join('；'),
       detail: '云端·DashScope 实时（葡语）',
     },
     {
       name: 'tencent',
-      ready: Boolean(process.env.TENCENT_ASR_SECRET_ID && process.env.TENCENT_ASR_SECRET_KEY),
-      // ⚠️ 只说"有没有设置"，**绝不打印密钥**
+      ready: tencentId.ok && tencentKey.ok,
+      // ⚠️ 只说"有没有设置/形状对不对"，**绝不打印密钥**
       needs: [
-        process.env.TENCENT_ASR_SECRET_ID ? 'secretId 已设置' : '缺 TENCENT_ASR_SECRET_ID',
-        process.env.TENCENT_ASR_SECRET_KEY ? 'secretKey 已设置' : '缺 TENCENT_ASR_SECRET_KEY',
+        ...keyBits('secretId（TENCENT_ASR_SECRET_ID）', tencentId),
+        ...keyBits('secretKey（TENCENT_ASR_SECRET_KEY）', tencentKey),
         `region=${process.env.TENCENT_ASR_REGION ?? 'ap-shanghai（缺省）'}`,
       ].join('；'),
       detail: '云端·一句话识别',
