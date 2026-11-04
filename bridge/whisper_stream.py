@@ -378,6 +378,11 @@ def parse_args(argv=None):
     parser.add_argument("--try-queue", default=None,
                         help="【单独试识别】把队列目录里**现有**的段逐段跑一遍（只读，不删文件）—— "
                              "用的就是流水线真正产出的那些段，最接近现场")
+    parser.add_argument("--try-offset", type=float, default=0.0,
+                        help="--try-audio 从第几秒开始取（缺省 0）。分轨文件往往几分钟长，"
+                             "切一小段试更快，也更接近现场被切成的那一句")
+    parser.add_argument("--try-seconds", type=float, default=0.0,
+                        help="--try-audio 取多长（缺省 0 = 到结尾）")
     parser.add_argument("--max-models", type=int, default=2,
                         help="模型池最多同时留在显存里的份数（缺省 2；超了淘汰最久没用的）。"
                              "⚠️ 调大就是多吃显存，不够时表现是 OOM 崩溃而不是变慢")
@@ -2465,6 +2470,54 @@ def read_try_audio(path, rate_hint, np):
     return audio, rate, f"裸 PCM（{origin}）"
 
 
+def describe_try_sources(data_dir):
+    """队列空了以后，告诉人"还能拿什么试" —— 返回几行人话（不含任何写入）。
+
+    <p>为什么要这个：实测第一次跑 `asr-try` 时队列**已经空了**（识别消费者处理完就删段），
+    于是只得出一句"没有待处理的段"，人除了"再录一次"没别的办法。
+    而现场**本来就留着更原始的东西**：`<data-dir>/audio/<房间>/<说话人>.pcm`
+    —— relay 按说话人分流的原始音频。拿它切一段来试，比重新录一遍更接近事故现场。
+    """
+    lines = []
+    audio_root = os.path.join(str(data_dir or ""), "audio") if data_dir else ""
+    tracks = []
+    if audio_root and os.path.isdir(audio_root):
+        for room in sorted(os.listdir(audio_root)):
+            room_dir = os.path.join(audio_root, room)
+            if not os.path.isdir(room_dir):
+                continue
+            for name in sorted(os.listdir(room_dir)):
+                path = os.path.join(room_dir, name)
+                if not name.endswith(".pcm") or not os.path.isfile(path):
+                    continue
+                try:
+                    size = os.path.getsize(path)
+                    mtime = os.path.getmtime(path)
+                except OSError:
+                    continue
+                tracks.append((mtime, path, size, room, name))
+    tracks.sort(reverse=True)
+    if tracks:
+        lines.append("[try] 队列空了，但**原始分轨音频还在**（relay 按说话人写的那份）：")
+        for _mtime, path, size, room, name in tracks[:5]:
+            seconds = size / 2.0 / 16000.0        # 16k 单声道 16bit
+            lines.append(f"[try]   {path}（{seconds:.1f}s，房间 {room}，说话人 "
+                         f"{name[:-4]}）")
+        first = tracks[0][1]
+        first_seconds = tracks[0][2] / 2.0 / 16000.0
+        want = max(1, min(8, int(round(first_seconds))))
+        lines.append("[try] 从里面切一段来试（16k 单声道裸 PCM）：")
+        lines.append(f"[try]   node scripts/asr-try.mjs --pcm {first} --rate 16000 "
+                     f"--offset 0 --seconds {want} --lang pt-BR")
+    failed_dir = os.path.join(str(data_dir or ""), "queue", "asr", "failed") if data_dir else ""
+    if failed_dir and os.path.isdir(failed_dir):
+        stuck = [name for name in sorted(os.listdir(failed_dir)) if name.endswith(".json")]
+        if stuck:
+            lines.append(f"[try] ⚠️ 另外 queue/asr/failed/ 里有 {len(stuck)} 段"
+                         "（那几段是**转写时抛异常**被挪出来的，需要单独看原因）")
+    return lines
+
+
 def run_try(args, np, engines):
     """单独试识别：一段或一批音频直接进引擎。返回进程退出码。
 
@@ -2484,8 +2537,10 @@ def run_try(args, np, engines):
         bases = sorted(_pending_segments(args.try_queue))
         if not bases:
             print(f"[try] 队列 {args.try_queue} 里没有待处理的段"
-                  "（识别消费者会把处理完的段删掉；要复现请先让流水线跑一段）",
+                  "（识别消费者处理完就删段，所以空队列是正常的）",
                   file=sys.stderr)
+            for line in describe_try_sources(args.data_dir):
+                print(line, file=sys.stderr)
             return 3
         for base in bases:
             got = _read_segment(args.try_queue, base, np)
@@ -2500,6 +2555,20 @@ def run_try(args, np, engines):
         except Exception as error:                                  # noqa: BLE001
             print(f"[try] ✗ 读不了 {args.try_audio}：{type(error).__name__}: {error}", file=sys.stderr)
             return 2
+        # 分轨文件会越写越长，常常是几分钟；直接整段送去识别既慢又不是"一句"
+        total_seconds = len(audio) / float(rate)
+        offset = max(0.0, float(getattr(args, "try_offset", 0.0) or 0.0))
+        want = float(getattr(args, "try_seconds", 0.0) or 0.0)
+        if offset > 0 or want > 0:
+            start = int(offset * rate)
+            stop = int((offset + want) * rate) if want > 0 else len(audio)
+            audio = audio[start:stop]
+            if len(audio) == 0:
+                print(f"[try] ✗ --offset {offset:g}s 已经超出这段音频（总长 {total_seconds:.2f}s）",
+                      file=sys.stderr)
+                return 2
+            print(f"[try] 截取 {offset:g}s 起、{len(audio) / float(rate):.2f}s"
+                  f"（原长 {total_seconds:.2f}s）", file=sys.stderr)
         print(f"[try] 音频 {args.try_audio}：{origin}，{rate} Hz，"
               f"{len(audio) / float(rate):.2f}s", file=sys.stderr)
         items.append((os.path.basename(args.try_audio), {"lang": args.language, "rate": rate}, audio))
@@ -3934,7 +4003,10 @@ def main():
     # `--follow` 会因为没有 sounddevice 直接退出（而退出前那句错误信息又被管道
     # 下游的桥当成"识别结果"写进了收件箱，见文件末尾的警告）。
     # 只要有"从文件读"的来源就不要麦克风依赖（--follow / --follow-dir 都算）
-    need_audio = args.file is None and args.follow is None and args.follow_dir is None
+    # ⚠️ 5.99：试识别（--try-*）也**不吃麦克风** —— 漏了这两个条件，测试机上没有
+    #    sounddevice 时会以"缺少 sounddevice"退出，而它跟这次要测的事毫无关系。
+    need_audio = (args.file is None and args.follow is None and args.follow_dir is None
+                  and args.try_audio is None and args.try_queue is None)
     np, WhisperModel, sounddevice = load_dependencies(need_audio)
 
     # ── 生产者模式（--segment-dir）：只切句，不加载模型 ────────────────────────

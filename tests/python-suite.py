@@ -3177,6 +3177,37 @@ def main():
     audio_code = whisper_stream.run_try(_try_args(audio_file=str(wav_path), language="pt-BR"),
                                         np, {"funasr": ok_engine})
     check("--try-audio 走的是同一条路（单段也能试）", audio_code == 0, str(audio_code))
+
+    # 分轨文件（<data-dir>/audio/<房间>/<说话人>.pcm）往往几分钟长：
+    # 直接整段送去识别既慢又不是"一句"，所以要能**切一段**出来试。
+    sliced_args = _try_args(audio_file=str(wav_path), language="pt-BR")
+    sliced_args.try_offset = 0.1
+    sliced_args.try_seconds = 0.25
+    sliced = _FakeCloudEngine({"text": "bom dia", "empty": False, "reason": None,
+                               "resolved_language": "pt-BR"})
+    check("--offset/--seconds 真的切了（0.25s @16k = 4000 采样点）",
+          whisper_stream.run_try(sliced_args, np, {"funasr": sliced}) == 0
+          and sliced.seen[0]["samples"] == 4000, str(sliced.seen))
+    beyond_args = _try_args(audio_file=str(wav_path), language="pt-BR")
+    beyond_args.try_offset = 99.0
+    beyond_args.try_seconds = 1.0
+    check("--offset 超出音频长度时报错而不是送一段空音频进去",
+          whisper_stream.run_try(beyond_args, np, {"funasr": ok_engine}) == 2)
+
+    # 队列空是**正常**的（消费者处理完就删段），所以必须告诉人还能拿什么试
+    track_root = try_dir / "audio" / "room-T"
+    track_root.mkdir(parents=True, exist_ok=True)
+    (track_root / "test3.pcm").write_bytes(bytes(32000 * 5))       # 5 秒 16k 单声道
+    hints = "\n".join(whisper_stream.describe_try_sources(str(try_dir)))
+    check("队列空了会指出去试**原始分轨音频**（而不是只说「没有段」）",
+          "test3.pcm" in hints and "5.0s" in hints, hints)
+    check("并且直接给出能抄的命令（--pcm + --rate 16000 + --offset/--seconds）",
+          "--pcm" in hints and "--rate 16000" in hints and "--seconds" in hints, hints)
+    failed_dir = try_dir / "queue" / "asr" / "failed"
+    failed_dir.mkdir(parents=True, exist_ok=True)
+    (failed_dir / "1793-room-T-000.json").write_text("{}", encoding="utf-8")
+    check("queue/asr/failed/ 里有残留时也说出来（那是转写抛异常被挪出来的）",
+          "failed" in "\n".join(whisper_stream.describe_try_sources(str(try_dir))))
     check("没有段的队列会说清楚（不是静默退出）",
           whisper_stream.run_try(_try_args(queue_dir=str(try_dir / "nope")), np, {"funasr": ok_engine}) == 3)
     _shutil.rmtree(try_dir, ignore_errors=True)

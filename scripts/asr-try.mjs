@@ -35,6 +35,8 @@ function parseArgs(argv) {
     wav: '',
     pcm: '',
     rate: 0,
+    offset: 0,
+    seconds: 0,
     python: process.env.LEION_PYTHON || '',
     device: '',
     engine: '',
@@ -49,14 +51,19 @@ function parseArgs(argv) {
     else if (item === '--wav') args.wav = argv[index += 1] ?? ''
     else if (item === '--pcm') args.pcm = argv[index += 1] ?? ''
     else if (item === '--rate') args.rate = Number(argv[index += 1] ?? 0)
+    else if (item === '--offset') args.offset = Number(argv[index += 1] ?? 0)
+    else if (item === '--seconds') args.seconds = Number(argv[index += 1] ?? 0)
     else if (item === '--python') args.python = argv[index += 1] ?? ''
     else if (item === '--device') args.device = argv[index += 1] ?? ''
     else if (item === '--engine') args.engine = argv[index += 1] ?? ''
     else if (item === '--model') args.model = argv[index += 1] ?? ''
     else if (item === '--help' || item === '-h') {
       console.log('用法：node scripts/asr-try.mjs [--data-dir 目录] [--queue 队列目录] '
-        + '[--wav 文件 | --pcm 文件 --rate 16000] [--lang pt-BR] [--engine 引擎] [--model 模型]')
+        + '[--wav 文件 | --pcm 文件 --rate 16000] [--offset 秒] [--seconds 秒] '
+        + '[--lang pt-BR] [--engine 引擎] [--model 模型]')
       console.log('  不给 --queue/--wav/--pcm 时，默认试 <data-dir>/queue/asr 里现有的段')
+      console.log('  队列空了也没关系：它会列出 <data-dir>/audio/<房间>/<说话人>.pcm，'
+        + '切一段来试即可（--pcm … --rate 16000 --offset 0 --seconds 8）')
       process.exit(0)
     } else {
       console.error(`不认识的参数：${item}`)
@@ -93,12 +100,16 @@ function main() {
       return 2
     }
     command.push('--try-audio', args.pcm, '--try-rate', String(args.rate))
+    if (args.offset > 0) command.push('--try-offset', String(args.offset))
+    if (args.seconds > 0) command.push('--try-seconds', String(args.seconds))
   } else if (args.wav) {
     if (!existsSync(args.wav)) {
       console.error(`找不到 ${args.wav}`)
       return 2
     }
     command.push('--try-audio', args.wav)
+    if (args.offset > 0) command.push('--try-offset', String(args.offset))
+    if (args.seconds > 0) command.push('--try-seconds', String(args.seconds))
   } else {
     if (!existsSync(queueDir)) {
       console.error(`找不到队列目录 ${queueDir}\n`
