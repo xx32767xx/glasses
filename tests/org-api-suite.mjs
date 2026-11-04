@@ -17,7 +17,7 @@ import { resolveDataDir } from '../lib/store.mjs'
 import { addCategory, emptyCategories, loadLibrary, listLibraries, loadCategories, saveCategories } from '../lib/libraries.mjs'
 import { loadRequests } from '../lib/requests.mjs'
 import { handleOrg, loadSelection, selectionPath, writeAsrProfileSidecar } from '../relay/org-api.mjs'
-import { mergeStrategies, parseJsonLoose } from '../lib/asr-engines.mjs'
+import { mergeStrategies, parseJsonLoose, setLanguageModel } from '../lib/asr-engines.mjs'
 
 const BASE = join(VAR_DIR, 'test', 'org-api-suite')
 const ENTRY = (zh, pt) => ({ zh, pt })
@@ -537,6 +537,30 @@ export async function runOrgApiSuite({ it, check, assert }) {
     check('没给 log 回调时静默（测试/嵌入调用不该被强制打日志）',
       (await call({ method: 'GET', path: '/org/asr/engines?lang=en-US',
         user: 'alice@example.com', role: 'user' })).status === 200)
+  })
+
+  await it('服务器端换模型（setLanguageModel）：改表就生效，别动别的字段', () => {
+    const table = {
+      version: 2,
+      default: { model: 'large-v3', compute_type: 'float16' },
+      strategies: { 'en-fast': { segmentation: { silence_ms: 650 } } },
+      languages: { 'en-US': { strategy: 'default' }, 'zh-CN': 'small' },
+    }
+    const pinned = setLanguageModel(table, 'en-US', 'tiny')
+    check('钉上模型', pinned.table.languages['en-US'].model === 'tiny', JSON.stringify(pinned.table.languages))
+    check('原来的 strategy 字段还在（只加一个 model，不整行替换）',
+      pinned.table.languages['en-US'].strategy === 'default')
+    check('别的语种、策略表、default 一个不动',
+      pinned.table.languages['zh-CN'] === 'small'
+      && JSON.stringify(pinned.table.strategies) === JSON.stringify(table.strategies)
+      && JSON.stringify(pinned.table.default) === JSON.stringify(table.default))
+    check('不修改传入的表（纯函数）', table.languages['en-US'].model === undefined)
+    check('简写 `"zh-CN": "small"` 会被展开成对象再钉',
+      setLanguageModel(table, 'zh-CN', 'tiny').table.languages['zh-CN'].model === 'tiny')
+    const restored = setLanguageModel(pinned.table, 'en-US', '')
+    check('--model "" 还原成"跟策略表走"（删掉 model 字段）',
+      restored.table.languages['en-US'].model === undefined && restored.before === 'tiny',
+      JSON.stringify(restored))
   })
 
   await rm(BASE, { recursive: true, force: true })
