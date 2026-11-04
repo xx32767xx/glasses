@@ -93,6 +93,7 @@
     <string name="interp_engine_row">Modelo de reconhecimento: %1$s</string>
     <string name="interp_engine_default">padrão do servidor</string>
     <string name="interp_engine_same_as_default">(igual ao padrão do servidor — escolher isto não muda nada)</string>
+    <string name="interp_engine_not_for_lang">Modelo de reconhecimento: o que você escolheu para %1$s não vale aqui, usando %2$s (toque para escolher para este idioma)</string>
     <string name="interp_engine_loading">carregando…</string>
     <string name="interp_engine_pick_title">Qual modelo de reconhecimento nesta sessão?</string>
     <string name="interp_engine_option">%1$s — %2$s</string>

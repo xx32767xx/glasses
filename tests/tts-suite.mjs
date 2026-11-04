@@ -576,6 +576,11 @@ export async function runTtsSuite({ it, check }) {
       /applyEngineChoice[\s\S]{0,600}?stopInterpreting\(\)/.test(activity))
     check('服务器上没有的选项也要显示出来（藏起来会变成"功能坏了"）',
       /interp_engine_missing/.test(activity) && /interp_engine_unverified/.test(activity))
+    // 5.67：实机踩到 —— 选择按语种分开记，用户改了「对方说」的语言后就"失忆"了
+    check('识别引擎的选择**跨语种记住最后一次**（改语言不该忘）',
+      /PREF_ENGINE = "interpEngine"/.test(activity) && /putString\(PREF_ENGINE, strategy\)/.test(activity))
+    check('这门语言用不上时说清"为什么"，而不是默默显示服务器默认',
+      /interp_engine_not_for_lang/.test(activity))
     check('三语文案都在（中文 / 英文 / 葡语）',
       ['values', 'values-en', 'values-pt-rBR'].every((set) => readFileSync(join(ROOT, 'android', 'app',
         'src', 'main', 'res', set, 'strings.xml'), 'utf-8').includes('name="interp_engine_row"')))

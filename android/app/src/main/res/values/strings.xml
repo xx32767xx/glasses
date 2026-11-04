@@ -393,6 +393,7 @@
     <string name="interp_engine_row">识别引擎：%1$s</string>
     <string name="interp_engine_default">服务器默认</string>
     <string name="interp_engine_same_as_default">（＝服务器默认，选它看不出区别）</string>
+    <string name="interp_engine_not_for_lang">识别引擎：%1$s 那门语言选的模型这里用不上，按%2$s（点一下可以给当前语言重选）</string>
     <string name="interp_engine_loading">读取中…</string>
     <string name="interp_engine_pick_title">这一场用哪个识别模型</string>
     <string name="interp_engine_option">%1$s — %2$s</string>

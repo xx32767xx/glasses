@@ -496,13 +496,26 @@ public class InterpreterActivity extends android.app.Activity {
 
     // ── 识别引擎（5.58）────────────────────────────────────────────────────
 
-    /** 识别引擎的选择按**识别语种**记（对方说的语言）—— 换语言就是换一套可选项。 */
-    private String enginePrefKey() {
-        return "interpEngine_" + partner;
-    }
+    /**
+     * 识别引擎的选择**跨语种记住最后一次**（5.67）。
+     *
+     * <p>原来是按语种分别记（`interpEngine_<语种>`），实机一测就露馅：用户在
+     * 「对方说英语」时选了 tiny，随后改了语言，写侧车时读的是**新语种**那一格（空的），
+     * 于是上报"无"、日志显示"（无，按模型表）" —— 用户会认为"我选过啊"。
+     *
+     * <p>⚠️ 用不上时**不硬顶**：`find()` 找不到就退回服务器默认（例如纯英文模型出现在
+     * 中文那一栏），并单独记下当初是按哪个语种选的，好在界面上说清"为什么不生效"。
+     */
+    private static final String PREF_ENGINE = "interpEngine";
+    private static final String PREF_ENGINE_LANG = "interpEngineLang";
 
     private String savedEngineStrategy() {
-        String value = getSharedPreferences(PREFS, MODE_PRIVATE).getString(enginePrefKey(), "");
+        String value = getSharedPreferences(PREFS, MODE_PRIVATE).getString(PREF_ENGINE, "");
+        return value == null ? "" : value;
+    }
+
+    private String savedEngineLang() {
+        String value = getSharedPreferences(PREFS, MODE_PRIVATE).getString(PREF_ENGINE_LANG, "");
         return value == null ? "" : value;
     }
 
@@ -573,6 +586,16 @@ public class InterpreterActivity extends android.app.Activity {
             return;
         }
         AsrEngineOptions.Option picked = engineChoice();
+        String chosen = savedEngineStrategy();
+        // 跨语种记住的选择，在**这门语言**用不上时要说清楚。
+        // 不说的话用户看到"服务器默认"会以为"我明明选过 tiny，怎么又回去了"（实机踩过）。
+        if (!chosen.isEmpty() && engineOptions.find(chosen) == null
+                && !savedEngineLang().isEmpty() && !savedEngineLang().equals(partner)) {
+            engineView.setText(getString(R.string.interp_engine_not_for_lang,
+                    langText(savedEngineLang()),
+                    picked == null ? getString(R.string.interp_engine_default) : picked.label));
+            return;
+        }
         engineView.setText(getString(R.string.interp_engine_row,
                 picked == null ? getString(R.string.interp_engine_default) : picked.label));
     }
@@ -630,7 +653,10 @@ public class InterpreterActivity extends android.app.Activity {
     private void applyEngineChoice(String strategy) {
         String before = savedEngineStrategy();
         if (before.equals(strategy)) return;
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(enginePrefKey(), strategy).apply();
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putString(PREF_ENGINE, strategy)
+                .putString(PREF_ENGINE_LANG, partner)
+                .apply();
         rebuildRouter();
         refreshEngineRow();
         AsrEngineOptions.Option picked = engineChoice();
