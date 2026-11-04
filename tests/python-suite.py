@@ -34,6 +34,7 @@ import inspect
 import io
 import json
 import types
+import time
 import re
 from pathlib import Path
 
@@ -2983,13 +2984,30 @@ def main():
                 else:
                     sys.modules[name] = module
 
+    # ⚠️ 5.99 实机事故：有些账号/模型**只回 result-generated、不回 task-finished**，
+    #    原实现于是每段都白等满 30 秒 —— 2 秒的音频等 30 秒，排队下去现场就是"一直没有输出"。
+    #    现在判据是"拿到文本 + 安静 CLOUD_QUIET_FLUSH_S 秒"，所以必须**快**。
+    quiet_started = time.perf_counter()
     kept = _run_timeout([_event("task-started"),
                          _event("result-generated", {"sentence_id": 1, "text": "olá, tudo bem?"})], 3)
+    quiet_elapsed = time.perf_counter() - quiet_started
     check("超时但已经收到文本 → 照样返回文字（不把识别结果丢掉）",
           kept["empty"] is False and kept["text"] == "olá, tudo bem?", str(kept))
+    check("拿到文本后不干等 30 秒（安静 1.2s 就收工）",
+          quiet_elapsed < 8.0, f"耗时 {quiet_elapsed:.2f}s")
     nothing = _run_timeout([], 1)
     check("什么都没收到时仍然是失败（不能凭空造一句）",
-          nothing["empty"] is True and "TimeoutError" in (nothing["reason"] or ""), str(nothing))
+          nothing["empty"] is True and "task-started" in (nothing["reason"] or ""), str(nothing))
+    # 一个字的文本都没收到时，仍要等到"服务端彻底不给东西"的上限才收工 ——
+    # 这里把上限临时改小，免得测试真的等 30 秒（判据本身不变）
+    saved_wait = whisper_stream.CLOUD_RESULT_WAIT_S
+    whisper_stream.CLOUD_RESULT_WAIT_S = 0.4
+    try:
+        silent_finish = _run_timeout([_event("task-started")], 2)
+    finally:
+        whisper_stream.CLOUD_RESULT_WAIT_S = saved_wait
+    check("没一个字、也没等到 task-finished → 原因说清是「等不到结束」而不是「没出字」",
+          "task-finished" in (silent_finish["reason"] or ""), str(silent_finish))
 
     # ⚠️ 5.98 实机事故：websockets 抛 `InvalidHeaderValue: invalid Authorization header`
     #    —— 一条看不出线索的第三方 traceback。真因是密钥被折成两行贴进来，
@@ -3046,7 +3064,7 @@ def main():
                         "websockets.sync.client": stub_client})
     _os.environ["DASHSCOPE_API_KEY"] = "sk-testkey00\n01abcdef"
     try:
-        handle = whisper_stream.FunAsrEngine(None, None).load({"model": "m"}, "cpu")
+        key_handle = whisper_stream.FunAsrEngine(None, None).load({"model": "m"}, "cpu")
     finally:
         if saved_key is None:
             _os.environ.pop("DASHSCOPE_API_KEY", None)
@@ -3058,7 +3076,110 @@ def main():
             else:
                 sys.modules[name] = module
     check("引擎拿到的密钥已经是干净的（换行不会流到 Authorization 头）",
-          handle["api_key"] == "sk-testkey0001abcdef", repr(handle["api_key"]))
+          key_handle["api_key"] == "sk-testkey0001abcdef", repr(key_handle["api_key"]))
+
+    # ⚠️ 5.99 用户原话：「还是没有输出 我建议单独测试识别功能」。
+    #    这话对：手机上说话到字幕之间有四层（转发/切句/识别/大脑），哪层坏了都是"没字幕"。
+    #    这个模式把中间几层拆掉，只回答"这份引擎 + 这段音频，出不出字、多久、报什么错"。
+    heading("单独试识别（5.99）：一段音频直接进引擎，把「识别坏了」和「链路坏了」分开")
+    import shutil as _shutil
+    try_dir = Path(ROOT / "var" / "test" / "try-asr")
+    _shutil.rmtree(try_dir, ignore_errors=True)
+    try_dir.mkdir(parents=True, exist_ok=True)
+
+    try_tone = np.zeros(8000, dtype=np.float32)
+    try_tone[1000:3000] = 0.2
+    wav_path = try_dir / "sample.wav"
+    import wave as _wave
+    with _wave.open(str(wav_path), "wb") as _w:
+        _w.setnchannels(1)
+        _w.setsampwidth(2)
+        _w.setframerate(16000)
+        _w.writeframes((np.clip(try_tone, -1, 1) * 32767).astype(np.int16).tobytes())
+    wav_audio, wav_rate, wav_origin = whisper_stream.read_try_audio(str(wav_path), None, np)
+    check("wav 能读，采样率按文件头", wav_rate == 16000 and abs(len(wav_audio) - 8000) < 2, wav_origin)
+    raw_path = try_dir / "sample.pcm"
+    raw_path.write_bytes((np.clip(try_tone, -1, 1) * 32767).astype(np.int16).tobytes())
+    raw_audio, raw_rate, raw_origin = whisper_stream.read_try_audio(str(raw_path), 16000, np)
+    check("裸 PCM 按 --try-rate 读", raw_rate == 16000 and len(raw_audio) == 8000, raw_origin)
+    (try_dir / "sample.rate").write_text("16000", encoding="utf-8")
+    check("裸 PCM 也能读同名 .rate 旁文件", whisper_stream.read_try_audio(str(raw_path), None, np)[1] == 16000)
+    (try_dir / "sample.rate").unlink()
+    try:
+        whisper_stream.read_try_audio(str(raw_path), None, np)
+        no_rate_error = ""
+    except RuntimeError as error:
+        no_rate_error = str(error)
+    check("既没 --try-rate 也没旁文件时**报错而不是猜**（猜错采样率=一堆乱码）",
+          "--try-rate" in no_rate_error, no_rate_error)
+
+    class _FakeCloudEngine:
+        """假引擎：只为把 run_try 那圈循环跑通（不依赖 websockets / faster-whisper）。"""
+        key = "funasr"
+
+        def __init__(self, outcome):
+            self.outcome = outcome
+            self.seen = []
+
+        def describe(self, profile):
+            return f"fake:{profile.get('model')}"
+
+        def needs_local_model(self, profile=None):
+            return False
+
+        def load(self, profile, device):
+            return {"ok": True}
+
+        def transcribe(self, handle, audio, language, profile=None):
+            self.seen.append({"language": language, "strategy": profile.get("strategy"),
+                              "model": profile.get("model"), "samples": len(audio)})
+            return dict(self.outcome)
+
+    def _try_args(queue_dir=None, audio_file=None, rate=None, language=None):
+        return types.SimpleNamespace(
+            asr_table={
+                "default": {"model": "large-v3"},
+                "strategies": {"pt-funasr": {"engine": "funasr", "model": "fun-asr-realtime"}},
+                "languages": {"pt-BR": {"strategy": "pt-funasr"}},
+            },
+            max_models=2, device="cpu", data_dir=None, language=language,
+            try_queue=queue_dir, try_audio=audio_file, try_rate=rate, samplerate=16000,
+            model="large-v3", compute_type="int8", beam_size=5, engine=None,
+            startup_model="large-v3", resolved_compute="int8")
+
+    seg_dir = try_dir / "queue"
+    seg_dir.mkdir(parents=True, exist_ok=True)
+    seg_name = whisper_stream._write_segment(str(seg_dir), "room-T", 16000, try_tone, np,
+                                             language="pt-BR", strategy="pt-funasr")
+    ok_engine = _FakeCloudEngine({"text": "bom dia", "empty": False, "reason": None,
+                                  "resolved_language": "pt-BR"})
+    ok_code = whisper_stream.run_try(_try_args(queue_dir=str(seg_dir)), np, {"funasr": ok_engine})
+    check("队列里的段能单独跑：出字 → 退出码 0", ok_code == 0, str(ok_code))
+    check("段自带的语种与策略真的生效（否则「单独测」会得出和现场不同的结论）",
+          ok_engine.seen and ok_engine.seen[0]["language"] == "pt-BR"
+          and ok_engine.seen[0]["strategy"] == "pt-funasr"
+          and ok_engine.seen[0]["model"] == "fun-asr-realtime", str(ok_engine.seen))
+    check("试测是**只读**的：队列里的段不会被删（现场那几段还能再跑一次）",
+          (seg_dir / f"{seg_name}.pcm").exists() and (seg_dir / f"{seg_name}.json").exists())
+
+    empty_engine = _FakeCloudEngine({"text": "", "empty": True, "reason": "Fun-ASR 没出字",
+                                     "resolved_language": "pt-BR"})
+    empty_code = whisper_stream.run_try(_try_args(queue_dir=str(seg_dir)), np, {"funasr": empty_engine})
+    check("引擎正常但没出字 → 退出码 3（和「根本没跑到识别」区分开）", empty_code == 3, str(empty_code))
+
+    class _BrokenEngine(_FakeCloudEngine):
+        def transcribe(self, handle, audio, language, profile=None):
+            raise RuntimeError("boom")
+
+    broken_code = whisper_stream.run_try(_try_args(queue_dir=str(seg_dir)), np, {"funasr": _BrokenEngine({})})
+    check("引擎抛异常 → 退出码 2（配置/加载层面的问题）", broken_code == 2, str(broken_code))
+
+    audio_code = whisper_stream.run_try(_try_args(audio_file=str(wav_path), language="pt-BR"),
+                                        np, {"funasr": ok_engine})
+    check("--try-audio 走的是同一条路（单段也能试）", audio_code == 0, str(audio_code))
+    check("没有段的队列会说清楚（不是静默退出）",
+          whisper_stream.run_try(_try_args(queue_dir=str(try_dir / "nope")), np, {"funasr": ok_engine}) == 3)
+    _shutil.rmtree(try_dir, ignore_errors=True)
 
     # 表坏了：保留旧表，绝不能"读到半张表就当没有"
     broken_dir = Path(ROOT / "var" / "test" / "asr-model-map")

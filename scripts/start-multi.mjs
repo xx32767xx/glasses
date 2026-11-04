@@ -996,6 +996,8 @@ export async function main(argv = process.argv.slice(2)) {
       console.log(`  识别       一份模型（全局唯一）${options.whisperModel} / ${options.device} / ${options.computeType}`)
       console.log(`  队列       ${options.queueDir.replace(/\\/g, '/')}/  ← 每场一个切句进程写这里（切句不加载模型）`)
       console.log(`  队列深度   每 ${options.depthReportSec}s 报一次（**不丢数据**：积压只报不丢）`)
+      console.log(`  单独试识别 node scripts/asr-try.mjs --data-dir ${options.dataDir.replace(/\\/g, '/')}`
+        + '  ← 没字幕时先到这里：它把转发/切句/大脑全拆掉，只看"引擎 + 这段音频"出不出字')
     } else {
       console.log(`  识别模型   ${options.whisperModel} / ${options.device} / ${options.computeType}`)
     }

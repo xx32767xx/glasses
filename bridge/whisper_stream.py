@@ -368,6 +368,16 @@ def parse_args(argv=None):
     parser.add_argument("--data-dir", default=None,
                         help="数据目录（5.41）：用来读 `<data-dir>/asr-profiles/<房间>.json`"
                              "（手机开会话时上报的模型/策略请求）。切句端与识别端都要给才能用房间覆盖")
+    parser.add_argument("--try-audio", default=None,
+                        help="【单独试识别】只跑这一段音频（wav，或配合 --try-rate 给裸 PCM），"
+                             "直接进引擎 —— 不经切句、不经队列、不经大脑。用来把"
+                             "\"识别坏了\"与\"链路坏了\"分开")
+    parser.add_argument("--try-rate", type=int, default=None,
+                        help="--try-audio 是裸 PCM 时它的采样率（队列里的段就是这种）。"
+                             "不给会去找同名 .rate 旁文件，再不行按 --samplerate")
+    parser.add_argument("--try-queue", default=None,
+                        help="【单独试识别】把队列目录里**现有**的段逐段跑一遍（只读，不删文件）—— "
+                             "用的就是流水线真正产出的那些段，最接近现场")
     parser.add_argument("--max-models", type=int, default=2,
                         help="模型池最多同时留在显存里的份数（缺省 2；超了淘汰最久没用的）。"
                              "⚠️ 调大就是多吃显存，不够时表现是 OOM 崩溃而不是变慢")
@@ -1691,6 +1701,15 @@ DASHSCOPE_ENV_WS_URL = "DASHSCOPE_WS_URL"
 # 代码不猜 —— 猜错的表现是"连接成功但 task-failed"，比缺参数更难查。
 DASHSCOPE_MODEL_HINTS = ("fun-asr-flash-2026-06-15", "qwen3-asr-flash-realtime",
                          "fun-asr-realtime", "paraformer-realtime-v2")
+# ⚠️ 5.99：收到最后一个 result-generated 之后，**多久没新事件就算说完了**。
+#   为什么要这个：有些账号/模型只回 result-generated、**不回 task-finished**，
+#   照原样等满 30 秒上限的话，每段话都要白等 30 秒 —— 2 秒的音频、30 秒的延迟，
+#   现场表现就是"一直没有输出"。判据改成"安静了没有"，比"等它说结束"可靠。
+#   取 1.2 秒：中文/葡语的实时识别增量间隔通常 200~600 ms，1.2 秒足够区分
+#   "还在出字"和"说完了"；太小会把一句话截成两半（那样反而更糟）。
+CLOUD_QUIET_FLUSH_S = 1.2
+# 一个字都没收到时最多等多久（这是"服务端彻底不给东西"的上限，不是常态等待）
+CLOUD_RESULT_WAIT_S = 30.0
 
 
 def _mask_secret(value):
@@ -1799,6 +1818,11 @@ class FunAsrEngine(AsrEngine):
     def __init__(self, model_class, args):
         self.args = args
 
+    def __init__(self, model_class, args):
+        self.args = args
+        # 5.99：只在**第一次**遇到"没回 task-finished"时打一行说明，之后不再刷屏
+        self._noted_quiet_flush = False
+
     def describe(self, profile):
         return f"funasr:{profile.get('model') or '(未指定模型)'}"
 
@@ -1877,6 +1901,9 @@ class FunAsrEngine(AsrEngine):
         sentences = {}
         order = []
         last_event = ""
+        # 最后一次收到 result-generated 的时刻（5.99：用来判断"安静了没有"，而不是干等）
+        last_text_at = None
+        saw_finished = False
 
         def parse(message):
             """返回 (event_name, event_dict)；非 JSON 返回 ("", {})。"""
@@ -1917,7 +1944,12 @@ class FunAsrEngine(AsrEngine):
                 started = False
                 deadline = time.time() + 15
                 while time.time() < deadline and not started:
-                    name, event = parse(ws.recv(timeout=max(1.0, deadline - time.time())))
+                    try:
+                        name, event = parse(ws.recv(timeout=max(0.2, deadline - time.time())))
+                    except TimeoutError:
+                        # 我们给的等待到期了 —— 交给下面那句人话去解释，
+                        # 别让 TimeoutError 冒到外层的"请求失败"里（那样看不出是卡在哪一步）
+                        break
                     if name:
                         last_event = name
                     if name == "task-started":
@@ -1948,14 +1980,45 @@ class FunAsrEngine(AsrEngine):
                                      "payload": {"input": {}}},
                                     ensure_ascii=False))
                 # ④ 收结果直到 task-finished
-                deadline = time.time() + 30
-                while time.time() < deadline:
-                    name, event = parse(ws.recv(timeout=max(1.0, deadline - time.time())))
+                #
+                # ⚠️ 5.99：**不能干等 30 秒**。实测有些账号/模型只回 `result-generated`
+                #    就再也没有 `task-finished`，于是每一段都要等满 30 秒才返回 ——
+                #    2 秒的音频等 30 秒，一段接一段排队，现场看到的就是"一直没有输出"。
+                #    正确判据不是"等它说完"，而是"**已经拿到文本，而且安静下来了**"：
+                #    收到过结果之后，只要连续 CLOUD_QUIET_FLUSH_S 秒没有新事件就收工；
+                #    一个字都没收到时才继续等满上限（那种确实是服务端没给东西）。
+                overall_deadline = time.time() + CLOUD_RESULT_WAIT_S
+                quiet_s = CLOUD_QUIET_FLUSH_S
+                saw_finished = False
+                while True:
+                    now = time.time()
+                    if now >= overall_deadline:
+                        break
+                    got_text = last_text_at is not None and joined_text() != ""
+                    budget = overall_deadline - now
+                    if got_text:
+                        left = last_text_at + quiet_s - now
+                        if left <= 0:
+                            # 有文本 + 安静够了 → 这就是最终结果，立刻返回
+                            if not self._noted_quiet_flush:
+                                self._noted_quiet_flush = True
+                                print(f"[识别] 云端没回 task-finished，但已经拿到文本；"
+                                      f"按「安静 {quiet_s:g}s 就收工」处理（不再等满 30s）",
+                                      file=sys.stderr, flush=True)
+                            break
+                        budget = min(budget, left)
+                    try:
+                        name, event = parse(ws.recv(timeout=max(0.05, budget)))
+                    except TimeoutError:
+                        # 有文本就让它转一圈（下一轮 left<=0 → break）；没文本继续等
+                        continue
                     if name:
                         last_event = name
                     if name == "result-generated":
                         collect(event)
+                        last_text_at = time.time()
                     elif name == "task-finished":
+                        saw_finished = True
                         break
                     elif name == "task-failed":
                         return {"text": "", "empty": True,
@@ -1982,8 +2045,13 @@ class FunAsrEngine(AsrEngine):
                                f"（最后收到的事件：{last_event or '无'}）{hint}"),
                     "resolved_language": language}
         text = joined_text()
-        return {"text": text, "empty": text == "",
-                "reason": None if text else "Fun-ASR 没出字", "resolved_language": language}
+        # 没出字时说清是"服务端说完了但没内容"还是"根本没等到结束"——
+        # 这两种的下一步完全不同（前者查音频/模型，后者查协议/网络）
+        if text:
+            return {"text": text, "empty": False, "reason": None, "resolved_language": language}
+        reason = ("Fun-ASR 没出字" if saw_finished
+                  else f"等不到 task-finished，且一个字都没收到（最后收到 {last_event or '什么都没有'}）")
+        return {"text": "", "empty": True, "reason": reason, "resolved_language": language}
 
 
 def build_engines(model_class, args):
@@ -2180,11 +2248,15 @@ def run_queue_consumer(args, np, pool):
                           file=sys.stderr, flush=True)
                 continue
             # 5.50：转写交给这一策略选中的**引擎**。whisper 只是其中一个实现。
+            # ⚠️ 5.99：顺手掐时间。原来日志里那个 `1.7s` 是**音频长度**，不是耗时 ——
+            # 云端某段卡了 30 秒时，日志照样显示"1.7s"，于是"字幕为什么不来"根本看不出来。
+            transcribe_started = time.perf_counter()
             try:
                 outcome = resolve_engine(profile, pool.engines).transcribe(handle, audio, language, profile)
             except Exception as error:      # noqa: BLE001
                 print(f"[识别] 引擎 {profile.get('engine')} 转写这一段失败"
-                      f"（策略 {strategyName}）：{type(error).__name__}: {error}",
+                      f"（策略 {strategyName}，耗时 {time.perf_counter() - transcribe_started:.2f}s）："
+                      f"{type(error).__name__}: {error}",
                       file=sys.stderr, flush=True)
                 failed_dir = os.path.join(args.queue_dir, "failed")
                 try:
@@ -2200,13 +2272,15 @@ def run_queue_consumer(args, np, pool):
             empty = outcome.get("empty", False)
             reason = outcome.get("reason")
             resolved_language = outcome.get("resolved_language")
+            elapsed = time.perf_counter() - transcribe_started
             override_beam = profile.get("beam_size")
             if isinstance(handle, tuple) and len(handle) == 2 and isinstance(handle[1], str):
                 pass            # whisper 句柄：(model, 实际精度)，beam 由引擎从 args 读
             _ = override_beam
             seconds = len(audio) / float(meta.get("rate") or args.samplerate)
             if empty:
-                print(f"  [丢弃 {seconds:.1f}s，房间 {meta.get('room')}：{reason or '没有内容'}]",
+                print(f"  [丢弃 {seconds:.1f}s，房间 {meta.get('room')}：{reason or '没有内容'}"
+                      f"（耗时 {elapsed:.2f}s）]",
                       file=sys.stderr, flush=True)
                 # 5.72：连丢到第 3 段就喊一次（只在"电平偏低"那种上喊，见 LevelWatch）
                 advisory = level_watch.note(meta.get("room"), reason)
@@ -2241,7 +2315,8 @@ def run_queue_consumer(args, np, pool):
                 units = spoken_units(text)
                 print(f"[识别] 房间 {meta.get('room')} 策略 {strategyName}"
                       f"（模型 {profile.get('model')}，切句由 {cutStrategy or '旧版段（无策略名）'}）"
-                      f" → {seconds:.1f}s 出{'字' if has_cjk(text) else '词'} {units}",
+                      f" → {seconds:.1f}s 出{'字' if has_cjk(text) else '词'} {units}"
+                      f"，耗时 {elapsed:.2f}s",
                       file=sys.stderr, flush=True)
             processed += 1
             # ⚠️ 处理完就删：队列目录同时是"待处理清单"，删掉才算消费完。
@@ -2324,6 +2399,180 @@ def describe_asr_table(table, cli=None):
                 label += f"（⚠️ 表里没有策略 '{name}'，实际走的是它继承的那几层）"
             parts.append(label)
     return "；".join(parts) if parts else "（表是空的）"
+
+
+# ── 单独试识别（5.99）────────────────────────────────────────────────────────
+#
+# 用户原话：「还是没有输出 我建议单独测试识别功能」。
+# 这话是对的 —— 现场那条链路有四个环节（手机→转发→切句→识别→大脑），
+# 任何一环坏了表现出来都是"没字幕"，而从日志上很难一眼看出是哪一环。
+# 这个模式把中间三层全部拆掉：**一段音频直接进引擎**，只回答一个问题 ——
+# "这份引擎+模型+这份音频，到底出不出字，多久出，报什么错"。
+#
+# 两种输入：
+#   --try-queue <队列目录>  把流水线**真正产出**的那些段逐段跑（只读，不删）
+#   --try-audio <文件>      跑任意一段（wav，或 --try-rate 给裸 PCM）
+# 两者都按**每一段自己的语种**走完整的 resolve_strategy，所以房间侧车/表/languages
+# 这几层照样生效 —— 否则"单独测"会得出与实际不同的结论，那比不测更糟。
+
+TRY_RAW_SUFFIXES = (".pcm", ".raw", ".s16", ".sw")
+
+
+def read_try_audio(path, rate_hint, np):
+    """读一段音频成 float32 单声道，返回 `(audio, rate, 来源说明)`。
+
+    <p>wav 按头里的采样率；裸 PCM 按 `--try-rate` → 同名 `.rate` 旁文件 → 报错让
+    人明说，**不猜** —— 猜错采样率的表现是"识别出一堆乱码"，而人会以为模型坏了。
+    """
+    import wave
+
+    lowered = str(path).lower()
+    if lowered.endswith(".wav"):
+        with wave.open(path, "rb") as wav:
+            rate = wav.getframerate()
+            channels = wav.getnchannels()
+            width = wav.getsampwidth()
+            raw = wav.readframes(wav.getnframes())
+        if width != 2:
+            raise RuntimeError(f"{path} 是 {width * 8} bit 的 wav，只支持 16 bit（PCM）")
+        audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        if channels > 1:
+            audio = audio.reshape(-1, channels).mean(axis=1)
+        return audio, rate, f"wav 头（{channels} 声道 / {width * 8} bit）"
+    rate = rate_hint
+    origin = "--try-rate"
+    if rate is None:
+        sidecar = os.path.splitext(str(path))[0] + ".rate"
+        if os.path.exists(sidecar):
+            try:
+                with open(sidecar, encoding="utf-8") as handle:
+                    rate = int(str(handle.read()).strip())
+                origin = f"旁文件 {os.path.basename(sidecar)}"
+            except (OSError, ValueError):
+                rate = None
+    if rate is None:
+        raise RuntimeError(
+            f"{path} 是裸 PCM，不知道采样率。给 --try-rate 16000（队列里的段都是 16k），"
+            "或者同名写一个 `.rate` 旁文件")
+    with open(path, "rb") as handle:
+        raw = handle.read()
+    # 奇数长度说明文件被截断了：直接说，别悄悄当成少一个采样点
+    if len(raw) % 2 != 0:
+        print(f"[try] ⚠️ {path} 的字节数是奇数（{len(raw)}），末尾那半个采样点会被丢掉",
+              file=sys.stderr)
+        raw = raw[:-1]
+    audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+    return audio, rate, f"裸 PCM（{origin}）"
+
+
+def run_try(args, np, engines):
+    """单独试识别：一段或一批音频直接进引擎。返回进程退出码。
+
+    <p>退出码：0 = 至少有一段出字；3 = 引擎都正常但没出字（"识别确实听不出东西"）；
+    2 = 配置/依赖/加载就没过（"根本没跑到识别"）。三种情况必须能区分 ——
+    混成一个"失败"就等于让人回去猜。
+    """
+    table = args.asr_table if isinstance(args.asr_table, dict) else {}
+    pool = ModelPool(engines, max_models=max(1, args.max_models),
+                     log=lambda line: print(line, file=sys.stderr, flush=True),
+                     device=args.device)
+    room_cache = {}
+
+    # ① 收集要试的段
+    items = []
+    if args.try_queue:
+        bases = sorted(_pending_segments(args.try_queue))
+        if not bases:
+            print(f"[try] 队列 {args.try_queue} 里没有待处理的段"
+                  "（识别消费者会把处理完的段删掉；要复现请先让流水线跑一段）",
+                  file=sys.stderr)
+            return 3
+        for base in bases:
+            got = _read_segment(args.try_queue, base, np)
+            if got is None:
+                print(f"[try] 跳过 {base}（读不出来）", file=sys.stderr)
+                continue
+            meta, audio = got
+            items.append((base, meta, audio))
+    else:
+        try:
+            audio, rate, origin = read_try_audio(args.try_audio, args.try_rate, np)
+        except Exception as error:                                  # noqa: BLE001
+            print(f"[try] ✗ 读不了 {args.try_audio}：{type(error).__name__}: {error}", file=sys.stderr)
+            return 2
+        print(f"[try] 音频 {args.try_audio}：{origin}，{rate} Hz，"
+              f"{len(audio) / float(rate):.2f}s", file=sys.stderr)
+        items.append((os.path.basename(args.try_audio), {"lang": args.language, "rate": rate}, audio))
+
+    print(f"[try] 共 {len(items)} 段，语种按**每一段自己的**来（表/侧车/languages 三层照常生效）",
+          file=sys.stderr)
+    total = {"text": 0, "empty": 0, "failed": 0}
+    elapsed_sum = 0.0
+    audio_sum = 0.0
+    for index, (label, meta, audio) in enumerate(items, start=1):
+        rate = int(meta.get("rate") or args.try_rate or args.samplerate)
+        seconds = len(audio) / float(rate)
+        language = meta.get("lang") or args.language
+        room = meta.get("room")
+        room_profile = read_room_asr_profile(args.data_dir, room, room_cache)
+        strategy = resolve_strategy(language, _cli_profile(args), table, room_profile)
+        name = str(meta.get("strategy") or strategy.get("strategy"))
+        engine_key = str(strategy.get("engine") or DEFAULT_ENGINE)
+        print(f"\n[try] ── 第 {index}/{len(items)} 段：{label}"
+              f"（房间 {room or '—'}／{language or '自动'}／{seconds:.2f}s）", file=sys.stderr)
+        print(f"[try]    解析：策略 {name} → 引擎 {engine_key}／模型 "
+              f"{strategy.get('model') or '（引擎缺省）'}"
+              f"（模型来自 {strategy.get('sources', {}).get('model') or '?'}）", file=sys.stderr)
+        level = float(np.sqrt(np.mean(np.square(audio)))) if len(audio) else 0.0
+        peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
+        print(f"[try]    电平：RMS {level:.4f} 峰值 {peak:.4f}"
+              f"（人声一般峰值 > 0.1；这里低就说明**这段音频本来就没声音**，"
+              "不是识别的问题）", file=sys.stderr)
+        try:
+            engine = resolve_engine(strategy, engines)
+            handle = pool.get(strategy, device=args.device)
+        except Exception as error:                                  # noqa: BLE001
+            total["failed"] += 1
+            print(f"[try] ✗ 引擎/模型没起来：{type(error).__name__}: {error}", file=sys.stderr)
+            if str(engine_key) == DEFAULT_ENGINE:
+                print(model_load_failure(strategy.get("model"), error,
+                                         strategy.get("compute_type") or "float16"), file=sys.stderr)
+            continue
+        started = time.perf_counter()
+        try:
+            outcome = engine.transcribe(handle, audio, language, strategy)
+        except Exception as error:                                  # noqa: BLE001
+            elapsed = time.perf_counter() - started
+            elapsed_sum += elapsed
+            audio_sum += seconds
+            total["failed"] += 1
+            print(f"[try] ✗ 转写抛异常（耗时 {elapsed:.2f}s）：{type(error).__name__}: {error}",
+                  file=sys.stderr)
+            continue
+        elapsed = time.perf_counter() - started
+        elapsed_sum += elapsed
+        audio_sum += seconds
+        text = str(outcome.get("text") or "")
+        if outcome.get("empty") or text.strip() == "":
+            total["empty"] += 1
+            print(f"[try] · 没出字（耗时 {elapsed:.2f}s，RTF {elapsed / seconds:.2f}）："
+                  f"{outcome.get('reason') or '引擎没说原因'}", file=sys.stderr)
+        else:
+            total["text"] += 1
+            print(f"[try] ✓ 出字（耗时 {elapsed:.2f}s，RTF {elapsed / seconds:.2f}，"
+                  f"语种 {outcome.get('resolved_language') or '?'}）：{text}", file=sys.stderr)
+
+    print("", file=sys.stderr)
+    print(f"[try] 小结：出字 {total['text']} / 没出字 {total['empty']} / 失败 {total['failed']}"
+          f"（音频合计 {audio_sum:.1f}s，识别耗时合计 {elapsed_sum:.1f}s，"
+          f"RTF {elapsed_sum / audio_sum:.2f}）" if audio_sum > 0
+          else f"[try] 小结：出字 {total['text']} / 没出字 {total['empty']} / 失败 {total['failed']}",
+          file=sys.stderr)
+    if total["text"] > 0:
+        return 0
+    if total["failed"] > 0 and total["empty"] == 0:
+        return 2
+    return 3
 
 
 # ── 依赖 ─────────────────────────────────────────────────────────────────────
@@ -3743,6 +3992,15 @@ def main():
     except ValueError as error:
         print(f"[whisper_stream] ✗ {error}", file=sys.stderr)
         return 2
+
+    # 5.99：单独试识别 —— 一段（或一批）音频直接进引擎，不经切句/队列/大脑。
+    # 放在这里：表已经读完，引擎注册表也有，但**还没加载启动模型** ——
+    # 试测要按每一段自己的策略取模型，不该先白占一份显存。
+    if args.try_audio is not None or args.try_queue is not None:
+        if args.try_audio is not None and args.try_queue is not None:
+            print("[whisper_stream] ✗ --try-audio 与 --try-queue 只能给一个", file=sys.stderr)
+            return 2
+        return run_try(args, np, engines)
 
     print(f"[whisper_stream] 加载 {startup_engine.describe(startup)}"
           f"（engine={startup_engine.key}, device={args.device}, compute_type={startup_compute}）…",
