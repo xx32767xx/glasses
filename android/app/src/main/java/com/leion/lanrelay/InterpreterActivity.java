@@ -635,6 +635,7 @@ public class InterpreterActivity extends android.app.Activity {
         refreshEngineRow();
         AsrEngineOptions.Option picked = engineChoice();
         String label = picked == null ? getString(R.string.interp_engine_default) : picked.label;
+        reportEngineChoice(strategy, picked);
         if (running) {
             stopInterpreting();
             statusView.setText(getString(R.string.interp_engine_changed, label));
@@ -643,6 +644,28 @@ public class InterpreterActivity extends android.app.Activity {
         }
         Log.i("LeionInterp", "🎛 识别引擎 → " + (strategy.isEmpty() ? "服务器默认" : strategy)
                 + "（" + label + "）");
+    }
+
+    /**
+     * 把这次切换**报告**给服务器（5.66）：让"我在手机上换了模型"在服务器终端上立刻可见。
+     *
+     * <p>⚠️ 它不改变识别行为 —— 真正的生效路径是开会话时写进房间侧车的那份请求。
+     * 这里只是痕迹：失败也不打扰用户（不弹提示、不拦操作），否则一个纯排障用的
+     * 旁路会在网络抖一下时把"换引擎"这件事整个卡住。
+     */
+    private void reportEngineChoice(String strategy, final AsrEngineOptions.Option picked) {
+        final LanClient relay = client != null ? client : buildClient();
+        if (relay == null) return;
+        final String askLang = partner;
+        new Thread(() -> {
+            try {
+                relay.reportAsrChoice(askLang, strategy,
+                        picked == null ? "" : picked.engineRequest(),
+                        picked == null ? "" : picked.modelRequest());
+            } catch (Exception error) {
+                Log.w("LeionInterp", "🎛 切换记录没送到服务器（不影响功能）：" + describe(error));
+            }
+        }, "interp-choice-report").start();
     }
 
     // ── 历史 ──────────────────────────────────────────────────────────────

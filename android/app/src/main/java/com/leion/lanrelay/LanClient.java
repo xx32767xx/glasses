@@ -1176,6 +1176,27 @@ public class LanClient {
         return unwrap(requestWithCode("/org/interpreter/start", "POST", body, 8000));
     }
 
+    /**
+     * 告诉服务器「我刚换了识别引擎」（5.66）。**只是打日志 + 记一份排队文件**，
+     * 不改变识别行为（真正的生效路径是开会话时写的房间侧车）。
+     *
+     * <p>为什么非要这一下：手机的选择原来只在"开会话"那一刻才传到服务器，
+     * 于是"我在配置页换了个模型"这件事服务器完全看不见 —— 排查时分不清
+     * "没换"、"换了没生效"、"换了但要下一场才生效"。这一条让第一秒就能分清。
+     *
+     * <p>失败**不打扰用户**：它只是痕迹，不是功能；调用方吞掉异常即可。
+     */
+    public void reportAsrChoice(String lang, String strategy, String engine, String model)
+            throws IOException, org.json.JSONException {
+        JSONObject body = new JSONObject();
+        body.put("lang", lang == null ? "" : lang);
+        body.put("strategy", strategy == null ? "" : strategy);
+        body.put("engine", engine == null ? "" : engine);
+        body.put("model", model == null ? "" : model);
+        body.put("note", "手机配置页切换");
+        unwrap(requestWithCode("/org/asr/choice", "POST", body, 4000));
+    }
+
     /** 兼容老调用（只给模型名）：引擎家族留空 = 用服务器缺省的 whisper。 */
     public JSONObject orgInterpreterStart(String name, String readLang, String speakLang, String engine)
             throws IOException, org.json.JSONException {

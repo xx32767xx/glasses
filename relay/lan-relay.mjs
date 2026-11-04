@@ -2636,6 +2636,9 @@ export async function startRelay(rawOptions = {}) {
           // path 要**带 query**：/org/history?limit=20 的 limit 就在这后面
           method: request.method, path: url.pathname + (url.search ?? ''), body, user, role,
           root: options.dataDir,
+          // 5.66：让 org-api（纯函数、走磁盘）也能在终端上说人话 ——
+          // "手机换了识别引擎"这件事必须一眼看得见，否则排查只能靠翻文件。
+          log: (line) => console.log(`[转发] ${line}`),
           // 历史页顶部要写"记录保存 N 天"：这个值只能是服务端说，客户端不编
           utteranceRetentionDays: options.utteranceRetentionDays,
           // ── 4.99 管理员清理历史：清单要"每个房间占多少音频"，清理要"把文件也删掉" ──

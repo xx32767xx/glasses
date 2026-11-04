@@ -498,6 +498,47 @@ export async function runOrgApiSuite({ it, check, assert }) {
     check('没有 BOM 时如实报没有', parseJsonLoose('{"a": 1}').hadBom === false)
   })
 
+  await it('手机切换识别引擎时，服务器终端要看得见（5.66）', async () => {
+    const lines = []
+    const withLog = (options) => handleOrg({
+      root, user: 'alice@example.com', role: 'user', log: (line) => lines.push(line), ...options,
+    })
+    const saved = await withLog({
+      method: 'POST', path: '/org/asr/choice',
+      body: { lang: 'en-US', strategy: 'en-tiny', engine: 'whisper', model: 'tiny' },
+    })
+    check('200 并落一份记录（谁会去翻 json 都要能查到"最后一次换了什么"）',
+      saved.status === 200 && saved.json.recorded === true, JSON.stringify(saved.json))
+    const recorded = JSON.parse(readFileSync(join(root, 'asr-choices', 'alice@example.com.json'), 'utf-8'))
+    check('记录里有语种、策略、模型', recorded.lang === 'en-US' && recorded.strategy === 'en-tiny'
+      && recorded.model === 'tiny', JSON.stringify(recorded))
+    check('终端那行说清了"换了什么、什么时候生效"',
+      lines.some((line) => line.includes('换了识别引擎') && line.includes('en-US')
+        && line.includes('下一场生效')), JSON.stringify(lines))
+    check('非法语种不报错但明确"没记下来"（痕迹接口不许拦住换引擎）',
+      (await withLog({
+        method: 'POST', path: '/org/asr/choice', body: { lang: 'fr-FR', strategy: 'en-tiny' },
+      })).json.recorded === false)
+    const dirty = await withLog({
+      method: 'POST', path: '/org/asr/choice',
+      body: { lang: 'en-US', strategy: 'Tiny!', model: 'bad model' },
+    })
+    check('脏字段丢掉并在响应里列出来（不是静默接受）',
+      dirty.status === 200 && dirty.json.ignored.length === 2, JSON.stringify(dirty.json))
+    check('而且那行日志里说了丢掉了什么',
+      lines.some((line) => line.includes('忽略了') && line.includes('strategy=Tiny!')),
+      JSON.stringify(lines.slice(-3)))
+
+    lines.length = 0
+    await withLog({ method: 'GET', path: '/org/asr/engines?lang=en-US' })
+    check('手机点开下拉框也会打一行（"切了没"这件事第一秒就能分清）',
+      lines.some((line) => line.includes('看识别引擎清单') && line.includes('en-US')),
+      JSON.stringify(lines))
+    check('没给 log 回调时静默（测试/嵌入调用不该被强制打日志）',
+      (await call({ method: 'GET', path: '/org/asr/engines?lang=en-US',
+        user: 'alice@example.com', role: 'user' })).status === 200)
+  })
+
   await rm(BASE, { recursive: true, force: true })
 }
 
