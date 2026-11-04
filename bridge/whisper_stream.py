@@ -1473,9 +1473,14 @@ def run_queue_consumer(args, np, pool):
                 payload["model"] = profile.get("model")
                 print(json.dumps(payload, ensure_ascii=False), flush=True)
                 # 每一句都在日志里留一行策略（用户要求：便于对照与调节）
+                # 5.73：多打一个**字数**。没有它，「丢了多少话」只能按秒报，
+                # 而秒数说不清"6 秒里到底有没有说话" —— 有字数才能把丢掉的段
+                # 折成"大约几句话"，也才能和字幕缺字对上（见 asr-loss-report）。
+                units = spoken_units(text)
                 print(f"[识别] 房间 {meta.get('room')} 策略 {strategyName}"
                       f"（模型 {profile.get('model')}，切句由 {cutStrategy or '旧版段（无策略名）'}）"
-                      f" → {seconds:.1f}s 出字", file=sys.stderr, flush=True)
+                      f" → {seconds:.1f}s 出{'字' if has_cjk(text) else '词'} {units}",
+                      file=sys.stderr, flush=True)
             processed += 1
             # ⚠️ 处理完就删：队列目录同时是"待处理清单"，删掉才算消费完。
             for suffix in (".pcm", QUEUE_META_SUFFIX):
@@ -1954,6 +1959,27 @@ def _level_from_reason(reason):
         return float(match.group(1))
     except (TypeError, ValueError):
         return None
+
+
+def has_cjk(text):
+    """文本里有没有中日韩文字（用来决定"字"还是"词"做计数单位）。"""
+    return any("\u3400" <= char <= "\u9fff" or "\u3040" <= char <= "\u30ff" for char in str(text or ""))
+
+
+def spoken_units(text):
+    """一段识别结果有多少**话**：中文按字、其它按词（5.73）。
+
+    <p>为什么不能直接用 `len(text)`：英文 `hello world` 是 11 个字符、2 个词，
+    拿字符数当"字数"会让英文的语速虚高好几倍。而这里要拿它算"每秒多少话"，
+    单位错了，后面所有折算（丢掉的段 ≈ 几句话）都跟着错。
+
+    <p>中文按字（不含标点/空白）、其余按空白分词 —— 与评测里 `asr_score` 的
+    "中文字 / 葡英词"口径一致，两处不要各写一套。
+    """
+    value = str(text or "")
+    if has_cjk(value):
+        return sum(1 for char in value if "\u3400" <= char <= "\u9fff" or "\u3040" <= char <= "\u30ff")
+    return len(value.split())
 
 
 def silence_skip_reason(audio, threshold=SILENCE_SKIP_RMS) -> str | None:

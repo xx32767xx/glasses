@@ -2827,6 +2827,17 @@ def main():
           watch.note("room-z", near_reason) is None and watch.counts.get("room-z") == 1,
           str(watch.counts.get("room-z")))
 
+    # 5.73：一句识别结果有多少「话」—— 单位错了，后面所有「丢了多少话」的折算全错。
+    # 英文用 len(text) 会把语速虚高好几倍（`hello world` 是 11 个字符、2 个词）。
+    units = whisper_stream.spoken_units
+    check("中文按字（标点不算）", units("这是一个好问题。") == 7, str(units("这是一个好问题。")))
+    check("英文按词", units("hello world") == 2, str(units("hello world")))
+    check("空串是 0（不是 1）", units("") == 0)
+    check("中英混排只数中文那部分（按字口径）", units("中英混排 hello world") == 4,
+          str(units("中英混排 hello world")))
+    check("has_cjk 与 spoken_units 的口径一致",
+          whisper_stream.has_cjk("你好") and not whisper_stream.has_cjk("hello"))
+
     print(f"\n=== 结果：{passed} 通过 / {len(failures)} 失败 ===")
     if failures:
         print("")

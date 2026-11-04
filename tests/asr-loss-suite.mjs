@@ -106,4 +106,47 @@ export async function runAsrLossSuite({ it, check }) {
     check('两个房间都列在表里', text.includes('room-mw1tgqcg-sjlh') && text.includes('room-w1abcde-zzzz'))
     check('判读纪律写在末尾（避免把"丢话"当成"模型差"）', text.includes('跟模型无关'))
   })
+
+  // 5.73：光有秒数不够 —— "6.6 秒被丢"可能是 6 秒静音 + 0.6 秒说话。
+  // 有了字数才能折成"大约几句话"，而**语速必须用这个房间自己的**，不能用全局常数。
+  const WITH_UNITS = [
+    '[切句·a] [切句] room-a test3 → 1-room-a-000（1.0s，策略 default，尾部静音裁掉 800ms，累计 1 段）',
+    '[识别] [asr-worker] [识别] 房间 room-a 策略 default（模型 tiny，切句由 default） → 1.0s 出字 7',
+    '[切句·a] [切句] room-a test3 → 2-room-a-000（2.0s，策略 default，尾部静音裁掉 800ms，累计 2 段）',
+    '[识别] [asr-worker] [识别] 房间 room-a 策略 default（模型 tiny，切句由 default） → 2.0s 出字 14',
+    '[识别] [asr-worker]   [丢弃 3.7s，房间 room-a：电平偏低（原始 0.0131，门槛 0.02）→ 按静音丢弃]',
+    '[切句·b] [切句] room-b test3 → 3-room-b-000（1.5s，策略 default，尾部静音裁掉 800ms，累计 1 段）',
+    '[识别] [asr-worker] [识别] 房间 room-b 策略 default（模型 large-v3，切句由 default） → 1.5s 出词 6',
+    '[识别] [asr-worker]   [丢弃 2.0s，房间 room-b：近乎静音（原始电平 0.0010 < 0.02）→ 解码前丢弃]',
+  ].join('\n')
+
+  await it('字数：把「丢了几秒」折成「大约丢了几句话」（语速按房间自己算）', () => {
+    const report = summarize(parseLog(WITH_UNITS))
+    const a = report.rooms.find((room) => room.room === 'room-a')
+    const b = report.rooms.find((room) => room.room === 'room-b')
+    check('中文字数解析出来了（出字 7 / 出字 14）',
+      parseLog(WITH_UNITS).transcripts[0].units === 7
+      && parseLog(WITH_UNITS).transcripts[1].units === 14)
+    check('英文按词也算得出来（出词 6）',
+      parseLog(WITH_UNITS).transcripts[2].units === 6)
+    check('语速 = 出字段字数 ÷ 出字段时长（(7+14)/3 = 7 字/秒）', a.unitsPerSec === 7, String(a.unitsPerSec))
+    check('估计丢字 = 丢掉的秒数 × 这个房间的语速（3.7 × 7 ≈ 26）',
+      a.lostUnitsEstimate === 26, String(a.lostUnitsEstimate))
+    check('另一个房间用自己的语速（6/1.5 = 4 → 2.0 × 4 = 8）',
+      b.unitsPerSec === 4 && b.lostUnitsEstimate === 8,
+      JSON.stringify([b.unitsPerSec, b.lostUnitsEstimate]))
+    const text = formatReport(report)
+    check('表里既有字/秒也有估计丢字', /字\/秒/.test(text) && /估计丢字/.test(text))
+    check('而且明说这是估计、不是实测', text.includes('是**估计**，不是实测'))
+  })
+
+  await it('老日志（没有字数）不许瞎算：估计那一列空着并说明原因', () => {
+    const report = summarize(parseLog(SAMPLE))
+    const first = report.rooms.find((room) => room.room === 'room-mw1tgqcg-sjlh')
+    check('没有字数时 unitsPerSec 是 null（不当成 0）', first.unitsPerSec === null,
+      String(first.unitsPerSec))
+    check('估计丢字也是 null（不拿 0 冒充）', first.lostUnitsEstimate === null)
+    const text = formatReport(report)
+    check('报告里解释为什么空着', text.includes('4.180 之前的日志没有这一列'), text.slice(-260))
+  })
 }
