@@ -1769,12 +1769,18 @@ class FunAsrEngine(AsrEngine):
 
         model = handle["model"]
         task_id = f"leion-{int(time.time() * 1000)}"
+        parameters = {"format": "pcm", "sample_rate": 16000}
+        # 5.93：语言提示。策略里写 `"language_hints": ["pt"]` 就带上（Fun-ASR 用它压语种）；
+        # 不写就不带 —— 让服务端自己判断。**不猜**：把 en 硬塞给葡语模型会让它把葡语当英语。
+        hints = (profile or {}).get("language_hints")
+        if isinstance(hints, list) and hints:
+            parameters["language_hints"] = [str(one).strip() for one in hints if str(one).strip()]
         run_task = {
             "header": {"action": "run-task", "task_id": task_id, "streaming": "duplex"},
             "payload": {
                 "task_group": "audio", "task": "asr", "function": "recognition",
                 "model": model,
-                "parameters": {"format": "pcm", "sample_rate": 16000},
+                "parameters": parameters,
                 "input": {},
             },
         }
