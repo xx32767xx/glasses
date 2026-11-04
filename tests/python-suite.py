@@ -2864,6 +2864,68 @@ def main():
     check("预热不让 NameError 被当成'预热偶尔不稳'吞掉",
           "except NameError:" in prewarm_src and "raise" in prewarm_src)
 
+    # 5.88：DashScope 实时协议有两条**实测踩过**的时序/语义约定，用假 socket 钉住：
+    #   ① 必须等 task-started 再送音频（不等就 1007 invalid frame payload data）
+    #   ② result-generated 是"这一句的最新文本"，不是新句子（直接拼接会重复）
+    def _run_stubbed(scripted):
+        import types as _types
+        frames = []
+
+        class FakeWS:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def send(self, payload):
+                frames.append("text" if isinstance(payload, str) else "audio")
+
+            def recv(self, timeout=None):
+                return scripted.pop(0)
+
+        fake = _types.ModuleType("websockets")
+        sync = _types.ModuleType("websockets.sync")
+        client = _types.ModuleType("websockets.sync.client")
+        client.connect = lambda *args, **kwargs: FakeWS()
+        sync.client = client
+        fake.sync = sync
+        saved = {name: sys.modules.get(name) for name in
+                 ("websockets", "websockets.sync", "websockets.sync.client")}
+        sys.modules["websockets"] = fake
+        sys.modules["websockets.sync"] = sync
+        sys.modules["websockets.sync.client"] = client
+        try:
+            engine = whisper_stream.FunAsrEngine(None, None)
+            result = engine.transcribe({"api_key": "k", "model": "m"},
+                                       np.zeros(1600, dtype=np.float32), "pt-BR", {"model": "m"})
+        finally:
+            for name, module in saved.items():
+                if module is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
+        return result, frames
+
+    def _event(name, sentence=None):
+        return json.dumps({"header": {"event": name},
+                           "payload": {"output": {"sentence": sentence or {}}}})
+
+    ok_result, frames = _run_stubbed([
+        _event("task-started"),
+        _event("result-generated", {"sentence_id": 1, "text": "bom dia"}),
+        _event("result-generated", {"sentence_id": 1, "text": "bom dia, como vai"}),
+        _event("task-finished"),
+    ])
+    check("先 run-task、再音频、最后 finish-task（音频排在 task-started 之后）",
+          frames[0] == "text" and frames[-1] == "text" and "audio" in frames[1:-1], str(frames))
+    check("同一句的增量更新只取最后版本（不重复拼接）",
+          ok_result["text"] == "bom dia, como vai", repr(ok_result["text"]))
+    failed_result, _ = _run_stubbed([_event("task-failed")])
+    check("task-failed 时返回空结果 + 原因（不让流水线崩）",
+          failed_result["empty"] is True and "task-failed" in (failed_result["reason"] or ""),
+          str(failed_result))
+
     # 表坏了：保留旧表，绝不能"读到半张表就当没有"
     broken_dir = Path(ROOT / "var" / "test" / "asr-model-map")
     broken_dir.mkdir(parents=True, exist_ok=True)

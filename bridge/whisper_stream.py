@@ -1727,11 +1727,15 @@ class FunAsrEngine(AsrEngine):
         return {"api_key": api_key, "model": model}
 
     def transcribe(self, handle, audio, language, profile=None):
-        """一句话一条连接：run-task → 音频 → finish-task → 收最终文本。
+        """一句话一条连接：run-task → **等 task-started** → 音频 → finish-task → 收文本。
 
         <p>为什么不用长连接池：我们的段是**离散的整句**（0.6–20 秒），每段一条连接
         换来的是"没有跨句状态"—— 而跨句状态正是同传里最难查的那类 bug。
         代价是每段多一次握手（几十毫秒），可接受。
+
+        <p>⚠️ 5.88：必须**先收到 `task-started` 再发音频**。实测直接连发会拿到
+        `1007 invalid frame payload data` —— 服务端还没进入接收状态，二进制帧被当成
+        非法载荷。这个错看起来像"音频格式不对"，其实是**时序**问题，所以这里把顺序写死。
         """
         import json as _json
 
@@ -1754,46 +1758,91 @@ class FunAsrEngine(AsrEngine):
         }
         samples = np.clip(np.asarray(audio, dtype=np.float32), -1.0, 1.0)
         pcm = (samples * 32767.0).astype("<i2").tobytes()
-        texts = []
+        # ⚠️ 5.88：DashScope 的 result-generated 是"当前这句的最新文本"（增量更新），
+        # **不是**新句子 —— 直接列表拼接会把「bom dia」+「bom dia como vai」拼成
+        # 「bom diabom dia como vai」（实测就是这么复现的）。所以按 sentence_id 取最后一版。
+        sentences = {}
+        order = []
+        last_event = ""
+
+        def parse(message):
+            """返回 (event_name, event_dict)；非 JSON 返回 ("", {})。"""
+            if isinstance(message, (bytes, bytearray)):
+                return "", {}
+            try:
+                event = _json.loads(message)
+            except Exception:                                      # noqa: BLE001
+                return "", {}
+            return str((event.get("header") or {}).get("event") or ""), event
+
+        def collect(event):
+            """result-generated → 按 sentence_id 记住这句的**最新**文本。"""
+            sentence = (((event.get("payload") or {}).get("output") or {}).get("sentence") or {})
+            piece = str(sentence.get("text") or "")
+            key = sentence.get("sentence_id")
+            if key is None:
+                # 没有 id 的服务端版本：把每一次当成新句子（宁可多句，不要拼错）
+                key = f"anon-{len(order)}"
+            if key not in sentences:
+                order.append(key)
+            if piece.strip() or key not in sentences:
+                sentences[key] = piece
+
         try:
             with connect(DASHSCOPE_WS_URL, max_size=None, open_timeout=10,
                          additional_headers={"Authorization": f"bearer {handle['api_key']}"}) as ws:
                 ws.send(_json.dumps(run_task, ensure_ascii=False))
-                # 音频按 100 ms 一帧发（DashScope 文档建议每帧 ≤ 100 ms）
+                # ① 等 task-started（这一步漏了就 1007）
+                started = False
+                deadline = time.time() + 15
+                while time.time() < deadline and not started:
+                    name, event = parse(ws.recv(timeout=max(1.0, deadline - time.time())))
+                    if name:
+                        last_event = name
+                    if name == "task-started":
+                        started = True
+                    elif name == "task-failed":
+                        return {"text": "", "empty": True,
+                                "reason": "DashScope task-failed（还没开始送音频）："
+                                          + _json.dumps(event.get("header") or {}, ensure_ascii=False),
+                                "resolved_language": language}
+                    elif name == "result-generated":
+                        collect(event)
+                if not started:
+                    return {"text": "", "empty": True,
+                            "reason": f"等 task-started 超时（最后收到 {last_event or '什么都没有'}）"
+                                      "—— 可能是模型 ID 不支持实时（换成 *-realtime 的模型）",
+                            "resolved_language": language}
+                # ② 送音频（100 ms 一帧）
                 chunk = 1600 * 2
                 for start in range(0, len(pcm), chunk):
                     ws.send(pcm[start:start + chunk])
+                # ③ 告诉服务端音频结束
                 ws.send(_json.dumps({"header": {"action": "finish-task", "task_id": task_id}},
                                     ensure_ascii=False))
+                # ④ 收结果直到 task-finished
                 deadline = time.time() + 30
                 while time.time() < deadline:
-                    message = ws.recv(timeout=max(1.0, deadline - time.time()))
-                    if isinstance(message, (bytes, bytearray)):
-                        continue
-                    try:
-                        event = _json.loads(message)
-                    except Exception:                              # noqa: BLE001
-                        continue
-                    header = event.get("header") or {}
-                    name = str(header.get("event") or "")
+                    name, event = parse(ws.recv(timeout=max(1.0, deadline - time.time())))
+                    if name:
+                        last_event = name
                     if name == "result-generated":
-                        sentence = (((event.get("payload") or {}).get("output") or {})
-                                    .get("sentence") or {})
-                        text = str(sentence.get("text") or "").strip()
-                        if text:
-                            texts.append(text)
-                    elif name in ("task-finished", "task-failed"):
-                        if name == "task-failed":
-                            return {"text": "", "empty": True,
-                                    "reason": "DashScope task-failed：" + _json.dumps(
-                                        header, ensure_ascii=False),
-                                    "resolved_language": language}
+                        collect(event)
+                    elif name == "task-finished":
                         break
+                    elif name == "task-failed":
+                        return {"text": "", "empty": True,
+                                "reason": "DashScope task-failed：" + _json.dumps(
+                                    event.get("header") or {}, ensure_ascii=False),
+                                "resolved_language": language}
         except Exception as error:                                  # noqa: BLE001
             return {"text": "", "empty": True,
-                    "reason": f"DashScope 请求失败：{type(error).__name__}: {error}",
+                    "reason": (f"DashScope 请求失败：{type(error).__name__}: {error}"
+                               f"（最后收到的事件：{last_event or '无'}）"),
                     "resolved_language": language}
-        text = "".join(texts).strip()
+        parts = [sentences[key].strip() for key in order if sentences[key].strip()]
+        # 句间分隔：中日韩不加空格（加了会变成「第一句 第二句」），其余加一个空格
+        text = ("" if has_cjk(" ".join(parts)) else " ").join(parts).strip()
         return {"text": text, "empty": text == "",
                 "reason": None if text else "Fun-ASR 没出字", "resolved_language": language}
 
