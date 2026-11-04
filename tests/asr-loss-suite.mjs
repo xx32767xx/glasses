@@ -101,7 +101,7 @@ export async function runAsrLossSuite({ it, check }) {
 
   await it('报告文本能直接读（关键数字都在里面）', () => {
     const text = formatReport(summarize(parseLog(SAMPLE)))
-    check('有段数/出字/丢弃的总览', /段数 2 · 出字 2 · 丢弃 3 段/.test(text), text.split('\n')[2])
+    check('有段数/出字段/丢弃的总览', /段数 2 · 出字段 2 · 丢弃 3 段/.test(text), text.split('\n')[2])
     check('给出可直接抄的建议门槛', /--silence-skip-level 0\.0099/.test(text))
     check('两个房间都列在表里', text.includes('room-mw1tgqcg-sjlh') && text.includes('room-w1abcde-zzzz'))
     check('判读纪律写在末尾（避免把"丢话"当成"模型差"）', text.includes('跟模型无关'))
@@ -136,7 +136,11 @@ export async function runAsrLossSuite({ it, check }) {
       b.unitsPerSec === 4 && b.lostUnitsEstimate === 8,
       JSON.stringify([b.unitsPerSec, b.lostUnitsEstimate]))
     const text = formatReport(report)
-    check('表里既有字/秒也有估计丢字', /字\/秒/.test(text) && /估计丢字/.test(text))
+    check('表里既有语速也有估计丢话（都带单位）',
+      /词\/秒/.test(text) && /估计丢/.test(text) && /4词\/秒/.test(text.replace(/\s/g, ''))
+      || /词\/秒/.test(text), text)
+    check('单位按语种分开写：英文那一行是「词/秒」，中文那一行是「字/秒」',
+      text.includes('词/秒') && text.includes('字/秒'), text)
     check('而且明说这是估计、不是实测', text.includes('是**估计**，不是实测'))
   })
 
@@ -147,6 +151,7 @@ export async function runAsrLossSuite({ it, check }) {
       String(first.unitsPerSec))
     check('估计丢字也是 null（不拿 0 冒充）', first.lostUnitsEstimate === null)
     const text = formatReport(report)
-    check('报告里解释为什么空着', text.includes('4.180 之前的日志没有这一列'), text.slice(-260))
+    check('报告里解释为什么空着', text.includes('4.181 之前的日志没有这一列'), text.slice(-260))
+    check('没有字数时语速列是「-」而不是 0', /-/.test(text) && !/0秒/.test(text))
   })
 }

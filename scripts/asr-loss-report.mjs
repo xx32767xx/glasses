@@ -48,7 +48,8 @@ const PATTERNS = {
   segment: /→\s*\S+-\d+（([\d.]+)s，策略\s*(\S+?)，尾部静音裁掉\s*(\d+)ms，累计\s*(\d+)\s*段/,
   // [识别] [asr-worker] [识别] 房间 room-x 策略 default（模型 tiny，切句由 default） → 0.6s 出字 12
   // 5.73：行尾多了字数（`出字 12` / `出词 3`）。老日志没有这一段，所以它是可选的。
-  transcript: /房间\s*(\S+)\s*策略\s*(\S+?)\s*（模型\s*([^，）]+)[^）]*）\s*→\s*([\d.]+)s\s*出(?:字|词)(?:\s*(\d+))?/,
+  // ⚠️ 字/词要**分开记**：中文按字、英文按词，混在一列里迟早被误读（第一版就是）。
+  transcript: /房间\s*(\S+)\s*策略\s*(\S+?)\s*（模型\s*([^，）]+)[^）]*）\s*→\s*([\d.]+)s\s*出(字|词)(?:\s*(\d+))?/,
   // [转发] [15:50:07]    音平 █········· 峰值 0.039 RMS 0.0083
   level: /音平.*峰值\s*([\d.]+)\s*RMS\s*([\d.]+)/,
 }
@@ -102,8 +103,10 @@ export function parseLog(text) {
       transcripts.push({
         room: transcript[1], strategy: transcript[2], model: transcript[3].trim(),
         seconds: Number(transcript[4]),
+        // 单位：中文按字、英文按词 —— 后面按房间统计时要知道是哪一种
+        unit: transcript[5],
         // 老日志没有字数 → null（**不要**当成 0，那会让语速算成 0）
-        units: transcript[5] === undefined ? null : Number(transcript[5]),
+        units: transcript[6] === undefined ? null : Number(transcript[6]),
       })
       continue
     }
@@ -141,7 +144,7 @@ export function summarize(parsed) {
     if (!rooms.has(key)) {
       rooms.set(key, { room: key, segments: 0, transcribed: 0, dropped: 0, droppedSec: 0,
         fragments: 0, fragmentSec: 0, tailTrimMs: [], models: new Set(),
-        units: 0, unitsSec: 0, transcribedSec: 0 })
+        units: 0, unitsSec: 0, transcribedSec: 0, unitsSeen: new Set() })
     }
     return rooms.get(key)
   }
@@ -156,6 +159,7 @@ export function summarize(parsed) {
     if (Number.isFinite(item.units) && item.units !== null) {
       room.units += item.units
       room.unitsSec += item.seconds
+      room.unitsSeen.add(item.unit)
     }
   }
   for (const drop of parsed.drops) {
@@ -185,6 +189,9 @@ export function summarize(parsed) {
     lostSec: round(room.droppedSec + room.fragmentSec, 2),
     // 5.73：有了字数就能把"丢掉的秒"折成"大约几句话"。
     // 系数是**这个房间自己的**语速（出字段的字数 ÷ 出字段的时长），不是全局常数。
+    // `unitsUnit` 说明这一列到底是字还是词（两种都出现过就写"字/词"，不自作主张合并）。
+    unitsUnit: room.unitsSeen.size === 0 ? null
+      : (room.unitsSeen.size === 1 ? [...room.unitsSeen][0] : '字/词'),
     unitsPerSec: room.unitsSec > 0 ? round(room.units / room.unitsSec, 2) : null,
     lostUnitsEstimate: room.unitsSec > 0
       ? Math.round((room.droppedSec + room.fragmentSec) * (room.units / room.unitsSec))
@@ -227,7 +234,7 @@ export function formatReport(report, options = {}) {
   const { totals, levels, threshold } = report
   lines.push('识别丢话体检（只读日志：不碰音频、不重跑模型）')
   lines.push('')
-  lines.push(`段数 ${totals.segments} · 出字 ${totals.transcribed} · 丢弃 ${totals.droppedCount} 段`
+  lines.push(`段数 ${totals.segments} · 出字段 ${totals.transcribed} · 丢弃 ${totals.droppedCount} 段`
     + `（${totals.droppedSec}s）· 切句碎片 ${totals.fragments} 段（${totals.fragmentSec}s）`)
   lines.push(`丢弃构成：电平偏低 ${totals.byKind['low-level']} 段、近乎静音 ${totals.byKind['near-silence']} 段`)
   if (totals.models.length > 0) lines.push(`实际用过的模型：${totals.models.join(' / ')}`)
@@ -240,22 +247,26 @@ export function formatReport(report, options = {}) {
   }
   if (report.rooms.length > 0) {
     lines.push('')
-    lines.push(`${'房间'.padEnd(24)} ${'段'.padStart(3)} ${'出字'.padStart(4)} ${'丢段'.padStart(4)} `
-      + `${'丢秒'.padStart(6)} ${'碎片'.padStart(4)} ${'尾裁'.padStart(5)} ${'字/秒'.padStart(6)} `
-      + `${'估计丢字'.padStart(8)}  模型`)
+    lines.push(`${'房间'.padEnd(24)} ${'段'.padStart(3)} ${'出字段'.padStart(5)} ${'丢段'.padStart(4)} `
+      + `${'丢秒'.padStart(6)} ${'碎片'.padStart(4)} ${'尾裁'.padStart(5)} ${'语速'.padStart(7)} `
+      + `${'估计丢'.padStart(6)}  模型`)
     for (const room of report.rooms) {
+      // 语速与估计丢话都要带单位：中文按字、英文按词，混着看会差好几倍
+      const unit = room.unitsUnit ?? '';
+      const speed = room.unitsPerSec === null ? '-' : `${room.unitsPerSec}${unit}/秒`
+      const lost = room.lostUnitsEstimate === null ? '-' : `${room.lostUnitsEstimate}${unit}`
       lines.push(`${room.room.slice(0, 24).padEnd(24)} ${String(room.segments).padStart(3)} `
         + `${String(room.transcribed).padStart(4)} ${String(room.dropped).padStart(4)} `
         + `${String(room.droppedSec).padStart(6)} ${String(room.fragments).padStart(4)} `
-        + `${String(room.tailTrimMsMedian ?? '-').padStart(5)} `
-        + `${String(room.unitsPerSec ?? '-').padStart(6)} `
-        + `${String(room.lostUnitsEstimate ?? '-').padStart(8)}  ${room.models.join(',') || '-'}`)
+        + `${String(room.tailTrimMsMedian ?? '-').padStart(5)} ${speed.padStart(7)} `
+        + `${lost.padStart(6)}  ${room.models.join(',') || '-'}`)
     }
     const withEstimate = report.rooms.filter((room) => room.lostUnitsEstimate !== null)
     lines.push('')
     lines.push(withEstimate.length > 0
-      ? '「估计丢字」= 丢掉的秒数 × 这个房间自己的语速（出字段字数 / 出字段时长）——是**估计**，不是实测。'
-      : '「估计丢字」空着是因为日志里没有字数（4.180 之前的日志没有这一列），只能按秒看。')
+      ? '「估计丢」= 丢掉的秒数 × 这个房间自己的语速（出字段字数 / 出字段时长）——是**估计**，不是实测；'
+        + ' 单位随语种（中文按字、英文按词）。'
+      : '「估计丢」空着是因为日志里没有字数（4.181 之前的日志没有这一列），只能按秒看。')
   }
   lines.push('')
   lines.push('判读：丢的段电平**接近**门槛 → 是门槛问题（调 --silence-skip-level）；')
