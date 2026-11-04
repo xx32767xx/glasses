@@ -2995,6 +2995,11 @@ def main():
           kept["empty"] is False and kept["text"] == "olá, tudo bem?", str(kept))
     check("拿到文本后不干等 30 秒（安静 1.2s 就收工）",
           quiet_elapsed < 8.0, f"耗时 {quiet_elapsed:.2f}s")
+    # ⚠️ 5.102：实测 8 秒音频花了 11.8 秒（RTF 1.47），而"整体慢"这种报法没法定位。
+    #    分四段计时（连接 / 等开始 / 送音频 / 收结果），才知道该优化哪儿、要不要换模型 ID。
+    quiet_timings = kept.get("timings") or {}
+    check("云端结果带分阶段耗时（连接/等开始/送音频/收结果）",
+          {"connect", "wait_started", "send_audio"} <= set(quiet_timings), str(quiet_timings))
     nothing = _run_timeout([], 1)
     check("什么都没收到时仍然是失败（不能凭空造一句）",
           nothing["empty"] is True and "task-started" in (nothing["reason"] or ""), str(nothing))

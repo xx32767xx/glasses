@@ -1939,15 +1939,27 @@ class FunAsrEngine(AsrEngine):
             if piece.strip() or key not in sentences:
                 sentences[key] = piece
 
+        # ⚠️ 5.102：**分阶段计时**。实测 `asr-try` 上 8 秒音频花了 11.8 秒（RTF 1.47）——
+        #    这种"整体慢"的报法没法定位：是握手慢、送音频慢，还是服务端算得慢？
+        #    四段各自计时，一眼就知道该优化哪儿（也才知道该不该换模型 ID）。
+        timings = {}
+        _t0 = time.perf_counter()
+
+        def with_timings(payload):
+            payload["timings"] = dict(timings)
+            return payload
+
         try:
             with connect(self.ws_url(), max_size=None, open_timeout=10,
                          additional_headers={"Authorization": f"bearer {handle['api_key']}"}) as ws:
                 # (连上了就把实际用的端点记下来；出错时能分辨是不是连错地方)
+                timings["connect"] = round(time.perf_counter() - _t0, 3)
                 used_url = self.ws_url()
                 ws.send(_json.dumps(run_task, ensure_ascii=False))
                 # ① 等 task-started（这一步漏了就 1007）
                 started = False
                 deadline = time.time() + 15
+                started_at = time.perf_counter()
                 while time.time() < deadline and not started:
                     try:
                         name, event = parse(ws.recv(timeout=max(0.2, deadline - time.time())))
@@ -1960,18 +1972,20 @@ class FunAsrEngine(AsrEngine):
                     if name == "task-started":
                         started = True
                     elif name == "task-failed":
-                        return {"text": "", "empty": True,
+                        return with_timings({"text": "", "empty": True,
                                 "reason": "DashScope task-failed（还没开始送音频，端点 " + used_url + "）："
                                           + _describe_header(event.get("header") or {}),
-                                "resolved_language": language}
+                                "resolved_language": language})
                     elif name == "result-generated":
                         collect(event)
+                timings["wait_started"] = round(time.perf_counter() - started_at, 3)
                 if not started:
-                    return {"text": "", "empty": True,
+                    return with_timings({"text": "", "empty": True,
                             "reason": f"等 task-started 超时（最后收到 {last_event or '什么都没有'}）"
                                       "—— 可能是模型 ID 不支持实时（换成 *-realtime 的模型）",
-                            "resolved_language": language}
+                            "resolved_language": language})
                 # ② 送音频（100 ms 一帧）
+                send_at = time.perf_counter()
                 chunk = 1600 * 2
                 for start in range(0, len(pcm), chunk):
                     ws.send(pcm[start:start + chunk])
@@ -1984,6 +1998,7 @@ class FunAsrEngine(AsrEngine):
                                                 "streaming": "duplex"},
                                      "payload": {"input": {}}},
                                     ensure_ascii=False))
+                timings["send_audio"] = round(time.perf_counter() - send_at, 3)
                 # ④ 收结果直到 task-finished
                 #
                 # ⚠️ 5.99：**不能干等 30 秒**。实测有些账号/模型只回 `result-generated`
@@ -2026,18 +2041,19 @@ class FunAsrEngine(AsrEngine):
                         saw_finished = True
                         break
                     elif name == "task-failed":
-                        return {"text": "", "empty": True,
+                        return with_timings({"text": "", "empty": True,
                                 "reason": "DashScope task-failed（端点 " + used_url + "）："
                                           + _describe_header(event.get("header") or {}),
-                                "resolved_language": language}
+                                "resolved_language": language})
+                timings["collect"] = round(time.perf_counter() - send_at - timings.get("send_audio", 0.0), 3)
         except Exception as error:                                  # noqa: BLE001
             # ⚠️ 5.96：实测遇到过「收到了 result-generated，却等不到 task-finished」
             #    （TimeoutError after 29.7s）。那时**文字已经拿到了**，当失败丢掉是最坑的选择
             #    —— 用户看到的是"没字幕"，而实际上识别已经完成了。
             partial = joined_text()
             if partial:
-                return {"text": partial, "empty": False, "reason": None,
-                        "resolved_language": language}
+                return with_timings({"text": partial, "empty": False, "reason": None,
+                        "resolved_language": language})
             # ⚠️ 5.98：握手阶段的头校验失败必须是**人话**。第三方原始 traceback
             #    （`InvalidHeaderValue: invalid Authorization header`）连"是密钥的问题"
             #    都没说出口，现场只能靠猜。
@@ -2045,18 +2061,20 @@ class FunAsrEngine(AsrEngine):
             if "Header" in type(error).__name__ or "invalid Authorization" in str(error):
                 hint = ("—— 这是 **API Key 里有 HTTP 头放不下的字符**（换行/控制字符最常见，"
                         f"长 key 复制时被折成两行就会这样）。重设一个干净的 {self.ENV_KEY} 即可")
-            return {"text": "", "empty": True,
+            return with_timings({"text": "", "empty": True,
                     "reason": (f"DashScope 请求失败：{type(error).__name__}: {error}"
                                f"（最后收到的事件：{last_event or '无'}）{hint}"),
-                    "resolved_language": language}
+                    "resolved_language": language})
         text = joined_text()
         # 没出字时说清是"服务端说完了但没内容"还是"根本没等到结束"——
         # 这两种的下一步完全不同（前者查音频/模型，后者查协议/网络）
         if text:
-            return {"text": text, "empty": False, "reason": None, "resolved_language": language}
+            return with_timings({"text": text, "empty": False, "reason": None,
+                                 "resolved_language": language})
         reason = ("Fun-ASR 没出字" if saw_finished
                   else f"等不到 task-finished，且一个字都没收到（最后收到 {last_event or '什么都没有'}）")
-        return {"text": "", "empty": True, "reason": reason, "resolved_language": language}
+        return with_timings({"text": "", "empty": True, "reason": reason,
+                             "resolved_language": language})
 
 
 def build_engines(model_class, args):
@@ -2622,6 +2640,14 @@ def run_try(args, np, engines):
         elapsed_sum += elapsed
         audio_sum += seconds
         text = str(outcome.get("text") or "")
+        timings = outcome.get("timings") if isinstance(outcome.get("timings"), dict) else {}
+        if timings:
+            # 分阶段耗时：整体慢的时候，"慢在哪一段"是唯一有用的信息
+            print("[try]    分阶段：" + " / ".join(
+                f"{label} {timings.get(key, 0):.2f}s"
+                for key, label in (("connect", "连接"), ("wait_started", "等开始"),
+                                   ("send_audio", "送音频"), ("collect", "收结果"))
+                if key in timings), file=sys.stderr)
         if outcome.get("empty") or text.strip() == "":
             total["empty"] += 1
             print(f"[try] · 没出字（耗时 {elapsed:.2f}s，RTF {elapsed / seconds:.2f}）："
