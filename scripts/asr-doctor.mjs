@@ -55,7 +55,7 @@ function run(command, argv, timeout = 20000) {
 const PY_PROBE = [
   'import json, sys',
   'out = {"python": sys.version.split()[0], "packages": {}}',
-  'for name in ("faster_whisper", "ctranslate2", "sherpa_onnx", "numpy", "torch", "onnxruntime"):',
+  'for name in ("faster_whisper", "ctranslate2", "sherpa_onnx", "numpy", "torch", "onnxruntime", "websockets"):',
   '    try:',
   '        module = __import__(name)',
   '        out["packages"][name] = getattr(module, "__version__", "?")',
@@ -257,6 +257,15 @@ function main() {
         (hasModule('nemo_toolkit') || hasModule('nemo')) ? '' : '没装 NeMo（pip install -U "nemo_toolkit[asr]"）']
         .filter((one) => one !== '').join('；') || '（依赖齐了，仍需实测 GPU 速度）',
       detail: '本地·NeMo/GPU（P40 用 fp32）',
+    },
+    {
+      name: 'funasr',
+      ready: hasModule('websockets') && Boolean(process.env.DASHSCOPE_API_KEY),
+      needs: [
+        hasModule('websockets') ? 'websockets 已装' : '没装 websockets（pip install websockets）',
+        process.env.DASHSCOPE_API_KEY ? 'DASHSCOPE_API_KEY 已设置' : '缺 DASHSCOPE_API_KEY',
+      ].join('；'),
+      detail: '云端·DashScope 实时（葡语）',
     },
     {
       name: 'tencent',

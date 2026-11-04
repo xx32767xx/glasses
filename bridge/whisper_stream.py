@@ -1650,6 +1650,118 @@ class TencentEngine(AsrEngine):
                 "resolved_language": language}
 
 
+# ── 阿里 DashScope Fun-ASR（5.84）────────────────────────────────────────────
+#
+# 为什么是它：用户那份 500 条 CORAA 巴葡评测里，Fun-ASR 是**最快且唯一 100% 成功**的
+# （P50/P95 = 938/3202 ms，微平均 WER 19.81%）。准确率最高的是豆包（16.02%），
+# 但 P95 5362 ms —— 两个都接，用策略表 A/B，而不是先替用户选。
+#
+# 协议形状（DashScope 实时语音识别，WebSocket + JSON 控制帧）：
+#   连 wss://dashscope.aliyuncs.com/api-ws/v1/inference，头 `Authorization: bearer <key>`
+#   发 run-task → 收 task-started → 发**二进制**音频帧 → 发 finish-task
+#   → 收若干 result-generated（payload.output.sentence.text）→ task-finished
+# ⚠️ 所有字段名都集中在这一处；第一次真调用若报错，把 DashScope 的原文贴出来改这里就够。
+DASHSCOPE_WS_URL = "wss://dashscope.aliyuncs.com/api-ws/v1/inference"
+DASHSCOPE_MODEL_BY_LANG = {"pt-BR": "fun-asr-realtime", "zh-CN": "fun-asr-realtime",
+                           "en-US": "fun-asr-realtime"}
+
+
+class FunAsrEngine(AsrEngine):
+    """阿里 DashScope 实时语音识别（Fun-ASR），按句调用一次 WebSocket。"""
+
+    key = "funasr"
+    display = "DashScope Fun-ASR"
+    ENV_KEY = "DASHSCOPE_API_KEY"
+
+    def __init__(self, model_class, args):
+        self.args = args
+
+    def describe(self, profile):
+        return f"funasr:{profile.get('model') or DASHSCOPE_MODEL_BY_LANG['pt-BR']}"
+
+    def load(self, profile, device):
+        try:
+            import websockets.sync.client                          # noqa: F401
+        except ImportError as error:
+            raise RuntimeError(
+                "funasr 需要 websockets 包（DashScope 的实时识别是 WebSocket 协议）。"
+                f"当前环境导入失败：{type(error).__name__}: {error}。"
+                "装法（**由部署方执行**）：pip install websockets") from error
+        api_key = os.environ.get(self.ENV_KEY, "").strip()
+        if not api_key:
+            raise RuntimeError(
+                f"funasr 缺少 API Key：请设置环境变量 {self.ENV_KEY}"
+                "（DashScope 控制台里创建；只从环境变量读，不写进仓库）")
+        return {"api_key": api_key}
+
+    def transcribe(self, handle, audio, language, profile=None):
+        """一句话一条连接：run-task → 音频 → finish-task → 收最终文本。
+
+        <p>为什么不用长连接池：我们的段是**离散的整句**（0.6–20 秒），每段一条连接
+        换来的是"没有跨句状态"—— 而跨句状态正是同传里最难查的那类 bug。
+        代价是每段多一次握手（几十毫秒），可接受。
+        """
+        import json as _json
+        from websockets.sync.client import connect
+
+        model = str((profile or {}).get("model") or "").strip() \
+            or DASHSCOPE_MODEL_BY_LANG.get(language_tag(language) or "", "fun-asr-realtime")
+        task_id = f"leion-{int(time.time() * 1000)}"
+        run_task = {
+            "header": {"action": "run-task", "task_id": task_id, "streaming": "duplex"},
+            "payload": {
+                "task_group": "audio", "task": "asr", "function": "recognition",
+                "model": model,
+                "parameters": {"format": "pcm", "sample_rate": 16000},
+                "input": {},
+            },
+        }
+        samples = np.clip(np.asarray(audio, dtype=np.float32), -1.0, 1.0)
+        pcm = (samples * 32767.0).astype("<i2").tobytes()
+        texts = []
+        try:
+            with connect(DASHSCOPE_WS_URL, max_size=None, open_timeout=10,
+                         additional_headers={"Authorization": f"bearer {handle['api_key']}"}) as ws:
+                ws.send(_json.dumps(run_task, ensure_ascii=False))
+                # 音频按 100 ms 一帧发（DashScope 文档建议每帧 ≤ 100 ms）
+                chunk = 1600 * 2
+                for start in range(0, len(pcm), chunk):
+                    ws.send(pcm[start:start + chunk])
+                ws.send(_json.dumps({"header": {"action": "finish-task", "task_id": task_id}},
+                                    ensure_ascii=False))
+                deadline = time.time() + 30
+                while time.time() < deadline:
+                    message = ws.recv(timeout=max(1.0, deadline - time.time()))
+                    if isinstance(message, (bytes, bytearray)):
+                        continue
+                    try:
+                        event = _json.loads(message)
+                    except Exception:                              # noqa: BLE001
+                        continue
+                    header = event.get("header") or {}
+                    name = str(header.get("event") or "")
+                    if name == "result-generated":
+                        sentence = (((event.get("payload") or {}).get("output") or {})
+                                    .get("sentence") or {})
+                        text = str(sentence.get("text") or "").strip()
+                        if text:
+                            texts.append(text)
+                    elif name in ("task-finished", "task-failed"):
+                        if name == "task-failed":
+                            return {"text": "", "empty": True,
+                                    "reason": "DashScope task-failed：" + _json.dumps(
+                                        header, ensure_ascii=False),
+                                    "resolved_language": language}
+                        break
+        except Exception as error:                                  # noqa: BLE001
+            return {"text": "", "empty": True,
+                    "reason": f"DashScope 请求失败：{type(error).__name__}: {error}",
+                    "resolved_language": language}
+        text = "".join(texts).strip()
+        return {"text": text, "empty": text == "",
+                "reason": None if text else "Fun-ASR 没出字", "resolved_language": language}
+
+
 def build_engines(model_class, args):
     """引擎注册表。**加一个新引擎 = 在这里加一行 + 写一个 AsrEngine 子类。**
 
@@ -1665,6 +1777,7 @@ def build_engines(model_class, args):
         WhisperEngine.key: WhisperEngine(model_class, args),
         ParakeetEngine.key: ParakeetEngine(model_class, args),
         TencentEngine.key: TencentEngine(model_class, args),
+        FunAsrEngine.key: FunAsrEngine(model_class, args),
     }
 
 

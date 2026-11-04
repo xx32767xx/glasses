@@ -33,6 +33,7 @@ import contextlib
 import inspect
 import io
 import json
+import types
 import re
 from pathlib import Path
 
@@ -2600,7 +2601,8 @@ def main():
         data_dir = None
     engines = whisper_stream.build_engines(None, _Args())
     check("注册表里有 whisper / parakeet / tencent",
-          set(engines) == {"whisper", "parakeet", "tencent"}, str(sorted(engines)))
+          {"whisper", "parakeet", "tencent", "funasr"}.issubset(set(engines)),
+          str(sorted(engines)))
 
     # 5.77：parakeet 有两条 runtime —— onnx（CPU int8，量准确率）与 nemo（GPU，上产线）。
     # 同一个引擎键、策略里一个字段切换，是为了"不用等另一套代码写完就能 A/B"。
@@ -2791,6 +2793,41 @@ def main():
     check("wav 封装是 16k 单声道 16bit（云端要的是音频文件不是裸 PCM）",
           wav[:4] == b"RIFF" and wav[8:12] == b"WAVE" and int.from_bytes(wav[24:28], "little") == 16000,
           wav[:16])
+
+    # 5.84：葡语走 DashScope Fun-ASR —— 缺 websockets / 缺 key 都必须大声报错
+    funasr = engines["funasr"]
+    check("funasr 的 describe 带模型名", "fun-asr" in funasr.describe({}), funasr.describe({}))
+    stub_modules = {}
+    for name in ("websockets", "websockets.sync", "websockets.sync.client"):
+        stub_modules[name] = sys.modules.get(name)
+        sys.modules[name] = types.ModuleType(name)
+    sys.modules["websockets.sync.client"].connect = lambda *args, **kwargs: None
+    try:
+        os.environ.pop("DASHSCOPE_API_KEY", None)
+        no_key = ""
+        try:
+            funasr.load({}, "cpu")
+        except RuntimeError as error:
+            no_key = str(error)
+        check("funasr 缺 API Key 时报出环境变量名（不静默退回 whisper）",
+              "DASHSCOPE_API_KEY" in no_key, no_key)
+        os.environ["DASHSCOPE_API_KEY"] = "sk-fake"
+        check("给了 key 就能载入（把 key 收进句柄，不外泄到日志）",
+              funasr.load({}, "cpu")["api_key"] == "sk-fake")
+        os.environ.pop("DASHSCOPE_API_KEY", None)
+    finally:
+        for name, module in stub_modules.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+    real_missing = ""
+    try:
+        funasr.load({}, "cpu")
+    except RuntimeError as error:
+        real_missing = str(error)
+    check("真的没装 websockets 时说清装什么（并且说明这是 WS 协议才需要的）",
+          "websockets" in real_missing and "pip install websockets" in real_missing, real_missing)
 
     # 表坏了：保留旧表，绝不能"读到半张表就当没有"
     broken_dir = Path(ROOT / "var" / "test" / "asr-model-map")
