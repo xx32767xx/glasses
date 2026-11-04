@@ -130,8 +130,13 @@ function main() {
   if (args.strategy !== null) {
     const strategies = table.strategies ?? {}
     if (strategies[args.strategy] === undefined) {
-      // ⚠️ 写一个不存在的策略名不会报错，识别侧会悄悄按 default 跑 —— 所以这里必须拦住
+      // ⚠️ 写一个不存在的策略名不会报错，识别侧会悄悄按 default 跑 —— 所以这里必须拦住。
+      // 5.80：并且要说清"缺的那些怎么补" —— 示例表和服务器上的表是**两份**，
+      // 新增的策略（en-parakeet / en-tencent…）得先 merge 进来，否则这里永远找不到。
       console.error(`表里没有策略 ${args.strategy}。可选：${Object.keys(strategies).join(' / ') || '（一个都没有）'}`)
+      console.error('缺的策略可以从仓库的示例表合并进来（只加不覆盖、会先备份）：'
+        + `\n  node scripts/asr-models-merge.mjs --data-dir ${root} --only ${args.strategy} --write`
+        + '\n  先看会加什么就去掉 --write（dry-run）。')
       return 2
     }
     const languages = { ...(next.languages ?? {}) }
