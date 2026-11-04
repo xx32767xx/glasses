@@ -78,7 +78,16 @@
     "en-parakeet": {
       "note": "英语本地首选（5.75）：NVIDIA Parakeet TDT 0.6B v2 的 ONNX 导出，走 sherpa-onnx（CPU int8，不需要 torch）。外部报告：总体 WER 2.13%、美音 0.93%、巴西口音英语 2.52%。model 写的是**模型目录**。",
       "engine": "parakeet",
+      "runtime": "onnx",
       "model": "/opt/leion/models/parakeet-tdt-0.6b-v2",
+      "langs": ["en-US"]
+    },
+    "en-parakeet-gpu": {
+      "note": "同一份 Parakeet 的 **GPU 路线**（5.77）：NeMo 2.x + torch。8 核 Haswell 上 CPU 版大约 RTF 0.3~0.8（17 秒的段要 5~14 秒），上产线得靠这条。⚠️ P40 是 Pascal（无 FP16 张量核心），别写 compute_type=fp16。需要 pip install -U \"nemo_toolkit[asr]\" torch。",
+      "engine": "parakeet",
+      "runtime": "nemo",
+      "model": "nvidia/parakeet-tdt-0.6b-v2",
+      "compute_type": "fp32",
       "langs": ["en-US"]
     },
     "en-tencent": {

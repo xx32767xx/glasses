@@ -1244,16 +1244,30 @@ class ParakeetEngine(AsrEngine):
     """
 
     key = "parakeet"
-    display = "本地 parakeet(ONNX)"
+    display = "本地 parakeet"
     ENV_DIR = "PARAKEET_MODEL_DIR"
     REQUIRED_SUFFIXES = ("tokens.txt",)
     REQUIRED_PREFIXES = ("encoder", "decoder", "joiner")
+    # 两种后端（5.77）：同一个引擎键，策略里用 `runtime` 字段选
+    #   onnx → sherpa-onnx（CPU int8，不装 torch；适合把**准确率**量准）
+    #   nemo → NeMo 2.x（GPU；适合上产线，但 P40 是 Pascal，没有 FP16 张量核心）
+    RUNTIMES = ("onnx", "nemo")
 
     def __init__(self, model_class, args):
         self.args = args
 
+    def runtime_of(self, profile):
+        wanted = str((profile or {}).get("runtime") or "").strip().lower() or "onnx"
+        if wanted not in self.RUNTIMES:
+            raise RuntimeError(
+                f"parakeet 不认识的 runtime `{wanted}`：只能是 {' / '.join(self.RUNTIMES)}"
+                "（onnx = sherpa-onnx CPU int8；nemo = NeMo + torch GPU）")
+        return wanted
+
     def describe(self, profile):
-        return f"parakeet:{profile.get('model') or self.ENV_DIR}"
+        runtime = str((profile or {}).get("runtime") or "onnx").strip().lower()
+        tag = "" if runtime == "onnx" else f"[{runtime}]"
+        return f"parakeet{tag}:{profile.get('model') or self.ENV_DIR}"
 
     def model_dir(self, profile):
         """这一份 parakeet 的模型目录（找不到就抛出**能照着做**的报错）。"""
@@ -1277,14 +1291,23 @@ class ParakeetEngine(AsrEngine):
             + "tokens.txt + encoder*.onnx + decoder*.onnx + joiner*.onnx）")
 
     def load(self, profile, device):
+        """按 `runtime` 分会两条路；**缺依赖时各自报清缺什么**，不互相兜底。"""
+        runtime = self.runtime_of(profile)
+        if runtime == "onnx":
+            return self.load_onnx(profile, device)
+        return self.load_nemo(profile, device)
+
+    def load_onnx(self, profile, device):
+        """ONNX 路：sherpa-onnx + int8（这台机器只需 onnxruntime，不需要 torch）。"""
         # 1) 依赖：sherpa-onnx（这台机器上目前没装，那就直接说清楚，别在段上反复失败）
         try:
             import sherpa_onnx                                     # noqa: F401
         except ImportError as error:
             raise RuntimeError(
-                "parakeet 需要 sherpa-onnx（它只依赖 onnxruntime，不需要 torch）。"
+                "parakeet(runtime=onnx) 需要 sherpa-onnx（它只依赖 onnxruntime，不需要 torch）。"
                 f"当前环境导入失败：{type(error).__name__}: {error}。"
-                "装法（**由部署方执行**）：pip install sherpa-onnx") from error
+                "装法（**由部署方执行**）：pip install sherpa-onnx。"
+                "如果你想要 GPU 那条路，把策略里的 runtime 改成 nemo（需要 torch + NeMo）") from error
         directory = self.model_dir(profile)
         found = set(os.listdir(directory))
         missing = [suffix for suffix in self.REQUIRED_SUFFIXES if suffix not in found]
@@ -1295,7 +1318,8 @@ class ParakeetEngine(AsrEngine):
             raise RuntimeError(
                 f"parakeet 模型目录 {directory} 里缺文件：{'、'.join(missing)}。"
                 "（sherpa-onnx 的 NeMo transducer 模型需要 encoder/decoder/joiner 三个 onnx + tokens.txt）")
-        threads = int((profile or {}).get("beam_size") or 0) or max(1, (os.cpu_count() or 4) // 2)
+        # 8 核机器上把线程全给它：CPU 路线的速度几乎只由线程数和核心架构决定
+        threads = int((profile or {}).get("beam_size") or 0) or max(1, os.cpu_count() or 4)
         kwargs = {
             "encoder": self._pick(found, directory, "encoder"),
             "decoder": self._pick(found, directory, "decoder"),
@@ -1313,17 +1337,68 @@ class ParakeetEngine(AsrEngine):
             recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(**kwargs)
         except Exception as error:                                  # noqa: BLE001
             raise RuntimeError(
-                f"parakeet 加载失败（目录 {directory}，参数 {sorted(kwargs)}）："
+                f"parakeet(onxx) 加载失败（目录 {directory}，参数 {sorted(kwargs)}）："
                 f"{type(error).__name__}: {error}。"
                 "常见原因：onnx 与 sherpa-onnx 版本不匹配，或这份导出不是 NeMo transducer"
                 "（那样要在策略里把 model_type 改对）") from error
-        return {"recognizer": recognizer, "dir": directory, "threads": threads}
+        return {"runtime": "onnx", "recognizer": recognizer, "dir": directory, "threads": threads}
+
+    def load_nemo(self, profile, device):
+        """NeMo 路：GPU + PyTorch（**预研用**，P40 上请用 fp32）。
+
+        <p>为什么这条也写进来：它是"真上产线"的候选（sherpa-onnx 在 8 核 Haswell 上
+        大概 RTF 0.3~0.8，17 秒的段要 5~14 秒）。同一个引擎键下换 `runtime` 就能 A/B，
+        不必等写完另一套代码。
+        """
+        try:
+            import nemo.collections.asr as nemo_asr                 # noqa: F401
+        except ImportError as error:
+            raise RuntimeError(
+                "parakeet(runtime=nemo) 需要 NeMo + torch。"
+                f"当前环境导入失败：{type(error).__name__}: {error}。"
+                "装法（**由部署方执行**，几个 GB，且 CUDA 版本要对）："
+                'pip install -U "nemo_toolkit[asr]" torch'
+                "。只想量准确率的话不必装它：把 runtime 改回 onnx（sherpa-onnx，几十 MB）") from error
+        name = str((profile or {}).get("model") or "").strip()
+        if name == "":
+            raise RuntimeError(
+                "parakeet(runtime=nemo) 的 model 要写**模型名或 .nemo 路径**"
+                "（例如 nvidia/parakeet-tdt-0.6b-v2），不能留空 —— ONNX 目录那条路不适用")
+        precision = str((profile or {}).get("compute_type") or "").strip().lower() or "fp32"
+        try:
+            model = nemo_asr.models.ASRModel.from_pretrained(model_name=name)
+        except Exception as error:                                  # noqa: BLE001
+            raise RuntimeError(
+                f"NeMo 加载 {name} 失败：{type(error).__name__}: {error}。"
+                "常见原因：模型名写错、没有网络/没预下载、或 NeMo 版本与模型不匹配") from error
+        target = "cuda" if str(device or "").startswith("cuda") else "cpu"
+        try:
+            if hasattr(model, "eval"):
+                model.eval()
+            if hasattr(model, "to"):
+                model.to(target)
+            # ⚠️ Pascal（P40）没有 FP16 张量核心：fp16 在这里只会更慢甚至报错
+            if precision == "fp16":
+                if hasattr(model, "half"):
+                    model.half()
+            elif hasattr(model, "float"):
+                model.float()
+        except Exception as error:                                  # noqa: BLE001
+            raise RuntimeError(
+                f"NeMo 模型搬到 {target}/{precision} 失败：{type(error).__name__}: {error}。"
+                "P40 是 Pascal（无 FP16 张量核心），请把 compute_type 删掉或写成 fp32") from error
+        return {"runtime": "nemo", "model": model, "device": target, "precision": precision}
 
     @staticmethod
     def _pick(found, directory, prefix):
-        for name in sorted(found):
-            if name.startswith(prefix) and name.endswith(".onnx"):
+        """挑 encoder/decoder/joiner 的 onnx；**优先 int8 量化版**（CPU 上快很多）。"""
+        candidates = [name for name in sorted(found)
+                      if name.startswith(prefix) and name.endswith(".onnx")]
+        for name in candidates:
+            if "int8" in name.lower():
                 return os.path.join(directory, name)
+        for name in candidates:
+            return os.path.join(directory, name)
         return os.path.join(directory, f"{prefix}.onnx")      # 走不到（前面已校验），留着防呆
 
     def transcribe(self, handle, audio, language, profile=None):
@@ -1334,12 +1409,30 @@ class ParakeetEngine(AsrEngine):
                     "reason": f"parakeet 只支持英语（这一段是 {tag or '未知语种'}）→ 跳过，"
                               f"要识别这种语言请给那个语种配 whisper/云端引擎",
                     "resolved_language": language}
+        if handle.get("runtime") == "nemo":
+            return self.transcribe_nemo(handle, audio, language)
         recognizer = handle["recognizer"]
         stream = recognizer.create_stream()
         stream.accept_waveform(16000, audio)
         recognizer.decode_stream(stream)
         text = str(stream.result.text or "").strip()
         return {"text": text, "empty": text == "", "reason": None if text else "parakeet 没出字",
+                "resolved_language": "en"}
+
+    def transcribe_nemo(self, handle, audio, language):
+        """NeMo 的 `transcribe` 在不同版本返回 str 或 Hypothesis —— 两种都要吃得下。"""
+        model = handle["model"]
+        try:
+            result = model.transcribe([audio])
+        except Exception as error:                                  # noqa: BLE001
+            return {"text": "", "empty": True,
+                    "reason": f"NeMo 转写失败：{type(error).__name__}: {error}",
+                    "resolved_language": language}
+        first = result[0] if isinstance(result, (list, tuple)) and result else result
+        text = getattr(first, "text", first)
+        text = str(text or "").strip()
+        return {"text": text, "empty": text == "",
+                "reason": None if text else "parakeet(NeMo) 没出字",
                 "resolved_language": "en"}
 
 

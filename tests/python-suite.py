@@ -2601,6 +2601,60 @@ def main():
     check("注册表里有 whisper / parakeet / tencent",
           set(engines) == {"whisper", "parakeet", "tencent"}, str(sorted(engines)))
 
+    # 5.77：parakeet 有两条 runtime —— onnx（CPU int8，量准确率）与 nemo（GPU，上产线）。
+    # 同一个引擎键、策略里一个字段切换，是为了"不用等另一套代码写完就能 A/B"。
+    parakeet = engines["parakeet"]
+    check("runtime 缺省是 onnx（不装 torch 也能跑的那条）", parakeet.runtime_of({}) == "onnx")
+    check("runtime 大小写与空白都容忍", parakeet.runtime_of({"runtime": " NeMo "}) == "nemo")
+    unknown_runtime = ""
+    try:
+        parakeet.runtime_of({"runtime": "tensorrt"})
+    except RuntimeError as error:
+        unknown_runtime = str(error)
+    check("未知 runtime 报错并列出可选项（不猜成一个后端）",
+          "tensorrt" in unknown_runtime and "onnx" in unknown_runtime
+          and "nemo" in unknown_runtime, unknown_runtime)
+
+    onnx_missing = ""
+    try:
+        parakeet.load({"runtime": "onnx", "model": "/nope"}, "cpu")
+    except RuntimeError as error:
+        onnx_missing = str(error)
+    check("onnx 路缺依赖时说清是 sherpa-onnx（并提示另一条路要改成 nemo）",
+          "sherpa-onnx" in onnx_missing and "runtime 改成 nemo" in onnx_missing, onnx_missing)
+    nemo_missing = ""
+    try:
+        parakeet.load({"runtime": "nemo", "model": "nvidia/parakeet-tdt-0.6b-v2"}, "cuda")
+    except RuntimeError as error:
+        nemo_missing = str(error)
+    check("nemo 路缺依赖时说清要 NeMo + torch（并提示只想量准确率可改 onnx）",
+          "NeMo" in nemo_missing and "torch" in nemo_missing and "onnx" in nemo_missing, nemo_missing)
+    check("两条路的报错互不冒充（onnx 的不提 torch 安装命令，nemo 的不提 sherpa-onnx 安装）",
+          "pip install sherpa-onnx" not in nemo_missing)
+    check("onnx 模型文件优先挑 int8 量化版（CPU 上快很多）",
+          parakeet._pick({"encoder.onnx", "encoder.int8.onnx"}, "/d", "encoder").endswith("encoder.int8.onnx"),
+          parakeet._pick({"encoder.onnx", "encoder.int8.onnx"}, "/d", "encoder"))
+    check("没有 int8 时退回普通版", parakeet._pick({"encoder.onnx"}, "/d", "encoder").endswith("encoder.onnx"))
+
+    class _FakeNemoModel:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def transcribe(self, audios):
+            return self.payload
+
+    class _Hypothesis:
+        text = "hello from nemo"
+
+    check("NeMo 返回字符串也吃得下",
+          parakeet.transcribe_nemo({"model": _FakeNemoModel(["plain text"])}, None, "en")["text"]
+          == "plain text")
+    check("NeMo 返回 Hypothesis 对象也吃得下（不同版本形态不同）",
+          parakeet.transcribe_nemo({"model": _FakeNemoModel([_Hypothesis()])}, None, "en")["text"]
+          == "hello from nemo")
+    check("NeMo 转写抛错时变成空结果+原因（不让整条流水线崩）",
+          parakeet.transcribe_nemo({"model": object()}, None, "en")["empty"] is True)
+
     missing_sherpa = ""
     try:
         engines["parakeet"].load({"engine": "parakeet", "model": "/nope"}, "cpu")

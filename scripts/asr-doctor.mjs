@@ -222,12 +222,20 @@ function main() {
       detail: '本地·CTranslate2',
     },
     {
-      name: 'parakeet',
+      name: 'parakeet(onnx)',
       ready: hasModule('sherpa_onnx') && paraDir !== '',
       needs: [hasModule('sherpa_onnx') ? '' : '没装 sherpa-onnx（pip install sherpa-onnx，不需要 torch）',
         paraDir === '' ? `模型目录没找到（找过 ${paraCandidates.join(' / ')}）` : `模型在 ${paraDir}`]
         .filter((one) => one !== '').join('；'),
       detail: '本地·ONNX int8/CPU',
+    },
+    {
+      name: 'parakeet(nemo)',
+      ready: hasModule('torch') && (hasModule('nemo_toolkit') || hasModule('nemo')),
+      needs: [hasModule('torch') ? '' : '没装 torch',
+        (hasModule('nemo_toolkit') || hasModule('nemo')) ? '' : '没装 NeMo（pip install -U "nemo_toolkit[asr]"）']
+        .filter((one) => one !== '').join('；') || '（依赖齐了，仍需实测 GPU 速度）',
+      detail: '本地·NeMo/GPU（P40 用 fp32）',
     },
     {
       name: 'tencent',
