@@ -501,6 +501,13 @@ def recognize(clips, result, rate, args, unit, model):
 
     再往上一层，每条口径又各有**严格**与**规范化**两个数（`asr_score` 里的两条轨）：
     这两个数的差回答的是"这些错里有多少只是写法差异（数字写成词 vs 写成阿拉伯数字）"。
+
+    ⚠️ **`vad_filter` 必须与产线一致（缺省 False）**。2026-11 实测踩到了：
+    这个函数原来写死 `vad_filter=True`，而产线 `bridge/whisper_stream.py` 是
+    `vad_filter=False`（那里有一行注释："我们已经按能量切好了，不需要再切"）。
+    于是同一批音频在评测里被**再切一次**：silero VAD 把每段的首尾当静音削掉，
+    短段的输出直接变成空串或只剩半句 —— 表现就是"删除占 88%"，而那根本不是识别能力。
+    这种"量的是另一个东西"的错最贵：它会让所有引擎都显得很差，然后得出"该换引擎"的结论。
     """
     stream, spans = result["stream"], result["spans"]
     elapsed = 0.0
@@ -516,7 +523,7 @@ def recognize(clips, result, rate, args, unit, model):
         start = time.perf_counter()
         pieces, _ = model.transcribe(
             audio, language=args.language, beam_size=args.beam_size,
-            vad_filter=True, condition_on_previous_text=False,
+            vad_filter=bool(args.vad), condition_on_previous_text=False,
             initial_prompt=args.initial_prompt,
         )
         text = "".join(p.text for p in pieces).strip()
@@ -574,8 +581,29 @@ def print_recognize_row(silence_ms, gap_ms, outcome, unit, elapsed_s):
             "substitutions": outcome["strict"]["substitutions"],
             "deletions": outcome["strict"]["deletions"],
             "insertions": outcome["strict"]["insertions"],
+            "joined_substitutions": outcome["joined_strict"]["substitutions"],
+            "joined_deletions": outcome["joined_strict"]["deletions"],
+            "joined_insertions": outcome["joined_strict"]["insertions"],
             "missedStrict": outcome["missed"]["strict"],
             "missedNormalized": outcome["missed"]["normalized"]}
+
+
+def split_artifact_references(run):
+    """哪些"参考"被**超过一段**共用 —— 那些段是切碎的产物，不是缺陷。
+
+    <p>为什么必须区分：一句话被切成两段时，两段各自只念了半句，却都要对着**整句**参考算，
+    于是两段都记成"漏了一半字"。这是**逐段口径的定义决定的**，不是模型漏了内容
+    （代码里 `recognize()` 的注释早就写了这一条）。2026-11 实测：英语 500ms 配置下
+    逐段口径里删除占 88%，就是这个效应 —— 如果不分开算，会误判成"VAD 吃掉了语音"
+    而去改切句/VAD，越改越偏。
+
+    返回参考文本 → 出现次数的字典，调用方只看 >1 的那些。
+    """
+    counts = {}
+    for item in run.get("records", []):
+        key = item.get("reference", "")
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 def worst_segments(run, unit, limit):
@@ -584,9 +612,17 @@ def worst_segments(run, unit, limit):
     为什么需要：一个 14.3% 的整体错误率可以是"普遍小错"，也可以是"少数几条崩了"，
     这两种情况的修法完全不同，而汇总数字分不出来。清单里每条都带参考/识别/逐项差异
     （`漏X` / `多X` / `A→B`），照着听就能定性。
+
+    ⚠️ **切碎产物不算缺陷**：参考被 ≥2 段共用的那些段（一句话被切开）会被排除，
+    并在返回里单独报出数量 —— 它们的逐段错误率按定义就高，列进"最差"只会误导排查方向。
     """
+    counts = split_artifact_references(run)
     rows = []
+    skipped = 0
     for index, item in enumerate(run.get("records", [])):
+        if counts.get(item.get("reference", ""), 0) > 1:
+            skipped += 1
+            continue
         score = error_rate(item["reference"], item["hypothesis"], unit)
         rows.append({"file": f"{run.get('silenceMs')}ms-seg{index}",
                      "seconds": round(float(item.get("endS", 0)) - float(item.get("startS", 0)), 2),
@@ -595,7 +631,8 @@ def worst_segments(run, unit, limit):
                      "deletions": score["deletions"], "insertions": score["insertions"],
                      "reference": item["reference"], "hypothesis": item["hypothesis"]})
     # threshold=0.0 → 只要错了一点就进清单（limit 控制条数）
-    return problem_samples(rows, threshold=0.0, unit=unit, limit=limit)
+    picked = problem_samples(rows, threshold=0.0, unit=unit, limit=limit)
+    return picked, skipped
 
 
 def write_dump(path, clips, unit, args, runs):
@@ -669,15 +706,28 @@ def run_rescore(path, json_out=None, worst=0):
                   ("substitutions", "deletions", "insertions")}
         grams = totals["substitutions"] + totals["deletions"] + totals["insertions"]
         if grams:
-            print(f"  严格口径的错由什么组成（全部配置合计）：替换 {totals['substitutions']} "
+            print(f"  逐段口径的错由什么组成（全部配置合计）：替换 {totals['substitutions']} "
                   f"({totals['substitutions'] / grams * 100:.0f}%)、"
                   f"删除 {totals['deletions']} ({totals['deletions'] / grams * 100:.0f}%)、"
                   f"插入 {totals['insertions']} ({totals['insertions'] / grams * 100:.0f}%)")
-            print("    删除多 → 切掉/被吃掉（切句或 VAD 的锅）；替换多 → 真听错；"
-                  "插入多 → 幻听/重复循环")
+            print("    ⚠️ 逐段口径的删除**天然偏高**：一句话被切成两段时，两段各对着整句参考算，"
+                  "都记成漏了一半。要看真实构成必须看下面那行『整段口径』")
+        # 整段口径的 S/D/I 才是"观众拿到的文字错在哪"—— 汇总数字里最该看的那一行
+        joined_totals = {key: sum(row["joined_" + key] for row in rows) for key in
+                         ("substitutions", "deletions", "insertions")}
+        joined_grams = sum(joined_totals.values())
+        if joined_grams:
+            print(f"  整段口径的错由什么组成（全部配置合计）：替换 {joined_totals['substitutions']} "
+                  f"({joined_totals['substitutions'] / joined_grams * 100:.0f}%)、"
+                  f"删除 {joined_totals['deletions']} ({joined_totals['deletions'] / joined_grams * 100:.0f}%)、"
+                  f"插入 {joined_totals['insertions']} ({joined_totals['insertions'] / joined_grams * 100:.0f}%)")
+            print("    判读：删除多 → 切句/VAD 把语音吃掉了；替换多 → 真听错；插入多 → 幻听/重复循环")
     if worst:
         for run in runs:
-            picked = worst_segments(run, unit, worst)
+            picked, skipped = worst_segments(run, unit, worst)
+            if skipped:
+                print(f"\n  （静音 {run.get('silenceMs')}ms 有 {skipped} 段是一句话被切开的产物，"
+                      f"逐段口径必然偏高，已从清单里排除）")
             if not picked:
                 continue
             print(f"\n  ⚠️ 最差的 {len(picked)} 段（静音 {run.get('silenceMs')}ms / "
@@ -727,6 +777,11 @@ def parse_args(argv=None):
     parser.add_argument("--language", default=None)
     parser.add_argument("--beam-size", type=int, default=5)
     parser.add_argument("--initial-prompt", default=None)
+    parser.add_argument("--vad", action="store_true",
+                        help="识别时开 faster-whisper 内置 VAD。**缺省关** —— 与产线一致："
+                             "我们按能量切好段了，再让 silero 削一次首尾会吃掉音节"
+                             "（2026-11 实测：开着时整段错误率里删除占 88%，那是测量口径的错，不是识别差）。"
+                             "只在做对照实验时开")
     parser.add_argument("--noise", type=float, default=0.0015,
                         help="填充用背景噪声的 RMS（缺省 0.0015）")
     parser.add_argument("--pad-s", type=float, default=0.8, help="每段前后垫多久的静音（缺省 0.8 秒）")

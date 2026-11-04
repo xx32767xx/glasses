@@ -1592,13 +1592,40 @@ def main():
         check("重打分把 S/D/I 也拆出来（只给一个错误率说不出该修哪一层）",
               (rows[0]["substitutions"], rows[0]["deletions"], rows[0]["insertions"]) == (2, 1, 0),
               str(rows[0]))
-        worst = _seg.worst_segments(runs[0], "word", 1)
+        check("整段口径的 S/D/I 也一起给（逐段那组天生偏高，不能拿来判病因）",
+              "joined_deletions" in rows[0] and "joined_substitutions" in rows[0],
+              str(sorted(rows[0])))
+        worst, skipped = _seg.worst_segments(runs[0], "word", 1)
         check("最差片段清单：能挑出最差的那条，并给出逐项差异",
               len(worst) == 1 and worst[0]["rate"] > 0
               and worst[0]["reference"] == "he is twenty three"
               and "three→23" in "、".join(worst[0]["diffs"]), str(worst))
+        check("这条 dump 里没有切碎产物（每条参考只被一段用到）", skipped == 0, str(skipped))
         check("最差片段清单的首行带 ERROR（日志里能直接筛）",
               _seg.format_problem_samples(worst).splitlines()[0].startswith("ERROR"))
+
+        # ⚠️ 切碎产物不能混进"最差片段"（2026-11 实测：逐段删除占 88% 全是这个效应）
+        split_run = {"silenceMs": 500, "gapMs": 900, "reached": [0, 1], "records": [
+            {"reference": "the quick brown fox jumps", "hypothesis": "the quick brown fox"},
+            {"reference": "the quick brown fox jumps", "hypothesis": "jumps"},
+            {"reference": "he is twenty three", "hypothesis": "he is twenty three"},
+        ]}
+        picked, split_skipped = _seg.worst_segments(split_run, "word", 5)
+        check("参考被 ≥2 段共用的那些段被认成「切碎产物」", split_skipped == 2, str(split_skipped))
+        check("切碎产物不进最差清单（否则排查方向会被带偏）", picked == [], str(picked))
+        check("判定靠的是「同一条参考被几段用到」",
+              _seg.split_artifact_references(split_run)["the quick brown fox jumps"] == 2)
+
+        # ⚠️ 2026-11 踩到的坑：评测里写死 vad_filter=True，而产线是 False ——
+        #    同一批音频被 silero 再削一次首尾，输出变成空串/半句，"删除"凭空涨到 88%。
+        #    这是**量错了东西**，不是识别差；所以口径必须交叉钉住。
+        check("评测的 VAD 缺省与产线一致（都关）",
+              _seg.parse_args(["--set", "x"]).vad is False)
+        harness_source = (ROOT / "asr-eval" / "segment_eval.py").read_text(encoding="utf-8")
+        pipeline_source = (ROOT / "bridge" / "whisper_stream.py").read_text(encoding="utf-8")
+        check("评测据实透传 args.vad（不再写死 True）", "vad_filter=bool(args.vad)" in harness_source)
+        check("产线那边确实是 vad_filter=False（它已经按能量切好了）",
+              "vad_filter=False" in pipeline_source)
         bogus = workdir / "bogus.json"
         bogus.write_text('{"hello": "world"}', encoding="utf-8")
         message = _exit_message_of(lambda: _seg.run_rescore(bogus))
