@@ -45,6 +45,12 @@ public final class RelayPipelineBackend implements InterpreterAsrBackend {
      */
     private final String engine;
 
+    /**
+     * 引擎家族（5.58：`whisper` / `parakeet`…）。空 = 不指定，服务器用它缺省的那个。
+     * 与 {@link #engine} 一起发给服务器（`asrEngines`），侧车里两个字段都能表达。
+     */
+    private final String asrEngine;
+
     private volatile boolean running = false;
     private volatile String sessionId = "";
     private Listener listener;
@@ -55,16 +61,27 @@ public final class RelayPipelineBackend implements InterpreterAsrBackend {
 
     public RelayPipelineBackend(LanClient client, String userName, String readLang, String speakLang,
                                 String engine) {
+        this(client, userName, readLang, speakLang, engine, "");
+    }
+
+    public RelayPipelineBackend(LanClient client, String userName, String readLang, String speakLang,
+                                String engine, String asrEngine) {
         this.client = client;
         this.userName = userName == null ? "" : userName;
         this.readLang = readLang == null || readLang.isEmpty() ? "zh-CN" : readLang;
         this.speakLang = speakLang == null || speakLang.isEmpty() ? "pt-BR" : speakLang;
         this.engine = engine == null ? "" : engine;
+        this.asrEngine = asrEngine == null ? "" : asrEngine;
     }
 
-    /** 引擎偏好（给界面/日志用；见字段注释：现在不生效）。 */
+    /** 模型偏好（给界面/日志用）。 */
     public String engine() {
         return engine;
+    }
+
+    /** 引擎家族偏好（给界面/日志用）。 */
+    public String asrEngine() {
+        return asrEngine;
     }
 
     @Override
@@ -122,13 +139,15 @@ public final class RelayPipelineBackend implements InterpreterAsrBackend {
         Listener target = listener;
         if (target == null) return;
         try {
-            JSONObject created = client.orgInterpreterStart("同传翻译官", readLang, speakLang, engine);
+            JSONObject created = client.orgInterpreterStart("同传翻译官", readLang, speakLang,
+                    engine, asrEngine);
             JSONObject session = created == null ? null : created.optJSONObject("session");
             String id = session == null ? "" : session.optString("id", "");
             // 服务器**实际收到**的模型请求（可能是空的：没指定/说了它不认识/写侧车失败）。
             // 这一句是 A/B 时唯一可信的"到底按哪个模型在跑"的依据，所以打进日志。
             JSONObject appliedModels = created == null ? null : created.optJSONObject("asrModels");
-            Log.i(TAG, "🎛 模型请求：" + (engine.isEmpty() ? "（没指定）" : engine)
+            Log.i(TAG, "🎛 模型请求：" + (engine.isEmpty() && asrEngine.isEmpty() ? "（没指定）"
+                    : (asrEngine.isEmpty() ? "" : asrEngine + " / ") + (engine.isEmpty() ? "（模型不指定）" : engine))
                     + " → 服务器收到 " + (appliedModels == null ? "（无）" : appliedModels.toString()));
             if (id.isEmpty()) {
                 target.onError(InterpreterErrorCodes.ASR_FAILED, "服务器没有返回会话 id");

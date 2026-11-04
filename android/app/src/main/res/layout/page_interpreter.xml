@@ -281,6 +281,25 @@
                 android:textColor="@color/ink_soft"
                 android:textSize="@dimen/text_caption" />
 
+            <!--
+              识别引擎（5.58）：一行、可点、只影响**这一场**。
+              为什么放在这里而不是设置页：它是「这次测试用哪个模型」的开关，
+              和语言胶囊是同一类东西 —— 每开一场都该能改，而不是去设置里翻。
+              点一下弹列表，列表来自服务器（服务器有什么才能选什么）。
+            -->
+            <TextView
+                android:id="@+id/interpEngine"
+                android:layout_width="match_parent"
+                android:layout_height="@dimen/touch_min"
+                android:layout_marginTop="@dimen/space_gap_small"
+                android:background="@drawable/tap_btn_secondary"
+                android:gravity="center_vertical"
+                android:paddingStart="@dimen/space_gap_small"
+                android:paddingEnd="@dimen/space_gap_small"
+                android:text="@string/interp_engine_row"
+                android:textColor="@color/ink_soft"
+                android:textSize="@dimen/text_secondary" />
+
             <TextView
                 android:id="@+id/interpOpenSettings"
                 android:layout_width="match_parent"

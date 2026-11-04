@@ -12,6 +12,7 @@
  * 界面隐藏按钮只是体验，真正的门在这里。
  *
  * 路径（都由 relay 转进来，relay 负责鉴权前解析 token）：
+ *   GET  /org/asr/engines?lang=en-US        这一场可选的识别引擎（5.58，只读清单）
  *   GET  /org/libraries                     列出可见库
  *   GET  /org/libraries/<id>                单个库详情
  *   GET  /org/meeting/<id>/libraries        这一场选了哪些库
@@ -34,50 +35,70 @@ import { closeRoomByAdmin, createInterpreterSession, createRoom, hideHistoryForU
 import { FLOOR_LOCKED_LEASE_MS, FLOOR_LEASE_MS, floorState, forceReleaseFloor, heartbeatFloor, releaseFloor, setFloorLock, sweepExpiredFloor, takeFloor } from '../lib/floor.mjs'
 import { publishMeetingTerms } from '../lib/meeting-terms.mjs'
 import { appendUtterance } from '../lib/db.mjs'
+import { ENGINE_LANGUAGES, listEngineOptions, loadStrategyTable } from '../lib/asr-engines.mjs'
 
 /** 允许出现在"模型名"里的字符：尺寸名（large-v3）或本地目录路径都能表达，但不含空格/引号。 */
 const ASR_MODEL_NAME = /^[A-Za-z0-9._/-]{1,120}$/
 
+/** 允许出现在"引擎名"里的字符（5.58：手机可以指定 whisper 之外的引擎家族）。 */
+const ASR_ENGINE_NAME = /^[a-z0-9_-]{1,32}$/
+
 /**
- * 把手机上报的「哪门语言用哪个模型」落成房间侧车（5.40）。
+ * 把手机上报的「哪门语言用哪个模型/引擎」落成房间侧车（5.40 / 5.58）。
  *
  * <p>侧车放在 `<数据目录>/asr-profiles/<房间>.json`，识别进程按 mtime 热读，
  * 所以**改完立刻生效**，而且只影响这一场 —— 这正是"拿着手机 A/B 换模型"要的性质。
  *
- * <p>三件刻意的克制：
+ * <p>四条刻意的克制：
  * <ul>
  *   <li>只接受 `zh-CN / pt-BR / en-US` 这几个语种标签，别的一律忽略并记录下来；</li>
  *   <li>模型名字符集收紧（{@link ASR_MODEL_NAME}）——它最终会被当成"模型尺寸名或目录"用；</li>
+ *   <li>引擎名只能是 `[a-z0-9_-]`（{@link ASR_ENGINE_NAME}）——它会被当成注册表键用；</li>
  *   <li>写失败**不拦开会话**：侧车只是"希望用什么"，识别进程读不到就按服务器模型表走。
- *       但返回值里要说清收到了什么，让手机能把"服务器实际收到的模型请求"显示出来。</li>
+ *       但返回值里要说清收到了什么，让手机能把"服务器实际收到的请求"显示出来。</li>
  * </ul>
  *
- * @returns {{applied: Object<string,string>, ignored: string[], error?: string}}
+ * <p>`byLang[lang]` 里可以只有 `model`、只有 `engine`，或两者都有：
+ * Python 侧按"房间覆盖"**逐字段**叠加，没写的字段继续继承表里那一层。
+ *
+ * @returns {{applied: Object<string,{model?: string, engine?: string}>, ignored: string[], error?: string}}
  */
-export function writeAsrProfileSidecar(root, roomId, requested, now = Date.now()) {
-  const applied = {}
+export function writeAsrProfileSidecar(root, roomId, requested, engines = null, now = Date.now()) {
   const ignored = []
-  if (requested === undefined || requested === null) return { applied, ignored }
-  if (typeof requested !== 'object' || Array.isArray(requested)) {
-    return { applied, ignored, error: 'asrModels 必须是一个对象：{ "en-US": "large-v3" }' }
+  if (requested !== undefined && requested !== null
+    && (typeof requested !== 'object' || Array.isArray(requested))) {
+    return { applied: {}, ignored, error: 'asrModels 必须是一个对象：{ "en-US": "large-v3" }' }
   }
-  for (const [rawLang, rawModel] of Object.entries(requested)) {
+  const engineOf = engines && typeof engines === 'object' && !Array.isArray(engines) ? engines : {}
+  const byLang = {}
+  for (const [rawLang, rawModel] of Object.entries(requested ?? {})) {
     const lang = String(rawLang).trim()
     const model = String(rawModel ?? '').trim()
-    if (!['zh-CN', 'pt-BR', 'en-US'].includes(lang) || !ASR_MODEL_NAME.test(model)) {
+    if (!['zh-CN', 'pt-BR', 'en-US'].includes(lang) || model === '') continue
+    if (!ASR_MODEL_NAME.test(model)) {
       ignored.push(`${lang}=${model}`)
       continue
     }
-    applied[lang] = model
+    byLang[lang] = { model }
   }
+  for (const [rawLang, rawEngine] of Object.entries(engineOf)) {
+    const lang = String(rawLang).trim()
+    const engine = String(rawEngine ?? '').trim().toLowerCase()
+    if (!['zh-CN', 'pt-BR', 'en-US'].includes(lang) || engine === '') continue
+    if (!ASR_ENGINE_NAME.test(engine)) {
+      ignored.push(`${lang}@${engine}`)
+      continue
+    }
+    byLang[lang] = { ...(byLang[lang] ?? {}), engine }
+  }
+  const applied = Object.fromEntries(Object.entries(byLang))
   if (Object.keys(applied).length === 0) return { applied, ignored }
   try {
     const dir = join(root, 'asr-profiles')
     mkdirSync(dir, { recursive: true })
     // 侧车结构：byLang（识别进程读这个）+ 谁在什么时候要求的（排障用）
     writeFileSync(join(dir, `${String(roomId).replace(/[^A-Za-z0-9_-]/g, '_')}.json`),
-      JSON.stringify({ roomId, byLang: Object.fromEntries(Object.entries(applied)
-        .map(([lang, model]) => [lang, { model }])), at: now }, null, 2),
+      JSON.stringify({ roomId, byLang, at: now }, null, 2),
       'utf-8')
     return { applied, ignored }
   } catch (error) {
@@ -142,6 +163,36 @@ export async function handleOrg(input) {
   const segments = path.split('?')[0].split('/').filter(Boolean).map((item) => decodeURIComponent(item))
 
   if (user === null || user === undefined) return bad(401, '需要登录（缺少有效 token）')
+
+  // ── 识别引擎清单（5.58：手机在 App 里选"这一场用哪个模型"）─────────────────
+  //
+  // 只读、只做展示：权威仍在 Python 侧。手机选中之后会把 engine+model **显式写进房间侧车**，
+  // 而侧车在 Python 那边的优先级最高，所以"手机选的"一定压过"表里算出来的"。
+  // 这一点很关键：清单算错顶多让某个选项名字不对，不会让识别悄悄跑成另一个模型。
+  if (method === 'GET' && segments[0] === 'org' && segments[1] === 'asr'
+    && segments[2] === 'engines') {
+    if (allowed(role, 'meeting.configure') !== true) return deny(role, 'meeting.configure')
+    const query = new URLSearchParams(String(input.path ?? '').split('?')[1] ?? '')
+    const lang = (query.get('lang') ?? '').trim() || 'en-US'
+    if (!ENGINE_LANGUAGES.includes(lang)) {
+      return bad(400, `lang 只能是 ${ENGINE_LANGUAGES.join(' / ')}`)
+    }
+    const loaded = loadStrategyTable(root)
+    const listed = listEngineOptions(loaded.table, lang)
+    return {
+      status: 200,
+      json: {
+        ok: true,
+        lang: listed.lang,
+        tableFound: listed.tableFound,
+        tablePath: loaded.path,
+        // 表写坏了要说出来（热改表写错逗号是常见手误），但**不拦**：列不出来就退化成一条"服务器默认"
+        tableProblem: loaded.problem,
+        current: listed.current,
+        options: listed.options,
+      },
+    }
+  }
 
   // ── 库列表 / 详情 ────────────────────────────────────────────────────────
   if (method === 'GET' && segments[0] === 'org' && segments[1] === 'libraries' && segments.length === 2) {
@@ -261,7 +312,8 @@ export async function handleOrg(input) {
     //
     // ⚠️ 只接受**语种标签 + 模型名**，模型名字符集收紧（写坏了只会在识别那边报"加载失败"，
     // 不会变成改文件路径之类的意外）。写不进去也**不拦开会话**：识别不上就不写侧车。
-    const requested = writeAsrProfileSidecar(root, created.session.id, body.asrModels)
+    const requested = writeAsrProfileSidecar(root, created.session.id, body.asrModels,
+      body.asrEngines)
     return {
       status: 200,
       json: { ok: true, session: created.session, asrModels: requested },

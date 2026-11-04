@@ -10,12 +10,13 @@
  */
 
 import { mkdir, rm } from 'node:fs/promises'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { VAR_DIR } from '../lib/paths.mjs'
 import { resolveDataDir } from '../lib/store.mjs'
 import { addCategory, emptyCategories, loadLibrary, listLibraries, loadCategories, saveCategories } from '../lib/libraries.mjs'
 import { loadRequests } from '../lib/requests.mjs'
-import { handleOrg, loadSelection, selectionPath } from '../relay/org-api.mjs'
+import { handleOrg, loadSelection, selectionPath, writeAsrProfileSidecar } from '../relay/org-api.mjs'
 
 const BASE = join(VAR_DIR, 'test', 'org-api-suite')
 const ENTRY = (zh, pt) => ({ zh, pt })
@@ -347,6 +348,90 @@ export async function runOrgApiSuite({ it, check, assert }) {
   await it('未知接口返回 404（不静默成功）', async () => {
     const nope = await call({ method: 'GET', path: '/org/nope', user: 'boss@example.com', role: 'admin' })
     check('404', nope.status === 404, String(nope.status))
+  })
+
+  // ── 5.58：手机在 App 里换识别引擎，靠的是"列清单 + 侧车"这两件事 ──────────
+  //
+  // 这一节守两个"不猜"：
+  //   ① 列清单**不编造模型名** —— 服务器没配表就只说"服务器默认"，不能给一个假尺寸名，
+  //      否则手机把它显示成"服务器收到了 large-v3"就是在骗用户；
+  //   ② 手机选的东西必须**真的落到侧车**（engine+model 两个字段）—— 侧车在 Python 那边
+  //      优先级最高，所以"手机选的"一定压过"表里算出来的"，这是这套设计的关键性质。
+  await it('识别引擎清单：列出服务器真的配过的组合，且不编造模型名', async () => {
+    const listed = await call({
+      method: 'GET', path: '/org/asr/engines?lang=en-US', user: 'boss@example.com', role: 'admin',
+    })
+    check('没有策略表时也返回 200（不能因为没配表就让手机以为功能坏了）', listed.status === 200,
+      String(listed.status))
+    check('只有一条"服务器默认"', listed.json.options.length === 1
+      && listed.json.options[0].label.includes('服务器默认'), JSON.stringify(listed.json.options))
+    check('而且 model 是空串（不编造尺寸名）', listed.json.options[0].model === '',
+      JSON.stringify(listed.json.options[0]))
+    check('tableFound=false 让手机知道"没有表"而不是"表里没东西"', listed.json.tableFound === false)
+
+    // 写一份"三个 whisper 变体"的表（只改 model，不动切句）
+    writeFileSync(join(root, 'asr-models.json'), JSON.stringify({
+      default: { model: 'large-v3' },
+      strategies: {
+        'en-turbo': { model: 'large-v3-turbo', note: '快 3-4 倍' },
+        'en-distil': { model: 'distil-large-v3' },
+        'en-buzzasr': { model: '/models/buzzasr-en' },
+      },
+      languages: { 'en-US': { strategy: 'en-turbo' }, 'zh-CN': {} },
+    }, null, 2), 'utf-8')
+
+    const variants = await call({
+      method: 'GET', path: '/org/asr/engines?lang=en-US', user: 'boss@example.com', role: 'admin',
+    })
+    const labels = variants.json.options.map((option) => option.model)
+    check('三个变体 + 默认都列出来', labels.length === 4, JSON.stringify(labels))
+    check('按"引擎+模型"去重（同一个模型配了两次不会出现两次）',
+      new Set(labels).size === labels.length, JSON.stringify(labels))
+    check('当前用的是表里 languages.en-US 指定的那个', variants.json.current.strategy === 'en-turbo',
+      JSON.stringify(variants.json.current))
+    check('当前那一条排在最前面（用户先看到"现在用哪个"）',
+      variants.json.options[0].current === true, JSON.stringify(variants.json.options[0]))
+    check('写了绝对路径但不存在 → available=missing（选了必然失败，要提前说）',
+      variants.json.options.find((option) => option.model === '/models/buzzasr-en')?.available === 'missing',
+      JSON.stringify(variants.json.options.map((option) => [option.model, option.available])))
+    check('只是个尺寸名 → available=unverified（首次用会下载，别假装已就绪）',
+      variants.json.options.find((option) => option.model === 'large-v3-turbo')?.available === 'unverified')
+    check('语种必须是那三个之一', (await call({
+      method: 'GET', path: '/org/asr/engines?lang=fr-FR', user: 'boss@example.com', role: 'admin',
+    })).status === 400)
+    // ⚠️ 普通用户**要能**调：换模型是"配置自己这场会"的一部分（meeting.configure），
+    //    而翻译官会话正是普通用户开的 —— 挡掉他们等于这个功能只对管理员可用。
+    check('普通用户能调（换模型属于配置自己的会议）', (await call({
+      method: 'GET', path: '/org/asr/engines?lang=en-US', user: 'alice@example.com', role: 'user',
+    })).status === 200)
+  })
+
+  await it('房间侧车能同时记下引擎与模型（手机选的才真到得了识别进程）', () => {
+    const written = writeAsrProfileSidecar(root, 'room-5-58', { 'en-US': 'large-v3-turbo' },
+      { 'en-US': 'whisper' })
+    const path = join(root, 'asr-profiles', 'room-5-58.json')
+    const sidecar = JSON.parse(readFileSync(path, 'utf-8'))
+    check('返回值里两个字段都在', written.applied['en-US']?.model === 'large-v3-turbo'
+      && written.applied['en-US']?.engine === 'whisper', JSON.stringify(written.applied))
+    check('侧车里也是两个字段（Python 按字段叠加，缺的继承上一层）',
+      sidecar.byLang['en-US'].model === 'large-v3-turbo' && sidecar.byLang['en-US'].engine === 'whisper',
+      JSON.stringify(sidecar.byLang))
+
+    const engineOnly = writeAsrProfileSidecar(root, 'room-5-58', null, { 'pt-BR': 'parakeet' })
+    check('只给引擎、不给模型也能落地', engineOnly.applied['pt-BR']?.engine === 'parakeet',
+      JSON.stringify(engineOnly))
+    // ⚠️ 侧车是"这一次开会的**完整**要求"，不是增量补丁：手机每次都把想要的整体报上来，
+    //    所以第二次只报 pt-BR 时 en-US 那条就没了。写死这个语义，免得以后有人当补丁用。
+    check('侧车是整体覆盖（不是增量补丁）',
+      JSON.parse(readFileSync(path, 'utf-8')).byLang['en-US'] === undefined,
+      JSON.stringify(JSON.parse(readFileSync(path, 'utf-8')).byLang))
+
+    const bad = writeAsrProfileSidecar(root, 'room-5-58', { 'en-US': 'bad model!' },
+      { 'en-US': 'Bad Engine' })
+    check('非法模型名/引擎名都被忽略并记录', bad.ignored.length === 2,
+      JSON.stringify(bad))
+    check('全都非法时不写文件（不能让上一条配置被半个请求覆盖）',
+      JSON.parse(readFileSync(path, 'utf-8')).byLang['pt-BR'].engine === 'parakeet')
   })
 
   await rm(BASE, { recursive: true, force: true })

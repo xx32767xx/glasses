@@ -1140,14 +1140,16 @@ public class LanClient {
     }
 
     /**
-     * 开一场翻译官会话，并把**这一路希望用哪个模型**一起报给服务器（5.40）。
+     * 开一场翻译官会话，并把**这一路希望用哪个模型/引擎**一起报给服务器（5.40 / 5.58）。
      *
-     * @param engine 识别模型的偏好（`asr-routes.json` 里的 engine 字段，例如 `large-v3`）。
+     * @param model  识别模型的偏好（例如 `large-v3`、`large-v3-turbo`）。
      *               `""` 或 `server-default` = 不指定，服务器按自己的模型表决定。
+     * @param engine 引擎家族（`whisper` / `parakeet`…）。`""` = 不指定（whisper 就是缺省）。
      *               ⚠️ 这只是**请求**：服务器可能没有这个模型、也可能不支持按语言切，
      *               所以界面上显示的是"服务器收到了什么"，不是"我们想要什么"。
      */
-    public JSONObject orgInterpreterStart(String name, String readLang, String speakLang, String engine)
+    public JSONObject orgInterpreterStart(String name, String readLang, String speakLang,
+                                          String model, String engine)
             throws IOException, org.json.JSONException {
         JSONObject body = new JSONObject();
         body.put("name", name == null ? "" : name);
@@ -1156,15 +1158,59 @@ public class LanClient {
         body.put("mode", "remote");
         if (speakLang != null && !speakLang.isEmpty()) {
             body.put("speakLang", speakLang);
-            // asrModels：语种 → 模型名。键用**识别语种**（对方说的语言），与服务器侧车一致。
-            String wanted = engine == null ? "" : engine.trim();
+            // asrModels / asrEngines：语种 → 模型/引擎。键用**识别语种**（对方说的语言），
+            // 与服务器侧车（asr-profiles/<room>.json）的 byLang 一致。
+            String wanted = model == null ? "" : model.trim();
             if (!wanted.isEmpty() && !"server-default".equals(wanted)) {
                 JSONObject models = new JSONObject();
                 models.put(speakLang, wanted);
                 body.put("asrModels", models);
             }
+            String family = engine == null ? "" : engine.trim();
+            if (!family.isEmpty() && !"server-default".equals(family)) {
+                JSONObject engines = new JSONObject();
+                engines.put(speakLang, family);
+                body.put("asrEngines", engines);
+            }
         }
         return unwrap(requestWithCode("/org/interpreter/start", "POST", body, 8000));
+    }
+
+    /** 兼容老调用（只给模型名）：引擎家族留空 = 用服务器缺省的 whisper。 */
+    public JSONObject orgInterpreterStart(String name, String readLang, String speakLang, String engine)
+            throws IOException, org.json.JSONException {
+        return orgInterpreterStart(name, readLang, speakLang, engine, "");
+    }
+
+    /**
+     * 问服务器「这一路能用哪些识别引擎」（5.58）。**只读**，给 App 里的选择器用。
+     *
+     * <p>为什么必须问服务器而不是在 App 里写死清单：可用与否取决于**服务器上装了哪些模型**，
+     * 写死在 App 里就会出现"选了但服务器没有"的静默失败 —— 那正是 A/B 结论不可信的原因。
+     *
+     * @return 失败时返回 {@code null}（界面显示"取不到清单"，而不是显示一个空清单）
+     */
+    public AsrEngineOptions asrEngines(String lang) throws IOException {
+        String target = lang == null ? "" : lang.trim();
+        JSONObject body = unwrap(requestWithCode(
+                "/org/asr/engines?lang=" + java.net.URLEncoder.encode(target, "UTF-8"),
+                "GET", null, 6000));
+        org.json.JSONArray options = body == null ? null : body.optJSONArray("options");
+        if (options == null) return null;
+        java.util.List<AsrEngineOptions.Option> parsed = new java.util.ArrayList<>();
+        for (int index = 0; index < options.length(); index += 1) {
+            JSONObject one = options.optJSONObject(index);
+            if (one == null) continue;
+            parsed.add(new AsrEngineOptions.Option(
+                    one.optString("strategy", ""),
+                    one.optString("engine", ""),
+                    one.optString("model", ""),
+                    one.optString("label", ""),
+                    one.optString("available", ""),
+                    one.optString("hint", ""),
+                    one.optBoolean("current", false)));
+        }
+        return new AsrEngineOptions(parsed);
     }
 
     /** 结束会话（定格时长）。幂等：重复调用服务端也只是再置一次 closed_at。 */

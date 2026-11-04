@@ -57,6 +57,18 @@
         "max_speech_ms": 25000
       }
     },
+    "en-turbo": {
+      "note": "英语候选（5.58）：large-v3-turbo，官方说快 3-4 倍、准确率略降。只改模型、不动切句 —— 这样和 default 的差才是「模型」的差。",
+      "model": "large-v3-turbo"
+    },
+    "en-distil": {
+      "note": "英语候选（5.58）：distil-large-v3（纯英文蒸馏版，约 756M）。同样是只改模型。",
+      "model": "distil-large-v3"
+    },
+    "en-buzzasr": {
+      "note": "英语候选（5.58）：BuzzASR 英文微调（外部报告里 WER 2.86%）。⚠️ 这是本地目录，没搬进来就选不了 —— 清单里会标 missing。",
+      "model": "/var/lib/leion/models/buzzasr-en-ct2"
+    },
     "zh-steady": {
       "note": "中文：与产线一致（留个名字，方便在日志里一眼看出这场走的是哪套）"
     }
