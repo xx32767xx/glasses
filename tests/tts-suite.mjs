@@ -615,6 +615,57 @@ export async function runTtsSuite({ it, check }) {
       /passed=21 failed=0/.test(engineReport), engineReport.trim().slice(-300))
   })
 
+  // 5.64：实机验收踩到的真 bug —— 侧车键写成 zh-CN、识别按 en-US 跑，切换永远不生效
+  await it('会话语种（SessionLang）：侧车键必须与识别侧同一套标签', async () => {
+    const { readFileSync } = await import('node:fs')
+    const relay = readFileSync(join(JAVA_SRC, 'RelayPipelineBackend.java'), 'utf-8')
+    const helper = readFileSync(join(JAVA_SRC, 'SessionLang.java'), 'utf-8')
+    const activity = readFileSync(join(JAVA_SRC, 'InterpreterActivity.java'), 'utf-8')
+
+    check('语种判据收在纯 Java 类里（能离线跑）',
+      /import\s+android\./.test(helper) === false && /public static String choose\(/.test(helper))
+    check('start(lang) 给的语种优先于实例自带字段（三个通用实例可互换，不能信字段）',
+      /sessionSpeakLang = SessionLang\.choose\(lang, speakLang\)/.test(relay))
+    check('开会话时报的是算出来的语种，不是实例字段',
+      /orgInterpreterStart\("同传翻译官", readLang, speakLang\(\)/.test(relay))
+    check('路由器按"对方说的语言"挑后端（挑的是识别语种）',
+      /router\.resolve\(partner\)/.test(activity))
+
+    let javacOk = true
+    try {
+      execFileSync('javac', ['-version'], { stdio: 'ignore' })
+    } catch (error) {
+      javacOk = false
+      if (error && error.code === 'EPERM') {
+        console.log('  ⏭ 这个沙箱不允许 Node 起子进程（javac EPERM），跳过 SessionLangCheck。')
+        return
+      }
+    }
+    if (!javacOk) {
+      console.log('  ⏭ 这台机器没有 javac，跳过 SessionLangCheck')
+      return
+    }
+    const dir = join(VAR_DIR, 'test', 'session-lang')
+    rmSync(dir, { recursive: true, force: true })
+    mkdirSync(dir, { recursive: true })
+    execFileSync('javac', ['-encoding', 'UTF-8', '-d', dir,
+      join(JAVA_SRC, 'InterpreterAsrBackend.java'), join(JAVA_SRC, 'SessionLang.java'),
+      join(ROOT, 'tests', 'java', 'SessionLangCheck.java')], { stdio: 'ignore' })
+    const log = join(dir, 'check.log')
+    const handle = openSync(log, 'w')
+    try {
+      execFileSync('java', ['-Dstdout.encoding=UTF-8', '-cp', dir, 'SessionLangCheck'],
+        { stdio: ['ignore', handle, handle] })
+    } catch {
+      // 断言失败会非零退出：报告已写进文件
+    } finally {
+      closeSync(handle)
+    }
+    const sessionReport = readFileSync(log, 'utf-8')
+    check('9 条语种判据全通过（start 优先 / 退回 / 归一化 / 都空不猜）',
+      /passed=9 failed=0/.test(sessionReport), sessionReport.trim().slice(-300))
+  })
+
   await it('错误码注册表：加码只改三处，漏一处自动红（不用改测试）', async () => {
     const { readFileSync } = await import('node:fs')
     const registryPath = join(JAVA_SRC, 'InterpreterErrorCodes.java')

@@ -53,6 +53,8 @@ public final class RelayPipelineBackend implements InterpreterAsrBackend {
 
     private volatile boolean running = false;
     private volatile String sessionId = "";
+    /** 这一场**真正**要识别的语种（5.64：以 `start(lang)` 传进来的为准，见 SessionLang）。 */
+    private volatile String sessionSpeakLang = "";
     private Listener listener;
 
     public RelayPipelineBackend(LanClient client, String userName, String readLang, String speakLang) {
@@ -106,6 +108,10 @@ public final class RelayPipelineBackend implements InterpreterAsrBackend {
     @Override
     public void start(String lang, Listener target) {
         if (running) return;
+        // 5.64：语种以**路由器传来的**为准。三个通用实例可互换（AsrRouter 对通用后端是
+        // 兜底式挑选），若沿用实例自带字段，开会话会把语种报成另一个语言 ——
+        // 模型侧车的键就跟着写错，识别侧永远匹配不上（实测：侧车写 zh-CN、识别按 en-US）。
+        sessionSpeakLang = SessionLang.choose(lang, speakLang);
         this.listener = target;
         running = true;
         new Thread(this::openSessionAndListen, "interp-session").start();
@@ -130,7 +136,7 @@ public final class RelayPipelineBackend implements InterpreterAsrBackend {
 
     /** 对方说的语言：`MicUploader` 上传时用它当 `?lang=`。 */
     public String speakLang() {
-        return speakLang;
+        return sessionSpeakLang.isEmpty() ? speakLang : sessionSpeakLang;
     }
 
     // ── 内部 ──────────────────────────────────────────────────────────────
@@ -139,7 +145,7 @@ public final class RelayPipelineBackend implements InterpreterAsrBackend {
         Listener target = listener;
         if (target == null) return;
         try {
-            JSONObject created = client.orgInterpreterStart("同传翻译官", readLang, speakLang,
+            JSONObject created = client.orgInterpreterStart("同传翻译官", readLang, speakLang(),
                     engine, asrEngine);
             JSONObject session = created == null ? null : created.optJSONObject("session");
             String id = session == null ? "" : session.optString("id", "");
