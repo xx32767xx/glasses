@@ -135,19 +135,40 @@ function main() {
   report.listing = listing
 
   // ── 2. Python 那边装了什么 ────────────────────────────────────────────────
-  const python = process.env.LEION_PYTHON || 'python3'
-  let pythonProbe = run(python, ['-c', PY_PROBE])
-  if (!pythonProbe.ok && python === 'python3') pythonProbe = run('python', ['-c', PY_PROBE])
+  // ⚠️ 5.78：这里踩过一个坑 —— 原来写死先试 `python3`、失败才试 `python`。
+  // 在 venv 里 `python3` 往往仍指向**系统**解释器（而包装在 venv 的 `python` 上），
+  // 于是体检报告"没装 sherpa_onnx / 没装 torch"，实际两样都装了 —— 这种假阴性
+  // 会让人去装一堆已经有的东西。所以现在按 **venv 优先** 逐个试，并**报告用的是哪个**。
+  const candidates = [
+    process.env.LEION_PYTHON,
+    process.env.VIRTUAL_ENV ? join(process.env.VIRTUAL_ENV, 'bin', 'python') : null,
+    'python',
+    'python3',
+  ].filter((one) => one !== null && one !== undefined && one !== '')
+  let pythonProbe = { ok: false, text: '', error: '没有可用的解释器' }
+  let pythonUsed = ''
+  const tried = []
+  for (const candidate of candidates) {
+    const attempt = run(candidate, ['-c', PY_PROBE])
+    tried.push(`${candidate}${attempt.ok ? '✓' : '✗'}`)
+    if (attempt.ok) {
+      pythonProbe = attempt
+      pythonUsed = candidate
+      break
+    }
+  }
   console.log('\n【Python 依赖】')
   if (!pythonProbe.ok) {
     // 拉不起来要**说出来**：那意味着医生脚本自己看不到识别环境，不是"环境没问题"
-    console.log(`  ? 探不到（${pythonProbe.error}）—— 用 --data-dir 之外，还要在装 faster-whisper 的那个 venv 里跑`)
-    report.problems.push(`探不到 python：${pythonProbe.error}`)
+    console.log(`  ? 探不到（试过 ${tried.join('、')}）—— 请在装 faster-whisper 的那个 venv 里跑，`
+      + '或用 LEION_PYTHON 指过去')
+    report.problems.push(`探不到 python（试过 ${tried.join('、')}）`)
     report.python = null
   } else {
     try {
       report.python = JSON.parse(pythonProbe.text)
-      console.log(`  · python ${report.python.python}`)
+      // ⚠️ 把解释器路径打出来：探错解释器是这份体检最容易出的假结论
+      console.log(`  · python ${report.python.python}（解释器 ${pythonUsed}）`)
       for (const [name, version] of Object.entries(report.python.packages)) {
         const bad = version.startsWith('缺失')
         console.log(`  ${bad ? '✗' : '✓'} ${name} ${version}`)
