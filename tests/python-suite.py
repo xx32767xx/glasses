@@ -3008,7 +3008,7 @@ def main():
     check("关闭握手也计入 timings（不然又会出现「10 秒不知去向」）",
           "close" in quiet_timings, str(quiet_timings))
     check("close_timeout 是秒级而不是沿用默认的 10 秒",
-          whisper_stream.CLOUD_CLOSE_TIMEOUT_S <= 2.0, str(whisper_stream.CLOUD_CLOSE_TIMEOUT_S))
+          whisper_stream.CLOUD_CLOSE_TIMEOUT_S <= 0.5, str(whisper_stream.CLOUD_CLOSE_TIMEOUT_S))
     nothing = _run_timeout([], 1)
     check("什么都没收到时仍然是失败（不能凭空造一句）",
           nothing["empty"] is True and "task-started" in (nothing["reason"] or ""), str(nothing))
