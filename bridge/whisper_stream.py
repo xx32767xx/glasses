@@ -1842,7 +1842,13 @@ class FunAsrEngine(AsrEngine):
                 for start in range(0, len(pcm), chunk):
                     ws.send(pcm[start:start + chunk])
                 # ③ 告诉服务端音频结束
-                ws.send(_json.dumps({"header": {"action": "finish-task", "task_id": task_id}},
+                # ⚠️ 5.92：finish-task 也**必须**带 payload（实测报
+                #    `Missing required parameter 'payload'! Please follow the protocol!`）。
+                #    第一版只给 header 不给 payload，于是每条控制帧都被拒；
+                #    而错误里既不说是哪条帧也不说是哪个字段，只能对照协议推。
+                ws.send(_json.dumps({"header": {"action": "finish-task", "task_id": task_id,
+                                                "streaming": "duplex"},
+                                     "payload": {"input": {}}},
                                     ensure_ascii=False))
                 # ④ 收结果直到 task-finished
                 deadline = time.time() + 30

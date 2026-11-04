@@ -2870,6 +2870,7 @@ def main():
     def _run_stubbed(scripted):
         import types as _types
         frames = []
+        texts = []
 
         class FakeWS:
             def __enter__(self):
@@ -2879,7 +2880,10 @@ def main():
                 return False
 
             def send(self, payload):
-                frames.append("text" if isinstance(payload, str) else "audio")
+                if isinstance(payload, str):
+                    frames.append(payload)
+                else:
+                    texts.append(len(payload))
 
             def recv(self, timeout=None):
                 return scripted.pop(0)
@@ -2917,8 +2921,14 @@ def main():
         _event("result-generated", {"sentence_id": 1, "text": "bom dia, como vai"}),
         _event("task-finished"),
     ])
-    check("先 run-task、再音频、最后 finish-task（音频排在 task-started 之后）",
-          frames[0] == "text" and frames[-1] == "text" and "audio" in frames[1:-1], str(frames))
+    actions = [json.loads(frame)["header"]["action"] for frame in frames]
+    check("控制帧顺序是 run-task → … → finish-task", actions[0] == "run-task"
+          and actions[-1] == "finish-task", str(actions))
+    # ⚠️ 5.92：finish-task 也**必须**带 payload，否则服务端报
+    #    Missing required parameter 'payload'! Please follow the protocol!
+    check("两条控制帧都带 payload（run-task 与 finish-task）",
+          all("payload" in json.loads(frame) for frame in frames),
+          str([sorted(json.loads(frame)) for frame in frames]))
     check("同一句的增量更新只取最后版本（不重复拼接）",
           ok_result["text"] == "bom dia, como vai", repr(ok_result["text"]))
     failed_result, _ = _run_stubbed([_event("task-failed")])
