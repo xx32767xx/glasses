@@ -2854,6 +2854,16 @@ def main():
     check("真的没装 websockets 时说清装什么（并且说明这是 WS 协议才需要的）",
           "websockets" in real_missing and "pip install websockets" in real_missing, real_missing)
 
+    # 5.87：`np` 在这个脚本里是 main() 的局部变量，模块级函数要用必须自己 import。
+    # 实测踩过：FunAsrEngine.transcribe 里直接写 np.clip(...) -> 第一段 NameError，
+    # 而预热那条被 try/except 吞了，看起来"预热完成 0.00s"一切正常。
+    funasr_src = inspect.getsource(whisper_stream.FunAsrEngine.transcribe)
+    check("FunAsrEngine.transcribe 自己 import numpy（np 不是模块级全局）",
+          "import numpy as np" in funasr_src, "少了 import numpy")
+    prewarm_src = inspect.getsource(whisper_stream.main)
+    check("预热不让 NameError 被当成'预热偶尔不稳'吞掉",
+          "except NameError:" in prewarm_src and "raise" in prewarm_src)
+
     # 表坏了：保留旧表，绝不能"读到半张表就当没有"
     broken_dir = Path(ROOT / "var" / "test" / "asr-model-map")
     broken_dir.mkdir(parents=True, exist_ok=True)

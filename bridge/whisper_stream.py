@@ -1734,6 +1734,11 @@ class FunAsrEngine(AsrEngine):
         代价是每段多一次握手（几十毫秒），可接受。
         """
         import json as _json
+
+        # ⚠️ `np` 在这个脚本里是 main() 的**局部变量**（load_dependencies 的返回值），
+        # 不是模块级全局 —— whisper 那条路靠参数把 np 传下去，模块级函数要用就自己 import。
+        # 实测踩过：这里直接写 np.clip(...)，第一段就 NameError（预热那条还被我 try 吞了）。
+        import numpy as np
         from websockets.sync.client import connect
 
         model = handle["model"]
@@ -3625,6 +3630,9 @@ def main():
         silent = np.zeros(args.samplerate, dtype=np.float32)
         try:
             engine_transcribe(silent, args.language)
+        except NameError:
+            # ⚠️ NameError 是**代码 bug**，不是"预热偶尔不稳" —— 吃掉它会让下一步看起来正常
+            raise
         except Exception as error:      # 预热失败不该让整个程序起不来
             print(f"[whisper_stream] 预热失败（忽略）：{type(error).__name__}: {error}", file=sys.stderr)
         print(f"[whisper_stream] 预热完成：{time.perf_counter() - warm_start:.2f}s"
