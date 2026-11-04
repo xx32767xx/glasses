@@ -543,14 +543,16 @@ export async function handleOrg(input) {
       const created = createRoom(root, { name, host: user, targetLang, now })
       if (created.ok !== true) return bad(400, created.error)
       // 5.04：建房者的「参会方式」也一起记下（面对面 / 远程）；不合法就当没说
-      joinRoom(root, { room: created.room, username: user, lang: body.lang, mode: body.mode, now })
+      joinRoom(root, { room: created.room, username: user, lang: body.lang, mode: body.mode,
+        hearLangs: body.hearLangs, now })
       return { status: 200, json: { ok: true, room: created.room } }
     }
     return bad(405, '只支持 POST')
   }
 
   if (method === 'POST' && segments[1] === 'rooms' && segments[2] === 'join' && segments.length === 3) {
-    const joined = joinRoom(root, { code: body.code, username: user, lang: body.lang, mode: body.mode, now })
+    const joined = joinRoom(root, { code: body.code, username: user, lang: body.lang,
+      mode: body.mode, hearLangs: body.hearLangs, now })
     if (joined.ok !== true) return bad(400, joined.error)
     return { status: 200, json: { ok: true, room: joined.room, members: joined.members } }
   }

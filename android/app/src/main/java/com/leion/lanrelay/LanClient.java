@@ -1030,6 +1030,17 @@ public class LanClient {
      */
     public JSONObject orgCreateRoom(String name, String lang, String targetLang, String mode)
             throws IOException, org.json.JSONException {
+        return orgCreateRoom(name, lang, targetLang, mode, "");
+    }
+
+    /**
+     * 建房 + 说话语言 + 目标语言 + 参会方式 + **我想看哪些语言的译文**（5.55）。
+     *
+     * @param hearLangs 逗号分隔的语种标签（`zh-CN,en-US`）；空 = 老客户端（只有自己那门）
+     */
+    public JSONObject orgCreateRoom(String name, String lang, String targetLang, String mode,
+                                    String hearLangs)
+            throws IOException, org.json.JSONException {
         JSONObject body = new JSONObject();
         body.put("name", name);
         if (lang != null && !lang.isEmpty()) {
@@ -1040,6 +1051,9 @@ public class LanClient {
         }
         if (mode != null && !mode.isEmpty()) {
             body.put("mode", mode);
+        }
+        if (hearLangs != null && !hearLangs.isEmpty()) {
+            body.put("hearLangs", hearLangs);
         }
         return unwrap(requestWithCode("/org/rooms", "POST", body, 8000));
     }
@@ -1063,6 +1077,17 @@ public class LanClient {
      */
     public JSONObject orgJoinRoom(String code, String lang, String mode)
             throws IOException, org.json.JSONException {
+        return orgJoinRoom(code, lang, mode, "");
+    }
+
+    /**
+     * 凭码加入 + 说话语言 + 参会方式 + **我想看哪些语言的译文**（5.55）。
+     *
+     * <p>`hearLangs` 是逗号分隔的语种标签（`zh-CN,en-US`），与"我说什么语言"分开：
+     * 一个人说一种、想读多种。空的 = 老客户端（服务端按"只有自己那门"处理）。
+     */
+    public JSONObject orgJoinRoom(String code, String lang, String mode, String hearLangs)
+            throws IOException, org.json.JSONException {
         JSONObject body = new JSONObject();
         body.put("code", code);
         if (lang != null && !lang.isEmpty()) {
@@ -1070,6 +1095,9 @@ public class LanClient {
         }
         if (mode != null && !mode.isEmpty()) {
             body.put("mode", mode);
+        }
+        if (hearLangs != null && !hearLangs.isEmpty()) {
+            body.put("hearLangs", hearLangs);
         }
         return unwrap(requestWithCode("/org/rooms/join", "POST", body, 8000));
     }

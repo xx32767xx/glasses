@@ -492,6 +492,70 @@ export async function runTtsSuite({ it, check }) {
       /passed=17 failed=0/.test(report), report.trim().slice(-300))
   })
 
+  await it('5.55：语言选择拆两行（我说一种 / 我想看多种），说话语言锁定在"我想看"里', async () => {
+    const { readFileSync } = await import('node:fs')
+    const create = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout',
+      'page_create_room.xml'), 'utf-8')
+    const joinLayout = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout',
+      'page_join_room.xml'), 'utf-8')
+    const createJava = readFileSync(join(JAVA_SRC, 'CreateRoomActivity.java'), 'utf-8')
+    const joinJava = readFileSync(join(JAVA_SRC, 'JoinRoomActivity.java'), 'utf-8')
+    const helper = readFileSync(join(JAVA_SRC, 'HearLangs.java'), 'utf-8')
+
+    check('创建页有两组语言胶囊（我说 / 我想看）',
+      ['createLangZh', 'createHearZh'].every((id) => create.includes(`@+id/${id}`)))
+    check('入会页有两组语言胶囊', ['joinLangZh', 'joinHearZh'].every((id) => joinLayout.includes(`@+id/${id}`)))
+    check('「我想看」用了自己的标题与说明（三语资源）',
+      /rooms_hear_title/.test(create) && /rooms_hear_hint/.test(create)
+      && /rooms_hear_title/.test(joinLayout))
+    check('两页都能切换"我想看"', /toggleHearLang\(/.test(createJava) && /toggleHearLang\(/.test(joinJava))
+    check('自己那门锁定（不可点，并给出提示）',
+      /if \(lang\.equals\(speakLang\)\)/.test(createJava) && /rooms_hear_locked/.test(createJava)
+      && /setClickable\(!locked\)/.test(createJava))
+    check('换说话语言时把它并进"我想看"', /hearLangs\.add\(speakLang\)/.test(createJava))
+    check('把选择随建房/入会请求一起上报',
+      /HearLangs\.join\(hearLangs, speakLang\)/.test(createJava)
+      && /HearLangs\.join\(hearLangs, speakLang\)/.test(joinJava))
+    check('房间页轮询时带上"我要看哪几种语言"',
+      /client\.setHearLangs\(/.test(readFileSync(join(JAVA_SRC, 'RoomActivity.java'), 'utf-8')))
+    check('规则收在一个纯 Java 类里（不 import android，可跑测试）',
+      /import\s+android\./.test(helper) === false && /public static List<String> normalize\(/.test(helper))
+
+    let javacOk = true
+    try {
+      execFileSync('javac', ['-version'], { stdio: 'ignore' })
+    } catch (error) {
+      javacOk = false
+      if (error && error.code === 'EPERM') {
+        console.log('  ⏭ 这个沙箱不允许 Node 起子进程（javac EPERM），跳过 HearLangsCheck。')
+        return
+      }
+    }
+    if (!javacOk) {
+      console.log('  ⏭ 这台机器没有 javac，跳过 HearLangsCheck')
+      return
+    }
+    const dir = join(VAR_DIR, 'test', 'hear-langs')
+    rmSync(dir, { recursive: true, force: true })
+    mkdirSync(dir, { recursive: true })
+    execFileSync('javac', ['-encoding', 'UTF-8', '-d', dir,
+      join(JAVA_SRC, 'InterpreterLang.java'), join(JAVA_SRC, 'HearLangs.java'),
+      join(ROOT, 'tests', 'java', 'HearLangsCheck.java')], { stdio: 'ignore' })
+    const log = join(dir, 'check.log')
+    const handle = openSync(log, 'w')
+    try {
+      execFileSync('java', ['-Dstdout.encoding=UTF-8', '-cp', dir, 'HearLangsCheck'],
+        { stdio: ['ignore', handle, handle] })
+    } catch {
+      // 断言失败会非零退出：报告已写进文件
+    } finally {
+      closeSync(handle)
+    }
+    const report = readFileSync(log, 'utf-8')
+    check('12 条语言规则全通过（强制含说话语言 / 归一化 / 顺序 / 空输入）',
+      /passed=12 failed=0/.test(report), report.trim().slice(-300))
+  })
+
   await it('错误码注册表：加码只改三处，漏一处自动红（不用改测试）', async () => {
     const { readFileSync } = await import('node:fs')
     const registryPath = join(JAVA_SRC, 'InterpreterErrorCodes.java')

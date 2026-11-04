@@ -58,6 +58,8 @@ public class CreateRoomActivity extends android.app.Activity {
     private String speakLang = "";
     /** 我的参会方式（onsite 面对面 / remote 远程）；空串 = 还没选。 */
     private String attendMode = "";
+    /** 5.55：我想看哪些语言的译文（永远包含 speakLang，见 {@link HearLangs}）。 */
+    private final java.util.Set<String> hearLangs = new java.util.LinkedHashSet<>();
 
     /** 电脑上可选的库：id 与"名字（N 条）"，与勾选状态一一对应。 */
     private final List<String> libIds = new ArrayList<>();
@@ -94,11 +96,17 @@ public class CreateRoomActivity extends android.app.Activity {
         findViewById(R.id.createLangZh).setOnClickListener(v -> setSpeakLang("zh-CN"));
         findViewById(R.id.createLangPt).setOnClickListener(v -> setSpeakLang("pt-BR"));
         findViewById(R.id.createLangEn).setOnClickListener(v -> setSpeakLang("en-US"));
+        // 5.55：我想看哪些语言的译文（多选；自己那门锁定）
+        findViewById(R.id.createHearZh).setOnClickListener(v -> toggleHearLang("zh-CN"));
+        findViewById(R.id.createHearPt).setOnClickListener(v -> toggleHearLang("pt-BR"));
+        findViewById(R.id.createHearEn).setOnClickListener(v -> toggleHearLang("en-US"));
         findViewById(R.id.createLibsRow).setOnClickListener(v -> pickLibraries());
 
         // 语言沿用上次的选择（它同时是"我读哪种语言"，重复选没有意义）；
         // 参会方式**不给默认值**：面对面/远程对应的是不同的收音方式，猜错比多问一句糟。
         String savedLang = prefs.getString("speakLang", "zh-CN");
+        // 5.55：上次勾的"我想看"（没有就是只有自己那门）
+        hearLangs.addAll(HearLangs.parse(prefs.getString("hearLangs", "")));
         setSpeakLang(savedLang == null || savedLang.isEmpty() ? "zh-CN" : savedLang);
         setAttendMode("");
 
@@ -153,7 +161,45 @@ public class CreateRoomActivity extends android.app.Activity {
         stylePills(R.id.createLangZh, R.string.rooms_speak_zh, R.string.rooms_speak_zh_on, "zh-CN".equals(speakLang));
         stylePills(R.id.createLangPt, R.string.rooms_speak_pt, R.string.rooms_speak_pt_on, "pt-BR".equals(speakLang));
         stylePills(R.id.createLangEn, R.string.rooms_speak_en, R.string.rooms_speak_en_on, "en-US".equals(speakLang));
+        // 5.55：换了"我说什么语言" → "我想看"里必须跟着含它
+        hearLangs.add(speakLang);
+        persistHearLangs();
+        applyHearChips();
         refreshSubmit();
+    }
+
+    /** 「我想看哪些语言的译文」——多选；自己那门锁定（见 HearLangs 的说明）。 */
+    private void toggleHearLang(String lang) {
+        if (lang == null || lang.isEmpty()) return;
+        if (lang.equals(speakLang)) {
+            Toast.makeText(this, getString(R.string.rooms_hear_locked), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!hearLangs.remove(lang)) hearLangs.add(lang);
+        persistHearLangs();
+        applyHearChips();
+    }
+
+    private void persistHearLangs() {
+        prefs.edit().putString("hearLangs", HearLangs.join(hearLangs, speakLang)).apply();
+    }
+
+    private void applyHearChips() {
+        applyHearChip(R.id.createHearZh, R.string.rooms_speak_zh, "zh-CN");
+        applyHearChip(R.id.createHearPt, R.string.rooms_speak_pt, "pt-BR");
+        applyHearChip(R.id.createHearEn, R.string.rooms_speak_en, "en-US");
+    }
+
+    private void applyHearChip(int viewId, int nameRes, String lang) {
+        TextView pill = findViewById(viewId);
+        if (pill == null) return;
+        boolean on = hearLangs.contains(lang);
+        boolean locked = lang.equals(speakLang);
+        pill.setText(on ? getString(R.string.rooms_hear_on, getString(nameRes)) : getString(nameRes));
+        pill.setBackgroundResource(on ? R.drawable.bg_pill_active : R.drawable.bg_pill);
+        pill.setTextColor(getColor(on ? R.color.on_brand : R.color.ink));
+        pill.setAlpha(locked ? 0.85f : 1f);
+        pill.setClickable(!locked);
     }
 
     private void setAttendMode(String mode) {
@@ -290,7 +336,8 @@ public class CreateRoomActivity extends android.app.Activity {
             try {
                 // 5.03：**不传目标语言** —— 译成什么由每位成员入会时选的语言决定
                 // 5.04：参会方式随建房一起给（服务端存 room_members.mode）
-                body = client.orgCreateRoom(topic, speakLang, "", attendMode);
+                body = client.orgCreateRoom(topic, speakLang, "", attendMode,
+                    HearLangs.join(hearLangs, speakLang));
             } catch (Exception e) {
                 error = e.getMessage() == null ? e.toString() : e.getMessage();
             }

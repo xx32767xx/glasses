@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <!--
   page_join_room.xml 鈥斺€?銆屽姞鍏ュ悓浼犱細璁€嶇殑涓撶敤琛ㄥ崟锛?.04锛岀敤鎴锋寚瀹氾級銆?
   涓庡垱寤洪〉**鍚屼竴濂楄瑙変笌瀛楁椋庢牸**锛屽彧鏄涓€椤逛粠"浼氳涓婚"鎹㈡垚"閭€璇风爜"锛?
@@ -215,6 +215,72 @@
 
                     <TextView
                         android:id="@+id/joinLangEn"
+                        android:layout_width="0dp"
+                        android:layout_height="@dimen/touch_min"
+                        android:layout_marginStart="@dimen/space_gap_small"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_pill"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:text="@string/rooms_speak_en"
+                        android:textColor="@color/ink"
+                        android:textSize="@dimen/text_body" />
+                </LinearLayout>
+
+                <!-- 5.55：我想看哪些语言的译文（多选；自己那门锁定） -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap"
+                    android:text="@string/rooms_hear_title"
+                    android:textColor="@color/ink"
+                    android:textSize="@dimen/text_title"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap_tiny"
+                    android:text="@string/rooms_hear_hint"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_secondary" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/joinHearZh"
+                        android:layout_width="0dp"
+                        android:layout_height="@dimen/touch_min"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_pill"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:text="@string/rooms_speak_zh"
+                        android:textColor="@color/ink"
+                        android:textSize="@dimen/text_body" />
+
+                    <TextView
+                        android:id="@+id/joinHearPt"
+                        android:layout_width="0dp"
+                        android:layout_height="@dimen/touch_min"
+                        android:layout_marginStart="@dimen/space_gap_small"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_pill"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:text="@string/rooms_speak_pt"
+                        android:textColor="@color/ink"
+                        android:textSize="@dimen/text_body" />
+
+                    <TextView
+                        android:id="@+id/joinHearEn"
                         android:layout_width="0dp"
                         android:layout_height="@dimen/touch_min"
                         android:layout_marginStart="@dimen/space_gap_small"

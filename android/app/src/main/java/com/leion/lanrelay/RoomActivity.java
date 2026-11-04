@@ -278,6 +278,11 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // 4.74：告诉轮询「我在哪个房间」。多场会并发时，
         // 字幕才不会把别的房间的句子画到这里来。
         client.setRoom(roomKey);
+        // 5.55：告诉轮询"我要看哪几种语言的译文"。一个人可能同时看两种（我说葡语、
+        // 英文和中文都想看），服务端会按语言各存一份帧；不带就只有自己那门。
+        // ⚠️ 这里必须**过滤成支持的标签**：prefs 里的值可能是老版本写的脏数据。
+        client.setHearLangs(HearLangs.join(HearLangs.parse(prefs.getString("hearLangs", "")),
+                prefs.getString("speakLang", "")));
         // 4.96：上传音频时自报发言人（服务端用它给字幕落名字，不再猜"现在谁持麦"）
         client.setSpeaker(myName);
         getSharedPreferences("leion", MODE_PRIVATE).edit().putString("roomId", roomKey).apply();

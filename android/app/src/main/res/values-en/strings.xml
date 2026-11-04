@@ -156,6 +156,10 @@
     <string name="rooms_title">Meeting rooms</string>
     <string name="rooms_my_lang_title">Which language I speak in the meeting</string>
     <string name="rooms_my_lang_hint">This is both what you speak and what you read: what you say is translated into the language of each listener, and what others say is translated into yours.</string>
+    <string name="rooms_hear_title">Translations I want to read</string>
+    <string name="rooms_hear_hint">Pick as many as you like. The language you speak is always included (others\' speech is translated into it for you); tick more to read several translations at once.</string>
+    <string name="rooms_hear_on">✓ %1$s</string>
+    <string name="rooms_hear_locked">This is the language you speak, so others\' speech is translated into it for you; it cannot be unchecked.</string>
     <string name="rooms_speak_zh">I speak Chinese</string>
     <string name="rooms_speak_pt">I speak Portuguese</string>
     <string name="rooms_speak_en">I speak English</string>

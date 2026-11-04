@@ -41,6 +41,8 @@ public class JoinRoomActivity extends android.app.Activity {
 
     private String speakLang = "";
     private String attendMode = "";
+    /** 5.55：我想看哪些语言的译文（永远包含 speakLang，见 {@link HearLangs}）。 */
+    private final java.util.Set<String> hearLangs = new java.util.LinkedHashSet<>();
 
     @Override
     protected void attachBaseContext(android.content.Context base) {
@@ -69,9 +71,15 @@ public class JoinRoomActivity extends android.app.Activity {
         findViewById(R.id.joinLangZh).setOnClickListener(v -> setSpeakLang("zh-CN"));
         findViewById(R.id.joinLangPt).setOnClickListener(v -> setSpeakLang("pt-BR"));
         findViewById(R.id.joinLangEn).setOnClickListener(v -> setSpeakLang("en-US"));
+        // 5.55：我想看哪些译文（多选；自己那门锁定）
+        findViewById(R.id.joinHearZh).setOnClickListener(v -> toggleHearLang("zh-CN"));
+        findViewById(R.id.joinHearPt).setOnClickListener(v -> toggleHearLang("pt-BR"));
+        findViewById(R.id.joinHearEn).setOnClickListener(v -> toggleHearLang("en-US"));
 
         // 语言沿用上次选择；参会方式不预置（面对面/远程决定收音方式，猜错更贵）
         String savedLang = prefs.getString("speakLang", "zh-CN");
+        // 5.55：上次勾的"我想看"（没有就是只有自己那门）
+        hearLangs.addAll(HearLangs.parse(prefs.getString("hearLangs", "")));
         setSpeakLang(savedLang == null || savedLang.isEmpty() ? "zh-CN" : savedLang);
         setAttendMode("");
 
@@ -123,7 +131,52 @@ public class JoinRoomActivity extends android.app.Activity {
         stylePills(R.id.joinLangZh, R.string.rooms_speak_zh, R.string.rooms_speak_zh_on, "zh-CN".equals(speakLang));
         stylePills(R.id.joinLangPt, R.string.rooms_speak_pt, R.string.rooms_speak_pt_on, "pt-BR".equals(speakLang));
         stylePills(R.id.joinLangEn, R.string.rooms_speak_en, R.string.rooms_speak_en_on, "en-US".equals(speakLang));
+        // 5.55：换了"我说什么语言" → "我想看"里必须跟着含它（不能出现"我说葡语但只看中文"）
+        hearLangs.add(speakLang);
+        persistHearLangs();
+        applyHearChips();
         refreshSubmit();
+    }
+
+    /**
+     * 「我想看哪些语言的译文」——**多选**（5.55）。
+     *
+     * <p>自己说的那门**锁定勾选、不能取消**：它不是"想看自己的原文"，而是
+     * "别人说的要按我读得懂的语言给我"。点它就是什么都不做（但给出提示，不静默）。
+     */
+    private void toggleHearLang(String lang) {
+        if (lang == null || lang.isEmpty()) return;
+        if (lang.equals(speakLang)) {
+            android.widget.Toast.makeText(this, getString(R.string.rooms_hear_locked),
+                    android.widget.Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!hearLangs.remove(lang)) hearLangs.add(lang);
+        persistHearLangs();
+        applyHearChips();
+    }
+
+    private void persistHearLangs() {
+        prefs.edit().putString("hearLangs", HearLangs.join(hearLangs, speakLang)).apply();
+    }
+
+    /** 三颗胶囊的状态：勾选=品牌底，自己那门锁定并加锁标记。 */
+    private void applyHearChips() {
+        applyHearChip(R.id.joinHearZh, R.string.rooms_speak_zh, "zh-CN");
+        applyHearChip(R.id.joinHearPt, R.string.rooms_speak_pt, "pt-BR");
+        applyHearChip(R.id.joinHearEn, R.string.rooms_speak_en, "en-US");
+    }
+
+    private void applyHearChip(int viewId, int nameRes, String lang) {
+        TextView pill = findViewById(viewId);
+        if (pill == null) return;
+        boolean on = hearLangs.contains(lang);
+        boolean locked = lang.equals(speakLang);
+        pill.setText(on ? getString(R.string.rooms_hear_on, getString(nameRes)) : getString(nameRes));
+        pill.setBackgroundResource(on ? R.drawable.bg_pill_active : R.drawable.bg_pill);
+        pill.setTextColor(getColor(on ? R.color.on_brand : R.color.ink));
+        pill.setAlpha(locked ? 0.85f : 1f);
+        pill.setClickable(!locked);
     }
 
     private void setAttendMode(String mode) {
@@ -166,7 +219,8 @@ public class JoinRoomActivity extends android.app.Activity {
             JSONObject body = null;
             String error = "";
             try {
-                body = client.orgJoinRoom(code, speakLang, attendMode);
+                body = client.orgJoinRoom(code, speakLang, attendMode,
+                        HearLangs.join(hearLangs, speakLang));
             } catch (Exception e) {
                 error = e.getMessage() == null ? e.toString() : e.getMessage();
             }

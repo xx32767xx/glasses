@@ -478,7 +478,7 @@ export async function runAndroidOrderSuite({ it, check }) {
       /"onsite"\.equals\(attendMode\)[\s\S]{0,200}attend_onsite_no_speaker/.test(createJava))
     check('参会方式随建房 / 加入请求发给服务端',
       /body\.put\("mode", mode\)/.test(readFileSync(join(javaDir, 'LanClient.java'), 'utf-8'))
-      && /orgJoinRoom\(code, speakLang, attendMode\)/.test(joinJava))
+      && /orgJoinRoom\(code, speakLang, attendMode,/.test(joinJava))
     check('参会方式不给默认值（猜错比多问一句糟）',
       /setAttendMode\(""\)/.test(createJava) && /setAttendMode\(""\)/.test(joinJava))
 
@@ -500,8 +500,9 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('只接受 onsite / remote，其它当没说（不猜）',
       /MEMBER_MODES\.includes\(options\.mode\) \? options\.mode : null/.test(rooms))
     check('建房与加入都把 mode 传到 joinRoom',
-      /joinRoom\(root, \{ room: created\.room, username: user, lang: body\.lang, mode: body\.mode, now \}\)/.test(api)
-      && /joinRoom\(root, \{ code: body\.code, username: user, lang: body\.lang, mode: body\.mode, now \}\)/.test(api))
+      /joinRoom\(root, \{ room: created\.room, username: user, lang: body\.lang, mode: body\.mode,/.test(api)
+      && /joinRoom\(root, \{ code: body\.code, username: user, lang: body\.lang,/.test(api)
+      && /mode: body\.mode, hearLangs: body\.hearLangs/.test(api))
   })
 
   await it('5.12：说话人也看得到自己那句（原文帧）+ 同语言时说明原因', () => {
@@ -1258,7 +1259,7 @@ export async function runAndroidOrderSuite({ it, check }) {
       !/roomsTarget/.test(createXml) && !/roomsTarget/.test(joinXml))
     const createJava = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay', 'CreateRoomActivity.java'), 'utf-8')
     check('建房请求不传目标语言（交给服务端按听众语言决定）',
-      /orgCreateRoom\(topic, speakLang, "", attendMode\)/.test(createJava) && !/targetLang/.test(createJava))
+      /orgCreateRoom\(topic, speakLang, "", attendMode,/.test(createJava) && !/targetLang/.test(createJava))
     check('说话语言写进 speakLang（建会议时）',
       /putString\("speakLang"/.test(createJava) && /putString\("speakLang"/.test(
         readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay', 'JoinRoomActivity.java'), 'utf-8')))

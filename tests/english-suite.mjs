@@ -144,7 +144,7 @@ export async function runEnglishSuite({ it, check, assert }) {
     const roomsJava = readFileSync(join(process.cwd(), 'android', 'app', 'src', 'main', 'java',
       'com', 'leion', 'lanrelay', 'CreateRoomActivity.java'), 'utf-8')
     check('手机建房时不传目标语言（自动）',
-      /orgCreateRoom\(topic, speakLang, "", attendMode\)/.test(roomsJava) && !/targetLang/.test(roomsJava))
+      /orgCreateRoom\(topic, speakLang, "", attendMode,/.test(roomsJava) && !/targetLang/.test(roomsJava))
   })
 
   await it('一句话译成**几种**：按听众语言去重（用户的架构）', async () => {

@@ -156,6 +156,10 @@
     <string name="rooms_title">Salas de reunião</string>
     <string name="rooms_my_lang_title">Em que idioma eu falo na reunião</string>
     <string name="rooms_my_lang_hint">É o seu idioma de fala e de leitura: o que você fala é traduzido para o idioma de cada ouvinte, e o que os outros falam é traduzido para o seu.</string>
+    <string name="rooms_hear_title">Traduções que quero ler</string>
+    <string name="rooms_hear_hint">Pode escolher quantas quiser. O idioma que você fala fica sempre marcado (a fala dos outros é traduzida para ele); marque outros para ver várias traduções ao mesmo tempo.</string>
+    <string name="rooms_hear_on">✓ %1$s</string>
+    <string name="rooms_hear_locked">Este é o idioma que você fala; a fala dos outros é traduzida para ele, então não pode ser desmarcado.</string>
     <string name="rooms_speak_zh">Eu falo chinês</string>
     <string name="rooms_speak_pt">Eu falo português</string>
     <string name="rooms_speak_en">Eu falo inglês</string>

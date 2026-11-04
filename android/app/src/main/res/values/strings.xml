@@ -462,6 +462,12 @@
     <string name="rooms_title">会议房间</string>
     <string name="rooms_my_lang_title">我在会里说哪种语言</string>
     <string name="rooms_my_lang_hint">它既是你说的语言，也是你读的语言：你说的话会译成对方各自的语言，对方说的会自动译成你这种语言。</string>
+    <!-- 5.55：「我说一种、我想看多种」。自己说的那门锁定勾选 —— 含义不是"想看自己的原文"，
+         而是"别人说的要按我读得懂的语言给我"。 -->
+    <string name="rooms_hear_title">我想看的译文</string>
+    <string name="rooms_hear_hint">可以多选。自己说的那门语言固定勾选（别人说的话会译成它给我）；再勾其他的，就能同时看到多种译文。</string>
+    <string name="rooms_hear_on">✓ %1$s</string>
+    <string name="rooms_hear_locked">这一门是你说的语言，别人说的话会译成它给你，所以不能取消。</string>
     <string name="rooms_speak_zh">我说中文</string>
     <string name="rooms_speak_pt">我说葡语</string>
     <string name="rooms_speak_en">我说英语</string>
