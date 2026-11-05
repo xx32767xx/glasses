@@ -1484,6 +1484,45 @@ export async function runRelaySuite({ it, check, assert }) {
     check('**仍然要密钥**（诊断通道不能成为后门）', noSecret.status === 401, String(noSecret.status))
   })
 
+  await it('5.122：多语言轮询只回**这门语言新到的**帧（不把上一句的译文再发一遍）', async () => {
+    // 用户实测：说了一句新的话，屏幕上却把**上一句**的译文又画了一遍。
+    // 原因是 `pickLangs` 每轮都把"每门语言的最新帧"整份回给手机 ——
+    // 这一门来了新帧，另一门就把自己**上一次**的帧跟着再发一次。
+    const roomId = 'room-lang-seq'
+    // 房间得先在库里存在：字幕只有能归属到房间时才会进"按语言各存一份"的那张表。
+    const made = createRoom(TMP, { host: 'test5', name: '语种序号', lang: 'zh-CN' })
+    const roomCode = made.ok === true ? made.room.code : ''
+    if (roomCode !== '') joinRoom(TMP, { code: roomCode, username: 'test5', lang: 'zh-CN' })
+    const realRoomId = made.ok === true ? made.room.id : roomId
+    const poll = async (since) => (await call(`/frame?since=${since}&room=${realRoomId}&langs=pt-BR,en-US`)).json
+    const waitFor = async (since, wantLang) => {
+      for (let i = 0; i < 80; i += 1) {
+        const body = await poll(since)
+        const langs = (body.frames ?? []).map((one) => one.lang)
+        if (body.changed === true && langs.includes(wantLang)) return body
+        await new Promise((resolve) => setTimeout(resolve, 30))
+      }
+      return null
+    }
+
+    await writeFile(bus, JSON.stringify(frame('第一句', {
+      speaker: 'me', lang: 'pt-BR', text: 'Primeira', source: '第一句', roomId: realRoomId,
+    })), 'utf-8')
+    const first = await waitFor(0, 'pt-BR')
+    check('第一句拿到葡语帧', first !== null, JSON.stringify(first))
+    const since = first === null ? 1 : first.seq
+
+    // 第二句只有英语（葡语这门这一轮没有新帧）
+    await writeFile(bus, JSON.stringify(frame('第二句', {
+      speaker: 'me', lang: 'en-US', text: 'Second', source: '第二句', roomId: realRoomId,
+    })), 'utf-8')
+    const second = await waitFor(since, 'en-US')
+    check('第二句拿到英语帧', second !== null, JSON.stringify(second))
+    const langs = (second?.frames ?? []).map((one) => one.lang)
+    check('这一轮**只回**英语（葡语那份上一句的译文不再重复下发）',
+      langs.includes('en-US') && !langs.includes('pt-BR'), JSON.stringify(langs))
+  })
+
   await relay.close()
   await rm(TMP, { recursive: true, force: true })
 }

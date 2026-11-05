@@ -192,9 +192,19 @@ export async function runEnglishSuite({ it, check, assert }) {
     const hubSource = readFileSync(join(process.cwd(), 'lib', 'ws-hub.mjs'), 'utf-8')
     check('按 conn.hearLang 过滤', /conn\.hearLang/.test(hubSource))
     check('没登记语言的连接照旧收（升级期不能吞字幕）',
-      /listening === '' \|\| listening === wanted/.test(hubSource))
-    check('relay 推帧时带上语言', /attribution\.roomId \?\? null, String\(frame\.lang \?\? ''\)\)/.test(
+      /list\.length === 0\) return true/.test(hubSource))
+    // 5.122：一个人可能同时想看几种译文 —— 只按"他说什么语言"扇出时，
+    // 他自己那句的译文会被全部挡掉（只剩原文帧），用户报的正是这个
+    check('按**一组**语言扇出（hearLangs），不是单个 speak 语言',
+      /conn\.hearLangs/.test(hubSource) && /list\.includes\(wanted\)/.test(hubSource))
+    check('relay 传给 hub 的是"每个人想看的语言集合"（hearByUser），不是他说什么语言',
+      /wsHub\.applyRoomLangs\(roomId, hearByUser\)/
+        .test(readFileSync(join(process.cwd(), 'relay', 'lan-relay.mjs'), 'utf-8')))
+    check('relay 推帧时带上语言', /attribution\.roomId \?\? null, fanoutLang\)/.test(
       readFileSync(join(process.cwd(), 'relay', 'lan-relay.mjs'), 'utf-8')))
+    // 提示帧（notice）不是字幕：它讲"这一句为什么没有译文"，必须发给房间里所有人
+    check('提示帧不按语言挡（否则最该看到它的人看不到）',
+      /frame\.notice[^\n]{0,80}\n?\s*\? ''/.test(readFileSync(join(process.cwd(), 'relay', 'lan-relay.mjs'), 'utf-8')))
   })
 
   await it('start-multi 把听众语言侧车路径交给大脑（否则大脑没法按语言各译一份）', async () => {

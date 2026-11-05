@@ -1042,7 +1042,14 @@ export async function startRelay(rawOptions = {}) {
           : ''))
     }
     if (wsHub !== null) {
-      try { wsHub.applyRoomLangs(roomId, byUser) } catch { /* 没有连接就算了 */ }
+      try {
+        // 5.122：按**每个人想看的语言集合**扇出（`hearByUser`），不是"他说什么语言"。
+        //
+        // 原来这里传的是 `byUser`（成员的语言），于是"我说英语、想看葡语+英语"的人
+        // 只收得到 `lang === en-US` 的帧 —— 而那正是**他自己那句的原文帧**。
+        // 表现就是用户报的："我自己说话，看到的永远是原文，看不到别人给我的译文"。
+        wsHub.applyRoomLangs(roomId, hearByUser)
+      } catch { /* 没有连接就算了 */ }
     }
     return langs
   }
@@ -1120,6 +1127,15 @@ export async function startRelay(rawOptions = {}) {
     // 4.43：字幕也走 WS（长轮询留着兜底）。4.86 起：有归属就**只发给这个房间**，
     // 不再广播给所有房间（那正是"两场会字幕互相污染"的来源）。
     if (wsHub !== null) {
+      // 5.00：这一帧是**译成哪种语言**的那一份。三语会议里同一句会有两份帧
+      // （如葡语一份、英语一份），只该发给读那种语言的人。
+      //
+      // 5.122：但**提示帧**（`notice`，例如"本场语言相同、无需翻译"）不是字幕，
+      // 它讲的是"这一句为什么没有译文"，必须发给房间里所有人 —— 带上语言就会被
+      // 按语言扇出挡在门外，于是恰好是"最需要看到它的人"看不到。
+      const fanoutLang = frame.notice !== undefined && frame.notice !== null && frame.notice !== ''
+        ? ''
+        : String(frame.lang ?? '')
       wsHub.broadcastFrame({
         type: 'frame',
         seq: state.seq,
@@ -1127,10 +1143,8 @@ export async function startRelay(rawOptions = {}) {
         frame,
         roomId: attribution.roomId ?? null,
         roomSeq: attribution.roomId === null ? null : (state.seqByRoom.get(attribution.roomId) ?? null),
-        // 5.00：这一帧是**译成哪种语言**的那一份。三语会议里同一句会有两份帧
-        // （如葡语一份、英语一份），只该发给读那种语言的人。
-        lang: String(frame.lang ?? ''),
-      }, attribution.roomId ?? null, String(frame.lang ?? ''))
+        lang: fanoutLang,
+      }, attribution.roomId ?? null, fanoutLang)
     }
   }
 
@@ -2310,6 +2324,11 @@ export async function startRelay(rawOptions = {}) {
          *
          * <p>没带 `langs` 时返回空数组（老行为：只看单帧）。带了就按语言挑 —— 同一句的
          * 两种译文都会回给手机，而不是只剩最后到的那一份。
+         *
+         * <p>⚠️ 5.122：**只回"这一门自己没有过的"那部分**（`hit.seq > since`）。
+         * 原来不判序号，于是任何一门语言来了新帧，另一门语言都会把它**上一次**的帧再发一遍 ——
+         * 手机拿到"上一句的译文"又画一张卡，用户看到的就是"我说了一句，上一句的译文又弹一次"。
+         * 序号是**按房间**的（`seqByRoom`），而这台手机只关心"我读到哪儿了"，所以判据成立。
          */
         const pickLangs = (roomId) => {
           if (wantedLangs.length === 0 || roomId === '') return []
@@ -2318,7 +2337,9 @@ export async function startRelay(rawOptions = {}) {
           const out = []
           for (const one of wantedLangs) {
             const hit = perLang.get(one)
-            if (hit !== undefined) out.push({ lang: one, frame: hit.frame })
+            if (hit === undefined) continue
+            if (Number(hit.seq) <= since) continue      // 这门语言这一帧已经给过了
+            out.push({ lang: one, seq: hit.seq, frame: hit.frame })
           }
           return out
         }
