@@ -32,7 +32,7 @@ const STRATEGY_NAME = /^[a-z0-9_-]{1,32}$/
 
 function parseArgs(argv) {
   const args = { dataDir: '', lang: 'en-US', model: null, strategy: null,
-    skipLevel: null, rmsLevel: null, clearTuning: false, segmentation: {} }
+    skipLevel: null, rmsLevel: null, rmsFloor: null, clearTuning: false, segmentation: {} }
   for (let index = 0; index < argv.length; index += 1) {
     const item = argv[index]
     if (item === '--data-dir') args.dataDir = argv[index += 1] ?? ''
@@ -41,6 +41,7 @@ function parseArgs(argv) {
     else if (item === '--strategy') args.strategy = argv[index += 1] ?? ''
     else if (item === '--skip-level') args.skipLevel = argv[index += 1] ?? ''
     else if (item === '--rms-level') args.rmsLevel = argv[index += 1] ?? ''
+    else if (item === '--rms-floor') args.rmsFloor = argv[index += 1] ?? ''
     else if (item === '--clear-tuning') args.clearTuning = true
     else if (item === '--silence-ms') args.segmentation.silence_ms = argv[index += 1] ?? ''
     else if (item === '--min-speech-ms') args.segmentation.min_speech_ms = argv[index += 1] ?? ''
@@ -94,7 +95,7 @@ function main() {
 
   // 没给任何"要改什么"的参数：只报告现状（含切句与两个电平门槛，5.109）
   const wantsChange = args.model !== null || args.strategy !== null
-    || args.skipLevel !== null || args.rmsLevel !== null || args.clearTuning
+    || args.skipLevel !== null || args.rmsLevel !== null || args.rmsFloor !== null || args.clearTuning
     || Object.keys(args.segmentation).length > 0
   if (!wantsChange) {
     console.log(`数据目录 ${root}`)
@@ -169,9 +170,11 @@ function main() {
   const tuning = {}
   if (args.skipLevel !== null) tuning.silence_skip_level = args.skipLevel
   if (args.rmsLevel !== null) tuning.rms_threshold = args.rmsLevel
+  if (args.rmsFloor !== null) tuning.rms_floor = args.rmsFloor
   if (args.clearTuning) {
     tuning.silence_skip_level = null
     tuning.rms_threshold = null
+    tuning.rms_floor = null
   }
   if (Object.keys(args.segmentation).length > 0) {
     const applied = setLanguageSegmentation(next, args.lang, args.segmentation)

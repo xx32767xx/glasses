@@ -446,7 +446,7 @@ def _write_segment(queue_dir, tag, samplerate, audio, np, language=None, speaker
     return base
 
 
-def _new_segmenter(args, np, segmentation=None, rms_threshold=None):
+def _new_segmenter(args, np, segmentation=None, rms_threshold=None, rms_floor=None):
     """按当前参数造一个切句器（一路音频一个：各自的能量统计必须独立）。
 
     <p>5.41：`segmentation` 给了就按它（来自识别策略）；没给就沿用命令行那套 ——
@@ -455,16 +455,23 @@ def _new_segmenter(args, np, segmentation=None, rms_threshold=None):
     <p>5.109：`rms_threshold` 也能由策略表给（"切句侧的电平门槛"）。给了就用它，
     没给才用命令行 `--rms-threshold` —— 这样"说话轻"的场景可以在电脑上按语种调，
     而不用重启整条管线。
+
+    <p>⚠️ 5.111：**自适应模式（缺省开）下 `rms_threshold` 只在开头 2 秒起作用** ——
+    一旦量出噪声底，门槛就变成 `max(rms_floor, 噪声底 × noise_multiplier)`。
+    所以"调切句侧电平"真正要动的是 `rms_floor`（自适应下限），它同样能由表给。
     """
     seg = dict(SEGMENTATION_DEFAULTS)
     seg.update(_numbers_or_skip(segmentation, SEGMENTATION_FIELDS))
     threshold = args.rms_threshold
     if isinstance(rms_threshold, (int, float)) and rms_threshold > 0:
         threshold = float(rms_threshold)
+    floor = args.rms_floor
+    if isinstance(rms_floor, (int, float)) and rms_floor > 0:
+        floor = float(rms_floor)
     return UtteranceSegmenter(
         args.samplerate, args.block_ms, seg["silence_ms"],
         seg["min_speech_ms"], seg["max_speech_ms"], threshold, args.preroll_ms, np,
-        adaptive=args.adaptive, rms_floor=args.rms_floor, noise_multiplier=args.noise_multiplier,
+        adaptive=args.adaptive, rms_floor=floor, noise_multiplier=args.noise_multiplier,
         short_utterance_ms=seg["short_utterance_ms"], short_silence_ms=seg["short_silence_ms"],
         cut_pause_ms=seg["cut_pause_ms"],
     )
@@ -551,12 +558,14 @@ def run_segment_producer_dir(args, np):
         改了却不重造，表里的新值就只对**新开的**那一路生效，而现场看到的是"改了没反应"。
         """
         key = tuple(strategy["segmentation"].get(field) for field in SEGMENTATION_FIELDS)
-        return key + (strategy.get("rms_threshold"),)
+        # 5.111：两个切句侧门槛都算进"身份"（自适应下限 rms_floor 才是缺省配置下真正起作用的那个）
+        return key + (strategy.get("rms_threshold"), strategy.get("rms_floor"))
 
     def make_segmenter(strategy):
         """按策略里的切句参数造切句器（一路一个：能量统计必须独立）。"""
         return _new_segmenter(args, np, segmentation=strategy["segmentation"],
-                              rms_threshold=strategy.get("rms_threshold"))
+                              rms_threshold=strategy.get("rms_threshold"),
+                              rms_floor=strategy.get("rms_floor"))
 
     def track_of(name):
         """该说话人的那一路（第一次见到就开跟）。"""
@@ -861,7 +870,7 @@ DEFAULT_ENGINE = "whisper"
 # 因为 segmentation 那一组统一按整数解析，而这两个是小数。
 #   · `silence_skip_level`：识别侧，解码前按电平丢弃的门槛
 #   · `rms_threshold`     ：切句侧，"算不算在说话"的门槛
-LEVEL_FIELDS = ("silence_skip_level", "rms_threshold")
+LEVEL_FIELDS = ("silence_skip_level", "rms_threshold", "rms_floor")
 
 # 命令行没给值时的缺省（与 parse_args 的 default 保持一致；表里没写就落在这里）
 SEGMENTATION_DEFAULTS = {

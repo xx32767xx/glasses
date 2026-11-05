@@ -3390,6 +3390,21 @@ def main():
           abs(low.rms_threshold - 0.02) < 1e-9 and abs(high.rms_threshold - 0.01) < 1e-9,
           f"{low.rms_threshold} / {high.rms_threshold}")
 
+    # ⚠️ 5.111：自适应模式（缺省开）下**真正起作用的是 rms_floor**，不是 rms_threshold ——
+    #    实际门槛 = max(rms_floor, 噪声底 × 4)。所以 rms_floor 也必须能由表给，
+    #    否则"调切句侧电平"这条路在缺省配置下根本走不通（写了 rms_threshold 也没反应）。
+    tuned_floor = whisper_stream._new_segmenter(fence_args, np, segmentation=None, rms_floor=0.002)
+    check("策略里的 rms_floor 真的进了切句器（0.002 vs 命令行 0.004）",
+          abs(tuned_floor.rms_floor - 0.002) < 1e-9, str(tuned_floor.rms_floor))
+    tuned_floor.window = [0.001] * 90 + [0.05] * 10      # 噪声底 0.001、语音档 0.05
+    tuned_floor._refresh_threshold()
+    check("自适应门槛按「噪声底×4」算，且不低于 rms_floor",
+          tuned_floor.noise_floor is not None and tuned_floor.threshold >= tuned_floor.rms_floor,
+          f"噪声底 {tuned_floor.noise_floor} → 门槛 {tuned_floor.threshold}")
+    check("rms_floor 会一路解析到策略档案里（切句器靠它重造）",
+          whisper_stream.resolve_strategy("zh-CN", cli5, {
+              "default": {"model": "large-v3", "rms_floor": 0.002}}).get("rms_floor") == 0.002)
+
     # ⚠️ 5.97 现场事故：启动那行「模型表：…」只打印 languages[语种].model，
     #    于是"语种里钉的是**策略**"（pt-BR → pt-funasr）被显示成 `pt-BR=（沿用 default）`。
     #    用户看着这行以为葡语云端配置没了 —— 日志说错话比不打印更糟，它把人支到错误方向。
