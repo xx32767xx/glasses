@@ -3516,8 +3516,10 @@ def main():
     (sim_dir / "audio" / "room-P").mkdir(parents=True, exist_ok=True)
     (sim_dir / "queue").mkdir(parents=True, exist_ok=True)
     track = sim_dir / "audio" / "room-P" / "alice.pcm"
-    clip = np.zeros(16000, dtype=np.float32)
-    clip[2000:14000] = 0.2
+    # 3 秒音频：自适应门槛要攒够 2 秒（20 块）才估得出噪声底，1 秒的不够
+    # —— 顺便用来验"门槛要说出来"（5.112：产线原来完全看不到这个数）
+    clip = np.zeros(48000, dtype=np.float32)
+    clip[2000:44000] = 0.2
     track.write_bytes((np.clip(clip, -1, 1) * 32767).astype(np.int16).tobytes())
     (sim_dir / "audio" / "room-P" / "alice.pcm.rate").write_text("16000\n", encoding="utf-8")
     (sim_dir / "audio" / "room-P" / "alice.pcm.lang").write_text("en-US\n", encoding="utf-8")
@@ -3540,8 +3542,16 @@ def main():
         model="large-v3", compute_type=None, beam_size=5,
         model_map=str(strategy_table_path), max_models=2, data_dir=str(sim_dir),
     )
-    producer_code = whisper_stream.run_segment_producer(producer_args, np)
+    producer_log = io.StringIO()
+    with contextlib.redirect_stderr(producer_log):
+        producer_code = whisper_stream.run_segment_producer(producer_args, np)
     check("切句进程能真跑起来并正常退出（不再 NameError）", producer_code == 0, str(producer_code))
+    # ⚠️ 5.112：能量门槛是**自适应算出来的**，原来只在 --stats 报表里出现 ⇒ 产线永远看不到。
+    #    用户问过"我调的 rms_floor 有没有用、现在到底多少"，当时只能靠猜。
+    producer_text = producer_log.getvalue()
+    check("切句日志里说出这一路**实际**用的能量门槛（含噪声底与倍数）",
+          "能量门槛" in producer_text and "噪声底" in producer_text,
+          producer_text[-300:])
     produced_files = sorted(p.name for p in (sim_dir / "queue").glob("*.json"))
     check("切出至少一段", len(produced_files) >= 1, str(produced_files))
     if produced_files:

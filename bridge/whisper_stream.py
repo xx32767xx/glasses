@@ -554,11 +554,10 @@ def run_segment_producer_dir(args, np):
     def segmenter_key(strategy):
         """切句器的"身份"：这些值任何一个变了就得重造一个。
 
-        <p>5.109：把 `rms_threshold`（电平门槛）也算进去 —— 它决定"算不算在说话"，
-        改了却不重造，表里的新值就只对**新开的**那一路生效，而现场看到的是"改了没反应"。
+        <p>5.111：两个切句侧门槛（`rms_threshold` / `rms_floor`）也算进"身份" ——
+        改了却不重造，表里新值就只对**新开的**那一路生效，现场看到的是"改了没反应"。
         """
         key = tuple(strategy["segmentation"].get(field) for field in SEGMENTATION_FIELDS)
-        # 5.111：两个切句侧门槛都算进"身份"（自适应下限 rms_floor 才是缺省配置下真正起作用的那个）
         return key + (strategy.get("rms_threshold"), strategy.get("rms_floor"))
 
     def make_segmenter(strategy):
@@ -566,6 +565,31 @@ def run_segment_producer_dir(args, np):
         return _new_segmenter(args, np, segmentation=strategy["segmentation"],
                               rms_threshold=strategy.get("rms_threshold"),
                               rms_floor=strategy.get("rms_floor"))
+
+    def report_gate(name, state):
+        """把这一路**实际**用的能量门槛说一次（5.112）。
+
+        <p>为什么需要：切句器真正的门槛是**自适应算出来的**（`max(rms_floor, 噪声底×4)`，
+        再加安全阀），而原来它只在 `--stats` 的结尾报表里出现 —— 也就是
+        **产线（start-multi）永远看不到**。于是"我调了门槛有没有用""现在到底多少"
+        只能靠猜，而这正是本项目反复踩的那类问题。
+
+        <p>只在两个时刻各说一次：① 噪声底量出来之后（每路一次）；
+        ② 安全阀被触发时（说明门槛已经顶到"较响档的一半"，行为会变）。
+        """
+        segmenter = state["segmenter"]
+        if segmenter.noise_floor is None:
+            return                       # 还没攒够 2 秒，估不了
+        if not state.get("gate_reported"):
+            state["gate_reported"] = True
+            print(f"[切句] {args.tag or '?'} {name} 能量门槛：{segmenter.gate_report()}",
+                  file=sys.stderr, flush=True)
+        elif segmenter.capped and not state.get("gate_capped_reported"):
+            state["gate_capped_reported"] = True
+            print(f"[切句] {args.tag or '?'} {name} ⚠️ 门槛顶到安全阀（{segmenter.threshold:.4f}）："
+                  f"底噪太高，已经在「不让门槛高到把说话当静音」的边界上；"
+                  f"要更稳就调大 --rms-floor 或改善收音环境",
+                  file=sys.stderr, flush=True)
 
     def track_of(name):
         """该说话人的那一路（第一次见到就开跟）。"""
@@ -681,6 +705,7 @@ def run_segment_producer_dir(args, np):
                     for block in blocks:
                         for utterance in state["segmenter"].push(block):
                             flush(name, state, utterance)
+                    report_gate(name, state)
                 elif idle.saw_nothing() and state["segmenter"].speaking:
                     flush(name, state, state["segmenter"].flush())
             # 文件消失（换人 / 清理）：那一路的缓冲也别丢
