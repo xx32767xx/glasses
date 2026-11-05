@@ -21,7 +21,7 @@ import { handleOrg, loadSelection, selectionPath } from '../relay/org-api.mjs'
 import {
   mergeStrategies, parseJsonLoose, setLanguageModel, describeKeyShape,
   setLanguageTuning, setLanguageSegmentation, clearLanguageTuning, resolveEffective,
-  SEGMENTATION_DEFAULTS,
+  setDefaultSegmentation, setDefaultTuning, SEGMENTATION_DEFAULTS,
 } from '../lib/asr-engines.mjs'
 
 const BASE = join(VAR_DIR, 'test', 'org-api-suite')
@@ -522,6 +522,29 @@ export async function runOrgApiSuite({ it, check, assert }) {
       && SEGMENTATION_DEFAULTS.short_utterance_ms === 800
       && SEGMENTATION_DEFAULTS.short_silence_ms === 1100
       && SEGMENTATION_DEFAULTS.cut_pause_ms === 200, JSON.stringify(SEGMENTATION_DEFAULTS))
+
+    // ── 5.114：改"所有人的默认"（切句是同一段代码，碎句/不切句三语一起犯）──
+    const globalSeg = setDefaultSegmentation(table, { silence_ms: 1100, short_utterance_ms: 1200 })
+    check('默认层的切句被改（并保留 default 里原有的别的字段）',
+      globalSeg.table.default.segmentation.silence_ms === 1100
+      && globalSeg.table.default.segmentation.short_utterance_ms === 1200
+      && globalSeg.table.default.model === 'large-v3', JSON.stringify(globalSeg.table.default))
+    check('原表没被改（纯函数）', table.default.segmentation.silence_ms === 800)
+    check('三门语言**都**生效（这就是它的意义）',
+      ['zh-CN', 'pt-BR', 'en-US'].every((lang) =>
+        resolveEffective(globalSeg.table, lang, 'default').segmentation.silence_ms === 1100),
+      JSON.stringify(['zh-CN', 'pt-BR', 'en-US'].map(
+        (lang) => resolveEffective(globalSeg.table, lang, 'default').segmentation.silence_ms)))
+    check('语种级的覆盖仍然优先（--default 定的只是基线）', (() => {
+      const withLang = setLanguageSegmentation(globalSeg.table, 'pt-BR', { silence_ms: 700 })
+      return resolveEffective(withLang.table, 'pt-BR', 'default').segmentation.silence_ms === 700
+        && resolveEffective(withLang.table, 'zh-CN', 'default').segmentation.silence_ms === 1100
+    })())
+    const globalLevels = setDefaultTuning(table, { rms_floor: 0.002 })
+    check('默认层的电平门槛也能改', globalLevels.table.default.rms_floor === 0.002,
+      JSON.stringify(globalLevels.table.default))
+    check('默认层同样做范围校验（0.2 报错）',
+      setDefaultTuning(table, { rms_floor: 0.2 }).problems.length === 1)
   })
 
   await it('服务器端换模型（setLanguageModel）：改表就生效，别动别的字段', () => {

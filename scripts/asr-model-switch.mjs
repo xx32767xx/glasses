@@ -25,6 +25,7 @@ import { join } from 'node:path'
 import {
   ENGINE_LANGUAGES, loadStrategyTable, parseJsonLoose, resolveEffective, resolveProfile,
   setLanguageModel, setLanguageSegmentation, setLanguageTuning,
+  setDefaultSegmentation, setDefaultTuning,
 } from '../lib/asr-engines.mjs'
 
 const MODEL_NAME = /^[A-Za-z0-9._/:-]{1,160}$/
@@ -32,7 +33,8 @@ const STRATEGY_NAME = /^[a-z0-9_-]{1,32}$/
 
 function parseArgs(argv) {
   const args = { dataDir: '', lang: 'en-US', model: null, strategy: null,
-    skipLevel: null, rmsLevel: null, rmsFloor: null, clearTuning: false, segmentation: {} }
+    skipLevel: null, rmsLevel: null, rmsFloor: null, clearTuning: false, segmentation: {},
+    useDefault: false }
   for (let index = 0; index < argv.length; index += 1) {
     const item = argv[index]
     if (item === '--data-dir') args.dataDir = argv[index += 1] ?? ''
@@ -43,9 +45,13 @@ function parseArgs(argv) {
     else if (item === '--rms-level') args.rmsLevel = argv[index += 1] ?? ''
     else if (item === '--rms-floor') args.rmsFloor = argv[index += 1] ?? ''
     else if (item === '--clear-tuning') args.clearTuning = true
+    else if (item === '--default') args.useDefault = true
     else if (item === '--silence-ms') args.segmentation.silence_ms = argv[index += 1] ?? ''
     else if (item === '--min-speech-ms') args.segmentation.min_speech_ms = argv[index += 1] ?? ''
     else if (item === '--short-silence-ms') args.segmentation.short_silence_ms = argv[index += 1] ?? ''
+    else if (item === '--short-utterance-ms') args.segmentation.short_utterance_ms = argv[index += 1] ?? ''
+    else if (item === '--max-speech-ms') args.segmentation.max_speech_ms = argv[index += 1] ?? ''
+    else if (item === '--cut-pause-ms') args.segmentation.cut_pause_ms = argv[index += 1] ?? ''
     else if (item === '--room') {
       // ⚠️ 5.108：房间侧车整层删除，`--room` 随之取消。**必须明确说清**，
       //    否则老脚本/老笔记里的人会以为它只是"暂时不好用"，继续试。
@@ -96,7 +102,7 @@ function main() {
   // 没给任何"要改什么"的参数：只报告现状（含切句与两个电平门槛，5.109）
   const wantsChange = args.model !== null || args.strategy !== null
     || args.skipLevel !== null || args.rmsLevel !== null || args.rmsFloor !== null || args.clearTuning
-    || Object.keys(args.segmentation).length > 0
+    || Object.keys(args.segmentation).length > 0 || args.useDefault
   if (!wantsChange) {
     console.log(`数据目录 ${root}`)
     for (const lang of ENGINE_LANGUAGES) {
@@ -122,7 +128,8 @@ function main() {
     if (strategies.length > 0) console.log(`\n可选策略：${strategies.join(' / ')}`)
     console.log('\n换模型：--model tiny（还原：--model ""）'
       + '\n换引擎：--strategy en-parakeet（parakeet / tencent 这类只能这样切）'
-      + '\n调切句：改表里该语种的 segmentation（例如 --silence-ms 650）'
+      + '\n调切句：--silence-ms 1100 / --min-speech-ms 700 / --short-utterance-ms 1200'
+      + '\n        加 --default = 改"所有人的默认"（切句是同一段代码，三门语言一起变）'
       + '\n调电平：--skip-level 0.006（识别侧）／--rms-level 0.015（切句侧）'
       + '\n全撤掉：--clear-tuning')
     return 0
@@ -177,26 +184,33 @@ function main() {
     tuning.rms_floor = null
   }
   if (Object.keys(args.segmentation).length > 0) {
-    const applied = setLanguageSegmentation(next, args.lang, args.segmentation)
+    const applied = args.useDefault
+      ? setDefaultSegmentation(next, args.segmentation)
+      : setLanguageSegmentation(next, args.lang, args.segmentation)
     if (applied.problems.length > 0) {
       for (const problem of applied.problems) console.error(problem)
       return 2
     }
     next = applied.table
+    const where = args.useDefault ? '默认层（三门语言都生效）' : args.lang
     for (const key of applied.written) {
-      reports.push(`${args.lang} 的切句 ${key} → ${args.segmentation[key]}ms`)
+      reports.push(`${where} 的切句 ${key} → ${args.segmentation[key]}ms`)
     }
+    for (const key of applied.removed) reports.push(`${where} 的切句 ${key} 已撤掉`)
   }
   if (Object.keys(tuning).length > 0) {
-    const applied = setLanguageTuning(next, args.lang, tuning)
+    const applied = args.useDefault
+      ? setDefaultTuning(next, tuning)
+      : setLanguageTuning(next, args.lang, tuning)
     if (applied.problems.length > 0) {
       // 越界/写错**直接报错**：这种值错一个数量级的表现是"一句字幕都没有"，最难查
       for (const problem of applied.problems) console.error(problem)
       return 2
     }
     next = applied.table
-    for (const key of applied.written) reports.push(`${args.lang} 的 ${key} → ${tuning[key]}`)
-    for (const key of applied.removed) reports.push(`${args.lang} 的 ${key} 已撤掉（回到 default/命令行）`)
+    const where = args.useDefault ? '默认层（三门语言都生效）' : args.lang
+    for (const key of applied.written) reports.push(`${where} 的 ${key} → ${tuning[key]}`)
+    for (const key of applied.removed) reports.push(`${where} 的 ${key} 已撤掉（回到 default/命令行）`)
   }
 
   if (existsSync(tablePath)) {
