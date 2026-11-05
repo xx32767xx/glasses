@@ -2374,6 +2374,9 @@ def run_queue_consumer(args, np, pool):
                       f"（策略 {strategyName}，耗时 {time.perf_counter() - transcribe_started:.2f}s）："
                       f"{type(error).__name__}: {error}",
                       file=sys.stderr, flush=True)
+                hint = describe_runtime_failure(error)
+                if hint:
+                    print(f"[识别] {hint}", file=sys.stderr, flush=True)
                 failed_dir = os.path.join(args.queue_dir, "failed")
                 try:
                     os.makedirs(failed_dir, exist_ok=True)
@@ -4062,6 +4065,63 @@ def emit(text: str, language=None):
         print(clean, flush=True)
 
 
+def _runtime_hint_for_text(text):
+    """把"运行库/驱动/显存"类报错翻译成**能照做**的中文。认不出就返回空串，不瞎猜。"""
+    low = str(text or "").lower()
+    if "libcublas" in low or "libcudnn" in low or "cannot be loaded" in low or \
+            "cannot open shared object" in low or "cudnn" in low:
+        return (
+            "这是 CUDA 运行库没找到（cuBLAS/cuDNN 12），不是代码问题，也不是模型没搬过来。\n"
+            "  ① 库在不在：ls $VENV/lib/python*/site-packages/nvidia/cublas/lib/libcublas.so.12\n"
+            "  ② 重新生成环境文件（把 LD_LIBRARY_PATH 指到那些目录）：\n"
+            "     sudo python3 scripts/make-env-file.py $VENV --hf-home /opt/leion/models --out /etc/leion/asr.env\n"
+            "  ③ systemd 单元里必须有 EnvironmentFile=/etc/leion/asr.env —— 少了它，"
+            "手跑能过、服务里每一段都失败（PATH 里有 venv，LD_LIBRARY_PATH 却没有）\n"
+            "  ④ 库确实没装：pip install nvidia-cublas-cu12 nvidia-cudnn-cu12\n"
+            "  ⑤ 只想先出字：把这张策略的 device 改成 cpu（慢，但不报错）\n"
+            "  一条命令查全：python3 scripts/check-asr-env.py")
+    if "out of memory" in low:
+        return (
+            "显存不够：别的进程占着卡，或同时加载的模型太多。\n"
+            "  看谁占着：nvidia-smi；  少加载点：--max-models 2（或把这张策略的 device 改成 cpu）")
+    if "no cuda-capable device" in low or "cuda driver" in low or "cudaerrornodevice" in low:
+        return (
+            "驱动/设备层面不通：GPU 不在、驱动太旧、或容器里没映射 /dev/nvidia*。\n"
+            "  看驱动：nvidia-smi；  ctranslate2 要 CUDA 12 的驱动（P40 需要 ≥ 525 版本）")
+    if "no kernel image" in low or "not compiled with cuda" in low:
+        return (
+            "这份 ctranslate2 没带对应计算能力的内核（P40 是 sm_61）。\n"
+            "  换回官方 wheel（pip install --force-reinstall ctranslate2），或改 device=cpu")
+    return ""
+
+
+# 同一种故障只解释一次：一段一失败、每段都贴五行说明，日志会被刷成噪声。
+_SHOWN_RUNTIME_HINTS = set()
+
+
+def describe_runtime_failure(error, dedupe=True):
+    """GPU/运行库类异常的**中文说明**（认不出返回空串）。
+
+    <p>`dedupe=True`（现场用的）：同一类故障只贴一次完整说明，之后每次只回一句
+    「已解释过」，免得一段一行把日志刷成噪声。`dedupe=False`：永远返回完整说明，
+    也不记账（测试和一次性排查用）。</p>
+
+    <p>为什么需要：现场日志里只有 `RuntimeError: Library libcublas.so.12 is not found
+    or cannot be loaded` 这种一行英文，用户会去反复重装 ctranslate2 —— 修错地方。
+    </p>
+    """
+    text = f"{type(error).__name__}: {error}"
+    hint = _runtime_hint_for_text(text)
+    if not hint:
+        return ""
+    key = hint.splitlines()[0]
+    if dedupe:
+        if key in _SHOWN_RUNTIME_HINTS:
+            return "（同类故障已解释过，见上面的完整说明；这次仍然失败）"
+        _SHOWN_RUNTIME_HINTS.add(key)
+    return hint
+
+
 def resolve_compute_type(requested, device):
     """返回 (实际使用的精度, 说明)。GPU 上把不支持的精度换成这台卡能跑的。
 
@@ -4384,7 +4444,18 @@ def main():
             # ⚠️ NameError 是**代码 bug**，不是"预热偶尔不稳" —— 吃掉它会让下一步看起来正常
             raise
         except Exception as error:      # 预热失败不该让整个程序起不来
-            print(f"[whisper_stream] 预热失败（忽略）：{type(error).__name__}: {error}", file=sys.stderr)
+            # ⚠️ 5.119：但**不能再写成"（忽略）"** —— 预热就是那个"GPU 到底能用吗"的探针。
+            # 运行库/驱动缺失时它必然失败，而失败被吞掉之后，程序看着一切正常、
+            # 每一段却在 0.03 秒内失败（实机日志：`Library libcublas.so.12 is not found`）。
+            # 这里不退出（同一个识别进程还要服务 pt/en 两条云端/CPU 策略，
+            # 杀掉它等于把好的语种也一起弄没），但要把后果说清楚。
+            hint = describe_runtime_failure(error)
+            print(f"[whisper_stream] 预热失败：{type(error).__name__}: {error}", file=sys.stderr)
+            if hint:
+                print(f"[whisper_stream] {hint}", file=sys.stderr)
+                print(f"[whisper_stream] ⚠️ 后果：走到这个引擎上的语种（缺省 {args.language}）"
+                      "会**每一段都失败、一直没字幕**；走云端/CPU 的语种不受影响。",
+                      file=sys.stderr)
         print(f"[whisper_stream] 预热完成：{time.perf_counter() - warm_start:.2f}s"
               f"（这段固定开销如果不提前付，会砸在第一句字幕上）", file=sys.stderr)
 

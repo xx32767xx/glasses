@@ -2172,6 +2172,34 @@ def main():
     check("CPU 上不查表（CPU 的档位与显卡无关）",
           whisper_stream.resolve_compute_type("float16", "cpu") == ("float16", ""))
 
+    # ── "运行库缺失"的报错翻译（实机日志：Library libcublas.so.12 is not found）────
+    # 现场只有一行英文，用户会去重装 ctranslate2 —— 修错地方。
+    cublas_error = RuntimeError("Library libcublas.so.12 is not found or cannot be loaded")
+    cublas_hint = whisper_stream.describe_runtime_failure(cublas_error, dedupe=False)
+    check("cuBLAS 缺失 → 指向 make-env-file.py 与单元里的 EnvironmentFile",
+          "make-env-file.py" in cublas_hint and "EnvironmentFile=/etc/leion/asr.env" in cublas_hint,
+          cublas_hint)
+    check("cuBLAS 缺失 → 明确说是运行库问题，不是模型没搬过来 / 不是代码 bug",
+          "CUDA 运行库" in cublas_hint and "不是模型没搬过来" in cublas_hint, cublas_hint)
+    check("cuBLAS 缺失 → 也给「先用 CPU 出字」这条退路",
+          "--device cpu" in cublas_hint or "device 改成 cpu" in cublas_hint, cublas_hint)
+    check("cuDNN 那类同样认得（走的是同一组判断）",
+          whisper_stream.describe_runtime_failure(
+              RuntimeError("Could not load library libcudnn_ops.so.9"), dedupe=False) != "")
+    oom_hint = whisper_stream.describe_runtime_failure(
+        RuntimeError("CUDA failed with error out of memory"), dedupe=False)
+    check("显存不足 → 指向 nvidia-smi / --max-models",
+          "nvidia-smi" in oom_hint and "--max-models" in oom_hint, oom_hint)
+    check("驱动/设备类也给方向（不是笼统一句「GPU 出错了」）",
+          "nvidia-smi" in whisper_stream.describe_runtime_failure(
+              RuntimeError("CUDA driver version is insufficient"), dedupe=False))
+    check("认不出的异常返回空串（不瞎猜、不硬编一段假解释）",
+          whisper_stream.describe_runtime_failure(ValueError("随便什么错"), dedupe=False) == "")
+    first = whisper_stream.describe_runtime_failure(cublas_error)
+    second = whisper_stream.describe_runtime_failure(cublas_error)
+    check("同一故障第二次只回一句「已解释过」，不把五行说明刷满日志",
+          "make-env-file.py" in first and "已解释过" in second, f"{second!r}")
+
     # ── 模型下载与环境自检的"报错翻译"────────────────────────────────────────
     # 用户在服务器上第一次跑时遇到的是：
     #   '[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol'
