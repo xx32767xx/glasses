@@ -28,16 +28,23 @@ public final class InterpreterLangCheck {
         eq("认不出的读语言 → 空串（不硬猜）", InterpreterLang.defaultPartner("ja-JP"), "");
         eq("空串 → 空串", InterpreterLang.defaultPartner(null), "");
 
-        // ② 对方语言的候选集合：永远不含我读的语言（不变量 ②）
+        // ② 对方语言的候选集合：除我读的那门以外都合法；永远不含读语言自己（不变量 ②）
+        //    ⚠️ 5.106 改过这里：原来"读葡语/英语时只有中文一种"，把**葡语↔英语**这一对
+        //    排除掉了 —— 用户实测就是"读葡语时对方只能选简体中文"，想选英语没有按钮。
         String[] zhOptions = InterpreterLang.partnerOptions(InterpreterLang.ZH);
         expect("读中文时对方有两种可能", zhOptions.length == 2, String.valueOf(zhOptions.length));
         contains("读中文时可选葡语", zhOptions, "pt-BR");
         contains("读中文时可选英语", zhOptions, "en-US");
         String[] ptOptions = InterpreterLang.partnerOptions(InterpreterLang.PT);
-        expect("读葡语时对方只有中文一种", ptOptions.length == 1, String.valueOf(ptOptions.length));
+        expect("读葡语时对方也有两种可能（中/英）", ptOptions.length == 2,
+                String.valueOf(ptOptions.length));
         contains("读葡语时可选中文", ptOptions, "zh-CN");
+        contains("读葡语时可选英语", ptOptions, "en-US");
         String[] enOptions = InterpreterLang.partnerOptions(InterpreterLang.EN);
-        expect("读英语时对方只有中文一种", enOptions.length == 1, String.valueOf(enOptions.length));
+        expect("读英语时对方也有两种可能（中/葡）", enOptions.length == 2,
+                String.valueOf(enOptions.length));
+        contains("读英语时可选中文", enOptions, "zh-CN");
+        contains("读英语时可选葡语", enOptions, "pt-BR");
         for (String read : new String[] { "zh-CN", "pt-BR", "en-US" }) {
             boolean self = false;
             for (String one : InterpreterLang.partnerOptions(read)) {
@@ -45,6 +52,8 @@ public final class InterpreterLangCheck {
             }
             expect("候选里不含读语言自己（" + read + "）", self == false, "");
         }
+        expect("认不出的读语言 → 没有候选（不瞎给按钮）",
+                InterpreterLang.partnerOptions("ja-JP").length == 0, "");
 
         // ③ 归一化：短码/大写下划线都要收（各家客户端上报的形状不一样）
         eq("zh 归一成 zh-CN", InterpreterLang.normalize("zh"), "zh-CN");
@@ -65,7 +74,10 @@ public final class InterpreterLangCheck {
         eq("读葡语却存了葡语 → 换成中文", InterpreterLang.resolvePartner("pt-BR", "pt-BR"), "zh-CN");
         eq("读中文存英语 → 保留（合法）", InterpreterLang.resolvePartner("en-US", "zh-CN"), "en-US");
         eq("读中文存葡语 → 保留（合法）", InterpreterLang.resolvePartner("pt-BR", "zh-CN"), "pt-BR");
-        eq("读葡语存英语 → 不合法，换成中文", InterpreterLang.resolvePartner("en-US", "pt-BR"), "zh-CN");
+        eq("读葡语存英语 → 合法（5.106 起允许葡英互译）",
+                InterpreterLang.resolvePartner("en-US", "pt-BR"), "en-US");
+        eq("读英语存葡语 → 合法（同上）", InterpreterLang.resolvePartner("pt-BR", "en-US"), "pt-BR");
+        eq("读英语存英语 → 换成默认中文", InterpreterLang.resolvePartner("en-US", "en-US"), "zh-CN");
 
         // ⑤ AUTO 常量的语义：界面上"不用想"的那一项（存 auto ≠ 存了一个语言）
         expect("AUTO 常量不与任何语言相等", !InterpreterLang.AUTO.equals(InterpreterLang.ZH)

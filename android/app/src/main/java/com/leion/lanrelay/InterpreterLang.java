@@ -72,16 +72,25 @@ public final class InterpreterLang {
     }
 
     /**
-     * 「对方说的语言」的**可选集合**：读中文时是葡/英两种；读葡语或英语时只有中文一种。
+     * 「对方说的语言」的**可选集合**：除了我读的那门，其余都合法。
      *
-     * <p>刻意**永不包含**读语言自己：那会让"原文与译文同语言"，服务端认定不需要译文 →
-     * 用户说完了却一条字幕都看不到。这个不变量也有测试钉着。
+     * <p>5.106 修：原来是"读中文→葡/英两种；读葡语或英语→**只有中文**"。
+     * 那条规则来自"巴西现场最常见"的假设，但它把**葡语↔英语**这一对直接排除掉了 ——
+     * 用户实测就卡在这里：我把读语言设成葡语（或英语），对方的语言只剩「简体中文」一个选项，
+     * 想选英语/葡语根本没有按钮。而服务端本来就能译这两门（`LANGS` 三语齐全），
+     * 是手机端自己把选项砍掉了。
+     *
+     * <p>仍然**永不包含**读语言自己：那会让"原文与译文同语言"，服务端认定不需要译文 →
+     * 用户说完了却一条字幕都看不到。这个不变量有测试钉着。
      */
     public static String[] partnerOptions(String readLang) {
         String read = normalize(readLang);
-        if (ZH.equals(read)) return new String[] { PT, EN };
-        if (PT.equals(read) || EN.equals(read)) return new String[] { ZH };
-        return new String[0];
+        if (!supported(read)) return new String[0];
+        java.util.ArrayList<String> out = new java.util.ArrayList<>(2);
+        for (String one : ALL) {
+            if (!one.equals(read)) out.add(one);
+        }
+        return out.toArray(new String[0]);
     }
 
     /**
@@ -98,7 +107,7 @@ public final class InterpreterLang {
         String read = resolveRead(readLang);
         String partner = normalize(storedPartner);
         if (partner.isEmpty() || partner.equals(read)) return defaultPartner(read);
-        // 读中文时对方允许葡/英；其余情况只有中文合法
+        // 5.106：可选集合 = 除我读的那门以外的两种（读中文→葡/英，读葡语→中/英，读英语→中/葡）
         for (String one : partnerOptions(read)) {
             if (one.equals(partner)) return partner;
         }

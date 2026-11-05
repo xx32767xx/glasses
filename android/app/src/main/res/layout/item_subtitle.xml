@@ -1,11 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  一个字幕片段：时间标记 + 原文（灰、16sp）+ 译文（深、22sp）。
-
+  一个字幕片段：顶部一行（时间 + 语言标签 + 生成中）+ 原文（灰，16sp）+ 译文（深，22sp）。
   规范明确不要"厚重边框或聊天气泡"，所以这里没有卡片背景，
   只有间距 + 一条细分隔线，读起来是连续的滚动字幕。
   字号在布局里给的是**基准值**，实际大小由代码按"字号"设置整体缩放
-  （见 MainActivity.applyFontScale），所以三个 TextView 都带 id。
+  （见 SubtitleList.applyScale），所以三个 TextView 都带 id。
+
+  ⚠️ 5.106 两处排版修正（用户实测："译文太大 / 多行时时行距对齐乱、看着歪"）：
+  ① 行距改用 **lineSpacingMultiplier**，不再用 lineSpacingExtra（dp）。
+     用固定 dp 的后果：字号随"字号设置"缩放时行距不跟着变（22sp → 18.7sp 但间隙还是 6dp），
+     多行看起来忽紧忽松；而且 dp 换算在 3x 屏上一加就是十几像素，本来就偏大。
+     倍数则是相对字号的，缩放后依然均匀。
+  ② **语言标签与「生成中」移到最上面那行**（和时间同一行），不再和译文挤在同一条横排里。
+     留在译文旁边时，长句一换行，那两个小胶囊就贴在多行文字的中上部 —— 看起来就是"歪的"；
+     移走之后译文拿到整卡宽度，每一行的左边缘都对得齐。
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
@@ -13,27 +21,18 @@
     android:orientation="vertical"
     android:paddingTop="14dp">
 
-    <TextView
-        android:id="@+id/segTime"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:textColor="@color/ink_faint"
-        android:textSize="11sp" />
-
-    <TextView
-        android:id="@+id/segSource"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:lineSpacingExtra="4dp"
-        android:textColor="@color/ink_soft"
-        android:textSize="16sp" />
-
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
+        android:gravity="center_vertical"
         android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/segTime"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textColor="@color/ink_faint"
+            android:textSize="11sp" />
 
         <!-- 5.54：这一行译文是**哪种语言**。
              为什么需要：一个人可能同时看两种译文（我说葡语，英文和中文都想看），
@@ -42,8 +41,7 @@
             android:id="@+id/segLang"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginEnd="8dp"
-            android:layout_marginTop="4dp"
+            android:layout_marginStart="8dp"
             android:background="@drawable/bg_chip"
             android:paddingStart="6dp"
             android:paddingTop="2dp"
@@ -54,20 +52,10 @@
             android:visibility="gone" />
 
         <TextView
-            android:id="@+id/segTarget"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:lineSpacingExtra="6dp"
-            android:textColor="@color/ink"
-            android:textSize="22sp" />
-
-        <TextView
             android:id="@+id/segTag"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginStart="8dp"
-            android:layout_marginTop="4dp"
             android:background="@drawable/bg_tag_live"
             android:paddingStart="6dp"
             android:paddingTop="2dp"
@@ -78,6 +66,24 @@
             android:textSize="10sp"
             android:visibility="gone" />
     </LinearLayout>
+
+    <TextView
+        android:id="@+id/segSource"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:lineSpacingMultiplier="1.15"
+        android:textColor="@color/ink_soft"
+        android:textSize="16sp" />
+
+    <TextView
+        android:id="@+id/segTarget"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:lineSpacingMultiplier="1.2"
+        android:textColor="@color/ink"
+        android:textSize="22sp" />
 
     <!-- 热词观测旁注（docs/15 §17）：只在"这句提到了名字、但译文没写出规范写法"时显示。
          它是旁注而不是正文：小字、警示色、不抢译文的注意力；没有时整行 GONE。 -->

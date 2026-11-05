@@ -222,8 +222,8 @@ export async function runTtsSuite({ it, check }) {
       closeSync(fd)
     }
     const report = readFileSync(logPath, 'utf-8')
-    check('31 条语言规则全通过（镜像/候选集合/归一化/钉正/AUTO）',
-      /passed=31 failed=0/.test(report), report.trim().slice(-300))
+    check('37 条语言规则全通过（镜像/候选集合/归一化/钉正/AUTO）',
+      /passed=37 failed=0/.test(report), report.trim().slice(-300))
   })
 
   await it('5.38：播报整层先停用（用户定「先不使用」），三处入口必须一致', async () => {
@@ -424,6 +424,45 @@ export async function runTtsSuite({ it, check }) {
         readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout', 'item_subtitle.xml'), 'utf-8')))
     check('时间标记按本场开始算（mm:ss），每场重置',
       /startedAt = System\.currentTimeMillis\(\)/.test(interp) && /%d:%02d/.test(interp))
+  })
+
+  await it('5.106：翻译官页三处实机问题（对方语言选项 / 同一句两张卡 / 多行看着歪）', async () => {
+    const { readFileSync } = await import('node:fs')
+    const backend = readFileSync(join(JAVA_SRC, 'RelayPipelineBackend.java'), 'utf-8')
+    const client = readFileSync(join(JAVA_SRC, 'LanClient.java'), 'utf-8')
+    const list = readFileSync(join(JAVA_SRC, 'SubtitleList.java'), 'utf-8')
+    const layout = readFileSync(
+      join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout', 'item_subtitle.xml'), 'utf-8')
+
+    // ① 实机：读葡语/英语时对方的语言只有「简体中文」一个按钮可点
+    //    规则在 InterpreterLang（有可执行用例），这里只钉"页面用的是那条规则、且没自己再砍一遍"
+    check('对方语言的候选集合来自 InterpreterLang（页面不自己写死）',
+      /partnerOptions\(lang\)/.test(
+        readFileSync(join(JAVA_SRC, 'InterpreterActivity.java'), 'utf-8')))
+
+    // ② 实机：原文播一次、原文+译文又播一次（同一句两张卡，朗读也念两遍）
+    //    两层都要有：服务端得知道"我只读这一门"，客户端还得按它拦一道 ——
+    //    服务端在"那门语言还没出帧"时仍然会回单帧（原文帧），只靠服务端拦不住。
+    check('开会话时把"我只读这一门"上报给服务器',
+      /client\.setHearLangs\(readLang\)/.test(backend))
+    check('客户端再按登记的语言拦一道（服务端时序上拦不住）',
+      /private boolean wantsFrameLanguage/.test(client)
+      && /!wantsFrameLanguage\(frameLang\)/.test(client))
+    check('带 notice 的提示帧不拦（它不是字幕，拦了就没提示了）',
+      /notice\.isEmpty\(\)\)\s*&&\s*!wantsFrameLanguage/.test(client))
+    check('没登记收听语言时保持老行为（什么都收，不静默吞字幕）',
+      /hearLangs == null \|\| hearLangs\.trim\(\)\.isEmpty\(\)\) return true/.test(client))
+
+    // ③ 实机：译文太大 + 多行时行距/对齐乱、看着歪
+    //    行距必须用**倍数**：固定 dp 的额外行距不跟字号缩放走，缩放后忽紧忽松。
+    check('行距改成倍数（不再是 lineSpacingExtra 的固定 dp）',
+      /lineSpacingMultiplier="1\.2"/.test(layout) && !/lineSpacingExtra=/.test(layout))
+    check('语言标签/生成中挪到最上面那行（留在译文里，长句换行会让胶囊看着歪）',
+      !/segTarget[\s\S]{0,600}?id="@\+id\/segLang"/.test(layout))
+    check('拉丁译文字号比中文小一档（同样 22sp，拉丁文本看起来更大）',
+      /BASE_TARGET_SP_LATIN = 20f/.test(list) && /targetBaseSp\(segment\.target\)/.test(list))
+    check('译文那一行拿整卡宽度（不再和胶囊挤在一条横排里）',
+      /id="@\+id\/segTarget"\s*\n\s*android:layout_width="match_parent"/.test(layout))
   })
 
   await it('5.49：网络抖动导致的翻译失败要重试（缺一句比慢一句糟）', async () => {

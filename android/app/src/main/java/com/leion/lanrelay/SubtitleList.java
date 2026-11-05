@@ -64,8 +64,19 @@ public class SubtitleList {
     /** 基准字号（item_subtitle.xml 里的值），缩放时以它为基准。 */
     private static final float BASE_SOURCE_SP = 16f;
     private static final float BASE_TARGET_SP = 22f;
+    /**
+     * 拉丁字母译文的字号（5.106）。
+     *
+     * <p>为什么同一张卡要按语种取两个值：同样 22sp，一串葡语/英语的**视觉体量明显大于**中文
+     * ——汉字是方块、拉丁字母窄而矮，但词与词之间要留空格、且单词不能被拆开，
+     * 于是同样宽度下拉丁文本占的行数更多、看着"更大更挤"。用户实测的原话是"译文太大"。
+     * 降 2sp（约 9%）既能看清又不再顶格。
+     */
+    private static final float BASE_TARGET_SP_LATIN = 20f;
     private static final float BASE_TIME_SP = 11f;
     private static final float BASE_NOTE_SP = 12f;
+    /** 「生成中」/语言标签：小胶囊，跟着字号缩放但不超过基准的 1.3 倍。 */
+    private static final float BASE_CHIP_SP = 10f;
 
     private final LayoutInflater inflater;
     private final ScrollView scroll;
@@ -141,12 +152,35 @@ public class SubtitleList {
 
     private void applyScale(Segment segment) {
         segment.sourceView.setTextSize(TypedValue.COMPLEX_UNIT_SP, BASE_SOURCE_SP * scale);
-        segment.targetView.setTextSize(TypedValue.COMPLEX_UNIT_SP, BASE_TARGET_SP * scale);
+        // 5.106：译文按"有没有汉字"取字号 —— 拉丁文本同字号看起来更大（见 BASE_TARGET_SP_LATIN）
+        segment.targetView.setTextSize(TypedValue.COMPLEX_UNIT_SP,
+                targetBaseSp(segment.target) * scale);
         // 观测提示不跟着放大那么多：它是旁注，不该抢正文的注意力
         segment.noteView.setTextSize(TypedValue.COMPLEX_UNIT_SP, BASE_NOTE_SP * Math.min(scale, 1.2f));
         // 时间标记不跟着放大那么多，否则会喧宾夺主
         ((TextView) segment.view.findViewById(R.id.segTime))
                 .setTextSize(TypedValue.COMPLEX_UNIT_SP, BASE_TIME_SP * Math.min(scale, 1.3f));
+        // 5.106：小胶囊同理（它们是标签，不该跟正文一起变大）
+        if (segment.langView != null) {
+            segment.langView.setTextSize(TypedValue.COMPLEX_UNIT_SP,
+                    BASE_CHIP_SP * Math.min(scale, 1.3f));
+        }
+        segment.tagView.setTextSize(TypedValue.COMPLEX_UNIT_SP,
+                BASE_CHIP_SP * Math.min(scale, 1.3f));
+    }
+
+    /** 译文该用的基准字号：含汉字用中文那档，纯拉丁字母用略小一档。 */
+    private static float targetBaseSp(String text) {
+        return containsCjk(text) ? BASE_TARGET_SP : BASE_TARGET_SP_LATIN;
+    }
+
+    /** 这串文字里有没有汉字（与眼镜那边的判据同一套：码位 ≥ 0x2E80）。 */
+    private static boolean containsCjk(String text) {
+        if (text == null) return false;
+        for (int index = 0; index < text.length(); index += 1) {
+            if (text.charAt(index) >= 0x2E80) return true;
+        }
+        return false;
     }
 
     /** 清空（开始新的会话时用）。 */
@@ -254,6 +288,8 @@ public class SubtitleList {
             langView.setText(label);
             langView.setVisibility(label.isEmpty() ? View.GONE : View.VISIBLE);
         }
+        // 5.106：语言标签与小胶囊在**最上面那行**（与时间同一行），译文拿整卡宽度 ——
+        // 详见 item_subtitle.xml 顶部注释（挤在译文旁边时，多行文字会让胶囊看着"歪"）。
         return new Segment(time, source == null ? "" : source, label, view,
                 sourceView, targetView, tagView, noteView, langView);
     }

@@ -864,8 +864,50 @@ public class LanClient {
         }
     }
 
+    /**
+     * 这一帧的**译文语言**是不是我想读的（5.106）。
+     *
+     * <p>为什么要客户端再拦一道：服务端的"按语言给我帧"（`&langs=`）只在**已经有了**
+     * 那门语言的帧时才生效；某一门还没出帧时，响应里的 `frames` 是空数组，
+     * 于是老的"单帧"字段照样会把**原文帧**推过来 —— 而那正是"同一句两张卡"的来源。
+     * 服务端无法消灭这种时序，客户端可以：语言对不上就不投。
+     *
+     * <p>三条例外（宁可多投一条，也不要莫名少一条）：
+     * <ul>
+     *   <li>没登记收听语言（空）→ 老行为，什么都收；</li>
+     *   <li>帧的 `lang` 认不出（`?` / 空）→ 不拦；</li>
+     *   <li>带 `notice` 的提示帧（例如"本场语言相同"）→ 不拦，它不是字幕。</li>
+     * </ul>
+     */
+    private boolean wantsFrameLanguage(String frameLang) {
+        if (hearLangs == null || hearLangs.trim().isEmpty()) return true;
+        String tag = normalizeLangTag(frameLang);
+        if (tag.isEmpty()) return true;
+        for (String one : hearLangs.split("[,;\\s]+")) {
+            if (normalizeLangTag(one).equals(tag)) return true;
+        }
+        return false;
+    }
+
+    /** 语种标签归一化（`zh` / `zh_CN` / `PT-br` 都能对上）；认不出返回空串。 */
+    private static String normalizeLangTag(String raw) {
+        String value = raw == null ? ""
+                : raw.trim().toLowerCase(java.util.Locale.ROOT).replace('_', '-');
+        if (value.isEmpty()) return "";
+        if (value.startsWith("zh")) return "zh-cn";
+        if (value.startsWith("pt")) return "pt-br";
+        if (value.startsWith("en")) return "en-us";
+        return "";
+    }
+
     /** 一帧 → 回调（5.53 抽出来，单帧与多语言帧共用同一份解析）。 */
     private void deliverFrame(JSONObject frame) {
+        String frameLang = frame.optString("lang", "?");
+        String notice = noticeOf(frame);
+        // 5.106：不是我想读的语言就不投（原文帧 = 同一句第二张卡的来源）
+        if ((notice == null || notice.isEmpty()) && !wantsFrameLanguage(frameLang)) {
+            return;
+        }
         JSONArray lines = frame.optJSONArray("lines");
         int count = lines == null ? 0 : lines.length();
         String[] out = new String[count];
@@ -882,7 +924,7 @@ public class LanClient {
         }
         listener.onFrame(
                 frame.optString("speaker", "them"),
-                frame.optString("lang", "?"),
+                frameLang,
                 out,
                 frame.optString("text", ""),
                 frame.optString("source", ""),
@@ -895,7 +937,7 @@ public class LanClient {
                 speakerNameOf(frame),
                 // 5.12：`notice` = 这一帧附带的一句提示（例如"本场语言相同"）。
                 // 同样要防 JSON null（optString 会给出 "null"）。
-                noticeOf(frame));
+                notice);
     }
 
     /** 一次请求。非 2xx 一律抛异常（把服务端的错误正文带出来，便于排查）。 */

@@ -370,6 +370,7 @@ public class InterpreterActivity extends android.app.Activity {
     /**
      * 改「我读的语言」。对方语言若因此变得非法（例如读葡语时对方不能也是葡语），
      * 按规则重新推一个 —— 绝不留下"原文与译文同语言"这种死局。
+     * <p>5.106：合法集合是"除我读的那门以外的两种"，所以读葡语时对方可以是中文**或英语**。
      */
     private void setReadLang(String next) {
         String read = InterpreterLang.resolveRead(next);
@@ -417,7 +418,8 @@ public class InterpreterActivity extends android.app.Activity {
         styleChip(findViewById(R.id.interpReadPt), InterpreterLang.PT.equals(lang), true);
         styleChip(findViewById(R.id.interpReadEn), InterpreterLang.EN.equals(lang), true);
 
-        // 对方语言的选项集合由「我读的语言」决定（读中文 → 葡/英；读葡语/英语 → 只有中文）
+        // 对方语言的选项集合由「我读的语言」决定：除我读的那门以外的两种都合法
+        // （5.106：读葡语/英语时也能选英语/葡语 —— 以前这里只给中文一个选项）
         String[] options = InterpreterLang.partnerOptions(lang);
         styleChip(findViewById(R.id.interpPartnerZh), InterpreterLang.ZH.equals(partner), allows(options, InterpreterLang.ZH));
         styleChip(findViewById(R.id.interpPartnerPt), InterpreterLang.PT.equals(partner), allows(options, InterpreterLang.PT));

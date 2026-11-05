@@ -169,6 +169,13 @@ public final class RelayPipelineBackend implements InterpreterAsrBackend {
             Log.i(TAG, "🎬 会话已建：" + id + "（对方说 " + speakLang + "，我读 " + readLang + "）");
             // 只订阅这一场的字幕（与房间页同一条通道）
             client.setRoom(id);
+            // ⚠️ 5.106：**必须**告诉服务器"我只读这一门语言"。
+            //    漏了这一行的表现是"同一句出现两张卡"：服务端不知道我听什么，
+            //    就把**原文帧（对方语言）**和**译文帧（我读的语言）**都推过来 ——
+            //    原文帧在界面上成了一张"只有原文的大字卡"，紧接着再来一张"原文+译文"，
+            //    用户看到的就是"原文播一次、原文和译文又播一次"，朗读也会念两遍。
+            //    房间页一直有这一行，翻译官页是后来接的、漏了。
+            client.setHearLangs(readLang);
             if (!userName.isEmpty()) client.setSpeaker(userName);
             client.start();
             target.onReady();
