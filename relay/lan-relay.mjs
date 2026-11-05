@@ -61,6 +61,9 @@ import {
 } from '../lib/accounts.mjs'
 import { describeMailConfig, sendMail, smtpConfigFromEnv } from '../lib/mail.mjs'
 import { APP_VERSION } from '../lib/app-version.generated.mjs'
+import {
+  ASR_HTTP_LIMITS, normalizeRequest as normalizeAsrRequest, transcribeOnce,
+} from '../lib/asr-http.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
 
@@ -84,6 +87,18 @@ export const DEFAULT_DATA_DIR = LIVE_DIR
 
 /** 每次请求体上限。字幕/一句话都很短，超过这个大小基本不是正常客户端。 */
 const MAX_BODY_BYTES = 8 * 1024
+
+/**
+ * `/asr/transcribe` 的请求体上限（5.117）。
+ *
+ * <p>为什么要单独一个：音频是 base64 塞在 JSON 里的，8 KB 那条上限对一段话完全不够。
+ * 取 `ASR_HTTP_LIMITS.maxAudioBytes` 的 base64 膨胀（4/3）再加一点 JSON 余量 ——
+ * 真正的大小判断留给 `normalizeRequest`（它能给出"太大了，请切成句"这种人话）。
+ */
+const MAX_ASR_BODY_BYTES = Math.ceil(ASR_HTTP_LIMITS.maxAudioBytes * 4 / 3) + 64 * 1024
+
+/** `/asr/models` 只列这三门（与 relay 的 LANGS 一致）。 */
+const ASR_HTTP_LANGS = ASR_HTTP_LIMITS.languages
 
 /**
  * 5.27：**版本门禁要在协议层硬拒时**，哪些端点算"客户端真的在用 App"。
@@ -691,6 +706,8 @@ export async function startRelay(rawOptions = {}) {
   const state = {
     /** 已读到的字幕总线原始内容（内容变了才算新帧） */
     busRaw: '',
+    /** 5.117：当前有几个 `/asr/transcribe` 请求在飞（识别进程串行，压多了只会一起慢） */
+    asrInFlight: 0,
     /** 总线是目录（每房间一份）还是单文件（4.86） */
     busIsDir: String(options.bus).endsWith('/') || String(options.bus).endsWith('\\')
       || (existsSync(options.bus) && statSync(options.bus).isDirectory()),
@@ -2131,6 +2148,86 @@ export async function startRelay(rawOptions = {}) {
           rooms.push({ room: roomId, dir, tracks, bytes, size, updatedAt })
         }
         send(response, 200, { ok: true, rooms, audioDir: join(String(options.dataDir), 'audio') })
+        return
+      }
+
+      // ── 5.117：给外部调用方的「一段音频 → 一句文字」HTTP 接口 ──────────────
+      //
+      // 为什么放在 relay 里而不是另起一个服务：relay 已经是唯一对外端口，
+      // 鉴权（X-Leion-Secret）、限流、公网限制都在这一层，复制一份只会多一处漂移。
+      //
+      // 为什么写进**同一个识别队列**：那边的模型是热的（会议里刚用过），
+      // 而且"这段音频走哪个策略/模型"由同一份 resolve 决定 —— 接口与会议不会有两套真相。
+      // 代价要说清：识别进程是**串行**的，接口请求会和正在进行的会议抢那一个消费者。
+      if (request.method === 'GET' && url.pathname === '/asr/models') {
+        const tablePath = join(String(options.dataDir), 'asr-models.json')
+        let table = {}
+        try {
+          table = JSON.parse(readFileSync(tablePath, 'utf-8').replace(/^\uFEFF/, ''))
+        } catch { /* 没有表就是"全用命令行那套"，不是错误 */ }
+        const languages = {}
+        for (const lang of ASR_HTTP_LANGS) {
+          const entry = table?.languages?.[lang]
+          const strategy = (entry && typeof entry === 'object' ? entry.strategy : '') || 'default'
+          const layer = table?.strategies?.[strategy]
+          const merged = {
+            ...(table?.default && typeof table.default === 'object' ? table.default : {}),
+            ...(layer && typeof layer === 'object' ? layer : {}),
+            ...(entry && typeof entry === 'object' ? entry : {}),
+          }
+          languages[lang] = {
+            strategy,
+            engine: merged.engine || 'whisper',
+            model: merged.model || null,
+          }
+        }
+        send(response, 200, {
+          ok: true,
+          endpoint: 'POST /asr/transcribe',
+          languages,
+          limits: ASR_HTTP_LIMITS,
+          note: '识别进程是串行的：调用会和正在进行的会议共享同一个消费者',
+        })
+        return
+      }
+
+      if (request.method === 'POST' && url.pathname === '/asr/transcribe') {
+        let body
+        try {
+          body = await readBody(request, MAX_ASR_BODY_BYTES)
+        } catch (error) {
+          // 读到一半就拒的：剩下的数据还在路上，必须关连接
+          sendAndClose(request, response, error.statusCode ?? 400,
+            { ok: false, error: String(error.message) })
+          return
+        }
+        const parsed = normalizeAsrRequest(body)
+        if (parsed.ok !== true) {
+          send(response, 400, { ok: false, error: parsed.error })
+          return
+        }
+        if (state.asrInFlight >= ASR_HTTP_LIMITS.maxInFlight) {
+          // ⚠️ 这里刻意用英文（5.117）：`/asr/*` 的调用方是外部系统，不是中文 App。
+          //    手机那条路的错误串必须能在 App 里翻成三语（tests/android-order-suite 在查），
+          //    两类文案混写只会让两边都别扭：机器可读的放 error 代码，人话放英文。
+          send(response, 429, {
+            ok: false,
+            error: 'too-many-requests',
+            hint: `at most ${ASR_HTTP_LIMITS.maxInFlight} in-flight recognition requests `
+              + '(the recognizer is single-threaded; extra requests only make everything slower)',
+          })
+          return
+        }
+        state.asrInFlight += 1
+        try {
+          const result = await transcribeOnce(
+            { dataDir: String(options.dataDir), queueDir: options.queueDir }, parsed)
+          send(response, result.status, result.json)
+        } catch (error) {
+          send(response, 500, { ok: false, error: String(error?.message ?? error) })
+        } finally {
+          state.asrInFlight -= 1
+        }
         return
       }
 
