@@ -542,6 +542,8 @@
     <string name="room_i_said">我说的话</string>
     <string name="room_speaking_suffix"> · 正在发言</string>
     <string name="room_other">对方</string>
+    <!-- 5.121：一句话有多种译文时，每种译文一行，行首标语言（只勾了一种时不显示这个格式） -->
+    <string name="room_translation_line">[%1$s] %2$s</string>
     <string name="btn_remove">移出</string>
     <string name="btn_force_release">解除 %1$s 的锁定</string>
     <string name="sys_source_on">原文显示已开启</string>

@@ -232,6 +232,8 @@ Microfone: microfone do celular (em uso)</string>
     <string name="room_i_said">O que eu disse</string>
     <string name="room_speaking_suffix"> · a falar</string>
     <string name="room_other">A outra pessoa</string>
+    <!-- 5.121: uma linha por tradução quando a frase tem várias -->
+    <string name="room_translation_line">[%1$s] %2$s</string>
     <string name="btn_remove">Remover</string>
     <string name="btn_force_release">Desbloquear %1$s</string>
     <string name="sys_source_on">Original exibido</string>

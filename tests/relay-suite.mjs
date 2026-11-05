@@ -17,7 +17,7 @@ import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { startRelay, formatBanner, pcmLevel, describeLevel, roomAudioPath, roomSpeakerAudioPath,
   roomTrackDir, createRateLimiter, clientIp, resolveSecret, formatPublicChecklist,
-  PUBLIC_LIMITS } from '../relay/lan-relay.mjs'
+  PUBLIC_LIMITS, splitMultiLangFrame } from '../relay/lan-relay.mjs'
 import { VAR_DIR } from '../lib/paths.mjs'
 import { takeFloor } from '../lib/floor.mjs'
 import { createInterpreterSession, createRoom, joinRoom, listMembers, listRoomTranscript } from '../lib/rooms.mjs'
@@ -46,6 +46,31 @@ function frame(text, extra = {}) {
 export async function runRelaySuite({ it, check, assert }) {
   await rm(TMP, { recursive: true, force: true })
   await mkdir(TMP, { recursive: true })
+
+  await it('5.121：一帧带多种译文 → 按语言拆开（写盘只有一次，不会互相覆盖丢帧）', async () => {
+    const frame = {
+      speaker: 'me', lang: 'pt-BR', text: 'Olá', source: '你好', sourceLang: 'zh-CN',
+      texts: { 'pt-BR': 'Olá', 'en-US': 'Hello' }, partial: false,
+    }
+    const split = splitMultiLangFrame(frame)
+    check('两种译文 → 两帧', Array.isArray(split) && split.length === 2, JSON.stringify(split))
+    check('每帧只带自己那门语言的译文',
+      split[0].lang === 'pt-BR' && split[0].text === 'Olá'
+      && split[1].lang === 'en-US' && split[1].text === 'Hello', JSON.stringify(split))
+    check('每帧都带 langs（手机据此把同一句的译文并到一张卡）',
+      JSON.stringify(split[0].langs) === JSON.stringify(['pt-BR', 'en-US']), JSON.stringify(split[0].langs))
+    check('原文/源语言/发言人这些字段原样保留（拆的是译文，不是整帧）',
+      split[0].source === '你好' && split[0].sourceLang === 'zh-CN' && split[0].speaker === 'me')
+    check('拆完的帧不再带 texts（避免下游再拆一次）',
+      split.every((one) => one.texts === undefined))
+    // 只有一种译文时**原样处理**：老行为逐字不变
+    check('单语帧不拆（返回 null，走原逻辑）',
+      splitMultiLangFrame({ lang: 'pt-BR', text: 'Olá', texts: { 'pt-BR': 'Olá' } }) === null)
+    check('没有 texts 的帧不拆', splitMultiLangFrame({ lang: 'pt-BR', text: 'Olá' }) === null)
+    check('空译文那门语言不算数（不会拆出一帧空字幕）',
+      splitMultiLangFrame({ lang: 'pt-BR', text: 'Olá', texts: { 'pt-BR': 'Olá', 'en-US': '' } }) === null)
+  })
+
 
   const inbox = join(TMP, 'asr-inbox.jsonl')
   const bus = join(TMP, 'subtitle-bus.json')

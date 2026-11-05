@@ -614,6 +614,15 @@ export function createInterpreter(ctx, rawConfig, deps) {
       // 按语言扇出之后，它天然只到"读源语言的人"手里（首先就是说话人自己）。
       ...(input.echo === true ? { echo: true } : {}),
       ...(typeof input.notice === 'string' && input.notice !== '' ? { notice: input.notice } : {}),
+      // 5.121：**一帧带多种译文**（`{ "pt-BR": "…", "en-US": "…" }`）。
+      //
+      // 为什么要合并：原来一句里有几种目标语言就写几次总线文件，而总线是
+      // **整文件覆盖 + 60ms 轮询** —— 两次紧挨着的写只有后一次能活下来，
+      // 另一种语言的译文就这么**静默消失**了（实机日志里"大脑明明译了中文，手机没有中文帧"）。
+      // 现在：定稿只写一次，带一张 `texts` 表；relay 再按语言拆开扇出，老客户端行为不变。
+      ...(input.texts !== undefined && input.texts !== null && typeof input.texts === 'object'
+        ? { texts: input.texts }
+        : {}),
       at: new Date().toISOString(),
     }
   }
@@ -1701,17 +1710,26 @@ export function createInterpreter(ctx, rawConfig, deps) {
         }
         // 多个目标**并行**翻译：串行会让第二份语言多等一整次调用（字幕慢一倍）。
         // 顺序性由"每个目标只有一次调用"保证，不需要额外串行。
+        //
+        // ⚠️ 5.121：并行翻译**不能各自写盘**。总线是"整文件覆盖 + 60ms 轮询"，
+        //    两种语言的定稿往往相差几毫秒 —— 两次写只有后一次能被读到，另一种语言的
+        //    译文就**静默消失**（实机：大脑日志明明译了 zh-CN，手机上只有 pt-BR 帧）。
+        //    所以这里把译文收进 `merged`，最后由 pump 统一写**一帧**（`texts` 带全部译文），
+        //    由 relay 再按语言拆开扇出。
+        const merged = { texts: {}, pending: [] }
         const results = await Promise.all(targets.map((target, index) => {
-          const one = { text: item.text, to: target }
+          const one = { text: item.text, to: target, mergeInto: merged }
           if (item.from !== undefined) one.from = item.from
           // 校对只对**主目标**（第一份）做：翻倍花钱只改个别字，而第二份语言通常只有一个人在看。
           if (index > 0) one.noProofread = true
           return runTranslate(one)
         }))
+        let firstOk = null
         for (let index = 0; index < results.length; index += 1) {
           const result = results[index]
           if (result.ok === true) {
             inbox.processed += 1
+            if (firstOk === null) firstOk = result
             // 自动同传这条路上没有人在看工具的返回值，所以把每一句打进日志 ——
             // 否则 transport 配成 'file' 时，整个 daemon 是完全静默的，出问题只能靠猜。
             // 5.41：识别侧把「这句用的是哪份识别策略」带进来了，日志里一并写出 ——
@@ -1726,6 +1744,44 @@ export function createInterpreter(ctx, rawConfig, deps) {
             console.log('[leion-pro] ✗ 翻译失败（' + targets[index] + '）：' + result.failure)
             if (result.partial !== null && result.partial !== undefined && result.partial !== '') {
               console.log('[leion-pro]   半截译文（已丢弃）：' + result.partial)
+            }
+          }
+        }
+        // 合成一帧：`lang`/`text` 仍是主目标（老客户端照旧能看），`texts` 带全部译文。
+        // 只有一份译文时行为与 5.120 完全一样（texts 里就一个键）。
+        if (firstOk !== null) {
+          const ordered = {}
+          for (const lang of targets) {
+            if (typeof merged.texts[lang] === 'string') ordered[lang] = merged.texts[lang]
+          }
+          // 热词观测是**按语言**算的（某种语言漏写了规范名），合到一帧里就取并集、按 id 去重。
+          const missById = new Map()
+          for (const result of results) {
+            for (const one of Array.isArray(result.termsMiss) ? result.termsMiss : []) {
+              if (one !== null && typeof one === 'object' && !missById.has(one.id)) missById.set(one.id, one)
+            }
+          }
+          const primary = firstOk.to
+          const frame = buildFrame({
+            text: ordered[primary] !== undefined ? ordered[primary] : firstOk.translation,
+            speaker: firstOk.displaySpeaker,
+            lang: primary,
+            source: item.text,
+            sourceLang: firstOk.from,
+            texts: ordered,
+            termsMiss: [...missById.values()],
+          })
+          await pushFrame(frame)
+          // 两个"第二遍"（校对 / 热词修正）现在才排队：它们的过期判据是 displaySeq，
+          // 必须等这一帧真的上屏之后再记，否则每次都会被判成"屏幕已经换了"。
+          for (const pending of merged.pending) {
+            if (pending.proofread !== null && pending.proofread !== undefined) {
+              enqueueProofread(Object.assign({}, pending.proofread,
+                { draftFrame: frame, seq: state.displaySeq }))
+            }
+            if (pending.rescue !== null && pending.rescue !== undefined) {
+              enqueueRescue(Object.assign({}, pending.rescue,
+                { draftFrame: frame, seq: state.displaySeq }))
             }
           }
         }
@@ -2144,7 +2200,12 @@ export function createInterpreter(ctx, rawConfig, deps) {
       const finalFrame = buildFrame({ text: normalized.text, speaker: displaySpeaker, lang: to,
         source, sourceLang: from,
         termsMiss: missed.map(event => ({ id: event.id, zh: event.zh })) })
-      await pushFrame(finalFrame)
+      // 5.121：多语合并（`args.mergeInto`）时**不自己写盘**，把这一份交给调用方，
+      // 由收件箱那条管线把几种译文合成**一帧**再写（原因见 buildFrame 的 texts 说明：
+      // 两次紧挨着的写盘只会活下来一次，另一种语言就丢了）。
+      const mergeInto = args.mergeInto !== undefined && args.mergeInto !== null
+        ? args.mergeInto : null
+      if (mergeInto === null) await pushFrame(finalFrame)
 
       // ── 排进「校对」队列（第二遍）────────────────────────────────────────
       // 顺序有讲究：先取上一句当上下文，再把这一句记进 recent。
@@ -2157,24 +2218,27 @@ export function createInterpreter(ctx, rawConfig, deps) {
       await refreshTerms()
       // 5.00：第二份语言**不排校对** —— 校对会翻倍花钱而只改个别字，而第二份语言通常
       // 只有一个人在看；主目标那一份照旧校对（保留"回头改错"的能力）。
-      if (args.noProofread !== true) enqueueProofread({
-        source,
-        from,
-        to,
-        draft: normalized.text,
-        displaySpeaker,
-        draftFrame: finalFrame,
-        // 记下"此刻屏幕的版本号"：等真轮到时用它确认这一句还在屏幕上（见 state.displaySeq）
-        seq: state.displaySeq,
-        at: Date.now(),
-        context: previous !== null && previous.to === to ? previous : null,
-      })
+      const proofreadItem = args.noProofread !== true
+        ? {
+          source,
+          from,
+          to,
+          draft: normalized.text,
+          displaySpeaker,
+          draftFrame: finalFrame,
+          // 记下"此刻屏幕的版本号"：等真轮到时用它确认这一句还在屏幕上（见 state.displaySeq）
+          seq: state.displaySeq,
+          at: Date.now(),
+          context: previous !== null && previous.to === to ? previous : null,
+        }
+        : null
       // ★ 热词临时修正（方向一实验，docs/15 §18）：只有**观测到漏写**时才排队；
       //   空闲时问一次"这个名字写成了什么"，通过闸门才把那一小段换成规范写法。
+      let rescueItem = null
       if (missed.length > 0 && rescueEnabled()) {
         const entry = termEntries.find(candidate => candidate.id === missed[0].id)
         if (entry !== undefined) {
-          enqueueRescue({
+          rescueItem = {
             source,
             from,
             to,
@@ -2184,8 +2248,17 @@ export function createInterpreter(ctx, rawConfig, deps) {
             at: Date.now(),
             speaker: displaySpeaker,
             entry,
-          })
+          }
         }
+      }
+      if (mergeInto === null) {
+        if (proofreadItem !== null) enqueueProofread(proofreadItem)
+        if (rescueItem !== null) enqueueRescue(rescueItem)
+      } else {
+        // 合并路径：译文交出去、两个"第二遍"延后 —— 它们必须等**合成的那一帧**
+        // 真正上屏之后再排队（否则 `seq` 对不上，校对结果会全部按"过期"丢掉）。
+        mergeInto.texts[to] = normalized.text
+        mergeInto.pending.push({ proofread: proofreadItem, rescue: rescueItem })
       }
       state.recent.push({ source, translation: normalized.text, to })
       if (state.recent.length > 4) state.recent.shift()
@@ -2200,6 +2273,8 @@ export function createInterpreter(ctx, rawConfig, deps) {
         model: result.provider + '/' + result.model,
         forced: args.from !== undefined || args.to !== undefined,
         preview: drawFrame(finalFrame, config.cols),
+        // 5.121：合并写盘时调用方要把各语言的 termsMiss 合到同一帧里，所以这里也返回一份。
+        termsMiss: missed.map(event => ({ id: event.id, zh: event.zh })),
         // 校对开着时把它的计数一并给出（拷贝一份：这是即时快照，不是活引用）。
         // 输出外壳是 additionalProperties: true，所以加字段不会破坏 schema 校验。
         proofread: proofreadWanted() === false ? null : Object.assign({}, state.proofread),

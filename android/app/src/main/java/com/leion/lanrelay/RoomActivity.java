@@ -77,21 +77,25 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     /**
      * 最后一条字幕的身份：**原文**（source）。
      *
-     * <p>为什么用原文而不是"是不是增量帧"：一句话在产线上会来**三帧** ——
-     * 增量帧（partial）、定稿帧、校对修订帧。它们共用同一句原文，只有原文相同才算同一段。
-     * 之前只按 `partial` 判断，于是定稿帧被当成新的一句 → 同一句话叠成三张卡，
-     * 其中一张还停在"识别中"，并且只显示半句译文（4.53 修）。
+     * <p>⚠️ 5.121：这段判断已经整体换掉（见 {@link #renderSegment}）。原因是它只跟
+     * "上一张卡"比，而多语会议里帧是**按语言交替**到的（增量 pt → 定稿 pt → 增量 en → 定稿 en），
+     * 每一步都"和上一张不同"，于是每帧都新起一张卡 —— 用户实测一句话出现五条字幕。
+     * 现在按"发言人 + 原文"认同一句（{@link #sentenceCards}），同一句的几种译文长在一张卡里。
      */
-    private String lastSegmentKey = null;
-    private boolean lastWasPartial = false;
-
-    /** 当前这一条字幕（用于同一段的**原位更新**，而不是新起一条）。 */
-    private View lastSegmentView;
-    private TextView lastSegmentSource;
-    private TextView lastSegmentTarget;
-    private TextView lastSegmentState;
     /** 字幕卡最多留多少条：多了就丢最老的（防止一场会开两小时把内存吃掉）。 */
     private static final int MAX_SEGMENTS = 60;
+    /** 同一句的译文在这段时间内到达都算同一句（超过就新起一张，避免把两句话并成一句）。 */
+    private static final long SENTENCE_MERGE_MS = 15000L;
+    /** 原文那一行 TextView 的标记（"原文显示"开关据此认出它，别用位置下标猜）。 */
+    private static final String SOURCE_TAG = "leion-source";
+    /**
+     * 最近出现过的"一句话"（键 = 发言人 + 原文）。
+     *
+     * <p>它同时承担两件事：① 同一句的几种译文/增量帧**原位更新**成一张卡；
+     * ② 卡片被挤出上限时连记录一起删，避免这张表越攒越大。
+     */
+    private final java.util.Map<String, SentenceCard> sentenceCards =
+            new java.util.LinkedHashMap<>();
     /** 我从什么时候开始持麦（用来在按钮上显示"正在发言 00:12"）。 */
     private long holdingSinceMs = 0L;
 
@@ -1579,36 +1583,96 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         boolean mine = myName != null && !myName.isEmpty() && who.equals(myName);
         String whoLabel = who.isEmpty() ? getString(R.string.room_other) : who;
 
-        // ── 同一段判定（4.53）────────────────────────────────────────
-        // 一句话会来三帧：增量 / 定稿 / 校对修订。它们的**原文相同**，
-        // 所以"原文相同"就是同一段；原文缺失时退化成"上一条还是增量态"也算同一段。
-        // ⚠️ 5.00：键**必须带语言** —— 三语会议里同一句会来两份帧（葡语/英语），
-        // 只按原文判会把第二份当成"同一段的定稿"直接覆盖第一份（另一份语言就没了）。
         String langKey = lang == null ? "" : lang;
-        String key = source.isEmpty() ? null : (langKey.isEmpty() ? source : langKey + "|" + source);
-        boolean sameSegment = lastSegmentView != null && (
-                // ① 上一帧还是增量态 → 这一帧一定是它的定稿/校对修订。
-                //    这条最硬：产线是**逐句串行**的，一句话的增量之后不可能突然变成另一句。
-                //    为什么不能只靠原文：增量帧的原文是**流式不完整**的，定稿帧才是完整原文，
-                //    两者不相等 —— 只按原文判，恰好会把"增量 + 定稿"拆成两条（用户报的现象）。
-                lastWasPartial
-                        // ② 原文一致 → 同一句（校对修订帧走这条，它带的原文与定稿相同）
-                        || (key != null && key.equals(lastSegmentKey))
-                        // ③ 增量帧没带原文、且上一张就是它
-                        || (key == null && partial));
-        if (sameSegment) {
-            lastSegmentTarget.setText(target);
-            if (!source.isEmpty()) lastSegmentSource.setText(source);
-            boolean hasSource = lastSegmentSource.getText() != null && lastSegmentSource.getText().length() > 0;
-            lastSegmentSource.setVisibility(showSource && hasSource ? View.VISIBLE : View.GONE);
-            lastSegmentState.setText(partial ? getString(R.string.st_recognizing) : getString(R.string.st_done));
-            lastSegmentState.setTextColor(getColor(partial ? R.color.accent : R.color.ok));
-            if (key != null) lastSegmentKey = key;
-            lastWasPartial = partial;
-            scrollToBottom();
-            return;
+        // ── 同一句判定（5.121：一句话 = 一张卡，几种译文各占一行）──────────────
+        //
+        // 旧实现只跟"上一张卡"比，于是：增量(pt) → 定稿(pt) → 增量(en) → 定稿(en)
+        // 这种**按语言交替**到达的顺序，每一步都"和上一张不同"，每帧都新起一张卡 ——
+        // 用户实测：一句话出现五条字幕（葡语三条、英语两条）。它要的是**一条**。
+        //
+        // 现在按"发言人 + 原文"认同一句：同一句的几种语言、增量与定稿都长在同一张卡上，
+        // 每种语言单独一行。原文一致就够——增量帧带的原文是**这整句**（不是逐字变长的），
+        // 定稿帧与 echo 帧带的也是同一句原文。
+        String sentenceKey = sentenceKeyOf(whoLabel, source, target);
+        SentenceCard card = findSentenceCard(sentenceKey);
+        if (card == null) card = createSentenceCard(sentenceKey, mine, whoLabel, source);
+        else if (!source.isEmpty() && !source.contentEquals(card.source.getText())) {
+            card.source.setText(source);
+            card.source.setVisibility(showSource ? View.VISIBLE : View.GONE);
         }
+        card.key = sentenceKey;
+        card.at = System.currentTimeMillis();
+        card.partial = partial;
 
+        // 这一门语言的译文：没有就加一行，有就原地换（增量 → 定稿）。
+        if (!target.isEmpty()) {
+            TextView line = card.lines.get(langKey);
+            if (line == null) {
+                line = new TextView(this);
+                line.setTextColor(getColor(R.color.ink));
+                line.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 15);
+                line.setTypeface(line.getTypeface(), android.graphics.Typeface.BOLD);
+                line.setLineSpacing(dp(4), 1f);
+                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+                params.topMargin = dp(6);
+                card.translations.addView(line, params);
+                card.lines.put(langKey, line);
+            }
+            line.setTag(target);           // 原始译文；标签前缀由 refreshTranslationLabels 统一加
+            line.setVisibility(View.VISIBLE);
+            refreshTranslationLabels(card);
+        }
+        boolean anyPartial = partial;
+        card.state.setText(anyPartial ? getString(R.string.st_recognizing) : getString(R.string.st_done));
+        card.state.setTextColor(getColor(anyPartial ? R.color.accent : R.color.ok));
+        scrollToBottom();
+
+        // 5.30：**定稿译文**才朗读（增量帧是半句话，念出来很怪）。
+        // 5.121：只念**主语言**那一份 —— 勾了两种译文时，两种都念等于把同一句话念两遍。
+        if (!partial && ttsQueue != null && !target.isEmpty() && isPrimaryLang(langKey)) {
+            ttsQueue.offer(target, langKey.isEmpty() ? hearLang : langKey);
+        }
+    }
+
+    /** 一句话的卡片（5.121）：同一句的几种译文都长在这张卡里。 */
+    private static final class SentenceCard {
+        View root;
+        TextView source;
+        LinearLayout translations;
+        TextView state;
+        /** 语种 → 那一行译文。 */
+        final java.util.Map<String, TextView> lines = new java.util.LinkedHashMap<>();
+        String key = "";
+        long at = 0L;
+        boolean partial = false;
+    }
+
+    /** 一句话的"身份"：发言人 + 原文（原文缺失时退回译文本身）。 */
+    private String sentenceKeyOf(String whoLabel, String source, String target) {
+        String origin = source == null || source.isEmpty() ? target : source;
+        return whoLabel + "\n" + (origin == null ? "" : origin);
+    }
+
+    /**
+     * 找这句话已经在屏幕上的那张卡；顺带把过期的丢掉。
+     *
+     * <p>为什么要过期：同一个人连说两句一模一样的话（"对。"、"对。"）会被认成一句 ——
+     * 那是"合并"的代价。用时间窗限制：只有 {@link #SENTENCE_MERGE_MS} 内出现过的同一句
+     * 才会被并进同一张卡，隔得久了就老老实实新起一张。
+     */
+    private SentenceCard findSentenceCard(String key) {
+        long now = System.currentTimeMillis();
+        java.util.Iterator<java.util.Map.Entry<String, SentenceCard>> it = sentenceCards.entrySet().iterator();
+        while (it.hasNext()) {
+            java.util.Map.Entry<String, SentenceCard> entry = it.next();
+            if (now - entry.getValue().at > SENTENCE_MERGE_MS) it.remove();
+        }
+        return sentenceCards.get(key);
+    }
+
+    /** 建一张新卡（头部 + 原文 + 译文容器），并按上限丢掉最老的。 */
+    private SentenceCard createSentenceCard(String key, boolean mine, String whoLabel, String source) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setBackgroundResource(mine ? R.drawable.bg_subtitle_self : R.drawable.bg_card);
@@ -1619,7 +1683,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         cardParams.bottomMargin = dp(8);
         card.setLayoutParams(cardParams);
 
-        // 卡片头部：头像 + 姓名 + 源语言标签 + 状态标签
+        // 卡片头部：头像 + 姓名 + 说话人标记 + 状态标签
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(android.view.Gravity.CENTER_VERTICAL);
@@ -1657,8 +1721,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         head.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
 
         final TextView state = new TextView(this);
-        state.setText(partial ? getString(R.string.st_recognizing) : getString(R.string.st_done));
-        state.setTextColor(getColor(partial ? R.color.accent : R.color.ok));
+        state.setText(getString(R.string.st_recognizing));
+        state.setTextColor(getColor(R.color.accent));
         state.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 10);
         head.addView(state, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
@@ -1669,44 +1733,63 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         sourceLine.setText(source);
         sourceLine.setTextColor(getColor(R.color.ink_soft));
         sourceLine.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12);
+        sourceLine.setTag(SOURCE_TAG);
         sourceLine.setVisibility(!showSource || source.isEmpty() ? View.GONE : View.VISIBLE);
         LinearLayout.LayoutParams sourceParams = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         sourceParams.topMargin = dp(6);
         card.addView(sourceLine, sourceParams);
 
-        // 译文（大字、加粗）
-        //
-        // 5.12：**原文帧的译文是空的**（那种帧只给"读源语言的人"看自己那句话）。
-        // 这时候不能留一行空白大字 —— 直接把这一行收起来，卡片就只剩原文。
-        final TextView targetLine = new TextView(this);
-        targetLine.setText(target);
-        targetLine.setTextColor(getColor(R.color.ink));
-        targetLine.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 15);
-        targetLine.setTypeface(targetLine.getTypeface(), android.graphics.Typeface.BOLD);
-        targetLine.setLineSpacing(dp(4), 1f);
-        targetLine.setVisibility(target.isEmpty() ? View.GONE : View.VISIBLE);
-        LinearLayout.LayoutParams targetParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-        targetParams.topMargin = dp(6);
-        card.addView(targetLine, targetParams);
+        // 译文容器：一句话可能有几种译文，一种一行（5.121）
+        LinearLayout translations = new LinearLayout(this);
+        translations.setOrientation(LinearLayout.VERTICAL);
+        card.addView(translations, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
         subtitleList.addView(card);
-        lastSegmentView = card;
-        lastSegmentSource = sourceLine;
-        lastSegmentTarget = targetLine;
-        lastSegmentState = state;
-        lastSegmentKey = key != null ? key : target;
-        lastWasPartial = partial;
 
-        // 超过上限就丢最老的那张（连同它的引用）
+        SentenceCard made = new SentenceCard();
+        made.root = card;
+        made.source = sourceLine;
+        made.translations = translations;
+        made.state = state;
+        made.key = key;
+        sentenceCards.put(key, made);
+
+        // 超过上限就丢最老的那张（连带它的记录，避免表越攒越大）
         while (subtitleList.getChildCount() > MAX_SEGMENTS + 1) {   // +1 是 roomEmpty
             View oldest = subtitleList.getChildAt(1);
-            if (oldest == null || oldest == lastSegmentView) break;
+            if (oldest == null || oldest == card) break;
             subtitleList.removeViewAt(1);
+            java.util.Iterator<java.util.Map.Entry<String, SentenceCard>> it = sentenceCards.entrySet().iterator();
+            while (it.hasNext()) {
+                if (it.next().getValue().root == oldest) { it.remove(); break; }
+            }
         }
-        scrollToBottom();
+        return made;
     }
+
+    /**
+     * 一句里有**多种译文**时，每行前面加语种标签（`〔葡〕`/`〔英〕`/`〔中〕`），
+     * 一眼能分清哪一行是哪门语言；只有一种译文时不加（标了反而啰嗦）。
+     */
+    private void refreshTranslationLabels(SentenceCard card) {
+        boolean many = card.lines.size() > 1;
+        for (java.util.Map.Entry<String, TextView> entry : card.lines.entrySet()) {
+            Object raw = entry.getValue().getTag();
+            String text = raw == null ? "" : raw.toString();
+            entry.getValue().setText(many && !entry.getKey().isEmpty()
+                    ? getString(R.string.room_translation_line, langLabelOf(entry.getKey()), text)
+                    : text);
+        }
+    }
+
+    /** 这一门语言是不是"我的主语言"（TTS 只念它，不把两种译文各念一遍）。 */
+    private boolean isPrimaryLang(String langKey) {
+        if (langKey.isEmpty()) return true;
+        return hearLang != null && !hearLang.isEmpty() && langKey.equals(hearLang);
+    }
+
 
     /**
      * 系统事件行（原型：以**弱化的居中文字**出现在字幕流里）。
@@ -1768,10 +1851,12 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             View child = subtitleList.getChildAt(i);
             if (!(child instanceof LinearLayout)) continue;
             LinearLayout card = (LinearLayout) child;
-            if (card.getChildCount() < 3) continue;
-            View sourceView = card.getChildAt(1);   // 头、原文、译文
-            if (sourceView instanceof TextView && sourceView != lastSegmentTarget) {
-                TextView line = (TextView) sourceView;
+            for (int j = 0; j < card.getChildCount(); j++) {
+                View view = card.getChildAt(j);
+                // 按**标记**认原文那一行（5.121：卡片里现在是"头 + 原文 + 译文容器"，
+                // 容器里还有每种译文一行，用下标猜位置迟早出错）
+                if (!(view instanceof TextView) || !SOURCE_TAG.equals(view.getTag())) continue;
+                TextView line = (TextView) view;
                 boolean hasText = line.getText() != null && line.getText().length() > 0;
                 line.setVisibility(showSource && hasText ? View.VISIBLE : View.GONE);
             }

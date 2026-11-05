@@ -225,9 +225,9 @@ export async function runEnglishSuite({ it, check, assert }) {
       /HearLangs\.normalize\(HearLangs\.parse\(/.test(room))
     check('帧语言缺失时照旧显示（不吞字幕）',
       /frameLang\.isEmpty\(\)/.test(room) && /return;/.test(room))
-    check('段落去重键带语言（否则第二份会覆盖第一份）',
-      /langKey\.isEmpty\(\) \? source : langKey \+ "\|" \+ source/.test(room),
-      '同一句的两种译文会互相覆盖')
+    check('同一句的几种译文并进一张卡（各占一行，不各占一张卡）',
+      /card\.lines\.get\(langKey\)/.test(room) && /refreshTranslationLabels/.test(room),
+      '5.121：一句话只该有一条字幕')
     check('心跳/上传路径也把语言记下来', /hearLang = speak;/.test(room))
   })
 

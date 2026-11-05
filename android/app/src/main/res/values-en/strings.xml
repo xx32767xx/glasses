@@ -232,6 +232,8 @@ Microphone: phone microphone (in use)</string>
     <string name="room_i_said">What I said</string>
     <string name="room_speaking_suffix"> · speaking</string>
     <string name="room_other">The other person</string>
+    <!-- 5.121: one line per translation when a sentence has several -->
+    <string name="room_translation_line">[%1$s] %2$s</string>
     <string name="btn_remove">Remove</string>
     <string name="btn_force_release">Unlock %1$s</string>
     <string name="sys_source_on">Original text shown</string>

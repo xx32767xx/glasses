@@ -542,9 +542,10 @@ export async function runAndroidOrderSuite({ it, check }) {
       check(`提示文案在 ${dir} 里有`, /name="st_same_language"/.test(
         readFileSync(join(resDir, dir, 'strings.xml'), 'utf-8')))
     }
-    // 原文帧的译文是空的：那张卡不能留一行空白大字
-    check('译文为空时把译文那一行收起来（卡片只剩原文）',
-      /targetLine\.setVisibility\(target\.isEmpty\(\) \? View\.GONE : View\.VISIBLE\)/.test(room))
+    // 原文帧的译文是空的：那张卡不能留一行空白大字（5.121：干脆不建译文行）
+    check('译文为空时不建译文行（卡片只剩原文）',
+      /if \(!target\.isEmpty\(\)\) \{[\s\S]{0,400}card\.lines\.get\(langKey\)/.test(room)
+      && !/targetLine\.setVisibility/.test(room))
   })
 
   await it('5.15：服务器满了要让手机说清楚（不是"说了半天没反应"）', () => {
@@ -1439,19 +1440,24 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('字幕列表容器', /@\+id\/roomSubtitles/.test(room))
     check('没有字幕时有空态提示', /@\+id\/roomEmpty/.test(room))
 
-    // M1 的关键不变量：partial 帧**原位更新**，不许新起一条
-    // 一句话会来三帧（增量 / 定稿 / 校对），必须按**原文**判同一段，三帧合成一张卡
-    check('同一段按原文去重', /boolean sameSegment = lastSegmentView != null && \(/.test(activity)
-      && /key\.equals\(lastSegmentKey\)/.test(activity),
-      '只按 partial 判会让定稿帧新起一条 → 同一句叠三张、还留一张"识别中"')
-    check('去重命中就原位更新文字与状态',
-      /if \(sameSegment\)\s*\{[\s\S]{0,400}lastSegmentTarget\.setText/.test(activity))
-    check('增量→定稿 用"上一帧是增量"兜住（原文是流式不完整的，不能只按原文判）',
-      /lastWasPartial\s*\/\//.test(activity) || /and ①[\s\S]{0,400}lastWasPartial/.test(activity) || /\n\s*lastWasPartial\s*\n/.test(activity),
-      '只按原文判会把「增量 + 定稿」拆成两条')
+    // M1 的关键不变量：一句话 = **一张卡**（5.121 起按"发言人 + 原文"认，且几种译文各占一行）
+    check('同一句按"发言人 + 原文"认同一张卡',
+      /sentenceKeyOf\(whoLabel, source, target\)/.test(activity)
+      && /sentenceCards\.get\(key\)/.test(activity),
+      '只跟"上一张卡"比时，多语会议里帧是交替到达的 → 每帧一张卡（用户实测一句话五条）')
+    check('同一句的译文原位更新（不新起一条）',
+      /TextView line = card\.lines\.get\(langKey\)/.test(activity)
+      && /line\.setTag\(target\)/.test(activity))
+    check('同一句的几种译文各占一行（不是各占一张卡）',
+      /translations\.addView\(line, params\)/.test(activity)
+      && /refreshTranslationLabels\(card\)/.test(activity),
+      '两种译文要合并成一条字幕里两行')
+    check('合并有时间窗（免得把连说的两句同样的话并成一句）',
+      /SENTENCE_MERGE_MS/.test(activity) && /now - entry\.getValue\(\)\.at > SENTENCE_MERGE_MS/.test(activity))
     check('新句追加后滚到底部', /scrollToBottom\(\)/.test(activity) && /fullScroll\(View\.FOCUS_DOWN\)/.test(activity))
     check('自己的发言换底色（浅主色+主色边框）', /bg_subtitle_self/.test(activity) && /bg_subtitle_self/.test(room) === false)
-    check('每条字幕有头像/姓名/源语言/状态', /bg_avatar/.test(activity) && /识别中|已完成/.test(activity))
+    check('每条字幕有头像/姓名/源语言/状态',
+      /bg_avatar/.test(activity) && /st_recognizing/.test(activity) && /st_done/.test(activity))
     check('字幕有上限，防止开两小时把内存吃掉', /MAX_SEGMENTS/.test(activity))
 
     // M3：原文显示开关

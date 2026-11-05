@@ -686,6 +686,41 @@ export async function runContractSuite(adapter, { it, check, assert }) {
     await box.tools.get('leion_inbox').execute({ action: 'stop' })
   })
 
+  await it('5.121：两种目标语言 → **一次写盘**，一帧带 texts（避免覆盖丢帧、也便于并成一张卡）', async () => {
+    // 为什么必须合：字幕总线是整文件覆盖 + 轮询，两种语言的译文往往同一毫秒产出，
+    // 各写一次只有后一次能读到 —— 实机日志里"大脑译了 zh-CN，手机上只有 pt-BR"。
+    const sidecar = inboxPathOf('room-langs/multi-two.json')
+    const inboxFile = inboxPathOf('inbox-multi-two.jsonl')
+    const store = new Map()
+    store.set(sidecar, JSON.stringify({
+      langs: ['en-US', 'pt-BR'], byUser: { a: 'en-US', b: 'pt-BR' },
+    }))
+    const llm = makeFakeLlm()
+    const box = await adapter.create({
+      llm, fs: makeFakeFs(store),
+      config: { inboxPath: inboxFile, inboxPollMs: 120, hearLangsPath: sidecar, proofread: 'off' },
+    })
+    store.set(inboxFile, JSON.stringify({ text: '今天会议改到下午三点。', from: 'zh-CN' }) + '\n')
+    const done = await waitFor(async () =>
+      (await box.tools.get('leion_inbox').execute({ action: 'status' })).processed >= 2)
+    check('两种语言都译了', done)
+    const history = await box.tools.get('leion_history').execute({ limit: 5 })
+    const finals = history.entries.filter((one) => one.echo !== true)
+    check('定稿译文只写了**一帧**（不是每种语言各写一帧）',
+      finals.length === 1, JSON.stringify(finals.map(e => e.lang)))
+    check('这一帧的 lang 是主目标（texts 里的第一门），texts 带全部译文',
+      typeof finals[0].texts === 'object' && finals[0].texts !== null
+      && Object.keys(finals[0].texts).length === 2
+      && finals[0].lang === Object.keys(finals[0].texts)[0]
+      && finals[0].text === finals[0].texts[finals[0].lang],
+      JSON.stringify(finals[0]))
+    const status = await box.tools.get('leion_status').execute({})
+    // 增量帧照旧一语言一帧（它们只影响"正在生成"的实时感，丢了也不影响最终结果）；
+    // 关键是**定稿只写一次** —— 上面 finals.length === 1 就是这一条。
+    check('至少两帧：原文帧 + 合成帧', status.pushes >= 2, String(status.pushes))
+    await box.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
   await it('5.12：全场同语言 → 不调模型、只发一帧原文并说明"无需翻译"', async () => {
     // 用户拍板：同语言时**不要**产译文；但屏幕不能一片空白，要明说原因。
     const sidecar = inboxPathOf('room-langs/echo-same.json')

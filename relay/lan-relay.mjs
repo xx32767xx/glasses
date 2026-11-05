@@ -568,6 +568,38 @@ export function roomSpeakerAudioPath(dataDir, roomId, speaker) {
 }
 
 /**
+ * 5.121：把"一帧带多种译文"（`texts: { 'pt-BR': '…', 'en-US': '…' }`）拆成
+ * **按语言的多帧**；只有一种译文（或没有 `texts`）时返回 `null`，表示"原样处理"。
+ *
+ * <p>为什么拆：字幕总线是**整文件覆盖 + 60ms 轮询**，而大脑那边几种语言的译文往往
+ * 在同一毫秒内产出 —— 各写一次盘只有**后一次**能读到，另一种语言的译文就静默消失了
+ * （实机：大脑日志明明译了 zh-CN，手机上只有 pt-BR 帧，说中文的人一句译文都没有）。
+ * 现在大脑只写一帧（带 `texts`），在这里拆成"一帧一种语言"，下面对
+ * `framesByRoomLang` / WS 按语言扇出 / 落库合并的逻辑**一行都不用改**。</p>
+ *
+ * <p>拆出来的帧仍带 `langs`（这一句有哪几种译文），手机端据此把同一句的几种译文
+ * 并到**一张卡**里，而不是一帧一张卡。</p>
+ */
+export function splitMultiLangFrame(frame) {
+  if (frame === null || typeof frame !== 'object') return null
+  const texts = frame.texts
+  if (texts === null || typeof texts !== 'object' || Array.isArray(texts)) return null
+  const langs = Object.keys(texts).filter((one) => typeof texts[one] === 'string' && texts[one] !== '')
+  if (langs.length < 2) return null
+  return langs.map((lang) => {
+    const copy = {}
+    for (const [key, value] of Object.entries(frame)) {
+      if (key === 'texts' || key === 'lang' || key === 'text') continue
+      copy[key] = value
+    }
+    copy.lang = lang
+    copy.text = texts[lang]
+    copy.langs = langs
+    return copy
+  })
+}
+
+/**
  * 删掉一场会议**留在磁盘上的东西**（4.99，管理员清理历史时用）。
  *
  * <p>这些文件的路径规则只有这个进程知道，所以清理也放在这里 —— 让 org-api 那边
@@ -1016,6 +1048,18 @@ export async function startRelay(rawOptions = {}) {
   }
 
   function publishFrame(frame, roomHint = '') {
+    // 5.121：一帧带多种译文（`texts`）时，先**按语言拆开**再走后面那套逻辑。
+    //
+    // 为什么在这里拆：总线文件是"整文件覆盖 + 60ms 轮询"，而大脑那边几种语言的译文
+    // 往往在同一毫秒内产出 —— 各写一次盘只有**后一次**能被读到，另一种语言的译文
+    // 就静默消失了（实机：大脑日志译了 zh-CN，手机上只有 pt-BR 帧）。
+    // 现在大脑只写一帧（带 `texts`），在这里拆成"一帧一种语言"，
+    // 下面对 `framesByRoomLang` / WS 扇出 / 落库合并**一行都不用改**。
+    const spread = splitMultiLangFrame(frame)
+    if (spread !== null) {
+      for (const one of spread) publishFrame(one, roomHint)
+      return
+    }
     state.seq += 1
     state.frameCount += 1
     // 归属：文件来源（最准）→ 帧里的 roomId → 刚上传音频的房间 → 持麦者推断
