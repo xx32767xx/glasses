@@ -3614,6 +3614,14 @@ def main():
           len(trimmed) == 1 and trim_seg.last_tail_trim_ms > 0,
           f"段数={len(trimmed)} trim={trim_seg.last_tail_trim_ms}ms")
 
+    # ⚠️ 5.115/5.116：靠静音收句时 tail 一定 ≥ silence_ms；0ms 只可能是被 idle 截断的。
+    #    这个区分原来只能靠人推 —— 现在日志会自己写出来，启动横幅也会说明 idle 阈值。
+    idle_src = inspect.getsource(whisper_stream.run_segment_producer_dir)
+    check("idle 截断的段会在日志里标明「不是静音收的句」",
+          'why="idle"' in idle_src and "不是静音收的句" in idle_src)
+    check("启动横幅说明「多久没新音频就交半句」与门槛模式（现场可自证）",
+          "多久没新音频就交半句" in idle_src and "能量门槛" in idle_src)
+
     near = (np.random.default_rng(0).normal(0, 0.012, 16000)).astype(np.float32)
     near_reason = whisper_stream.silence_skip_reason(near)
     check("电平接近门槛时提示「可能是说得轻」并给出能救回来的阈值",

@@ -527,6 +527,13 @@ def run_segment_producer_dir(args, np):
         return 2
     print(f"[切句] {args.tag or '?'} 尾随分轨目录 {root} → 队列 {args.segment_dir}"
           f"（**不加载模型**；每个说话人一路，各带自己的语种）", file=sys.stderr, flush=True)
+    # 5.116：把"多久没新音频就交半句"和"门槛是自适应还是固定"写进启动横幅。
+    # 为什么要写：`--idle-flush-ms` 太小会在**说话中间**切句（表现是"句子很碎"），
+    # 而它原来在日志里完全不可见 —— 现场只能猜。这一行以后每一场都能自证。
+    gate_mode = (f"自适应（噪声底 × {args.noise_multiplier:g}，下限 {args.rms_floor}）"
+                 if args.adaptive else f"固定 {args.rms_threshold}")
+    print(f"[切句] {args.tag or '?'} 多久没新音频就交半句：{args.idle_flush_ms}ms"
+          f"；能量门槛：{gate_mode}", file=sys.stderr, flush=True)
 
     idle = IdleTracker(args.idle_flush_ms, args.follow_poll_ms)
     idle_stop_ms = (None if args.stop_after_idle is None
