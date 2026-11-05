@@ -53,6 +53,7 @@ import { runTranslateSuite } from './translate-suite.mjs'
 import { runAsrPackSuite } from './asr-pack-suite.mjs'
 import { runAsrLossSuite } from './asr-loss-suite.mjs'
 import { runAsrHttpSuite } from './asr-http-suite.mjs'
+import { runLeionCleanSuite } from './leion-clean-suite.mjs'
 import { runLive } from './live/run.mjs'
 
 let passed = 0
@@ -347,6 +348,7 @@ await runAsrPackSuite(helpers)
 heading('丢话报告（三种丢弃写法 / 碎片分开算 / 多房间不串 / 认不出不算）')
 await runAsrLossSuite(helpers)
 await runAsrHttpSuite(helpers)
+await runLeionCleanSuite(helpers)
 
 // ── 8. 真实 Cordis 组合（真实 ToolRuntime + 真实执行流水线） ─────────────────
 
