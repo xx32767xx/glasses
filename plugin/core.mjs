@@ -217,13 +217,21 @@ export const DEVICE = {
  *
  * <p><b>排除源语言</b>：不排除就会"译成同语言"，产出一份看着正常、其实毫无意义的假字幕。
  *
- * <p>优先级（与 {@link resolveTarget} 一致，只是从"一个"变成"一组"）：
- * 会议显式指定（`config.targetLang`，手机建房时选的覆盖值）→ 监听语言集合 → 兜底 opposite(源)。
+ * <p><b>优先级（5.120 改过，注意方向）</b>：
+ * <ol>
+ *   <li>听众登记的语言（`hearLangs` 侧车里的并集）—— **这才是"我要看哪几种译文"**；</li>
+ *   <li>会议显式指定的目标语言（`rooms.target_lang`）—— **并进去**，不是覆盖；</li>
+ *   <li>两者都没有 → 兜底 `opposite(源)`。</li>
+ * </ol>
+ * 5.120 之前显式值**覆盖**听众集合，于是"手机里勾了三种我想看，屏幕上只有一种" ——
+ * 用户报的就是这个：勾选是真的、下发也是真的，但大脑把并集丢掉了。
+ * 显式值仍然有用：它解决"三种语言时方向不唯一"（这也是它当初被加进来的原因），
+ * 只是不该反过来**减少**别人能看到的语种。
  *
  * @param {string} from 源语言
  * @param {string} override 显式目标（空串 = 不覆盖）
  * @param {string[]} listenerLangs 听众登记的语言（可能为空）
- * @returns {{targets: string[], source: 'override'|'listeners'|'paired'|'none'}}
+ * @returns {{targets: string[], source: 'override'|'override+listeners'|'listeners'|'paired'|'none'}}
  */
 export function resolveTargets(from, override, listenerLangs) {
   const clean = (list) => {
@@ -236,18 +244,22 @@ export function resolveTargets(from, override, listenerLangs) {
     }
     return [...seen]
   }
-  if (typeof override === 'string' && override !== '') {
-    const only = clean([override])
-    return { targets: only, source: only.length === 0 ? 'none' : 'override' }
-  }
+  const explicit = typeof override === 'string' ? override.trim() : ''
   const heard = clean(listenerLangs)
-  if (heard.length > 0) return { targets: heard, source: 'listeners' }
+  // 显式值排在前面：它仍然决定"哪一份是主目标"（校对只对第一份做）。
+  const merged = clean(explicit === '' ? heard : [explicit, ...(Array.isArray(listenerLangs) ? listenerLangs : [])])
+  if (merged.length > 0) {
+    const source = heard.length === 0
+      ? 'override'
+      : (explicit === '' ? 'listeners' : 'override+listeners')
+    return { targets: merged, source }
+  }
   // ⚠️ 关键：**登记了语言、但清完是空**（所有人读的都是源语言）→ 这一句不需要任何译文。
   //    如果这时回落到 opposite，就会给"没人需要的语言"白译一份 —— 既费钱又可能把
   //    一份多余的字幕推给不该看到它的人。
   const anyRegistered = (Array.isArray(listenerLangs) ? listenerLangs : [])
     .some(item => String(item === undefined || item === null ? '' : item).trim() !== '')
-  if (anyRegistered) return { targets: [], source: 'listeners' }
+  if (anyRegistered || explicit !== '') return { targets: [], source: 'listeners' }
   const guess = opposite(from)
   return { targets: guess === 'unknown' ? [] : [guess], source: guess === 'unknown' ? 'none' : 'paired' }
 }
@@ -1643,15 +1655,17 @@ export function createInterpreter(ctx, rawConfig, deps) {
         inbox.lastTargets = { targets: [...targets], source: resolvedTargets.source, listeners }
         if (targetKey !== lastTargetKey) {
           lastTargetKey = targetKey
-          const why = resolvedTargets.source === 'explicit' ? '显式指定'
-            : resolvedTargets.source === 'override' ? '这一场显式指定的目标语言'
-              : resolvedTargets.source === 'listeners'
-                ? (targets.length === 0
-                  ? `听众 ${listeners.join('/')} 全都读源语言（不需要译文）`
-                  : `听众登记的语言 ${listeners.join('/')}`)
-                : resolvedTargets.source === 'paired'
-                  ? `听众没登记，按 opposite(${resolvedSourceLang || '?'}) 兜底`
-                  : '判不出方向'
+          const why = resolvedTargets.source === 'explicit' ? '显式指定（工具调用）'
+            : resolvedTargets.source === 'override' ? '这一场显式指定的目标语言（听众没登记语言）'
+              : resolvedTargets.source === 'override+listeners'
+                ? `听众登记 ${listeners.join('/')} + 这一场的 ${config.targetLang}`
+                : resolvedTargets.source === 'listeners'
+                  ? (targets.length === 0
+                    ? `听众 ${listeners.join('/')} 全都读源语言（不需要译文）`
+                    : `听众登记的语言 ${listeners.join('/')}`)
+                  : resolvedTargets.source === 'paired'
+                    ? `听众没登记，按 opposite(${resolvedSourceLang || '?'}) 兜底`
+                    : '判不出方向'
           console.log('[leion-pro] 译文目标：' + (targets.length === 0 ? '（不需要译文）' : targets.join(' + '))
             + '（依据：' + why + '）')
         }

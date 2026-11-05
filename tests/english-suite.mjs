@@ -166,11 +166,18 @@ export async function runEnglishSuite({ it, check, assert }) {
     check('没人登记时按老行为（中→葡）',
       legacy.targets.length === 1 && legacy.targets[0] === PT && legacy.source === 'paired',
       JSON.stringify(legacy))
-    // 显式覆盖
+    // 显式目标：5.120 起**并进**听众集合，不再是"只译那一种"
     const override = resolveTargets(ZH, EN, ['pt-BR'])
-    check('会议显式指定时只译那一种（覆盖听众集合）',
-      override.targets.length === 1 && override.targets[0] === EN, JSON.stringify(override))
-    check('显式=源语言 → 不译', resolveTargets(ZH, ZH, ['pt-BR']).targets.length === 0)
+    check('显式目标 + 听众集合 → 两种都译（不再被显式值压成一种）',
+      override.targets.length === 2 && override.targets.includes(EN) && override.targets.includes(PT)
+      && override.source === 'override+listeners', JSON.stringify(override))
+    check('显式目标排第一（它仍然决定"哪一份是主目标"，校对只做这一份）',
+      override.targets[0] === EN, JSON.stringify(override.targets))
+    check('显式目标 = 源语言时按听众集合走（不会因为一句废话配置就没有译文）',
+      JSON.stringify(resolveTargets(ZH, ZH, ['pt-BR']).targets) === JSON.stringify([PT]))
+    check('三种语言全勾 + 显式目标在内 → 去掉源语言后两份，不重复',
+      JSON.stringify(resolveTargets(ZH, PT, [ZH, PT, EN]).targets) === JSON.stringify([PT, EN]),
+      JSON.stringify(resolveTargets(ZH, PT, [ZH, PT, EN])))
     check('三种语言全在时最多两份（源语言占一种）',
       resolveTargets(ZH, '', [ZH, PT, EN]).targets.length === 2,
       JSON.stringify(resolveTargets(ZH, '', [ZH, PT, EN]).targets))
