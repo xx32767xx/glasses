@@ -201,6 +201,15 @@ export function parseArgs(argv = []) {
     // 表现是「一句字幕都没有」，却看不出是电平问题；而这个脚本原来根本不认这个参数，
     // 用户照着日志的建议加 `--silence-skip-level 0.008` 只会得到「未知选项」。
     silenceSkipLevel: null,
+    // 5.115：切句侧「多久没新音频就把半句交出去」。手机上传是**断续的**（实测一批 5-6 秒、
+    // 间隔有时到 9 秒），这个值必须明显大于上传间隔，否则会**在说话中间**把句子截断 ——
+    // 表现就是"句子很碎"，而且日志里 `尾部静音裁掉 0ms` 正是它的指纹。
+    idleFlushMs: 3000,
+    // 5.115：切句门槛用自适应还是固定值。**连续说话**的场景里自适应会把「人声」当噪声底，
+    // 门槛一路升到安全阀（实测 0.11，而正常说话 0.07~0.22）→ 说话被当静音。
+    // 那种房间反而该用固定门槛：`--no-adaptive --rms-threshold 0.03`。
+    noAdaptive: false,
+    rmsThreshold: null,
     // 5.45：翻译官会话多久没音频就判定"客户端不在了"并结束它（0 = 关掉这个兜底）
     interpreterIdleMin: 10,
     device: 'cuda',
@@ -213,7 +222,7 @@ export function parseArgs(argv = []) {
   const takesValue = new Set(['data-dir', 'buses', 'port', 'poll-ms', 'grace-ms', 'cols', 'lines',
     'max-rooms', 'only', 'whisper-model', 'compute', 'switch-idle-ms', 'min-hold-ms',
     'queue-dir', 'depth-report-s', 'translate-mode', 'model-map', 'max-models',
-    'interpreter-idle-min', 'silence-skip-level'])
+    'interpreter-idle-min', 'silence-skip-level', 'idle-flush-ms', 'rms-threshold'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -231,6 +240,7 @@ export function parseArgs(argv = []) {
     if (key === 'parallel-translate') { options.translateMode = 'parallel'; continue }
     if (key === 'serial-translate') { options.translateMode = 'serial'; continue }
     if (key === 'queue-translate') { options.translateMode = 'queue'; continue }
+    if (key === 'no-adaptive') { options.noAdaptive = true; continue }
     if (!takesValue.has(key)) throw new Error(`未知选项 --${key}（用 --help 看用法）`)
     const value = argv[index + 1]
     if (value === undefined || value.startsWith('--')) throw new Error(`--${key} 需要一个值`)
@@ -244,6 +254,21 @@ export function parseArgs(argv = []) {
     } else if (key === 'whisper-model') options.whisperModel = value
     else if (key === 'model-map') options.modelMap = value
     else if (key === 'silence-skip-level') options.silenceSkipLevel = Number(value)
+    else if (key === 'rms-threshold') {
+      const threshold = Number(value)
+      if (!Number.isFinite(threshold) || threshold <= 0 || threshold >= 1) {
+        throw new Error('--rms-threshold 必须是 0~1 之间的数（RMS 电平；人声一般 0.02~0.12）')
+      }
+      options.rmsThreshold = threshold
+    }
+    else if (key === 'idle-flush-ms') {
+      const ms = Number(value)
+      if (!Number.isInteger(ms) || ms < 200 || ms > 60000) {
+        throw new Error('--idle-flush-ms 必须是 200~60000 的整数（毫秒）'
+          + '；它要明显大于手机的上传间隔，否则会在说话中间切句')
+      }
+      options.idleFlushMs = ms
+    }
     else if (key === 'interpreter-idle-min') {
       const minutes = Number(value)
       if (!Number.isFinite(minutes) || minutes < 0) throw new Error('--interpreter-idle-min 必须是非负数（0 = 关闭兜底）')
@@ -427,6 +452,12 @@ export function pipelineSteps(options, room) {
           // 语言从源头就错了，下游再怎么修都是补丁。
           '--follow-dir', files.audioDir,
           '--follow-poll-ms', '80',
+          // 5.115：多久没新音频就把半句交出去。太小 = 在说话中间切句（手机上传是一批一批来的，
+          // 间隔实测能到 9 秒）；太大 = 最后一句多等。日志里 `尾部静音裁掉 0ms` 就是它触发的指纹。
+          '--idle-flush-ms', String(options.idleFlushMs),
+          // 5.115：固定门槛的两项（`--rms-threshold` 只在 `--no-adaptive` 时才真的全程生效）
+          ...(options.noAdaptive ? ['--no-adaptive'] : []),
+          ...(options.rmsThreshold === null ? [] : ['--rms-threshold', String(options.rmsThreshold)]),
           // 5.41：切句侧也要读**同一张策略表**（它只用 `segmentation` 那一半）。
           // 不传的话会出现"改表只影响识别、切句照旧"的半生效状态 —— 那比不生效更难察觉。
           ...(options.modelMap ? ['--model-map', options.modelMap, '--data-dir', options.dataDir] : []),

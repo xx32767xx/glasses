@@ -618,6 +618,34 @@ export async function runStartMultiSuite({ it, check, assert }) {
       cut.args.includes('--data-dir')
       && cut.args[cut.args.indexOf('--data-dir') + 1] === auto.dataDir, cut.args.join(' '))
 
+    // ── 5.115：切句侧两个"只在电脑上调"的旋钮，必须真的传到切句进程 ────────────
+    // ① idle-flush：手机上传是**断续的**（实测一批 5-6 秒、间隔到 9 秒），
+    //    这个值小于上传间隔就会**在说话中间**截断句子 —— 表现是"句子很碎"。
+    check('切句进程收到 --idle-flush-ms（缺省 3000，不是 2000）',
+      cut.args.includes('--idle-flush-ms')
+      && cut.args[cut.args.indexOf('--idle-flush-ms') + 1] === '3000', cut.args.join(' '))
+    const slowerIdle = parseArgs(['--data-dir', base, '--idle-flush-ms', '5000'])
+    check('--idle-flush-ms 能改，并且传下去',
+      pipelineSteps(slowerIdle, { id: 'room-A' }).find((step) => step.role === 'cut')
+        .args.includes('5000'), '')
+    check('--idle-flush-ms 越界要报错（200~60000）', (() => {
+      try {
+        parseArgs(['--data-dir', base, '--idle-flush-ms', '5'])
+        return false
+      } catch {
+        return true
+      }
+    })())
+    // ② 固定门槛：连续说话的房间里自适应会把"人声"当噪声底，门槛顶到安全阀 →
+    //    说话被当静音。那种房间要用固定门槛，所以这两项也必须能传。
+    const fixedGate = parseArgs(['--data-dir', base, '--no-adaptive', '--rms-threshold', '0.03'])
+    const fixedCut = pipelineSteps(fixedGate, { id: 'room-A' }).find((step) => step.role === 'cut')
+    check('--no-adaptive 传给切句进程', fixedCut.args.includes('--no-adaptive'), fixedCut.args.join(' '))
+    check('--rms-threshold 传给切句进程',
+      fixedCut.args[fixedCut.args.indexOf('--rms-threshold') + 1] === '0.03', fixedCut.args.join(' '))
+    check('不给 --no-adaptive 时不传它（保持自适应，缺省行为不变）',
+      cut.args.includes('--no-adaptive') === false, cut.args.join(' '))
+
     const explicit = parseArgs(['--data-dir', base, '--model-map', 'config/asr-models.json', '--max-models', '3'])
     check('显式 --model-map 优先于自动发现', explicit.modelMap.endsWith(join('config', 'asr-models.json')),
       String(explicit.modelMap))

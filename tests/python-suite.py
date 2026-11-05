@@ -2435,7 +2435,7 @@ def main():
         shutil.rmtree(track_root, ignore_errors=True)
 
     heading("队列契约 · 切句端真的不加载模型")
-    producer_src = inspect.getsource(whisper_stream.run_segment_producer)
+    producer_src = inspect.getsource(whisper_stream.run_segment_producer_dir)
     check("生产者里没有构造 WhisperModel", "WhisperModel(" not in producer_src)
     check("生产者只做切句 + 落队列", "_write_segment(" in producer_src)
     check("生产者必须配 --follow（否则不知道跟谁）", "--follow" in producer_src)
@@ -3404,6 +3404,23 @@ def main():
     check("rms_floor 会一路解析到策略档案里（切句器靠它重造）",
           whisper_stream.resolve_strategy("zh-CN", cli5, {
               "default": {"model": "large-v3", "rms_floor": 0.002}}).get("rms_floor") == 0.002)
+
+    # ⚠️ 5.115 实机：房间底噪 0.07、语音档 0.22，倍数 4 时门槛升到安全阀 0.11（≈ 正常说话），
+    #    于是"说话被当静音" → 句子在中间被收掉。倍数也得能由表给（噪声大的房间要调小它）。
+    tuned_mult = whisper_stream._new_segmenter(fence_args, np, noise_multiplier=2.0)
+    check("策略里的 noise_multiplier 真的进了切句器（2 vs 命令行 4）",
+          abs(tuned_mult.noise_multiplier - 2.0) < 1e-9, str(tuned_mult.noise_multiplier))
+    check("noise_multiplier 也会解析到策略档案里",
+          whisper_stream.resolve_strategy("zh-CN", cli5, {
+              "default": {"model": "large-v3", "noise_multiplier": 2.5}}).get("noise_multiplier") == 2.5)
+
+    # ⚠️ 5.115 实机（同一份日志）：英文那一路被写成「策略 pt-funasr（模型 parakeet 目录）」——
+    #    因为 state["strategy"] 只在切句参数变化时才更新，而"语种变了、切句参数一样"时它不变。
+    producer_src = inspect.getsource(whisper_stream.run_segment_producer_dir)
+    check("策略名要单独跟住语种（切句参数没变也要换名字）",
+          "name_changed" in producer_src and "策略名跟随语种" in producer_src)
+    check("idle 截断的段要自己说出来（`尾部静音裁掉 0ms` 是它的指纹）",
+          'why="idle"' in producer_src and "不是静音收的句" in producer_src)
 
     # ⚠️ 5.97 现场事故：启动那行「模型表：…」只打印 languages[语种].model，
     #    于是"语种里钉的是**策略**"（pt-BR → pt-funasr）被显示成 `pt-BR=（沿用 default）`。

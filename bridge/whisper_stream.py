@@ -446,7 +446,8 @@ def _write_segment(queue_dir, tag, samplerate, audio, np, language=None, speaker
     return base
 
 
-def _new_segmenter(args, np, segmentation=None, rms_threshold=None, rms_floor=None):
+def _new_segmenter(args, np, segmentation=None, rms_threshold=None, rms_floor=None,
+                   noise_multiplier=None):
     """按当前参数造一个切句器（一路音频一个：各自的能量统计必须独立）。
 
     <p>5.41：`segmentation` 给了就按它（来自识别策略）；没给就沿用命令行那套 ——
@@ -468,10 +469,16 @@ def _new_segmenter(args, np, segmentation=None, rms_threshold=None, rms_floor=No
     floor = args.rms_floor
     if isinstance(rms_floor, (int, float)) and rms_floor > 0:
         floor = float(rms_floor)
+    # 5.115：噪声倍数也能由表给。这一项在**底噪高**的房间最要紧 ——
+    #   门槛 = max(rms_floor, 噪声底 × 倍数)，倍数是 4 时很容易顶到安全阀（0.5×语音档），
+    #   而顶到安全阀就意味着"门槛和正常说话一样高"，说话会被当静音。
+    multiplier = args.noise_multiplier
+    if isinstance(noise_multiplier, (int, float)) and noise_multiplier > 0:
+        multiplier = float(noise_multiplier)
     return UtteranceSegmenter(
         args.samplerate, args.block_ms, seg["silence_ms"],
         seg["min_speech_ms"], seg["max_speech_ms"], threshold, args.preroll_ms, np,
-        adaptive=args.adaptive, rms_floor=floor, noise_multiplier=args.noise_multiplier,
+        adaptive=args.adaptive, rms_floor=floor, noise_multiplier=multiplier,
         short_utterance_ms=seg["short_utterance_ms"], short_silence_ms=seg["short_silence_ms"],
         cut_pause_ms=seg["cut_pause_ms"],
     )
@@ -558,13 +565,15 @@ def run_segment_producer_dir(args, np):
         改了却不重造，表里新值就只对**新开的**那一路生效，现场看到的是"改了没反应"。
         """
         key = tuple(strategy["segmentation"].get(field) for field in SEGMENTATION_FIELDS)
-        return key + (strategy.get("rms_threshold"), strategy.get("rms_floor"))
+        return key + (strategy.get("rms_threshold"), strategy.get("rms_floor"),
+                      strategy.get("noise_multiplier"))
 
     def make_segmenter(strategy):
         """按策略里的切句参数造切句器（一路一个：能量统计必须独立）。"""
         return _new_segmenter(args, np, segmentation=strategy["segmentation"],
                               rms_threshold=strategy.get("rms_threshold"),
-                              rms_floor=strategy.get("rms_floor"))
+                              rms_floor=strategy.get("rms_floor"),
+                              noise_multiplier=strategy.get("noise_multiplier"))
 
     def report_gate(name, state):
         """把这一路**实际**用的能量门槛说一次（5.112）。
@@ -614,7 +623,14 @@ def run_segment_producer_dir(args, np):
               file=sys.stderr, flush=True)
         return state
 
-    def flush(name, state, utterance):
+    def flush(name, state, utterance, why=None):
+        """写出一段。`why` 只为日志服务（`idle` = 被"多久没新音频"截断的）。
+
+        <p>⚠️ 5.115：`尾部静音裁掉 0ms` 是**可疑信号** —— 靠静音收句时 tail 一定
+        ≥ silence_ms（裁掉的正是那一段静音），所以 0ms 说明这句是**被 idle 截断的**，
+        也就是"手机这批音频之间停顿太久了"。实机日志里大量出现，正是"句子很碎"的主因之一。
+        以前这个区别只能靠人去推，现在直接写在行尾。
+        """
         nonlocal produced
         if utterance is None or len(utterance) == 0:
             return
@@ -625,9 +641,13 @@ def run_segment_producer_dir(args, np):
         # 每一句都把策略名打出来（用户要求：便于对照与调节）
         # 5.52：尾巴裁掉多少也带上 —— 它紧贴最后一个音节，是"句尾缺一截"的头号嫌疑
         trim = getattr(state["segmenter"], "last_tail_trim_ms", 0)
+        note = ""
+        if trim == 0 and why == "idle":
+            note = (f"（⚠️ 不是静音收的句：连续 {args.idle_flush_ms}ms 没有新音频就交了"
+                    f" —— 手机上传是断续的，这个值要比上传间隔大，见 docs/06 §4）")
         print(f"[切句] {args.tag or '?'} {name} → {base}"
               f"（{len(utterance) / args.samplerate:.1f}s，策略 {state['strategy']['strategy']}，"
-              f"尾部静音裁掉 {trim}ms，累计 {produced} 段）",
+              f"尾部静音裁掉 {trim}ms，累计 {produced} 段）{note}",
               file=sys.stderr, flush=True)
 
     def report(name, state):
@@ -687,6 +707,12 @@ def run_segment_producer_dir(args, np):
                 # 手上正攒着的那句话必须按旧参数收尾，否则同一句会被两套阈值判两次
                 # （那正是"半句旧参数半句新参数"的噪声，A/B 时最难解释的一种）。
                 wanted = strategy_for(state["language"])
+                # ⚠️ 5.115：**策略名要单独跟住语种**。原来只在 `segmenter_key` 变化时更新
+                #    `state["strategy"]`，而"语种变了但切句参数一样"（比如 en-US→pt-BR
+                #    都用 default 的 segmentation）时 key 不变 —— 于是段里带的策略名一直是旧的。
+                #    实机表现：英文那一路写成 `策略 pt-funasr（模型 parakeet 目录）`，
+                #    A/B 按策略名分组直接失效，日志自相矛盾。
+                name_changed = wanted["strategy"] != state["strategy"]["strategy"]
                 if segmenter_key(wanted) != state["segmenter_key"]:
                     if state["segmenter"].speaking:
                         print(f"[切句] {args.tag or '?'} {name} 策略变了"
@@ -699,6 +725,11 @@ def run_segment_producer_dir(args, np):
                         print(f"[切句] {args.tag or '?'} {name} 换策略 → {wanted['strategy']}"
                               f"（切句 {', '.join(f'{k}={v}' for k, v in wanted['segmentation'].items())}）",
                               file=sys.stderr, flush=True)
+                elif name_changed:
+                    # 切句参数没变，只是名字（= 引擎/模型）变了：换名字，不重造切句器
+                    state["strategy"] = wanted
+                    print(f"[切句] {args.tag or '?'} {name} 策略名跟随语种 → {wanted['strategy']}"
+                          f"（切句参数相同，不重造切句器）", file=sys.stderr, flush=True)
                 if blocks:
                     any_data = True
                     idle.saw_data()
@@ -707,7 +738,7 @@ def run_segment_producer_dir(args, np):
                             flush(name, state, utterance)
                     report_gate(name, state)
                 elif idle.saw_nothing() and state["segmenter"].speaking:
-                    flush(name, state, state["segmenter"].flush())
+                    flush(name, state, state["segmenter"].flush(), why="idle")
             # 文件消失（换人 / 清理）：那一路的缓冲也别丢
             for name in list(tracks.keys()):
                 if name in names:
@@ -895,7 +926,7 @@ DEFAULT_ENGINE = "whisper"
 # 因为 segmentation 那一组统一按整数解析，而这两个是小数。
 #   · `silence_skip_level`：识别侧，解码前按电平丢弃的门槛
 #   · `rms_threshold`     ：切句侧，"算不算在说话"的门槛
-LEVEL_FIELDS = ("silence_skip_level", "rms_threshold", "rms_floor")
+LEVEL_FIELDS = ("silence_skip_level", "rms_threshold", "rms_floor", "noise_multiplier")
 
 # 命令行没给值时的缺省（与 parse_args 的 default 保持一致；表里没写就落在这里）
 SEGMENTATION_DEFAULTS = {
