@@ -31,7 +31,10 @@ var net = require('net')
 var childProcess = require('child_process')
 
 var problems = 0
-var MIN_NODE_MAJOR = 20
+// 22.5 是硬门槛：lib/db.mjs 用内置 node:sqlite，比它旧的 Node 一加载模块就
+// 报 `ERR_UNKNOWN_BUILTIN_MODULE: No such built-in module: node:sqlite`。
+var MIN_NODE_MAJOR = 22
+var MIN_NODE_MINOR = 5
 
 function ok(label, detail) {
   console.log('  [OK]   ' + label + (detail ? '：' + detail : ''))
@@ -53,15 +56,24 @@ function warn(label, detail) {
 
 // ── ① Node 版本 ─────────────────────────────────────────────────────────────
 function checkNode() {
-  console.log('① Node 版本')
-  var major = parseInt(String(process.versions.node).split('.')[0], 10)
-  if (isNaN(major) || major < MIN_NODE_MAJOR) {
-    bad('当前 Node ' + process.versions.node + '，项目要 ≥ ' + MIN_NODE_MAJOR,
-      ['否则一跑 .mjs 就报 SyntaxError: Unexpected token \'?\'（这是空值合并语法，Node 14 才有）',
-        'Ubuntu 22.04 用 apt 装的 nodejs 是 12.22 —— 正是这个坑。装新版：',
-        '  curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -',
+  console.log('① Node 版本（要 ≥ ' + MIN_NODE_MAJOR + '.' + MIN_NODE_MINOR + '）')
+  var parts = String(process.versions.node).split('.')
+  var major = parseInt(parts[0], 10)
+  var minor = parseInt(parts[1], 10)
+  if (isNaN(minor)) minor = 0
+  var tooOld = isNaN(major) || major < MIN_NODE_MAJOR ||
+    (major === MIN_NODE_MAJOR && minor < MIN_NODE_MINOR)
+  if (tooOld) {
+    bad('当前 Node ' + process.versions.node + '（' + process.execPath + '），项目要 ≥ ' + MIN_NODE_MAJOR + '.' + MIN_NODE_MINOR,
+      ['为什么：lib/db.mjs 用 Node 内置的 node:sqlite，' + MIN_NODE_MAJOR + '.' + MIN_NODE_MINOR + ' 才提供；更旧的版本一启动就报',
+        '  Error [ERR_UNKNOWN_BUILTIN_MODULE]: No such built-in module: node:sqlite',
+        '最常见的情形：手动跑用的是 PATH 里的新版，systemd 单元里写死 /usr/bin/node（apt 装的 18/20），于是"手动能跑、服务起不来"。',
+        '先看这台机器到底有几个 node：',
+        '  which -a node; node -v; /usr/bin/node -v',
+        '把 systemd 单元的 ExecStart 改成 node -v 显示新版本的那个绝对路径，或者装新版：',
+        '  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -',
         '  sudo apt install -y nodejs',
-        '装完 node -v 必须显示 v20.x 或更高（可能要 sudo apt purge nodejs 先卸掉旧的）'])
+        '装完 systemctl daemon-reload 再重启服务，日志里 ① 这一项必须是 OK'])
     return false
   }
   ok('Node ' + process.versions.node)
