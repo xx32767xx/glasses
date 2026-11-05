@@ -2220,6 +2220,8 @@ def run_queue_consumer(args, np, pool):
     map_stamp = _stamp_of(args.model_map)
     # 连丢几段「电平偏低」就喊一次（见 LevelWatch）
     level_watch = LevelWatch(getattr(args, "silence_skip_level", SILENCE_SKIP_RMS))
+    # 5.110：表里的电平门槛与命令行不一致时，每个语种只说一次（不然一段刷一行）
+    level_notes = {}
     while True:
         # 模型表热加载：每轮看一眼 mtime，变了就重读 —— "插拔接口"要真的是插拔
         if args.model_map:
@@ -2253,6 +2255,19 @@ def run_queue_consumer(args, np, pool):
             cutStrategy = meta.get("strategy")
             strategyName = str(cutStrategy) if isinstance(cutStrategy, str) and cutStrategy.strip() else strategy["strategy"]
             profile = strategy
+            # 5.110：表里的电平门槛和命令行不一致 → 说一次谁赢（每语种一次）。
+            # 这正是"两个地方都能设"最容易出错的地方：命令行写着 0.008、表里写着 0.006，
+            # 而实际用的是表里的 —— 不说的话现场只能靠猜。
+            table_floor = strategy.get("silence_skip_level")
+            cli_floor = getattr(args, "silence_skip_level", None)
+            if (isinstance(table_floor, (int, float)) and isinstance(cli_floor, (int, float))
+                    and abs(float(table_floor) - float(cli_floor)) > 1e-9):
+                note_key = f"{language}|{table_floor}"
+                if note_key not in level_notes:
+                    level_notes[note_key] = True
+                    print(f"[识别] 电平门槛：{language} 用**表里**的 {table_floor}"
+                          f"（命令行给的是 {cli_floor}）→ 表优先；要让命令行生效就把表里那个字段删掉",
+                          file=sys.stderr, flush=True)
             pool.note(strategy, strategyName)
             try:
                 handle = pool.get(profile, device=args.device)
@@ -4138,16 +4153,34 @@ def main():
     startup_compute_raw = startup.get("compute_type") or compute_type
     startup_compute, compute_note = resolve_compute_type(startup_compute_raw, args.device)
     if compute_note:
-        source = startup.get("sources", {}).get("compute_type") or startup.get("source") or "配置"
+        # 5.110：`resolve_strategy` 记的键叫 `sources`（复数）；原来这里读 `source`，
+        # 于是这一行永远印"来自 配置"。顺手把这个死兜底删掉。
+        source = (startup.get("sources") or {}).get("compute_type") or "配置"
         print(f"[whisper_stream] {compute_note}"
               f"（这个精度来自 {source}；策略表里的 compute_type 会覆盖命令行 --compute）",
               file=sys.stderr)
+    elif str(startup_compute_raw) != str(compute_type):
+        # 5.110：表里的精度和命令行给的**不一样**（但两个都跑得了）→ 也要说清谁赢，
+        # 否则"我明明给了 --compute"这件事在现场无法核对。
+        print(f"[whisper_stream] ⚠️ 命令行 --compute {compute_type}，表里是 {startup_compute_raw}"
+              f" → **按表走**（要让命令行生效就把表里那个字段删掉）", file=sys.stderr)
     # 队列消费者要用同一组值当"命令行档案"，否则表里的 default 会被命令行旧值盖住
     args.startup_model = startup_model
     args.resolved_compute = startup_compute
     if args.model_map and args.asr_table:
+        # ⚠️ 5.110：这里原来写的是 `startup.get('source')` —— 而 resolve_strategy 记录的键叫
+        #    `sources`（复数），于是这一行**永远印 "来源：None"**。正是那种"看着像信息、
+        #    其实什么都没有"的日志（§5.105 那条纪律）。
+        startup_source = (startup.get("sources") or {}).get("model") or "命令行"
         print(f"[whisper_stream] 模型表：{describe_asr_table(args.asr_table, _cli_profile(args))}"
-              f"（启动先加载 {startup_model}，来源：{startup.get('source')}）", file=sys.stderr)
+              f"（启动先加载 {startup_model}，来自 {startup_source}）", file=sys.stderr)
+        # ⚠️ 5.110：命令行与表**都给了**、而值不一样时，必须当场说清谁赢 ——
+        #    否则"我明明给了 --whisper-model"和"表里改的才是生效的"会各说一套，
+        #    正是这两周反复踩的那类"两个地方都能设"的坑。表优先是刻意设计（改表不用重启）。
+        if args.model and startup_model and str(args.model) != str(startup_model):
+            print(f"[whisper_stream] ⚠️ 命令行写的是 {args.model}，但表里那一层是 {startup_model}"
+                  f"（来自 {startup_source}）→ **按表走**；要让命令行生效就把表里那个字段删掉",
+                  file=sys.stderr)
 
     # 5.86：先建引擎注册表并解析出**这一路是哪个引擎**，再决定要不要做"本地模型"检查。
     # 原来这个检查排在解析引擎之前，于是云端引擎（tencent / funasr）的"模型"（其实是

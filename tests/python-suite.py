@@ -3419,6 +3419,20 @@ def main():
     check("没有表时那行仍是人话（不退化成空串）",
           "没有模型表" in whisper_stream.describe_asr_table({}, cli5))
 
+    # ⚠️ 5.110：启动那行原来写 `来源：{startup.get('source')}` —— 而 resolve_strategy 记的键
+    #    叫 `sources`（复数），于是**永远印 "来源：None"**。这类"看着像信息其实啥都没有"的日志，
+    #    正是 §5.105 那条纪律要消灭的东西。同时：命令行与表冲突时必须说清谁赢。
+    _src = inspect.getsource(whisper_stream.main)
+    check("启动那行不再印「来源：None」（读的是 sources 复数键）",
+          "启动先加载 {startup_model}，来源：" not in _src
+          and "启动先加载 {startup_model}，来自 {startup_source}" in _src, "")
+    check("命令行与表冲突时明说「按表走」",
+          "按表走" in _src and "要让命令行生效就把表里那个字段删掉" in _src)
+    check("命令行 --compute 与表不一致时也说",
+          "命令行 --compute" in _src)
+    check("电平门槛：表与命令行不一致时每个语种说一次",
+          "用**表里**的" in inspect.getsource(whisper_stream.run_queue_consumer))
+
     # 切出来的段必须把**策略名**写进 meta —— 这是"策略随数据往下走"的第一步
     queue_dir = Path(ROOT / "var" / "test" / "queue-strategy")
     shutil.rmtree(queue_dir, ignore_errors=True)
