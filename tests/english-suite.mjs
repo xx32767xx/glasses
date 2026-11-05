@@ -210,13 +210,19 @@ export async function runEnglishSuite({ it, check, assert }) {
     check('relay 写的就是这个位置', /join\(options\.dataDir, 'room-langs'/.test(relaySource))
   })
 
-  await it('客户端：只显示自己语言那一份，且去重键带语言', async () => {
+  await it('客户端：按**集合**显示译文（勾了几种显示几种），且去重键带语言', async () => {
     const room = readFileSync(join(process.cwd(), 'android', 'app', 'src', 'main', 'java',
       'com', 'leion', 'lanrelay', 'RoomActivity.java'), 'utf-8')
-    check('有 hearLang 字段（读哪种语言）', /private String hearLang = ""/.test(room))
-    check('帧语言与我的不同 → 直接不显示',
-      /!frameLang\.isEmpty\(\) && !hearLang\.isEmpty\(\) && !frameLang\.equals\(hearLang\)/.test(room),
-      '没有按语言过滤，三语会议里会同时看到两份译文')
+    check('有 hearLang 字段（主语言：TTS / 重新登记用它）', /private String hearLang = ""/.test(room))
+    // 5.120：原来的判据是"帧语言 != hearLang 就不显示"，多选等于白选
+    check('不再按单个主语言做等值过滤',
+      !/frameLang\.equals\(hearLang\)/.test(room),
+      '这一行会让"勾了三种"只剩一种（用户报的 bug）')
+    check('帧语言不在我想看的集合里才不显示',
+      /!hearLangs\.isEmpty\(\) && !wantsFrameLanguage\(frameLang\)/.test(room),
+      '没有按集合过滤，多选的下发就白费了')
+    check('集合由 HearLangs 归一化（多选 + 强制含说话语言）',
+      /HearLangs\.normalize\(HearLangs\.parse\(/.test(room))
     check('帧语言缺失时照旧显示（不吞字幕）',
       /frameLang\.isEmpty\(\)/.test(room) && /return;/.test(room))
     check('段落去重键带语言（否则第二份会覆盖第一份）',
@@ -258,7 +264,8 @@ export async function runEnglishSuite({ it, check, assert }) {
     check('上传器也换语种（正在说话时立刻生效）',
       /void syncSpokenLanguage\(\)[\s\S]{0,900}mic\.setLanguage\(want\)/.test(room))
     check('服务端重新登记（否则大脑的听众集合里没有这门语言 → 一句都不译）',
-      /void syncSpokenLanguage\(\)[\s\S]{0,1200}orgJoinRoom\(roomCode, want, null\)/.test(room))
+      /void syncSpokenLanguage\(\)[\s\S]{0,1600}orgJoinRoom\(roomCode, want, null, langs\)/.test(room),
+      '5.120：连 hearLangs 一起报，服务端才知道这台设备要看哪几门')
     check('进房第一次不重复打服务端（入会时已登记）', /boolean changed = !syncedSpeakLang\.isEmpty\(\)/.test(room))
     check('邀请码来自房间详情（重新登记要用它）', /roomCode = code/.test(room))
   })

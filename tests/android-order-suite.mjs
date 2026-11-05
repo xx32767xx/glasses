@@ -410,6 +410,24 @@ export async function runAndroidOrderSuite({ it, check }) {
       sourceIntegrityProblems(prose).join('；'))
   })
 
+  await it('5.120：房间页按**集合**拦译文帧（勾了几种就显示几种）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const roomJava = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+    // 反例（bug 原形）：拿单个字段做等值比较，于是用户勾的其他语种全被丢掉
+    check('不再用单个 hearLang 做等值过滤',
+      !/frameLang\.equals\(hearLang\)/.test(roomJava),
+      '这一行就是"勾了三种只显示一种"的原因：帧语言不同就直接 return')
+    check('过滤器走集合判断', roomJava.includes('wantsFrameLanguage(frameLang)')
+      && /hearLangs\.contains\(/.test(roomJava), 'wantsFrameLanguage 必须查集合')
+    check('集合来自 HearLangs（多选 + 强制含说话语言）',
+      roomJava.includes('HearLangs.normalize(') && roomJava.includes('HearLangs.join('),
+      '不要在房间页自己再写一套归一化规则')
+    // 集合为空（老配置）时不能拦：宁可多显示一条，也不能吞字幕
+    check('空集合不拦（老配置照样能看）',
+      /!hearLangs\.isEmpty\(\)\s*&&\s*!wantsFrameLanguage/.test(roomJava),
+      '判据里必须有 hearLangs.isEmpty() 这一档')
+  })
+
   await it('房间页没有术语库按钮（选库只在建房那一步，会中不可改）', () => {
     const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
     const roomXml = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout', 'page_room.xml'), 'utf-8')
@@ -1405,7 +1423,7 @@ export async function runAndroidOrderSuite({ it, check }) {
       /private void updateModeTag\(\)/.test(roomJava) && /modeTag\.setText\(/.test(roomJava),
       '只改布局缺省值没用 —— 必须有人给它赋值')
     check('进房时就渲染一次', /loadRoomHeader\(\);[\s\S]{0,400}updateModeTag\(\)/.test(roomJava))
-    check('会中换语言时跟着换', /void syncSpokenLanguage\(\)[\s\S]{0,600}updateModeTag\(\)/.test(roomJava))
+    check('会中换语言时跟着换', /void syncSpokenLanguage\(\)[\s\S]{0,900}updateModeTag\(\)/.test(roomJava))
     check('三种语言都认（不只中文/葡语）',
       /rooms_speak_en/.test(roomJava) && /rooms_speak_pt/.test(roomJava) && /rooms_speak_zh/.test(roomJava))
     check('带着参会方式 5.04 收集的面对面/远程', /attend_mode_onsite/.test(roomJava) && /attend_mode_remote/.test(roomJava))

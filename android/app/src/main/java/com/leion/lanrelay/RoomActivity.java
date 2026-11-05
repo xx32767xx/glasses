@@ -150,13 +150,24 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
      */
     private String holderName = "";
     /**
-     * 我**读**哪种语言的字幕（5.00）。
+     * 我**说**的语言（= 我的主语言，5.00）。
      *
-     * <p>三语会议里同一句会产出两份译文（比如葡语一份、英语一份），这台设备只该显示自己那份。
-     * 现在"说"和"读"是同一个值（入会时登记的 `speakLang`）—— 要分开（比如"我说中文但我能读葡语"）
-     * 就得再加一个字段和一处 UI，那是下一轮的事，这里先把规则写明。
+     * <p>它曾经同时兼任"我读哪种语言" —— 于是"我说中文、但中文和葡语译文都想看"表达不出来。
+     * 5.120 起"读"是一个**集合**（{@link #hearLangs}），这个字段只留作主语言：
+     * TTS 的音色/语言、重连登记、以及"哪一份是主译文"仍以它为准。
      */
     private String hearLang = "";
+    /**
+     * 我**想看的全部译文语言**（5.120：多选）。
+     *
+     * <p>为什么必须是个集合：手机里勾了"中文 + 葡语 + 英语"，服务端就会为这一句产出多份译文帧，
+     * 但它们**语言不同**。原来这里拿单个 `hearLang` 去比对，等于把多出来的那几份全丢掉 ——
+     * 表现就是"勾了几种，屏幕上只有一种（而且正是我说的那种语言）"。
+     *
+     * <p>来源与 {@link #hearLangsOf} 一致：偏好里的多选 + 强制并入说话语言（见 {@code HearLangs}）。
+     * 空集合 = 没登记（老配置）→ 不拦，宁可多显示也不吞字幕。
+     */
+    private final java.util.Set<String> hearLangs = new java.util.LinkedHashSet<>();
     /**
      * 上一次**已经登记到服务端**的参会语言（5.06）。
      *
@@ -268,6 +279,10 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // 纯听众（从不开麦）也要有值，否则三语会议里会收到两种语言的帧、都显示出来。
         hearLang = prefs.getString("speakLang", "");
         if (hearLang == null) hearLang = "";
+        // 5.120：真正决定"显示哪几份译文"的是**集合**（偏好里的多选 + 强制并入说话语言）。
+        // 只有主语言 `hearLang` 的话，勾了几种也只显示一种 —— 这就是用户报的那个 bug。
+        hearLangs.clear();
+        hearLangs.addAll(hearLangsOf(prefs));
         // 5.06：会中换语言时用它比对（见 syncSpokenLanguage）
         syncedSpeakLang = hearLang;
         String token = prefs.getString("accountToken", "");
@@ -281,8 +296,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // 5.55：告诉轮询"我要看哪几种语言的译文"。一个人可能同时看两种（我说葡语、
         // 英文和中文都想看），服务端会按语言各存一份帧；不带就只有自己那门。
         // ⚠️ 这里必须**过滤成支持的标签**：prefs 里的值可能是老版本写的脏数据。
-        client.setHearLangs(HearLangs.join(HearLangs.parse(prefs.getString("hearLangs", "")),
-                prefs.getString("speakLang", "")));
+        client.setHearLangs(HearLangs.join(hearLangsOf(prefs), prefs.getString("speakLang", "")));
         // 4.96：上传音频时自报发言人（服务端用它给字幕落名字，不再猜"现在谁持麦"）
         client.setSpeaker(myName);
         getSharedPreferences("leion", MODE_PRIVATE).edit().putString("roomId", roomKey).apply();
@@ -1336,14 +1350,22 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         final boolean changed = !syncedSpeakLang.isEmpty();
         syncedSpeakLang = want;
         hearLang = want;
+        // 5.120：换了说话语言，"我想看"的集合也要跟着含它（HearLangs 的硬规则），
+        // 否则切到葡语说话之后，葡语那份译文会被自己的过滤器挡掉。
+        String wantTag = HearLangs.normalizeTag(want);
+        if (wantTag != null) hearLangs.add(wantTag);
         if (mic != null) mic.setLanguage(want);
         // 5.07：顶部那格「我说…」跟着换（它以前永远显示中文）
         updateModeTag();
         if (!changed || roomCode.isEmpty()) return;
         hintLine.setText(getString(R.string.st_lang_now, langLabelOf(want)));
+        final String langs = HearLangs.join(hearLangs, want);
+        // 轮询那边也要跟着换，否则它还在按旧的集合收发
+        if (client != null) client.setHearLangs(langs);
         new Thread(() -> {
             try {
-                client.orgJoinRoom(roomCode, want, null);
+                // 5.120：连 `hearLangs` 一起报，服务端才知道"这台设备要看哪几门"。
+                client.orgJoinRoom(roomCode, want, null, langs);
             } catch (Exception ignored) {
                 // 网络不通就算了：下一次开麦上传时服务端还会用 &lang= 校正一次
             }
@@ -1472,17 +1494,19 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
      * 迟早出现"长轮询能显示、WS 显示不出来"这种只在一半设备上出现的分裂。
      *
      * @param speakerName 这一句**是谁说的**（4.95：服务端随帧给出；空串 = 未知）
-     * @param lang        这一帧是**译成哪种语言**的（5.00：三语会议里同一句有两份帧，
-     *                    只显示自己登记的那一份；空串 = 老服务端，照旧显示）
+     * @param lang        这一帧是**译成哪种语言**的（5.120：三语会议里同一句会产出多份帧，
+     *                    勾了的每一份都显示，见 {@link #hearLangs}；空串 = 老服务端，照旧显示）
      */
     private void applyFrame(String text, String[] lines, String source, boolean partial,
                             String[] termsMissing, String speakerName, String lang, String notice) {
         String target = (text == null || text.isEmpty())
                 ? (lines == null ? "" : String.join("\n", lines)) : text;
         String frameLang = lang == null ? "" : lang.trim();
-        // 5.00：只显示自己语言那一份。判据是本机登记的说话语言（同时作为"读的语言"）。
+        // 5.120：按**集合**拦，不是按单个主语言。三语会议里同一句会产出多份译文
+        // （中/葡/英各一份），勾了的每一份都该显示 —— 原来拿单个 `hearLang` 比对，
+        // 等于把用户勾的其他语种全部丢掉（"勾了几种只显示一种"就是这么来的）。
         // 帧语言缺失（老服务端/无语言）时照旧显示 —— 宁可多显示，也不能吞掉字幕。
-        if (!frameLang.isEmpty() && !hearLang.isEmpty() && !frameLang.equals(hearLang)) {
+        if (!frameLang.isEmpty() && !hearLangs.isEmpty() && !wantsFrameLanguage(frameLang)) {
             return;
         }
         // 5.12：这一帧带了提示（例如"本场语言相同 · 无需翻译"）—— 写在提示行，
@@ -1508,6 +1532,25 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         } else if (notice == null || notice.isEmpty()) {
             hintLine.setText("");
         }
+    }
+
+    /**
+     * 「我想看哪些译文」的**唯一取值点**（5.120）：偏好里的多选 + 强制并入说话语言。
+     *
+     * <p>会议页与建房页必须用同一套规则，否则"勾的时候三种、显示的时候一种"，
+     * 而且不会有任何报错 —— 只能靠这里统一（见 {@code HearLangs}）。
+     */
+    private java.util.List<String> hearLangsOf(SharedPreferences prefs) {
+        SharedPreferences store = prefs == null ? getSharedPreferences("leion", MODE_PRIVATE) : prefs;
+        return HearLangs.normalize(HearLangs.parse(store.getString("hearLangs", "")),
+                store.getString("speakLang", ""));
+    }
+
+    /** 这一帧的译文语言在不在「我想看」的集合里（认不出的标签不拦，宁可多显示）。 */
+    private boolean wantsFrameLanguage(String frameLang) {
+        String tag = HearLangs.normalizeTag(frameLang);
+        if (tag == null) return true;
+        return hearLangs.contains(tag);
     }
 
     /**
