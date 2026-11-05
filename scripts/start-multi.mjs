@@ -508,7 +508,8 @@ export function workerStep(options) {
   if (options.modelMap) {
     args.push('--model-map', options.modelMap)
     args.push('--max-models', String(options.maxModels ?? 2))
-    // 5.41：房间覆盖（手机上报的策略/模型）也读这里
+    // ⚠️ 5.108：`--data-dir` 原来是为了读房间侧车（手机上报的模型），那一层已删除；
+    // 现在它只留给试测/体检（`asr-try` 会去 `<data-dir>/audio/<房间>/` 找原始分轨）。
     args.push('--data-dir', options.dataDir)
   }
   // 5.70：电平门槛（不给就用识别进程的缺省；实机验证时几乎总要调低）

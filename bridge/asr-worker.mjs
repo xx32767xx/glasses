@@ -253,10 +253,11 @@ export function consumerCommand(options) {
     '--queue-depth-report-s', String(options.depthReportS),
     // 队列模式下语种是**每段自带**的（切句时从手机的旁文件读），命令行不写死。
     '--format', 'json',
-    // 5.41：房间覆盖（手机上报的策略/模型）要读 `<data-dir>/asr-profiles/<房间>.json`
+    // 数据目录：5.108 起**不再**用于读房间侧车（那一层已删除），
+    // 但还留给试测/体检（例如 --try-* 会去 <data-dir>/audio/<房间>/ 找原始分轨）。
     '--data-dir', options.dataDir,
   ]
-  // 5.40/5.41：策略表。给了就传下去 —— 识别进程按"房间 > languages > strategies > default
+  // 5.40/5.41：策略表。给了就传下去 —— 识别进程按"languages > strategies > default
   // > 命令行"选模型。⚠️ 这条曾经漏在这里过：start-multi 传了 `--model-map`，但这个脚本
   // 的 parseArgs 不认识，于是**识别进程直接退出、整条链被拖停**。
   // 现在 tests/start-multi-suite.mjs 会拿 workerStep 生成的参数**直接喂给这个 parseArgs**。

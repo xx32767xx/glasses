@@ -7,10 +7,9 @@
  * "改配置 → 开始 → 说话"，来回几轮太慢；而做模型对比本质上只关心**现在用哪个模型**。
  * 那就让服务器说了算 —— 用户 2026-11 原话：「如果还是有问题，可以放弃手机端控制」。
  *
- * 改的是 `<数据目录>/asr-models.json` 的 `languages[语种].model`：这一层
- * **高于**策略表/default、**低于**房间侧车。所以
+ * 改的是 `<数据目录>/asr-models.json` 的 `languages[语种]`：
  *   ① 立刻影响之后的所有段（识别侧按 mtime 热读，**不用重启**）；
- *   ② 如果某个房间真的在 App 里选过模型，那个房间仍按它自己的选择走。
+ *   ② 这是**唯一**的决定点 —— 5.108 起"房间侧车"那一层已整层删除（`--room` 也随之取消）。
  *
  * 用法
  *   node scripts/asr-model-switch.mjs --data-dir /var/lib/leion/test --model tiny
@@ -18,11 +17,10 @@
  *   node scripts/asr-model-switch.mjs --data-dir /var/lib/leion/test --model ""     # 还原成表里的默认
  *   node scripts/asr-model-switch.mjs --data-dir /var/lib/leion/test --strategy en-parakeet
  *       ↑ 换**引擎/整套策略**（parakeet、tencent 这些只能这样切；--model 只换模型名）
- *   node scripts/asr-model-switch.mjs --data-dir /var/lib/leion/test --room room-xxx --model tiny
  *   node scripts/asr-model-switch.mjs --data-dir /var/lib/leion/test              # 只看现在是什么
  */
 
-import { copyFileSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   ENGINE_LANGUAGES, loadStrategyTable, parseJsonLoose, resolveProfile, setLanguageModel,
@@ -32,17 +30,23 @@ const MODEL_NAME = /^[A-Za-z0-9._/:-]{1,160}$/
 const STRATEGY_NAME = /^[a-z0-9_-]{1,32}$/
 
 function parseArgs(argv) {
-  const args = { dataDir: '', lang: 'en-US', model: null, strategy: null, room: '' }
+  const args = { dataDir: '', lang: 'en-US', model: null, strategy: null }
   for (let index = 0; index < argv.length; index += 1) {
     const item = argv[index]
     if (item === '--data-dir') args.dataDir = argv[index += 1] ?? ''
     else if (item === '--lang') args.lang = argv[index += 1] ?? ''
     else if (item === '--model') args.model = argv[index += 1] ?? ''
     else if (item === '--strategy') args.strategy = argv[index += 1] ?? ''
-    else if (item === '--room') args.room = argv[index += 1] ?? ''
-    else if (item === '--help' || item === '-h') {
+    else if (item === '--room') {
+      // ⚠️ 5.108：房间侧车整层删除，`--room` 随之取消。**必须明确说清**，
+      //    否则老脚本/老笔记里的人会以为它只是"暂时不好用"，继续试。
+      console.error('--room 已在 5.108 删除：手机端的模型控制早就删了，房间侧车那一层也一起删掉了。\n'
+        + '  现在"用哪个模型"只由服务器那张表决定（表是唯一的决定点）。\n'
+        + '  换某一门语言的模型：--lang pt-BR --strategy pt-funasr（或 --model <名字>）')
+      process.exit(2)
+    } else if (item === '--help' || item === '-h') {
       console.log('用法：node scripts/asr-model-switch.mjs --data-dir <目录> '
-        + '[--lang en-US|zh-CN|pt-BR] [--model 名字] [--strategy 策略名] [--room 房间id]')
+        + '[--lang en-US|zh-CN|pt-BR] [--model 名字] [--strategy 策略名]')
       process.exit(0)
     } else {
       console.error(`不认识的参数：${item}`)
@@ -68,31 +72,10 @@ function parseArgs(argv) {
   return args
 }
 
-/** 只给房间用时：写侧车（比改表更"局部"，适合一场一测）。 */
-function switchRoom(root, room, lang, model) {
-  const dir = join(root, 'asr-profiles')
-  mkdirSync(dir, { recursive: true })
-  const path = join(dir, `${room}.json`)
-  const payload = { roomId: room, byLang: { [lang]: { model } }, at: Date.now(), by: 'asr-model-switch' }
-  writeFileSync(path, JSON.stringify(payload, null, 2), 'utf-8')
-  console.log(`已写房间侧车 ${path}`)
-  console.log(`  ${lang} → ${model}（只影响这一场；识别侧按 mtime 热读，下一个段就生效）`)
-  console.log('  ⚠️ 提醒：App 里重新开始这一场会覆盖它（手机上报的优先级更高）。')
-}
-
 function main() {
   const args = parseArgs(process.argv.slice(2))
   const root = args.dataDir
   const tablePath = join(root, 'asr-models.json')
-
-  if (args.room !== '') {
-    if (args.model === null || args.model === '') {
-      console.error('--room 必须配一个具体的 --model（房间侧车没有"还原"这种语义，删文件即可）')
-      return 2
-    }
-    switchRoom(root, args.room, args.lang, args.model)
-    return 0
-  }
 
   const loaded = loadStrategyTable(root)
   if (loaded.problem) {
@@ -173,7 +156,9 @@ function main() {
   console.log(`现在这一路会跑：引擎 ${after.engine} / 模型 ${after.model || '默认'}`)
   console.log(`已写 ${tablePath}（识别侧按 mtime 热读，**不用重启**）`)
   console.log('验证：日志里出现 `[识别] 加载 <引擎>:<模型>` 与 `（引擎 <引擎>）`')
-  console.log('⚠️ 只在 App 里没给这场选过模型时才生效（房间侧车优先级更高）。')
+  // ⚠️ 5.108：这一行以前写的是"只在 App 里没给这场选过模型时才生效（房间侧车优先级更高）"。
+  //    侧车整层删除之后，表就是**唯一**的决定点 —— 再留着那句会让人以为还有别的东西压着它。
+  console.log('提示：表是唯一的决定点（房间侧车那一层已在 5.108 删除）。')
   return 0
 }
 

@@ -38,16 +38,16 @@ public final class RelayPipelineBackend implements InterpreterAsrBackend {
     /**
      * 引擎偏好（5.39/5.40，来自 `asr-routes.json`）。
      *
-     * <p>5.40 起它**会真的发给服务器**（会话创建时带上 `asrModels`）：
-     * 识别进程按"房间覆盖 > 服务器模型表 > 默认"选模型，所以这张表确实能拿来做 A/B。
-     * 但服务器可能没有这个模型 —— 那种情况识别进程会明确报"加载失败并跳过这一段"，
-     * 不会偷偷换成别的模型（否则 A/B 的结论就是假的）。
+     * <p>⚠️ 5.108：服务器**不再读手机上报的模型/引擎** —— 房间侧车那一层整层删除了
+     * （手机端的模型选择在 5.69 就没了）。这两个字段仍然照原样发过去，但服务器只把它
+     * 记一行日志，**不产生任何效果**；"这场用什么模型"只由服务器表决定。
+     * 保留字段是为了不破坏协议形状（老 APK / 老脚本仍会带它们）。
      */
     private final String engine;
 
     /**
      * 引擎家族（5.58：`whisper` / `parakeet`…）。空 = 不指定，服务器用它缺省的那个。
-     * 与 {@link #engine} 一起发给服务器（`asrEngines`），侧车里两个字段都能表达。
+     * 与 {@link #engine} 一起发给服务器（`asrEngines`）—— 5.108 起服务器不再据此改模型。
      */
     private final String asrEngine;
 
@@ -110,7 +110,7 @@ public final class RelayPipelineBackend implements InterpreterAsrBackend {
         if (running) return;
         // 5.64：语种以**路由器传来的**为准。三个通用实例可互换（AsrRouter 对通用后端是
         // 兜底式挑选），若沿用实例自带字段，开会话会把语种报成另一个语言 ——
-        // 模型侧车的键就跟着写错，识别侧永远匹配不上（实测：侧车写 zh-CN、识别按 en-US）。
+        // 上报的语种就跟着写错（实测：报了 zh-CN、识别按 en-US；5.108 前这还会写成侧车键）。
         sessionSpeakLang = SessionLang.choose(lang, speakLang);
         this.listener = target;
         running = true;
@@ -149,7 +149,7 @@ public final class RelayPipelineBackend implements InterpreterAsrBackend {
                     engine, asrEngine);
             JSONObject session = created == null ? null : created.optJSONObject("session");
             String id = session == null ? "" : session.optString("id", "");
-            // 服务器**实际收到**的模型请求（可能是空的：没指定/说了它不认识/写侧车失败）。
+            // 服务器**实际收到**的模型请求（5.108 起它只被记一行日志、不产生效果）。
             // 这一句是 A/B 时唯一可信的"到底按哪个模型在跑"的依据，所以打进日志。
             JSONObject appliedModels = created == null ? null : created.optJSONObject("asrModels");
             Log.i(TAG, "🎛 模型请求：" + (engine.isEmpty() && asrEngine.isEmpty() ? "（没指定）"

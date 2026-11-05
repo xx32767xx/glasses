@@ -188,7 +188,7 @@ def parse_args(argv=None):
     # 为什么需要它：`--file` 与麦克风流式模式只吃"启动时加载的那一份"，
     # 而在此之前引擎只能从策略表里来 —— 于是想用同一批音频离线量 parakeet，
     # 就必须先起整套管线、改表、再说一遍话。有了这个参数，一行命令就能量。
-    # 优先级与模型相同：命令行 → 表 default → strategies → languages → 房间覆盖。
+    # 优先级与模型相同：命令行 → 表 default → strategies → languages。
     parser.add_argument("--engine", default=None,
                         help="引擎家族：whisper（缺省）/ parakeet / tencent（策略表里的 engine 会覆盖它）")
     parser.add_argument("--device", default="cpu", help="cpu 或 cuda（本机实测两者都能跑，见 --stats）")
@@ -364,10 +364,10 @@ def parse_args(argv=None):
     parser.add_argument("--model-map", default=None,
                         help="按语言选模型的表（JSON，5.40）。给了它，每段话就按自己的语种"
                              "查表决定用哪个模型/解码参数；改了文件会自动重新读，不用重启。"
-                             "优先级：房间覆盖 > languages[语种] > default > 命令行")
+                             "优先级：languages[语种] > strategies > default > 命令行")
     parser.add_argument("--data-dir", default=None,
-                        help="数据目录（5.41）：用来读 `<data-dir>/asr-profiles/<房间>.json`"
-                             "（手机开会话时上报的模型/策略请求）。切句端与识别端都要给才能用房间覆盖")
+                        help="数据目录（5.41）：试测/体检会用到它（例如 `asr-try` 找 `audio/<房间>/`）。"
+                             "⚠️ 5.108 起它**不再**用于读房间侧车 —— 那一层已删除")
     parser.add_argument("--try-audio", default=None,
                         help="【单独试识别】只跑这一段音频（wav，或配合 --try-rate 给裸 PCM），"
                              "直接进引擎 —— 不经切句、不经队列、不经大脑。用来把"
@@ -514,7 +514,6 @@ def run_segment_producer_dir(args, np):
     tracks = {}
     produced = 0
     announced = set()
-    room_cache = {}
     # 5.41：策略表（切句这里只读它的 `segmentation` 那一半）
     table, table_problem = load_asr_models(args.model_map)
     if table_problem:
@@ -528,11 +527,15 @@ def run_segment_producer_dir(args, np):
             print(f"[切句] {line}", file=sys.stderr, flush=True)
 
     def strategy_for(language):
-        """这一路该用哪份策略（含切句参数）。策略名会跟着段一路传到收信箱。"""
-        room_profile = read_room_asr_profile(args.data_dir, args.tag, room_cache)
+        """这一路该用哪份策略（含切句参数）。策略名会跟着段一路传到收信箱。
+
+        <p>5.108：这里原来还叠加了一层"房间覆盖"（relay 按手机上报写的侧车）。
+        手机端的模型选择早在 5.69 就删了，那一层于是变成"只可能过期、不可能正确"的负担 ——
+        它的优先级还最高，实测踩过一次"表改了没生效"。现在整层删除，见 §5.108。
+        """
         return resolve_strategy(language, {
             "model": args.model, "compute_type": args.compute_type, "beam_size": args.beam_size,
-        }, table, room_profile)
+        }, table)
 
     def segmenter_key(strategy):
         return tuple(strategy["segmentation"].get(key) for key in SEGMENTATION_FIELDS)
@@ -803,10 +806,15 @@ def _pending_segments(queue_dir):
 # OOM 崩溃，而不是"慢一点"，这条不藏着。
 #
 # 优先级（从高到低），每一级都会在日志里写明是**哪一级**决定的：
-#   ① 房间覆盖（`<data-dir>/asr-profiles/<房间>.json`，由 relay 按手机上报写下来）
-#   ② `asr-models.json` 的 `languages[<语种>]`
+#   ① `asr-models.json` 的 `languages[<语种>]`（可以钉模型，也可以钉策略名）
+#   ② `asr-models.json` 的 `strategies[<策略名>]`
 #   ③ `asr-models.json` 的 `default`
 #   ④ 命令行 `--model / --compute-type / --beam-size`（老行为，一个模型服务所有语种）
+#
+# ⚠️ 5.108：这里原来还有一级"房间覆盖"（`<data-dir>/asr-profiles/<房间>.json`，
+#    relay 按手机上报写下来），现已**整层删除**。理由见 §5.108：手机端的模型选择
+#    在 5.69 就删了，那一层于是只可能带着过期值，却拥有最高优先级 ——
+#    实测踩过"表改了没生效"，而现场日志只能靠猜。
 
 ASR_MODELS_FILE = "asr-models.json"
 
@@ -889,7 +897,7 @@ def merge_strategy(base, *layers):
     return merged
 
 
-def resolve_strategy(language, cli, table=None, room_profile=None):
+def resolve_strategy(language, cli, table=None):
     """算出一段话该用的**整份识别策略**（模型 + 切句参数 + 名字 + 来源）。
 
     叠加顺序（后面的覆盖前面的）：
@@ -897,7 +905,9 @@ def resolve_strategy(language, cli, table=None, room_profile=None):
       ② 表里的 `default`
       ③ 表里的 `strategies[名字]`（名字来自 ②/languages 的 `strategy` 字段）
       ④ 表里的 `languages[语种]`（行内可以再覆盖任意字段）
-      ⑤ 房间覆盖（手机上报，只影响这一场）
+
+    <p>⚠️ 5.108：参数里的 `room_profile`（原第 ⑤ 层"房间覆盖"）已删除 ——
+    手机端的模型控制在 5.69 就删了，这一层只可能带着过期值却拥有最高优先级。
 
     返回的字典包含：
       · `strategy`：策略名（日志/数据都用它，**做 A/B 时按它分组**）
@@ -961,17 +971,6 @@ def resolve_strategy(language, cli, table=None, room_profile=None):
         if isinstance(lang_entry, dict) and lang_entry.get("segmentation"):
             sources["segmentation"] = label
 
-    room_layer = (room_profile or {}).get("byLang") if isinstance(room_profile, dict) else None
-    if isinstance(room_layer, dict):
-        for key in (tag, language):
-            if key and key in room_layer:
-                # 房间覆盖里可以只写模型，也可以带上 segmentation（手机那张表将来能表达）
-                layered = merge_strategy(layered, room_layer[key])
-                if isinstance(room_layer[key], dict):
-                    sources["model"] = f"房间覆盖 {key}"
-                    if room_layer[key].get("segmentation"):
-                        sources["segmentation"] = f"房间覆盖 {key}"
-                break
 
     layered["strategy"] = name
     layered["sources"] = sources
@@ -1055,11 +1054,14 @@ def _profile_of(entry, base):
     return profile
 
 
-def resolve_asr_profile(language, cli, table=None, room_profile=None):
+def resolve_asr_profile(language, cli, table=None):
     """决定这一段用哪个模型/解码参数。**纯函数**（好测，也不依赖模型）。
 
     返回 `{"model", "compute_type", "beam_size", "source"}`，`source` 写清是
-    房间覆盖 / languages / default / 命令行 哪一级决定的（日志与排障都靠它）。
+    languages / default / 命令行 哪一级决定的（日志与排障都靠它）。
+
+    <p>⚠️ 5.108：参数里的 `room_profile`（原来的"房间覆盖"）已删除 ——
+    手机端的模型控制在 5.69 就删掉了，这一层只可能带着过期值。
     """
     base = {
         "model": (cli or {}).get("model"),
@@ -1067,15 +1069,6 @@ def resolve_asr_profile(language, cli, table=None, room_profile=None):
         "beam_size": (cli or {}).get("beam_size"),
     }
     table = table if isinstance(table, dict) else {}
-
-    by_lang = (room_profile or {}).get("byLang") if isinstance(room_profile, dict) else None
-    if isinstance(by_lang, dict):
-        tag = language_tag(language) or (language if isinstance(language, str) else "")
-        for key in (tag, language):
-            if key and key in by_lang:
-                profile = _profile_of(by_lang[key], base)
-                profile["source"] = f"房间覆盖 {key}"
-                return profile
 
     languages = table.get("languages")
     if isinstance(languages, dict):
@@ -1094,68 +1087,6 @@ def resolve_asr_profile(language, cli, table=None, room_profile=None):
     profile = dict(base)
     profile["source"] = "命令行"
     return profile
-
-
-def describe_room_profile(profile, language):
-    """把「房间侧车对**这一段**意味着什么」说成人话（没有侧车/键不匹配/命中 三种）。"""
-    if not isinstance(profile, dict):
-        return "没有侧车 → 按模型表"
-    by_lang = profile.get("byLang") if isinstance(profile.get("byLang"), dict) else {}
-    tag = language_tag(language) or (language if isinstance(language, str) else "")
-    for key in (tag, language):
-        entry = by_lang.get(key) if key else None
-        if isinstance(entry, dict) and (entry.get("model") or entry.get("engine")):
-            bits = [f"{name}={entry[name]}" for name in MODEL_FIELDS if entry.get(name)]
-            return f"命中 {key} → " + ", ".join(bits)
-    if not by_lang:
-        return "侧车是空的 → 按模型表"
-    # ⚠️ 这一条是 2026-11 实机排查最需要的一句：侧车里明明有东西，就是没有这一段要的语种。
-    #    没有它，日志里"没命中"和"没侧车"长得一模一样，只能靠人工去翻文件。
-    keys = ", ".join(sorted(by_lang))
-    return f"侧车里只有 [{keys}]，这一段要的是 {tag or language} → **没匹配上**，按模型表"
-
-
-def _note_room_profile(room, language, profile, notes):
-    """侧车状态发生变化时才打一行（每段都打会淹掉日志）。
-
-    `notes` 是调用方持有的 dict：room → 上一次已报告的说明。
-    """
-    if notes is None or not room:
-        return
-    note = describe_room_profile(profile, language)
-    if notes.get(room) == note:
-        return
-    notes[room] = note
-    print(f"[识别] 房间 {room} 的模型请求：{note}", file=sys.stderr, flush=True)
-
-
-def read_room_asr_profile(data_dir, room, cache=None):
-    """读"这个房间想用哪些模型"的侧车（relay 按手机上报写的）。
-
-    <p>按 mtime 缓存：每段都读文件是没必要的开销，而"改了立刻生效"又很重要
-    （用户正拿着手机 A/B 换模型）。
-    """
-    if not data_dir or not room:
-        return None
-    path = os.path.join(str(data_dir), "asr-profiles", f"{str(room)}.json")
-    try:
-        stamp = os.stat(path).st_mtime_ns
-    except OSError:
-        return None
-    if cache is not None and cache.get("path") == path and cache.get("stamp") == stamp:
-        return cache.get("value")
-    try:
-        import json as _json
-        with open(path, encoding="utf-8") as handle:
-            value = _json.load(handle)
-    except Exception as error:            # noqa: BLE001
-        print(f"[识别] 房间模型侧车读不了（按模型表处理）：{path}：{error}",
-              file=sys.stderr, flush=True)
-        value = None
-    if cache is not None:
-        cache.clear()
-        cache.update({"path": path, "stamp": stamp, "value": value})
-    return value
 
 
 class AsrEngine:
@@ -2224,9 +2155,6 @@ def run_queue_consumer(args, np, pool):
     last_report = time.monotonic()
     waited_ms_max = 0
     map_stamp = _stamp_of(args.model_map)
-    room_cache = {}
-    # 侧车「对这一段的含义」只在变化时打一行（见 describe_room_profile）
-    room_notes = {}
     # 连丢几段「电平偏低」就喊一次（见 LevelWatch）
     level_watch = LevelWatch(getattr(args, "silence_skip_level", SILENCE_SKIP_RMS))
     while True:
@@ -2252,13 +2180,12 @@ def run_queue_consumer(args, np, pool):
             meta, audio = got
             waited_ms_max = max(waited_ms_max, int(time.time() * 1000) - int(meta.get("queuedAt") or 0))
             language = meta.get("lang") or args.language
-            # 5.40/5.41：这一段用哪份策略 —— 房间覆盖 → languages → strategies[名字] →
-            # default → 命令行（见 resolve_strategy）。策略里既有模型也有切句参数；
+            # 5.40/5.41：这一段用哪份策略 —— languages → strategies[名字] → default →
+            # 命令行（见 resolve_strategy）。策略里既有模型也有切句参数；
             # 切句那半边是切句进程用的，这里只取模型这半边，但**名字要一路带下去**。
-            room_profile = read_room_asr_profile(args.data_dir, meta.get("room"), room_cache)
-            _note_room_profile(meta.get("room"), language, room_profile, room_notes)
+            # ⚠️ 5.108：原来这里还会叠一层"房间侧车"，已整层删除（见 §5.108）。
             strategy = resolve_strategy(language, _cli_profile(args),
-                                        getattr(args, "asr_table", None), room_profile)
+                                        getattr(args, "asr_table", None))
             # 切句那边已经给这一段起过名字（meta["strategy"]）；没给就用这份策略算出来的名字。
             cutStrategy = meta.get("strategy")
             strategyName = str(cutStrategy) if isinstance(cutStrategy, str) and cutStrategy.strip() else strategy["strategy"]
@@ -2580,8 +2507,6 @@ def run_try(args, np, engines):
     pool = ModelPool(engines, max_models=max(1, args.max_models),
                      log=lambda line: print(line, file=sys.stderr, flush=True),
                      device=args.device)
-    room_cache = {}
-
     # ① 收集要试的段
     items = []
     if args.try_queue:
@@ -2624,7 +2549,7 @@ def run_try(args, np, engines):
               f"{len(audio) / float(rate):.2f}s", file=sys.stderr)
         items.append((os.path.basename(args.try_audio), {"lang": args.language, "rate": rate}, audio))
 
-    print(f"[try] 共 {len(items)} 段，语种按**每一段自己的**来（表/侧车/languages 三层照常生效）",
+    print(f"[try] 共 {len(items)} 段，语种按**每一段自己的**来（表 languages/strategies/default 三层照常生效）",
           file=sys.stderr)
     total = {"text": 0, "empty": 0, "failed": 0}
     elapsed_sum = 0.0
@@ -2634,8 +2559,7 @@ def run_try(args, np, engines):
         seconds = len(audio) / float(rate)
         language = meta.get("lang") or args.language
         room = meta.get("room")
-        room_profile = read_room_asr_profile(args.data_dir, room, room_cache)
-        strategy = resolve_strategy(language, _cli_profile(args), table, room_profile)
+        strategy = resolve_strategy(language, _cli_profile(args), table)
         name = str(meta.get("strategy") or strategy.get("strategy"))
         engine_key = str(strategy.get("engine") or DEFAULT_ENGINE)
         print(f"\n[try] ── 第 {index}/{len(items)} 段：{label}"

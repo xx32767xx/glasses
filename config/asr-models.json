@@ -7,7 +7,7 @@
     "识别进程读 model/compute_type/beam_size。但它们**故意放在同一张表里** ——",
     "因为这两件事总是要成对地调（切句窗口变了，模型表现也会变）。",
     "",
-    "优先级（后面覆盖前面）：内置缺省 → default → strategies[名字] → languages[语种] → 房间覆盖（手机上报）",
+    "优先级（后面覆盖前面）：内置缺省 → default → strategies[名字] → languages[语种]",
     "没写的字段一律**继承**上一层，所以只想改 silence_ms 就只写 silence_ms。",
     "",
     "字段说明（切句侧，单位毫秒）：",

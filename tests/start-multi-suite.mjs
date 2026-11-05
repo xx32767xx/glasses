@@ -614,7 +614,7 @@ export async function runStartMultiSuite({ it, check, assert }) {
     check('切句进程也收到 --model-map（策略表两半都要生效）',
       cut.args.includes('--model-map')
       && cut.args[cut.args.indexOf('--model-map') + 1] === auto.modelMap, cut.args.join(' '))
-    check('切句进程收到 --data-dir（房间覆盖要能读到）',
+    check('切句进程收到 --data-dir（试测/体检用；5.108 起不再用于读房间侧车）',
       cut.args.includes('--data-dir')
       && cut.args[cut.args.indexOf('--data-dir') + 1] === auto.dataDir, cut.args.join(' '))
 

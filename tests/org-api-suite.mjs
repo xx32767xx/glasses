@@ -10,13 +10,14 @@
  */
 
 import { mkdir, rm } from 'node:fs/promises'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { VAR_DIR } from '../lib/paths.mjs'
 import { resolveDataDir } from '../lib/store.mjs'
 import { addCategory, emptyCategories, loadLibrary, listLibraries, loadCategories, saveCategories } from '../lib/libraries.mjs'
 import { loadRequests } from '../lib/requests.mjs'
-import { handleOrg, loadSelection, selectionPath, writeAsrProfileSidecar } from '../relay/org-api.mjs'
+import * as api from '../relay/org-api.mjs'
+import { handleOrg, loadSelection, selectionPath } from '../relay/org-api.mjs'
 import { mergeStrategies, parseJsonLoose, setLanguageModel, describeKeyShape } from '../lib/asr-engines.mjs'
 
 const BASE = join(VAR_DIR, 'test', 'org-api-suite')
@@ -351,41 +352,27 @@ export async function runOrgApiSuite({ it, check, assert }) {
     check('404', nope.status === 404, String(nope.status))
   })
 
-  // ── 5.58：手机在 App 里换识别引擎，靠的是"列清单 + 侧车"这两件事 ──────────
+  // ── 5.108：房间侧车整层删除（手机端的模型控制 5.69 就删了）──────────────────
   //
-  // 这一节守两个"不猜"：
-  //   ① 列清单**不编造模型名** —— 服务器没配表就只说"服务器默认"，不能给一个假尺寸名，
-  //      否则手机把它显示成"服务器收到了 large-v3"就是在骗用户；
-  //   ② 手机选的东西必须**真的落到侧车**（engine+model 两个字段）—— 侧车在 Python 那边
-  //      优先级最高，所以"手机选的"一定压过"表里算出来的"，这是这套设计的关键性质。
-  await it('房间侧车能同时记下引擎与模型（手机选的才真到得了识别进程）', () => {
-    const written = writeAsrProfileSidecar(root, 'room-5-58', { 'en-US': 'large-v3-turbo' },
-      { 'en-US': 'whisper' })
-    const path = join(root, 'asr-profiles', 'room-5-58.json')
-    const sidecar = JSON.parse(readFileSync(path, 'utf-8'))
-    check('返回值里两个字段都在', written.applied['en-US']?.model === 'large-v3-turbo'
-      && written.applied['en-US']?.engine === 'whisper', JSON.stringify(written.applied))
-    check('侧车里也是两个字段（Python 按字段叠加，缺的继承上一层）',
-      sidecar.byLang['en-US'].model === 'large-v3-turbo' && sidecar.byLang['en-US'].engine === 'whisper',
-      JSON.stringify(sidecar.byLang))
-
-    const engineOnly = writeAsrProfileSidecar(root, 'room-5-58', null, { 'pt-BR': 'parakeet' })
-    check('只给引擎、不给模型也能落地', engineOnly.applied['pt-BR']?.engine === 'parakeet',
-      JSON.stringify(engineOnly))
-    // ⚠️ 侧车是"这一次开会的**完整**要求"，不是增量补丁：手机每次都把想要的整体报上来，
-    //    所以第二次只报 pt-BR 时 en-US 那条就没了。写死这个语义，免得以后有人当补丁用。
-    check('侧车是整体覆盖（不是增量补丁）',
-      JSON.parse(readFileSync(path, 'utf-8')).byLang['en-US'] === undefined,
-      JSON.stringify(JSON.parse(readFileSync(path, 'utf-8')).byLang))
-
-    const bad = writeAsrProfileSidecar(root, 'room-5-58', { 'en-US': 'bad model!' },
-      { 'en-US': 'Bad Engine' })
-    check('非法模型名/引擎名都被忽略并记录', bad.ignored.length === 2,
-      JSON.stringify(bad))
-    check('全都非法时不写文件（不能让上一条配置被半个请求覆盖）',
-      JSON.parse(readFileSync(path, 'utf-8')).byLang['pt-BR'].engine === 'parakeet')
+  // 为什么删：侧车拥有**最高**优先级，却只可能带着过期内容 —— 实测踩过"服务器表改对了、
+  // 字幕还是按旧模型跑"，而日志上只能靠猜。现在"用哪个模型"只有一个来源：服务器上的表。
+  await it('5.108：手机上报的模型请求被忽略，不再落成任何侧车文件', async () => {
+    check('writeAsrProfileSidecar 已从 org-api 移除（不是改名）',
+      typeof api.writeAsrProfileSidecar === 'undefined',
+      String(typeof api.writeAsrProfileSidecar))
+    const logs = []
+    const result = await handleOrg({
+      root, method: 'POST', path: '/org/interpreter/start',
+      body: { name: '同传', lang: 'pt-BR', targetLang: 'zh-CN', asrModels: { 'pt-BR': 'tiny' } },
+      user: 'alice', role: 'admin', log: (line) => logs.push(String(line)),
+    })
+    check('开会话照常成功（模型请求不影响开会话）', result.status === 200,
+      `${result.status} ${JSON.stringify(result.json)}`)
+    const dir = join(root, 'asr-profiles')
+    check('没有写出任何侧车文件', !existsSync(dir), dir)
+    check('日志里说明这是"忽略"（不然有人会以为生效了）',
+      logs.some((line) => line.includes('忽略')), logs.join(' | '))
   })
-
   await it('策略表合并（只加不覆盖）：运维手改过的配置不能被工具抹掉', () => {
     const existing = {
       version: 2,

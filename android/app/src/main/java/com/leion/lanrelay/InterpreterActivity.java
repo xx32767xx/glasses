@@ -260,7 +260,7 @@ public class InterpreterActivity extends android.app.Activity {
         if ("relay".equals(route.backendId)) {
             if (relay == null) return null;
             // 5.69：「这一场用哪个模型」**不再由手机决定**（见 docs/21 §5.69）——
-            // 归服务器管：`scripts/asr-model-switch.mjs` 改表即生效，或写房间侧车只影响一场。
+            // 归服务器管：`scripts/asr-model-switch.mjs` 改表即生效（5.108 起房间侧车已整层删除，表是唯一决定点）。
             // 手机这边只保留路由表那一列（`asr-routes.json` 的 engine，默认 `server-default`
             // 表示"不指定"），它仍然会作为 asrModels 报给服务器 —— 一个可用的逃生口。
             return new RelayPipelineBackend(relay, myName(), lang, speakLang, route.engine);

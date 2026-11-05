@@ -36,13 +36,13 @@ public final class SessionLang {
     }
 
     /**
-     * 侧车（`asr-profiles/<room>.json`）的键该怎么写。
+     * 「这一场要识别的语种」该用哪种写法（**与识别侧同一套标签**）。
      *
-     * <p>刻意写成**和识别侧同一套标签**：侧车是给识别进程按"这一段的语种"查的，
-     * 键不一致就等于没写。所以这里不做任何"猜"（例如把 `en` 补成 `en-US`），
-     * 只做归一化 —— 猜错比不补更糟。
+     * <p>5.108：这个方法原来叫 `sidecarKey`（写房间侧车的键用的）—— 侧车已整层删除，
+     * 但它算出来的值仍然有意义：会话语种与上传音频的 `?lang=` 都用它。
+     * 所以只改名、不改逻辑：**同一套标签**这件事本身没变（`en` 不会被猜成 `en-US`）。
      */
-    public static String sidecarKey(String startLang, String fallback) {
+    public static String sessionLang(String startLang, String fallback) {
         return choose(startLang, fallback);
     }
 }

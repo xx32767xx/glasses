@@ -2526,32 +2526,29 @@ def main():
     check("没有 languages 也没有 default → 命令行（老行为不变）",
           whisper_stream.resolve_asr_profile("pt-BR", cli, {})["model"] == "large-v3")
 
-    room = {"byLang": {"en-US": {"model": "small"}}}
-    overridden = whisper_stream.resolve_asr_profile("en-US", cli, table, room)
-    check("房间覆盖优先于服务器表（手机 A/B 只影响这一场）", overridden["model"] == "small", str(overridden))
-    check("房间覆盖的理由写清是房间", "房间覆盖" in overridden["source"], overridden["source"])
-    check("房间没提这个语种就回落到表",
-          whisper_stream.resolve_asr_profile("pt-BR", cli, table, room)["model"] == "large-v3")
-
-    # 侧车「对这一段意味着什么」必须能一句话说清（2026-11 实机排查：侧车有、键不对，
-    # 日志里和"没有侧车"长得一模一样，只能人工翻文件）
-    describe = whisper_stream.describe_room_profile
-    check("没有侧车时说明按模型表", "没有侧车" in describe(None, "en-US"))
-    check("侧车命中时把命中的字段打出来", "命中 en-US" in describe(room, "en-US")
-          and "model=small" in describe(room, "en-US"))
-    mismatched = describe({"byLang": {"zh-CN": {"model": "tiny"}}}, "en-US")
-    check("侧车有内容但键不对时**明说没匹配上**，并列出它有哪些键",
-          "没匹配上" in mismatched and "zh-CN" in mismatched and "en-US" in mismatched, mismatched)
-    check("Whisper 的短码也能命中（en → en-US 那格）",
-          "命中" in describe({"byLang": {"en-US": {"model": "tiny"}}}, "en"))
-    check("空侧车不等于没匹配（说的是「侧车是空的」）",
-          "空的" in describe({"byLang": {}}, "en-US"), describe({"byLang": {}}, "en-US"))
-    notes = {}
-    whisper_stream._note_room_profile("room-1", "en-US", {"byLang": {"zh-CN": {"model": "tiny"}}}, notes)
-    first = notes.get("room-1", "")
-    whisper_stream._note_room_profile("room-1", "en-US", {"byLang": {"zh-CN": {"model": "tiny"}}}, notes)
-    check("同一状态只记一次（每段都打会把日志淹掉）", first != "" and notes["room-1"] == first)
-
+    # ⚠️ 5.108：「房间覆盖」那一层**整层删除**了（手机端的模型控制在 5.69 就删了，
+    #    侧车只可能带着过期值却拥有最高优先级 —— 实测踩过"表改了没生效"）。
+    #    这几条断言是"真的没了"，不是"暂时不生效"：
+    check("房间侧车的读取函数已删除（读侧车的路只剩表一条）",
+          not hasattr(whisper_stream, "read_room_asr_profile")
+          and not hasattr(whisper_stream, "describe_room_profile")
+          and not hasattr(whisper_stream, "_note_room_profile"))
+    check("resolve_strategy / resolve_asr_profile 都不再收 room_profile 参数",
+          "room_profile" not in inspect.signature(whisper_stream.resolve_strategy).parameters
+          and "room_profile" not in inspect.signature(whisper_stream.resolve_asr_profile).parameters,
+          str(list(inspect.signature(whisper_stream.resolve_strategy).parameters)))
+    try:
+        whisper_stream.resolve_strategy("en-US", cli, table,
+                                        {"byLang": {"en-US": {"model": "small"}}})
+        extra_arg_error = False
+    except TypeError:
+        extra_arg_error = True
+    check("多传第四个参数会报错（不静默忽略，免得有人以为还能用）", extra_arg_error)
+    # 注释里留一句"这里原来是什么"是有意为之（不然下次有人会把它加回来），
+    # 所以要查的是**代码里不再有那个字符串** —— 路径是拼出来的，没有字面量就拼不出来。
+    whisper_src = inspect.getsource(whisper_stream)
+    check("代码里不再有 asr-profiles 这个路径字面量（删干净，不是只删调用）",
+          '"asr-profiles"' not in whisper_src and "'asr-profiles'" not in whisper_src)
     # 模型池：超过上限要淘汰最久没用的（而不是无限加载，也不是一直重载同一个）
     # 5.50 起池子按「引擎 + 模型」取用，所以这里用一个假引擎来验 LRU（不碰 whisper）。
     loaded = []
@@ -3325,11 +3322,14 @@ def main():
     check("非法数值被忽略（不会把 0 或字符串当成参数）",
           bad_numbers["segmentation"]["silence_ms"] == 800
           and bad_numbers["segmentation"]["max_speech_ms"] == 30000, str(bad_numbers["segmentation"]))
-    room_model = whisper_stream.resolve_strategy(
-        "en-US", cli5, strategy_table, {"byLang": {"en-US": {"model": "small"}}})
-    check("房间覆盖只改模型，切句仍来自策略",
-          room_model["model"] == "small" and room_model["segmentation"]["silence_ms"] == 650,
-          f"{room_model['model']} / {room_model['segmentation']['silence_ms']}")
+    # 5.108：原来这里验的是"房间覆盖只改模型、切句仍来自策略"。侧车整层删除后，
+    # 换成验"languages 行里只写 model 时，切句仍来自策略"（同一类语义，只是不再有房间这一层）。
+    lang_model_only = whisper_stream.resolve_strategy(
+        "en-US", cli5, dict(strategy_table, languages={"en-US": {"strategy": "en-fast", "model": "small"}}))
+    check("语种行里只写模型时，切句仍来自策略",
+          lang_model_only["model"] == "small"
+          and lang_model_only["segmentation"]["silence_ms"] == 650,
+          f"{lang_model_only['model']} / {lang_model_only['segmentation']['silence_ms']}")
     described_strategies = "\n".join(whisper_stream.describe_strategies(strategy_table))
     check("describe_strategies 摊出策略名与语种指向",
           "en-fast" in described_strategies and "en-US" in described_strategies, described_strategies)
