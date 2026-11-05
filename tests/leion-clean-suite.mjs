@@ -80,9 +80,13 @@ export async function runLeionCleanSuite({ it, check }) {
     check('applyPlan 之后旧的没了、新的还在',
       applied.removed === 2 && left.length === 1 && left[0] === 'fresh.pcm', JSON.stringify(left))
 
-    // 阈值 0 = 不按时间筛（全清），用来验"应急"那条路
+    // 阈值 0 = 不按时间筛（全清），用来验"应急"那条路。
+    // 这里只断言"刚写的那个也在里面"，不数总数：`var/tmp` 是仓库公共目录，
+    // 别的东西（比如测试自己的日志）躺在里面时，"恰好 1 个"会变成假失败。
     const all = collectPlan({ dataDir: base, olderThanDays: 0 })
-    check('--older-than 0 会把剩下的也列进来', all.plan.flatMap(i => i.files).length === 1,
+    const allFiles = all.plan.flatMap(i => i.files)
+    check('--older-than 0 会把剩下的（刚写的）也列进来',
+      allFiles.some((one) => one.endsWith('fresh.pcm')),
       JSON.stringify(all.plan.map(i => i.files)))
 
     rmSync(base, { recursive: true, force: true })
