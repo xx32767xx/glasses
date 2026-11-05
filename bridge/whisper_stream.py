@@ -446,17 +446,24 @@ def _write_segment(queue_dir, tag, samplerate, audio, np, language=None, speaker
     return base
 
 
-def _new_segmenter(args, np, segmentation=None):
+def _new_segmenter(args, np, segmentation=None, rms_threshold=None):
     """按当前参数造一个切句器（一路音频一个：各自的能量统计必须独立）。
 
     <p>5.41：`segmentation` 给了就按它（来自识别策略）；没给就沿用命令行那套 ——
     所以"不配策略表"的行为与以前一模一样。
+
+    <p>5.109：`rms_threshold` 也能由策略表给（"切句侧的电平门槛"）。给了就用它，
+    没给才用命令行 `--rms-threshold` —— 这样"说话轻"的场景可以在电脑上按语种调，
+    而不用重启整条管线。
     """
     seg = dict(SEGMENTATION_DEFAULTS)
     seg.update(_numbers_or_skip(segmentation, SEGMENTATION_FIELDS))
+    threshold = args.rms_threshold
+    if isinstance(rms_threshold, (int, float)) and rms_threshold > 0:
+        threshold = float(rms_threshold)
     return UtteranceSegmenter(
         args.samplerate, args.block_ms, seg["silence_ms"],
-        seg["min_speech_ms"], seg["max_speech_ms"], args.rms_threshold, args.preroll_ms, np,
+        seg["min_speech_ms"], seg["max_speech_ms"], threshold, args.preroll_ms, np,
         adaptive=args.adaptive, rms_floor=args.rms_floor, noise_multiplier=args.noise_multiplier,
         short_utterance_ms=seg["short_utterance_ms"], short_silence_ms=seg["short_silence_ms"],
         cut_pause_ms=seg["cut_pause_ms"],
@@ -538,12 +545,18 @@ def run_segment_producer_dir(args, np):
         }, table)
 
     def segmenter_key(strategy):
-        return tuple(strategy["segmentation"].get(key) for key in SEGMENTATION_FIELDS)
+        """切句器的"身份"：这些值任何一个变了就得重造一个。
+
+        <p>5.109：把 `rms_threshold`（电平门槛）也算进去 —— 它决定"算不算在说话"，
+        改了却不重造，表里的新值就只对**新开的**那一路生效，而现场看到的是"改了没反应"。
+        """
+        key = tuple(strategy["segmentation"].get(field) for field in SEGMENTATION_FIELDS)
+        return key + (strategy.get("rms_threshold"),)
 
     def make_segmenter(strategy):
         """按策略里的切句参数造切句器（一路一个：能量统计必须独立）。"""
-        seg = strategy["segmentation"]
-        return _new_segmenter(args, np, segmentation=seg)
+        return _new_segmenter(args, np, segmentation=strategy["segmentation"],
+                              rms_threshold=strategy.get("rms_threshold"))
 
     def track_of(name):
         """该说话人的那一路（第一次见到就开跟）。"""
@@ -844,6 +857,12 @@ SEGMENTATION_FIELDS = (
 MODEL_FIELDS = ("engine", "model", "compute_type", "beam_size")
 DEFAULT_ENGINE = "whisper"
 
+# 5.109：两个"电平"旋钮。放在**档案这一层**（不是 segmentation 里面），
+# 因为 segmentation 那一组统一按整数解析，而这两个是小数。
+#   · `silence_skip_level`：识别侧，解码前按电平丢弃的门槛
+#   · `rms_threshold`     ：切句侧，"算不算在说话"的门槛
+LEVEL_FIELDS = ("silence_skip_level", "rms_threshold")
+
 # 命令行没给值时的缺省（与 parse_args 的 default 保持一致；表里没写就落在这里）
 SEGMENTATION_DEFAULTS = {
     "silence_ms": 800,
@@ -970,6 +989,45 @@ def resolve_strategy(language, cli, table=None):
             sources["model"] = label
         if isinstance(lang_entry, dict) and lang_entry.get("segmentation"):
             sources["segmentation"] = label
+
+
+    # ── 5.109：两个"电平"旋钮也随策略下来 ────────────────────────────────
+    #
+    # 为什么要放进表：这两个值的调法**跟语种走**（葡语说话轻、中文正常），
+    # 而且它们是现场最常被问"能不能改"的两个 —— 放在表里就自动获得
+    # "改完下一段生效、不用重启"这条性质（识别侧按 mtime 热读）。
+    #
+    #   · `silence_skip_level`：**识别侧**，"解码前先按电平丢掉"的门槛（whisper 那条路）
+    #   · `rms_threshold`     ：**切句侧**，"算不算在说话"的门槛（决定切不切得出来）
+    #
+    # 写了非法值（非数字/≤0）就**忽略这一项**并把原因记在 sources 里 ——
+    # 不让一个打错的字段把整份策略变成另一种行为。
+    tuned = {}
+    for label, layer in (
+        ("表 default", default_layer),
+        (f"策略 {name}", named if isinstance(named, dict) else {}),
+        (f"languages.{tag or language}", lang_entry if isinstance(lang_entry, dict) else {}),
+    ):
+        for key in LEVEL_FIELDS:
+            if isinstance(layer, dict) and layer.get(key) not in (None, ""):
+                tuned[key] = label
+    for key in LEVEL_FIELDS:
+        raw = layered.get(key)
+        if raw is None or raw == "":
+            layered.pop(key, None)
+            continue
+        try:
+            number = float(raw)
+        except (TypeError, ValueError):
+            layered.pop(key, None)
+            sources[key] = f"{tuned.get(key, '?')} 里写了个非法值 {raw!r}，已忽略"
+            continue
+        if number <= 0:
+            layered.pop(key, None)
+            sources[key] = f"{tuned.get(key, '?')} 里写的 {raw!r} ≤ 0，已忽略"
+            continue
+        layered[key] = number
+        sources[key] = tuned.get(key, "?")
 
 
     layered["strategy"] = name
@@ -1177,11 +1235,16 @@ class WhisperEngine(AsrEngine):
     def transcribe(self, handle, audio, language, profile=None):
         model, _compute = handle
         beam = (profile or {}).get("beam_size") or self.args.beam_size
+        # 5.109：电平门槛可以按策略给（表里写了就用表里的，没写才用命令行的）。
+        # 这样"说话轻"的场景不用重启整条管线 —— 改表下一段就生效。
+        floor = (profile or {}).get("silence_skip_level")
+        if not isinstance(floor, (int, float)) or floor <= 0:
+            floor = self.args.silence_skip_level
         text, empty, reason, overrode, kind, resolved_language = transcribe(
             model, audio, language,
             self.args.min_logprob, self.args.no_speech_prob,
             beam_size=beam,
-            silence_floor=self.args.silence_skip_level,
+            silence_floor=floor,
             hint_text=None if self.args.no_prompt else prompt_for(language, self.args.initial_prompt),
             context_text=None,
             do_normalize=not self.args.no_normalize,
@@ -2266,7 +2329,10 @@ def run_queue_consumer(args, np, pool):
                       f"（耗时 {elapsed:.2f}s）]",
                       file=sys.stderr, flush=True)
                 # 5.72：连丢到第 3 段就喊一次（只在"电平偏低"那种上喊，见 LevelWatch）
-                advisory = level_watch.note(meta.get("room"), reason)
+                # 5.109：门槛按这一段的策略算（表里没写才用命令行那个值）——
+                # 否则"表里调了 silence_skip_level"和这条提示会各说一套。
+                advisory = level_watch.note(meta.get("room"), reason,
+                                            threshold=profile.get("silence_skip_level"))
                 if advisory:
                     print(f"[识别] {advisory}", file=sys.stderr, flush=True)
             else:
@@ -2567,6 +2633,14 @@ def run_try(args, np, engines):
         print(f"[try]    解析：策略 {name} → 引擎 {engine_key}／模型 "
               f"{strategy.get('model') or '（引擎缺省）'}"
               f"（模型来自 {strategy.get('sources', {}).get('model') or '?'}）", file=sys.stderr)
+        # 5.109：两个"电平"旋钮也打出来 —— 试测的目的常常就是"这个门槛对不对"
+        tuned = []
+        for key, label in zip(LEVEL_FIELDS, ("识别侧", "切句侧")):
+            if strategy.get(key) is not None:
+                tuned.append(f"{label} {key}={strategy[key]}"
+                             f"（来自 {strategy.get('sources', {}).get(key) or '?'}）")
+        if tuned:
+            print("[try]    电平门槛：" + "；".join(tuned), file=sys.stderr)
         level = float(np.sqrt(np.mean(np.square(audio)))) if len(audio) else 0.0
         peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
         print(f"[try]    电平：RMS {level:.4f} 峰值 {peak:.4f}"
@@ -3030,8 +3104,14 @@ class LevelWatch:
         self.counts.pop(room, None)
         self.levels.pop(room, None)
 
-    def note(self, room, reason):
-        """记一次丢弃；到阈值返回提示文本（已提示过就返回 None）。"""
+    def note(self, room, reason, threshold=None):
+        """记一次丢弃；到阈值返回提示文本（已提示过就返回 None）。
+
+        <p>5.109：`threshold` 可以每段不同（来自策略表）。只影响**提示里写哪个门槛**，
+        计数与"每房间只喊一次"的语义不变 —— 否则换了门槛之后那句建议会写得对不上。
+        """
+        if threshold is not None:
+            self.threshold = threshold
         if room is None or not isinstance(reason, str):
             return None
         if not reason.startswith("电平偏低"):

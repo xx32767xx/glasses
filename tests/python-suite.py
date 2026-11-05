@@ -3334,6 +3334,62 @@ def main():
     check("describe_strategies 摊出策略名与语种指向",
           "en-fast" in described_strategies and "en-US" in described_strategies, described_strategies)
 
+    # ⚠️ 5.109：两个"电平"旋钮也要能像模型一样在电脑上控制（用户原话：
+    #    「切句间隔 识别的电平阈值 能不能像模型那样 可以在电脑上手动控制？」）。
+    #    做法是把它们放进同一张表：改完下一段生效、不用重启、且能按语种覆盖。
+    tuning_table = {
+        "default": {"model": "large-v3", "silence_skip_level": 0.02, "rms_threshold": 0.01},
+        "strategies": {"pt-light": {"silence_skip_level": 0.008}},
+        "languages": {"pt-BR": {"strategy": "pt-light", "rms_threshold": "0.015"}},
+    }
+    tuned_pt = whisper_stream.resolve_strategy("pt-BR", cli5, tuning_table)
+    check("识别侧电平门槛能写在策略层的任意一层（策略里写了就用策略的）",
+          tuned_pt["silence_skip_level"] == 0.008, str(tuned_pt.get("silence_skip_level")))
+    check("切句侧门槛能从 languages 行覆盖（字符串数字也认）",
+          tuned_pt["rms_threshold"] == 0.015, str(tuned_pt.get("rms_threshold")))
+    check("来源写清是**哪一层**给的值（不然「改了没生效」又只能猜）",
+          "策略 pt-light" in str(tuned_pt["sources"].get("silence_skip_level"))
+          and "languages.pt-BR" in str(tuned_pt["sources"].get("rms_threshold")),
+          str({k: tuned_pt["sources"].get(k) for k in ("silence_skip_level", "rms_threshold")}))
+    tuned_zh = whisper_stream.resolve_strategy("zh-CN", cli5, tuning_table)
+    check("别的语种不受影响（还是 default 层的值）",
+          tuned_zh["silence_skip_level"] == 0.02 and tuned_zh["rms_threshold"] == 0.01,
+          f"{tuned_zh.get('silence_skip_level')} / {tuned_zh.get('rms_threshold')}")
+    check("都没写时**不出现**这两个键（表明「用命令行缺省」，而不是悄悄给 0）",
+          "silence_skip_level" not in whisper_stream.resolve_strategy("ja-JP", cli5, {}),
+          str(whisper_stream.resolve_strategy("ja-JP", cli5, {})))
+    bad_tuning = whisper_stream.resolve_strategy("en-US", cli5, {
+        "default": {"silence_skip_level": "abc", "rms_threshold": -1}})
+    check("写错（非数字 / ≤0）就忽略这一项，并在 sources 里说明",
+          "silence_skip_level" not in bad_tuning and "rms_threshold" not in bad_tuning
+          and "已忽略" in str(bad_tuning["sources"].get("silence_skip_level")),
+          str(bad_tuning["sources"]))
+
+    # 引擎侧要用策略里的门槛（不是永远用命令行那个）—— 否则"表里调了"和实际行为对不上。
+    # 用前面那个"只认两字母码"的假模型走一遍真路径：同一段 0.01 电平的音频，
+    # 命令行门槛 0.02 会丢、策略里给 0.006 就该出字。
+    tuning_engine = whisper_stream.WhisperEngine(None, types.SimpleNamespace(
+        beam_size=5, min_logprob=-1.0, no_speech_prob=0.9, silence_skip_level=0.02,
+        no_prompt=True, initial_prompt=None, no_normalize=True, lang_candidates=None))
+    quiet_audio = np.full(16000, 0.01, dtype=np.float32)
+    by_cli = tuning_engine.transcribe((_StrictWhisperModel(), "int8"), quiet_audio, "pt-BR", {})
+    by_table = tuning_engine.transcribe((_StrictWhisperModel(), "int8"), quiet_audio, "pt-BR",
+                                        {"silence_skip_level": 0.006})
+    check("命令行门槛 0.02 会把 0.01 的段判成静音（对照）",
+          by_cli["empty"] is True and "电平" in str(by_cli["reason"]), str(by_cli))
+    check("策略表里写 0.006 → 同一条音频照样出字（表真的生效了）",
+          by_table["empty"] is False and by_table["text"] == "bom dia", str(by_table))
+
+    # 切句侧：门槛进 segmenter，而且要能触发"重造切句器"（不然改了只对新一路生效）
+    fence_args = types.SimpleNamespace(
+        samplerate=16000, block_ms=100, rms_threshold=0.01, preroll_ms=200, adaptive=True,
+        rms_floor=0.004, noise_multiplier=4.0)
+    low = whisper_stream._new_segmenter(fence_args, np, segmentation=None, rms_threshold=0.02)
+    high = whisper_stream._new_segmenter(fence_args, np, segmentation=None, rms_threshold=None)
+    check("策略里的 rms_threshold 真的进了切句器（0.02 vs 命令行 0.01）",
+          abs(low.rms_threshold - 0.02) < 1e-9 and abs(high.rms_threshold - 0.01) < 1e-9,
+          f"{low.rms_threshold} / {high.rms_threshold}")
+
     # ⚠️ 5.97 现场事故：启动那行「模型表：…」只打印 languages[语种].model，
     #    于是"语种里钉的是**策略**"（pt-BR → pt-funasr）被显示成 `pt-BR=（沿用 default）`。
     #    用户看着这行以为葡语云端配置没了 —— 日志说错话比不打印更糟，它把人支到错误方向。

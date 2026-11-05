@@ -23,20 +23,28 @@
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  ENGINE_LANGUAGES, loadStrategyTable, parseJsonLoose, resolveProfile, setLanguageModel,
+  ENGINE_LANGUAGES, loadStrategyTable, parseJsonLoose, resolveEffective, resolveProfile,
+  setLanguageModel, setLanguageSegmentation, setLanguageTuning,
 } from '../lib/asr-engines.mjs'
 
 const MODEL_NAME = /^[A-Za-z0-9._/:-]{1,160}$/
 const STRATEGY_NAME = /^[a-z0-9_-]{1,32}$/
 
 function parseArgs(argv) {
-  const args = { dataDir: '', lang: 'en-US', model: null, strategy: null }
+  const args = { dataDir: '', lang: 'en-US', model: null, strategy: null,
+    skipLevel: null, rmsLevel: null, clearTuning: false, segmentation: {} }
   for (let index = 0; index < argv.length; index += 1) {
     const item = argv[index]
     if (item === '--data-dir') args.dataDir = argv[index += 1] ?? ''
     else if (item === '--lang') args.lang = argv[index += 1] ?? ''
     else if (item === '--model') args.model = argv[index += 1] ?? ''
     else if (item === '--strategy') args.strategy = argv[index += 1] ?? ''
+    else if (item === '--skip-level') args.skipLevel = argv[index += 1] ?? ''
+    else if (item === '--rms-level') args.rmsLevel = argv[index += 1] ?? ''
+    else if (item === '--clear-tuning') args.clearTuning = true
+    else if (item === '--silence-ms') args.segmentation.silence_ms = argv[index += 1] ?? ''
+    else if (item === '--min-speech-ms') args.segmentation.min_speech_ms = argv[index += 1] ?? ''
+    else if (item === '--short-silence-ms') args.segmentation.short_silence_ms = argv[index += 1] ?? ''
     else if (item === '--room') {
       // ⚠️ 5.108：房间侧车整层删除，`--room` 随之取消。**必须明确说清**，
       //    否则老脚本/老笔记里的人会以为它只是"暂时不好用"，继续试。
@@ -84,25 +92,38 @@ function main() {
   }
   const table = loaded.table ?? {}
 
-  // 没给 --model 也没给 --strategy：只报告现状
-  if (args.model === null && args.strategy === null) {
+  // 没给任何"要改什么"的参数：只报告现状（含切句与两个电平门槛，5.109）
+  const wantsChange = args.model !== null || args.strategy !== null
+    || args.skipLevel !== null || args.rmsLevel !== null || args.clearTuning
+    || Object.keys(args.segmentation).length > 0
+  if (!wantsChange) {
     console.log(`数据目录 ${root}`)
     for (const lang of ENGINE_LANGUAGES) {
       const entry = table.languages?.[lang]
       const named = typeof entry === 'object' && entry !== null ? entry.strategy : ''
-      const model = typeof entry === 'object' && entry !== null ? entry.model : entry
-      const profile = resolveProfile(table, lang, named || 'default')
+      const pinnedModel = typeof entry === 'object' && entry !== null ? entry.model : entry
+      const profile = resolveEffective(table, lang, named || 'default')
       const parts = [
         named ? `策略 ${named}` : '策略 default',
         `引擎 ${profile.engine}/${profile.model || '默认'}`,
-        model ? `（直接钉了模型 ${model}）` : '',
+        pinnedModel ? `（直接钉了模型 ${pinnedModel}）` : '',
       ].filter(Boolean)
       console.log(`  · ${lang}：${parts.join('，')}`)
+      // 切句参数与两个电平门槛：现场最常问的就是"现在到底是多少"
+      const segText = Object.entries(profile.segmentation)
+        .map(([key, value]) => `${key}=${value}`).join(' ')
+      const levelText = Object.entries(profile.levels)
+        .map(([key, value]) => `${key}=${value}`).join(' ')
+      console.log(`      切句 ${segText}`)
+      console.log(`      电平 ${levelText || '（命令行缺省：识别 0.02 / 切句 0.01）'}`)
     }
     const strategies = Object.keys(table.strategies ?? {})
     if (strategies.length > 0) console.log(`\n可选策略：${strategies.join(' / ')}`)
     console.log('\n换模型：--model tiny（还原：--model ""）'
-      + '\n换引擎：--strategy en-parakeet（parakeet / tencent 这类只能这样切）')
+      + '\n换引擎：--strategy en-parakeet（parakeet / tencent 这类只能这样切）'
+      + '\n调切句：改表里该语种的 segmentation（例如 --silence-ms 650）'
+      + '\n调电平：--skip-level 0.006（识别侧）／--rms-level 0.015（切句侧）'
+      + '\n全撤掉：--clear-tuning')
     return 0
   }
 
@@ -142,6 +163,37 @@ function main() {
     next = pinned.table
     reports.push(`${args.lang} 的模型：${pinned.before || '（按策略表/default）'} → `
       + `${pinned.after || '（还原成策略表/default）'}`)
+  }
+
+  // ③ 调"电平门槛"（5.109）：和模型一样写在表里，改完下一段生效
+  const tuning = {}
+  if (args.skipLevel !== null) tuning.silence_skip_level = args.skipLevel
+  if (args.rmsLevel !== null) tuning.rms_threshold = args.rmsLevel
+  if (args.clearTuning) {
+    tuning.silence_skip_level = null
+    tuning.rms_threshold = null
+  }
+  if (Object.keys(args.segmentation).length > 0) {
+    const applied = setLanguageSegmentation(next, args.lang, args.segmentation)
+    if (applied.problems.length > 0) {
+      for (const problem of applied.problems) console.error(problem)
+      return 2
+    }
+    next = applied.table
+    for (const key of applied.written) {
+      reports.push(`${args.lang} 的切句 ${key} → ${args.segmentation[key]}ms`)
+    }
+  }
+  if (Object.keys(tuning).length > 0) {
+    const applied = setLanguageTuning(next, args.lang, tuning)
+    if (applied.problems.length > 0) {
+      // 越界/写错**直接报错**：这种值错一个数量级的表现是"一句字幕都没有"，最难查
+      for (const problem of applied.problems) console.error(problem)
+      return 2
+    }
+    next = applied.table
+    for (const key of applied.written) reports.push(`${args.lang} 的 ${key} → ${tuning[key]}`)
+    for (const key of applied.removed) reports.push(`${args.lang} 的 ${key} 已撤掉（回到 default/命令行）`)
   }
 
   if (existsSync(tablePath)) {

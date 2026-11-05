@@ -18,7 +18,11 @@ import { addCategory, emptyCategories, loadLibrary, listLibraries, loadCategorie
 import { loadRequests } from '../lib/requests.mjs'
 import * as api from '../relay/org-api.mjs'
 import { handleOrg, loadSelection, selectionPath } from '../relay/org-api.mjs'
-import { mergeStrategies, parseJsonLoose, setLanguageModel, describeKeyShape } from '../lib/asr-engines.mjs'
+import {
+  mergeStrategies, parseJsonLoose, setLanguageModel, describeKeyShape,
+  setLanguageTuning, setLanguageSegmentation, clearLanguageTuning, resolveEffective,
+  SEGMENTATION_DEFAULTS,
+} from '../lib/asr-engines.mjs'
 
 const BASE = join(VAR_DIR, 'test', 'org-api-suite')
 const ENTRY = (zh, pt) => ({ zh, pt })
@@ -463,6 +467,61 @@ export async function runOrgApiSuite({ it, check, assert }) {
     check('没给前缀要求时不瞎猜开头（腾讯云 SecretId 是 AKID，不是 sk-）',
       describeKeyShape('AKIDtest0001', { expectPrefix: 'AKID' }).notes.length === 0
       && describeKeyShape('AKIDtest0001').notes.length === 0)
+  })
+
+  await it('5.109：电平门槛与切句参数也能在电脑上调（跟模型一样写进表）', () => {
+    const table = {
+      version: 2,
+      default: { model: 'large-v3', segmentation: { silence_ms: 800 }, silence_skip_level: 0.02 },
+      strategies: { 'en-fast': { segmentation: { silence_ms: 650 } } },
+      languages: { 'en-US': { strategy: 'en-fast' } },
+    }
+    // ① 两个电平门槛写进 languages[语种]（优先级最高，只影响这一门）
+    const tuned = setLanguageTuning(table, 'pt-BR', {
+      silence_skip_level: 0.006, rms_threshold: 0.015,
+    })
+    check('两个门槛都写进去了', tuned.written.length === 2, JSON.stringify(tuned.written))
+    check('原表没被改（纯函数）', table.languages['pt-BR'] === undefined)
+    check('写的是 numbers 而不是字符串（Python 那边按 float 解析）',
+      tuned.table.languages['pt-BR'].silence_skip_level === 0.006,
+      JSON.stringify(tuned.table.languages['pt-BR']))
+
+    // ② 越界必须报错，不能悄悄夹到边界 —— 错一个数量级的表现是"一句字幕都没有"
+    const tooBig = setLanguageTuning(table, 'pt-BR', { silence_skip_level: 0.2 })
+    check('0.2 这种"多打一个 0"的值直接报错', tooBig.problems.length === 1
+      && tooBig.problems[0].includes('超出合理范围'), JSON.stringify(tooBig.problems))
+    const notNumber = setLanguageTuning(table, 'pt-BR', { rms_threshold: 'abc' })
+    check('不是数字也报错', notNumber.problems.length === 1, JSON.stringify(notNumber.problems))
+    const unknown = setLanguageTuning(table, 'pt-BR', { beam_size: 5 })
+    check('不是可调字段也报错（不乱写）', unknown.problems.length === 1, JSON.stringify(unknown.problems))
+
+    // ③ 切句参数写进 segmentation（单位是毫秒）
+    const seg = setLanguageSegmentation(table, 'pt-BR', { silence_ms: 650, min_speech_ms: 300 })
+    check('切句参数写进 segmentation', seg.table.languages['pt-BR'].segmentation.silence_ms === 650
+      && seg.table.languages['pt-BR'].segmentation.min_speech_ms === 300,
+      JSON.stringify(seg.table.languages['pt-BR']))
+    const badSeg = setLanguageSegmentation(table, 'pt-BR', { silence_ms: 5 })
+    check('把毫秒写成秒（5）会报错，不是默默接受', badSeg.problems.length === 1,
+      JSON.stringify(badSeg.problems))
+
+    // ④ 实际生效值：引擎/模型 + 切句 + 门槛，一次算全（"现在到底是多少"要能一眼看到）
+    const merged = setLanguageSegmentation(seg.table, 'pt-BR', { silence_ms: 650 })
+    const withLevels = setLanguageTuning(merged.table, 'pt-BR', { silence_skip_level: 0.006 })
+    const effective = resolveEffective(withLevels.table, 'pt-BR', 'en-fast')
+    check('生效值里切句来自 languages 覆盖（650，而不是策略的缺省）',
+      effective.segmentation.silence_ms === 650, JSON.stringify(effective.segmentation))
+    check('生效值里两个门槛都在', effective.levels.silence_skip_level === 0.006,
+      JSON.stringify(effective.levels))
+    check('撤掉之后回到 default 层的值（clearLanguageTuning）',
+      resolveEffective(clearLanguageTuning(withLevels.table, 'pt-BR').table, 'pt-BR', 'en-fast')
+        .levels.silence_skip_level === 0.02)
+    // ⑤ 缺省值必须与 Python 的 SEGMENTATION_DEFAULTS 逐字一致（两边各写一份就得对齐）
+    check('切句缺省值与 Python 一致（800 / 500 / 30000 / 800 / 1100 / 200）',
+      SEGMENTATION_DEFAULTS.silence_ms === 800 && SEGMENTATION_DEFAULTS.min_speech_ms === 500
+      && SEGMENTATION_DEFAULTS.max_speech_ms === 30000
+      && SEGMENTATION_DEFAULTS.short_utterance_ms === 800
+      && SEGMENTATION_DEFAULTS.short_silence_ms === 1100
+      && SEGMENTATION_DEFAULTS.cut_pause_ms === 200, JSON.stringify(SEGMENTATION_DEFAULTS))
   })
 
   await it('服务器端换模型（setLanguageModel）：改表就生效，别动别的字段', () => {
