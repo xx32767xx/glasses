@@ -494,6 +494,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                         for (int i = 0; i < missing.length; i++) missing[i] = missArray.optString(i, "");
                     }
                     applyFrame(frame.optString("text", ""), lines, frame.optString("source", ""),
+                            // 5.123：源语言要传下去 —— 用来判"这一帧是不是我自己那句话的译文"
+                            frame.optString("sourceLang", ""),
                             frame.optBoolean("partial", false), missing,
                             // 4.96：用 LanClient.speakerNameOf —— 它把 JSON null 当成"没有"，
                             // 不然 optString 会返回字符串 "null"，界面上就出现一个叫 null 的发言人
@@ -1490,7 +1492,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                         String source, String sourceLang, boolean partial, String[] termsMissing,
                         String speakerName, String notice) {
         // 5.00：这里的 `lang` 就是"这一帧译成哪种语言"（relay 的帧字段），直接传给 applyFrame
-        ui.post(() -> applyFrame(text, lines, source, partial, termsMissing, speakerName, lang, notice));
+        ui.post(() -> applyFrame(text, lines, source, sourceLang, partial, termsMissing,
+                speakerName, lang, notice));
     }
 
     /**
@@ -1501,11 +1504,27 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
      * @param lang        这一帧是**译成哪种语言**的（5.120：三语会议里同一句会产出多份帧，
      *                    勾了的每一份都显示，见 {@link #hearLangs}；空串 = 老服务端，照旧显示）
      */
-    private void applyFrame(String text, String[] lines, String source, boolean partial,
+    private void applyFrame(String text, String[] lines, String source, String sourceLang, boolean partial,
                             String[] termsMissing, String speakerName, String lang, String notice) {
         String target = (text == null || text.isEmpty())
                 ? (lines == null ? "" : String.join("\n", lines)) : text;
         String frameLang = lang == null ? "" : lang.trim();
+        // ── 5.123：**我自己说的那句话，只给我原文** ────────────────────────────────
+        //
+        // 这是产品早就定下的规矩，不是"实现得不够好"：A 说英语、同时想看英语+葡语时，
+        // A 自己的那句话只该显示原文；"英语→葡语"那份译文是**给别人**的。
+        // 服务端也按同一条规矩不发（ws-hub 的 exceptUser），这里再拦一道：
+        // 长轮询那条路拿不到请求者身份，只能靠本机知道"我是谁"。
+        //
+        // 判据：带译文的帧（`lang` 与源语言不同、且有译文内容）+ 发言人就是我自己。
+        // 原文帧（echo）的 `lang` 等于源语言、译文为空，因此不受影响 —— 那正是我该看到的。
+        String fromLang = sourceLang == null ? "" : sourceLang.trim();
+        if (!target.isEmpty() && !frameLang.isEmpty() && !fromLang.isEmpty()
+                && !frameLang.equals(fromLang)
+                && myName != null && !myName.isEmpty()
+                && speakerName != null && speakerName.trim().equals(myName)) {
+            return;
+        }
         // 5.120：按**集合**拦，不是按单个主语言。三语会议里同一句会产出多份译文
         // （中/葡/英各一份），勾了的每一份都该显示 —— 原来拿单个 `hearLang` 比对，
         // 等于把用户勾的其他语种全部丢掉（"勾了几种只显示一种"就是这么来的）。

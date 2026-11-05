@@ -1136,6 +1136,19 @@ export async function startRelay(rawOptions = {}) {
       const fanoutLang = frame.notice !== undefined && frame.notice !== null && frame.notice !== ''
         ? ''
         : String(frame.lang ?? '')
+      // 5.123：**说话人自己不看这句话的译文**（只给他原文帧）。
+      // 这是早就定下的产品规矩；原来漏了这一步，于是"我说英语、又勾了葡语"时
+      // 会把"我这句话的葡语译文"推回给我 —— 那份译文是给别人的。
+      // 原文帧（echo）除外：那正是他自己该看到的东西。
+      //
+      // ⚠️ 翻译官会话（`kind = 'interpreter'`）**不能**这么排除：那条路上
+      // 手机上传的是**对方**的语音，"上传者"根本不是说话人 —— 排掉等于把他唯一
+      // 需要的译文删了（他自己说的那句反而没有译文帧）。
+      const meIsSpeaker = (attribution.roomId ?? '') !== ''
+        && audioRoomKind(attribution.roomId) !== 'interpreter'
+      const exceptUser = frame.echo === true || meIsSpeaker !== true
+        ? ''
+        : String(frame.speakerName ?? '')
       wsHub.broadcastFrame({
         type: 'frame',
         seq: state.seq,
@@ -1144,7 +1157,7 @@ export async function startRelay(rawOptions = {}) {
         roomId: attribution.roomId ?? null,
         roomSeq: attribution.roomId === null ? null : (state.seqByRoom.get(attribution.roomId) ?? null),
         lang: fanoutLang,
-      }, attribution.roomId ?? null, fanoutLang)
+      }, attribution.roomId ?? null, fanoutLang, exceptUser)
     }
   }
 

@@ -200,11 +200,25 @@ export async function runEnglishSuite({ it, check, assert }) {
     check('relay 传给 hub 的是"每个人想看的语言集合"（hearByUser），不是他说什么语言',
       /wsHub\.applyRoomLangs\(roomId, hearByUser\)/
         .test(readFileSync(join(process.cwd(), 'relay', 'lan-relay.mjs'), 'utf-8')))
-    check('relay 推帧时带上语言', /attribution\.roomId \?\? null, fanoutLang\)/.test(
+    check('relay 推帧时带上语言', /attribution\.roomId \?\? null, fanoutLang, exceptUser\)/.test(
       readFileSync(join(process.cwd(), 'relay', 'lan-relay.mjs'), 'utf-8')))
     // 提示帧（notice）不是字幕：它讲"这一句为什么没有译文"，必须发给房间里所有人
     check('提示帧不按语言挡（否则最该看到它的人看不到）',
       /frame\.notice[^\n]{0,80}\n?\s*\? ''/.test(readFileSync(join(process.cwd(), 'relay', 'lan-relay.mjs'), 'utf-8')))
+    // 5.123：**说话人自己不看这句话的译文**（只给他原文）。这是早就定下的规矩，
+    // 5.122 那次改"按想看语言扇出"时漏掉了它 —— 于是 A 说英语、勾了葡语，
+    // 就把"自己这句话的葡语译文"推回给自己了。
+    check('hub 支持排除某个用户（exceptUser）',
+      /function broadcastFrame\(payload, roomId = null, lang = null, exceptUser = ''\)/.test(hubSource)
+      && /conn\.user \?\? ''\) === skipUser/.test(hubSource))
+    check('relay 把"这句话的说话人"传下去，原文帧不排除',
+      /frame\.echo === true \|\| meIsSpeaker !== true/
+        .test(readFileSync(join(process.cwd(), 'relay', 'lan-relay.mjs'), 'utf-8')))
+    // ⚠️ 翻译官会话里"上传者"不是说话人（他上传的是对方的语音）：那种房间不能排除，
+    // 否则把用户唯一需要的译文删掉
+    check('翻译官会话不按"上传者"排除',
+      /audioRoomKind\(attribution\.roomId\) !== 'interpreter'/
+        .test(readFileSync(join(process.cwd(), 'relay', 'lan-relay.mjs'), 'utf-8')))
   })
 
   await it('start-multi 把听众语言侧车路径交给大脑（否则大脑没法按语言各译一份）', async () => {
