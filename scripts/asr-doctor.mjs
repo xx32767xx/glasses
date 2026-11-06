@@ -241,6 +241,9 @@ function main() {
   const dashscopeKey = describeKeyShape(process.env.DASHSCOPE_API_KEY, { expectPrefix: 'sk-' })
   const tencentId = describeKeyShape(process.env.TENCENT_ASR_SECRET_ID, { expectPrefix: 'AKID' })
   const tencentKey = describeKeyShape(process.env.TENCENT_ASR_SECRET_KEY)
+  // 5.124：端点现在是**可覆盖**的（离线演练指向本地假服务 / 专线域名）。体检时必须把
+  // 「这次会打到哪」说出来 —— 否则"改了环境变量还在连官方域名"这种错只能靠翻代码发现。
+  const tencentEndpoint = (process.env.TENCENT_ASR_ENDPOINT ?? '').trim()
   /** 一个密钥的体检结论摊成几段字：没设置就说没设置，设置了就说形状与问题（不打印密钥）。 */
   const keyBits = (label, shape) => (shape.present
     ? [`${label} ${shape.shape}`, ...shape.problems, ...shape.notes]
@@ -285,6 +288,7 @@ function main() {
         ...keyBits('secretId（TENCENT_ASR_SECRET_ID）', tencentId),
         ...keyBits('secretKey（TENCENT_ASR_SECRET_KEY）', tencentKey),
         `region=${process.env.TENCENT_ASR_REGION ?? 'ap-shanghai（缺省）'}`,
+        `端点=${tencentEndpoint || 'https://asr.tencentcloudapi.com（缺省）'}`,
       ].join('；'),
       detail: '云端·一句话识别',
     },

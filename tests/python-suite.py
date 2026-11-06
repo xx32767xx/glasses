@@ -2832,6 +2832,224 @@ def main():
           wav[:4] == b"RIFF" and wav[8:12] == b"WAVE" and int.from_bytes(wav[24:28], "little") == 16000,
           wav[:16])
 
+    # ── 5.124：腾讯云这条路**没有密钥也能整条跑一遍** ──────────────────────────
+    #
+    # 为什么值得做：真调用一次要等"我改代码 → 部署 → 用户重启 → 贴日志"一整轮
+    # （docs/25 数了 8~9 轮）。把端点指向本地假服务之后，**能离线验的部分**
+    # —— 签名头、请求体字段、错误分类、退出码 —— 就都固定成断言了；
+    # 等真密钥到位，只剩"腾讯自己怎么说"那一步，而不是"先看看会不会还有别的坑"。
+    heading("腾讯云离线演练（5.124）：本地假端点跑真实 TencentEngine —— 签名/请求体/错误分类/退出码")
+    import http.server as _http
+    import threading as _threading
+
+    class _TencentStub(_http.BaseHTTPRequestHandler):
+        """本地假腾讯端点：把收到的请求记下来，按脚本回 JSON（不联网）。"""
+        status = 200
+        reply = {"Response": {"Result": "olá mundo", "RequestId": "stub-1"}}
+        seen = []
+
+        def do_POST(self):                                          # noqa: N802
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length)
+            _TencentStub.seen.append({"path": self.path,
+                                      "headers": {key.lower(): value for key, value in self.headers.items()},
+                                      "body": body})
+            payload = json.dumps(_TencentStub.reply).encode("utf-8")
+            self.send_response(_TencentStub.status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            return
+
+    _stub_server = _http.ThreadingHTTPServer(("127.0.0.1", 0), _TencentStub)
+    _stub_port = _stub_server.server_address[1]
+    _threading.Thread(target=_stub_server.serve_forever, daemon=True).start()
+    _tencent_env = ("TENCENT_ASR_ENDPOINT", "TENCENT_ASR_SECRET_ID",
+                    "TENCENT_ASR_SECRET_KEY", "TENCENT_ASR_REGION")
+    _saved_tencent_env = {name: os.environ.get(name) for name in _tencent_env}
+    tencent_offline_dir = Path(ROOT / "var" / "test" / "tencent-offline")
+    import shutil as _shutil_tencent
+    _shutil_tencent.rmtree(tencent_offline_dir, ignore_errors=True)
+    tencent_offline_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        os.environ["TENCENT_ASR_ENDPOINT"] = f"http://127.0.0.1:{_stub_port}"
+        os.environ["TENCENT_ASR_SECRET_ID"] = "AKIDoffline"
+        os.environ["TENCENT_ASR_SECRET_KEY"] = "offline-secret"
+        os.environ.pop("TENCENT_ASR_REGION", None)
+        tencent = engines["tencent"]
+
+        offline_url, offline_host = whisper_stream.tencent_endpoint()
+        check("端点能被环境变量覆盖（离线演练的前提），host 与 URL 同源",
+              offline_url == f"http://127.0.0.1:{_stub_port}"
+              and offline_host == f"127.0.0.1:{_stub_port}", f"{offline_url} / {offline_host}")
+        os.environ["TENCENT_ASR_ENDPOINT"] = "asr.tencentcloudapi.com"      # 忘了写 scheme
+        bad_endpoint = ""
+        try:
+            whisper_stream.tencent_endpoint()
+        except RuntimeError as error:
+            bad_endpoint = str(error)
+        check("端点写错形状时当场说清是哪个环境变量（不等到 urllib 抛 URLError）",
+              "TENCENT_ASR_ENDPOINT" in bad_endpoint and "http(s)://" in bad_endpoint, bad_endpoint)
+        os.environ["TENCENT_ASR_ENDPOINT"] = f"http://127.0.0.1:{_stub_port}"
+
+        tencent_handle = tencent.load({}, "cpu")
+        check("给了密钥就能载入（region 缺省 ap-shanghai）",
+              tencent_handle["secret_id"] == "AKIDoffline" and tencent_handle["region"] == "ap-shanghai",
+              str({k: v for k, v in tencent_handle.items() if k != "secret_key"}))
+        offline_audio = np.zeros(16000, dtype=np.float32)
+        offline_audio[800:4800] = 0.2                                  # 0.3 秒"说话"
+        _TencentStub.seen.clear()
+        _TencentStub.status = 200
+        _TencentStub.reply = {"Response": {"Result": "olá mundo", "RequestId": "stub-1"}}
+        offline_outcome = tencent.transcribe(tencent_handle, offline_audio, "pt-BR",
+                                             {"engine": "tencent"})
+        check("假端点回 Result 时照常出字（整条链路跑到解析为止）",
+              offline_outcome["text"] == "olá mundo" and offline_outcome["empty"] is False,
+              str(offline_outcome))
+
+        offline_seen = _TencentStub.seen[0] if _TencentStub.seen else {"headers": {}, "body": b"{}", "path": ""}
+        offline_body = json.loads(offline_seen["body"] or b"{}")
+        import base64 as _b64_tencent
+        offline_data = _b64_tencent.b64decode(offline_body.get("Data") or "")
+        check("请求打到了**覆盖后的**端点根路径（POST /）", offline_seen["path"] == "/", offline_seen["path"])
+        check("签名头齐全且 Host 跟着端点走（签名算的就是这个 host）",
+              offline_seen["headers"].get("host") == f"127.0.0.1:{_stub_port}"
+              and offline_seen["headers"].get("x-tc-action") == "SentenceRecognition"
+              and offline_seen["headers"].get("x-tc-version") == "2019-06-14"
+              and offline_seen["headers"].get("x-tc-region") == "ap-shanghai"
+              and str(offline_seen["headers"].get("authorization") or "").startswith(
+                  "TC3-HMAC-SHA256 Credential=AKIDoffline/"),
+              str({k: v for k, v in offline_seen["headers"].items()
+                   if k in ("host", "x-tc-action", "x-tc-version", "x-tc-region", "authorization")}))
+        check("请求体字段按腾讯文档的形状（EngSerViceType/SourceType/VoiceFormat/UsrAudioKey）",
+              offline_body.get("EngSerViceType") == "16k_pt"
+              and offline_body.get("SourceType") == 1
+              and offline_body.get("VoiceFormat") == "wav"
+              and str(offline_body.get("UsrAudioKey") or "") != "",
+              str({k: v for k, v in offline_body.items() if k != "Data"}))
+        check("Data 是 WAV 容器（RIFF/16k），不是裸 PCM",
+              offline_data[:4] == b"RIFF" and offline_data[8:12] == b"WAVE"
+              and int.from_bytes(offline_data[24:28], "little") == 16000,
+              str(offline_data[:16]))
+        check("DataLen 是**原始字节数**，不是 base64 之后的长度",
+              offline_body.get("DataLen") == len(offline_data)
+              and offline_body.get("DataLen") != len(offline_body.get("Data") or ""),
+              f"DataLen={offline_body.get('DataLen')} wav={len(offline_data)} "
+              f"base64={len(offline_body.get('Data') or '')}")
+        tencent.transcribe(tencent_handle, offline_audio, "en-US", {"engine": "tencent"})
+        check("语种换到英语时引擎编码跟着换成 16k_en（不是沿用上一段）",
+              json.loads(_TencentStub.seen[-1]["body"]).get("EngSerViceType") == "16k_en",
+              str(json.loads(_TencentStub.seen[-1]["body"]).get("EngSerViceType")))
+
+        # ⚠️ 5.124 逮到的真 bug：`--engine tencent` 但没给 `--model` 时，档案里还带着
+        #    whisper 的模型名（large-v3）。照原样发过去，腾讯报"引擎类型不对"——
+        #    而现场那和"密钥错"分不开。所以现在**发请求之前**就拦，并说清怎么改。
+        wrong_code_error = ""
+        try:
+            tencent.engine_code({"model": "large-v3"}, "en-US")
+        except RuntimeError as error:
+            wrong_code_error = str(error)
+        check("model 写成 whisper 的模型名时当场拦下（并说清是 --model 16k_en 的问题）",
+              "引擎编码" in wrong_code_error and "16k_en" in wrong_code_error, wrong_code_error)
+
+        # 权限错误要能"一眼看出该怎么办"：这是 §5.76 真机上唯一见到的错误。
+        _TencentStub.reply = {"Response": {"Error": {
+            "Code": "AuthFailure.UnauthorizedOperation",
+            "Message": "you are not authorized to perform operation (asr:SentenceRecognition) "
+                       "resource (*) has no permission"},
+            "RequestId": "stub-2"}}
+        denied = tencent.transcribe(tencent_handle, offline_audio, "pt-BR", {"engine": "tencent"})
+        check("AuthFailure.UnauthorizedOperation → 空结果 + 原文照抄（不吞成「没出字」）",
+              denied["empty"] is True and "UnauthorizedOperation" in denied["reason"]
+              and "no permission" in denied["reason"], denied["reason"])
+        check("并且按错误码给出下一步（CAM 授权 QcloudASRFullAccess）",
+              "QcloudASRFullAccess" in denied["reason"], denied["reason"])
+        _TencentStub.reply = {"Response": {"Error": {"Code": "Weird.Unknown", "Message": "?"},
+                                           "RequestId": "stub-3"}}
+        unknown = tencent.transcribe(tencent_handle, offline_audio, "pt-BR", {"engine": "tencent"})
+        check("不认识的错误码**不编解释**（原样带出来，但不加一句猜的下一步）",
+              "Weird.Unknown" in unknown["reason"] and "QcloudASRFullAccess" not in unknown["reason"],
+              unknown["reason"])
+        _TencentStub.status = 500
+        _TencentStub.reply = {"Oops": True}
+        broken = tencent.transcribe(tencent_handle, offline_audio, "pt-BR", {"engine": "tencent"})
+        check("HTTP 500 时说清是 HTTP 几（不是「没出字」）",
+              "HTTP 500" in broken["reason"], broken["reason"])
+        _TencentStub.status = 200
+        os.environ["TENCENT_ASR_ENDPOINT"] = "http://127.0.0.1:1"        # 肯定连不上
+        unreachable = tencent.transcribe(tencent_handle, offline_audio, "pt-BR", {"engine": "tencent"})
+        check("端点连不上时返回空 + 原因（不抛异常把整条管线带崩）",
+              unreachable["empty"] is True and "请求失败" in unreachable["reason"],
+              unreachable["reason"])
+        os.environ["TENCENT_ASR_ENDPOINT"] = f"http://127.0.0.1:{_stub_port}"
+
+        # 端到端：`asr-try` 那条路（run_try）对真 TencentEngine 的退出码
+        offline_wav_path = tencent_offline_dir / "speech.wav"
+        with wave.open(str(offline_wav_path), "wb") as _w_off:
+            _w_off.setnchannels(1)
+            _w_off.setsampwidth(2)
+            _w_off.setframerate(16000)
+            _w_off.writeframes((np.clip(offline_audio, -1, 1) * 32767).astype(np.int16).tobytes())
+
+        def _tencent_try_args(cli_engine=None, cli_model=None, table=None):
+            return types.SimpleNamespace(
+                asr_table=table if table is not None else {
+                    "default": {"model": "large-v3"},
+                    "strategies": {"en-tencent": {"engine": "tencent", "model": "16k_en"}},
+                    "languages": {"en-US": {"strategy": "en-tencent"}}},
+                max_models=2, device="cpu", data_dir=None, language="en-US",
+                try_queue=None, try_audio=str(offline_wav_path), try_rate=None, samplerate=16000,
+                model=cli_model, compute_type="int8", beam_size=5, engine=cli_engine,
+                startup_model=None, resolved_compute="int8")
+
+        tencent_engines = whisper_stream.build_engines(None, None)
+        _TencentStub.reply = {"Response": {"Result": "olá mundo", "RequestId": "stub-4"}}
+        _TencentStub.status = 200
+        with contextlib.redirect_stderr(io.StringIO()) as _ok_log:
+            ok_code = whisper_stream.run_try(_tencent_try_args(), np, tencent_engines)
+        check("表里把 en-US 指向 en-tencent 时，asr-try 出字 → 退出码 0",
+              ok_code == 0, f"退出码 {ok_code}\n{_ok_log.getvalue()[-600:]}")
+        check("试测日志里写着解析结果（策略 → 引擎/模型），不看日志也能对上号",
+              "en-tencent" in _ok_log.getvalue() and "tencent" in _ok_log.getvalue(),
+              _ok_log.getvalue()[-600:])
+        _TencentStub.reply = {"Response": {"Error": {
+            "Code": "AuthFailure.UnauthorizedOperation", "Message": "no permission"},
+            "RequestId": "stub-5"}}
+        with contextlib.redirect_stderr(io.StringIO()) as _denied_log:
+            denied_code = whisper_stream.run_try(_tencent_try_args(), np, tencent_engines)
+        check("权限错时 asr-try 退出码 3（引擎正常、腾讯没给字），并把人话下一步打出来",
+              denied_code == 3 and "QcloudASRFullAccess" in _denied_log.getvalue(),
+              f"退出码 {denied_code}\n{_denied_log.getvalue()[-600:]}")
+        os.environ.pop("TENCENT_ASR_SECRET_ID", None)
+        os.environ.pop("TENCENT_ASR_SECRET_KEY", None)
+        with contextlib.redirect_stderr(io.StringIO()) as _nokey_log:
+            nokey_code = whisper_stream.run_try(_tencent_try_args(), np, whisper_stream.build_engines(None, None))
+        check("缺密钥时退出码 2（根本没跑到识别），并报出要设的环境变量名",
+              nokey_code == 2 and "TENCENT_ASR_SECRET_ID" in _nokey_log.getvalue(),
+              f"退出码 {nokey_code}\n{_nokey_log.getvalue()[-600:]}")
+        with contextlib.redirect_stderr(io.StringIO()) as _wrong_model_log:
+            wrong_model_code = whisper_stream.run_try(
+                # 这张表**没有**把 model 写成引擎编码（模拟"表里只改了引擎"的那份配置）
+                _tencent_try_args(cli_engine="tencent", cli_model="large-v3",
+                                  table={"default": {"model": "large-v3"},
+                                         "languages": {"en-US": {"engine": "tencent"}}}), np,
+                whisper_stream.build_engines(None, None))
+        check("`--engine tencent` 但模型名还是 large-v3 时退出码 2，并说清怎么写对",
+              wrong_model_code == 2 and "引擎编码" in _wrong_model_log.getvalue(),
+              f"退出码 {wrong_model_code}\n{_wrong_model_log.getvalue()[-600:]}")
+    finally:
+        for name, value in _saved_tencent_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        _stub_server.shutdown()
+        _stub_server.server_close()
+        _shutil_tencent.rmtree(tencent_offline_dir, ignore_errors=True)
+
     # 5.84：葡语走 DashScope Fun-ASR —— 缺 websockets / 缺 key 都必须大声报错
     funasr = engines["funasr"]
     check("funasr 的 describe 带模型名（没写时如实说未指定，不编一个）",

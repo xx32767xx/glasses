@@ -1552,27 +1552,85 @@ class ParakeetEngine(AsrEngine):
 #   · 流式要维持长连接、处理 part/final 事件，只有在"边说边出字"才划算。
 # ⚠️ 参数名以腾讯文档为准，全部集中在下面 `SentenceRecognition` 的那一处；
 #    第一次真调用如果报参数错，把腾讯返回的原文贴出来即可，改一处就够。
-TENCENT_ENDPOINT = "asr.tencentcloudapi.com"
+# ⚠️ 5.124：端点从"只写域名"改成**完整 URL**，并允许 `TENCENT_ASR_ENDPOINT` 覆盖。
+#   两个理由，都不是为了好看：
+#   ① **离线演练**：没有密钥时把端点指到本地假服务，整条调用链（签名头 / 请求体 /
+#      错误分类 / 退出码）就能在测试里跑 —— 省掉的正是 docs/25 里那 8~9 轮
+#      "我改代码 → 部署 → 用户重启 → 贴日志"；
+#   ② 地域/专线域名与官方不同时只改环境变量，不改代码（签名用的 host 跟着 URL 走）。
+TENCENT_ENDPOINT = "https://asr.tencentcloudapi.com"
+TENCENT_ENDPOINT_ENV = "TENCENT_ASR_ENDPOINT"
 TENCENT_SERVICE = "asr"
 TENCENT_VERSION = "2019-06-14"
 TENCENT_ACTION = "SentenceRecognition"
 # 各语种默认用哪个引擎编码；策略里的 `model` 字段会覆盖它（直接把编码写进 model）
 TENCENT_ENGINE_BY_LANG = {"en-US": "16k_en", "zh-CN": "16k_zh", "pt-BR": "16k_pt"}
+# 腾讯云的引擎编码长这样：16k_en / 16k_zh / 16k_zh_large / 8k_zh……（前段是采样率）。
+# ⚠️ 5.124 离线演练逮到的一个真 bug：命令行只给 `--engine tencent` 时，档案里的 model
+#    仍是 whisper 那一份（large-v3），照原样当引擎编码发过去 —— 腾讯返回的是
+#    "引擎类型不对"，而在现场它和"密钥错"看起来一模一样。所以**先看形状**再说。
+TENCENT_ENGINE_CODE_RE = re.compile(r"^(8k|16k)_[A-Za-z0-9_-]+$")
+
+
+def tencent_endpoint():
+    """这次调用打哪个端点：`TENCENT_ASR_ENDPOINT` 优先，缺省官方域名。返回 (url, host)。
+
+    <p>`host` 单独返回来是因为**签名算的是 host**（`content-type;host` 那一段）。
+    两者取自同一个 URL，就不会出现"请求发到 A、签名按 B 算"这种永远对不上的局面。
+    """
+    import urllib.parse
+
+    raw = (os.environ.get(TENCENT_ENDPOINT_ENV) or "").strip() or TENCENT_ENDPOINT
+    parts = urllib.parse.urlsplit(raw)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        raise RuntimeError(
+            f"腾讯云端点看不懂：{TENCENT_ENDPOINT_ENV}={raw!r}。"
+            f"要么删掉这个环境变量，用缺省 {TENCENT_ENDPOINT}；"
+            f"要么写成 http(s)://域名 的样子（离线演练指向本地假服务：http://127.0.0.1:8765）")
+    return raw, parts.netloc
+
+
+# 腾讯云错误码 → "下一步该干什么"（docs/25 §6 第 3 条：报错误就要说人话并给出下一步）。
+# ⚠️ 只收**已确认/文档明确**的几条；表里没有的错误码就**不添一句解释**，
+#    原样把腾讯的 JSON 带出来 —— 宁可少说，也不许把"看起来像"的推断当事实写进日志。
+TENCENT_ERROR_HINTS = {
+    "AuthFailure.UnauthorizedOperation": (
+        "鉴权已通过，但**没有权限**：控制台开通「语音识别」，并给这个 SecretId 授权 "
+        "QcloudASRFullAccess（或自定义策略允许 asr:SentenceRecognition）。"
+        "能走到这条错误，说明 TC3 签名与请求参数都是对的"),
+    "AuthFailure.SignatureFailure": (
+        "签名对不上：先用 `node scripts/asr-doctor.mjs` 查密钥形状（尾随换行最常见），"
+        "再核对这台机器的系统时间（偏差超过 5 分钟就会失败）"),
+    "AuthFailure.SecretIdNotFound": (
+        "SecretId 不存在：核对控制台「访问管理 → API 密钥」，注意别把 SecretKey 填进 SecretId"),
+    "LimitExceeded": "被限流/超配额：降低并发或稍后再试",
+    "RequestLimitExceeded": "被限流/超配额：降低并发或稍后再试",
+    "FailedOperation.ServiceIsolate": "账号欠费或被隔离：控制台结清/解冻后再试",
+}
+
+
+def tencent_error_hint(code):
+    """按错误码给一句"下一步"；不认识的码返回空串（不编解释）。"""
+    return TENCENT_ERROR_HINTS.get(str(code or "").strip(), "")
 
 
 def tencent_tc3_headers(secret_id, secret_key, payload, timestamp=None,
                         region="ap-shanghai", action=TENCENT_ACTION,
                         version=TENCENT_VERSION, service=TENCENT_SERVICE,
-                        host=TENCENT_ENDPOINT):
+                        host=None):
     """生成 TC3-HMAC-SHA256 签名头（**纯函数**，可离线测）。
 
     <p>单独成函数只为一个理由：签名错的表现是 `AuthFailure.SignatureFailure`，
     而它和"密钥错""时间漂移"长得一模一样 —— 没法在函数外一眼看出是谁的锅。
     拆出来以后可以拿固定输入钉住每一步（docs 里的算法有三段派生密钥，容易写漏一段）。
+
+    <p>`host=None` 时取 {@link tencent_endpoint} 解析出来的那个 —— 签名算的就是 host，
+    所以它必须和请求真正发去的地址同源；测试里传固定 host 才能复现同一份签名。
     """
     import hashlib
     import hmac
 
+    host = host or tencent_endpoint()[1]
     stamp = int(timestamp if timestamp is not None else time.time())
     date = time.strftime("%Y-%m-%d", time.gmtime(stamp))
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -1668,6 +1726,16 @@ class TencentEngine(AsrEngine):
         """这一段用哪个引擎编码：策略的 `model` 直接写编码就覆盖语言默认值。"""
         wanted = str((profile or {}).get("model") or "").strip()
         if wanted:
+            # ⚠️ 5.124：model 里可能是 whisper 的模型名（`--engine tencent` 但没给 `--model` 时
+            #    档案里就是 large-v3）。把它当引擎编码发出去，腾讯会说"引擎类型不对"，
+            #    而现场那和"密钥错"长得一样 —— 所以在**发请求之前**先按形状拦下来。
+            if not TENCENT_ENGINE_CODE_RE.match(wanted):
+                raise RuntimeError(
+                    f"腾讯云引擎的 model 是**引擎编码**（形如 16k_en / 16k_pt / 8k_zh），"
+                    f"但这一份写的是 {wanted!r}。这通常是命令行只给了 `--engine tencent`、"
+                    f"没有同时给 `--model 16k_en`（于是沿用了 whisper 的模型名）。"
+                    f"两种改法：命令行加 `--model 16k_en`；或在策略表里把该语种指向 "
+                    f"`en-tencent` 这种把 model 写成引擎编码的策略")
             return wanted
         tag = language_tag(language) or ""
         code = TENCENT_ENGINE_BY_LANG.get(tag)
@@ -1713,6 +1781,7 @@ class TencentEngine(AsrEngine):
         import urllib.request
 
         code = self.engine_code(profile, language)
+        url, host = tencent_endpoint()
         wav = pcm16_wav_bytes(audio)
         payload = {
             "EngSerViceType": code,
@@ -1723,9 +1792,9 @@ class TencentEngine(AsrEngine):
             "UsrAudioKey": "leion-live",   # 腾讯要求调用方给的一句话标识
         }
         headers, body = tencent_tc3_headers(handle["secret_id"], handle["secret_key"], payload,
-                                           region=handle["region"])
+                                           region=handle["region"], host=host)
         request = urllib.request.Request(
-            f"https://{TENCENT_ENDPOINT}", data=body.encode("utf-8"), headers=headers, method="POST")
+            url, data=body.encode("utf-8"), headers=headers, method="POST")
         try:
             with urllib.request.urlopen(request, timeout=20) as response:
                 reply = json.loads(response.read().decode("utf-8"))
@@ -1740,10 +1809,13 @@ class TencentEngine(AsrEngine):
         response = (reply or {}).get("Response") or {}
         problem = response.get("Error")
         if problem:
-            # 把腾讯自己的错误原样带出来：参数名错了、密钥错了、欠费了，都能从这句看出来
-            return {"text": "", "empty": True,
-                    "reason": "腾讯云返回错误：" + json.dumps(problem, ensure_ascii=False),
-                    "resolved_language": language}
+            # 把腾讯自己的错误**原样**带出来：参数名错了、密钥错了、欠费了，都能从这句看出来。
+            # 再按错误码补一句"下一步"—— 但只对认识的码补（不认识就不编，见 TENCENT_ERROR_HINTS）。
+            hint = tencent_error_hint(problem.get("Code"))
+            reason = "腾讯云返回错误：" + json.dumps(problem, ensure_ascii=False)
+            if hint:
+                reason += f"\n→ {hint}"
+            return {"text": "", "empty": True, "reason": reason, "resolved_language": language}
         text = str(response.get("Result") or "").strip()
         return {"text": text, "empty": text == "", "reason": None if text else "腾讯云没出字",
                 "resolved_language": language}
