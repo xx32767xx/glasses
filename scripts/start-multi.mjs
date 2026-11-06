@@ -43,6 +43,8 @@
  *   --offline             大脑用离线例句表（不联网、零成本，只认得剧本那 14 句）
  *   --terms-rescue        打开热词临时修正（实验，缺省关）
  *   --no-transcriber      只起转发 + 每场的大脑（用手输文字那条路时够用）
+ *   --no-api-translate    不起「大脑·API」：外部调用方的 `POST /translate` 会回 503
+ *                         （缺省是**起**的 —— 那是"另一组要调用我们翻译链路"的入口）
  *   --data-dir <path>     数据目录（缺省 var/live）
  *   --buses <dir>         字幕总线目录（缺省 <data-dir>/buses）
  *   --port <n>            转发端口（缺省 8788）
@@ -55,7 +57,7 @@ import { spawn } from 'node:child_process'
 import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { LOGS_DIR, ROOT } from '../lib/paths.mjs'
+import { LOGS_DIR, ROOT, apiTranslateBus, apiTranslateInbox, defaultTerms, defaultTermsActive } from '../lib/paths.mjs'
 import { DEFAULT_DATA_DIR, roomAudioPath, roomTrackDir } from '../relay/lan-relay.mjs'
 import { listRooms, closeRoomByAdmin } from '../lib/rooms.mjs'
 import { dbPath } from '../lib/db.mjs'
@@ -99,6 +101,8 @@ const HELP = `start-multi —— 一条命令起「多场会并行」
   --proofread            打开大模型校对（缺省关；多场并行时每句多一次模型调用，自己权衡）
   --terms-rescue         打开热词临时修正（实验，缺省关，见 docs/15 §18）
   --no-transcriber       只起转发 + 每场的大脑（手输文字那条路不需要识别）
+  --no-api-translate     不起「大脑·API」：外部调用方的 POST /translate 会回 503
+                         （缺省**起**它 —— 那是"另一组要调用我们翻译链路"的入口）
   --include-empty        连"一个人都没在"的房间也起管线（缺省只跑有人的房间）
   --data-dir <path>      数据目录（缺省 var/live）
   --buses <dir>          字幕总线目录（缺省 <data-dir>/buses）
@@ -112,6 +116,8 @@ const HELP = `start-multi —— 一条命令起「多场会并行」
   [转发]    relay/lan-relay.mjs --bus <buses 目录>            一个，读目录，把每场字幕分开
   [识别·房间X] bridge/asr-bridge.mjs --whisper-follow audio/X.pcm --inbox asr-inbox-X.jsonl
   [大脑·房间X] scripts/harness-side.mjs --inbox asr-inbox-X.jsonl --bus buses/X.json
+  [大脑·API]  scripts/harness-side.mjs --inbox api-translate/inbox.jsonl --bus api-translate/bus.json
+             一个常驻的、不属于任何一场会的大脑：服务外部调用方的 POST /translate
 
 房间从哪来：手机建会/入会即有一个房间（邀请码 6 位）。脚本每 --poll-ms 看一眼
 「开着的、且有人在里面」的房间，缺管线就补、散了就收（收之前等 --grace-ms）。
@@ -193,6 +199,15 @@ export function parseArgs(argv = []) {
     proofread: false,
     termsRescue: false,
     transcriber: true,
+    /**
+     * 5.125：给外部调用方的 `POST /translate` 用的常驻「大脑·API」。
+     *
+     * <p>缺省**开**：那个接口是"另一组要调用我们的翻译链路"这件事的入口，默认能跑
+     * 才算把这件事做完。代价是常驻多一个大脑进程（一份 DSH 组合，空闲时很轻），
+     * 而它只在真的有人调 `/translate` 时才花一次模型调用 —— 不需要就给
+     * `--no-api-translate` 关掉（那时接口回 503 并说清为什么）。
+     */
+    apiTranslate: true,
     whisperModel: null,          // null = 按设备自动选
     modelMap: null,              // null = 用 <data-dir>/asr-models.json（存在才启用）
     maxModels: 2,                // 模型池上限：同时留在显存里的模型份数
@@ -233,6 +248,8 @@ export function parseArgs(argv = []) {
     if (key === 'proofread') { options.proofread = true; continue }
     if (key === 'terms-rescue') { options.termsRescue = true; continue }
     if (key === 'no-transcriber') { options.transcriber = false; continue }
+    if (key === 'no-api-translate') { options.apiTranslate = false; continue }
+    if (key === 'api-translate') { options.apiTranslate = true; continue }
     if (key === 'include-empty') { options.includeEmpty = true; continue }
     if (key === 'public') { options.public = true; continue }
     if (key === 'quiet-logs') { options.writeLogs = false; continue }
@@ -551,6 +568,62 @@ export function workerStep(options) {
     key: 'asr-worker', role: 'worker', tag: '识别', label: '识别', color: '\x1b[35m',
     script: join(ROOT, 'bridge', 'asr-worker.mjs'),
     args,
+  }
+}
+
+/**
+ * 「API 翻译」的一对文件（收件箱 + 字幕总线）。路径只在 `lib/paths.mjs` 定义一次。
+ *
+ * <p>为什么单独一对：外部调用方的请求**不属于任何一场会** —— 不能写进某个房间的
+ * 收件箱（会混进那一场的字幕与历史），也不能用房间的总线（`--bus` 目录里每个
+ * `<房间id>.json` 都会被 relay 当成一场会去扇出/落库）。
+ */
+export function apiTranslateFiles(dataDir) {
+  return { inbox: apiTranslateInbox(dataDir), bus: apiTranslateBus(dataDir) }
+}
+
+/**
+ * 清一次 API 翻译的旧状态（与 {@link prepareRoomFiles} 同一个道理，只是没有"房间"）。
+ *
+ * <p>为什么必须清：收件箱是**追加**的，大脑按"已读偏移"往下取 —— 上一次运行留下的行
+ * 会被**重新翻译一遍**，于是每次重启后外部调用方都会先收到一句莫名其妙的旧译文。
+ * 总线也删掉：留一帧旧的会让新请求第一轮就撞上"比 baseline 还旧"的歧义。
+ */
+export function prepareApiTranslateFiles(files) {
+  try { mkdirSync(dirname(files.inbox), { recursive: true }) } catch { /* 建不出来下一步会报 */ }
+  try { writeFileSync(files.inbox, '', 'utf-8') } catch { /* 同上 */ }
+  try { if (existsSync(files.bus)) unlinkSync(files.bus) } catch { /* 有人正读着就算了 */ }
+}
+
+/**
+ * 「API 翻译」的常驻大脑（5.125）：给外部调用方的 `POST /translate` 用。
+ *
+ * <p>为什么不借一个房间的大脑：房间会散会（大脑跟着收），而且每场会都有自己的
+ * 听众语言与术语快照 —— 外部调用方的请求跟这些都不该互相影响。所以它有自己的
+ * 一对文件、自己的生命周期，与会议**解耦**：没人开会也能翻，开会时也不会被
+ * "这一场的目标语言"改写方向。
+ *
+ * <p>它和房间大脑是**同一段代码**（`scripts/harness-side.mjs` + `plugin/core.mjs`）：
+ * 术语表、校对、切行、翻译后端完全一致 —— 这正是"调用我们 App 的翻译链路"的含义。
+ */
+export function apiStep(options) {
+  const files = apiTranslateFiles(options.dataDir)
+  const args = ['--data-dir', options.dataDir, '--cols', String(options.cols),
+    '--lines', String(options.lines), '--inbox', files.inbox, '--bus', files.bus,
+    // 收件箱由本脚本统一清（见 prepareApiTranslateFiles），别让大脑再清一遍
+    '--keep-inbox']
+  args.push(options.proofread ? '--proofread' : '--no-proofread')
+  if (options.offline) args.push('--offline')
+  if (options.termsRescue) args.push('--terms-rescue')
+  // 术语：全局表（"这场会的术语快照"是每场会的事，这里没有"场"）。
+  // 显式给了 --terms-path/--terms-active-path（管理员/调试）时以它为准。
+  const termsPath = options.termsPath ?? defaultTerms(options.dataDir)
+  const activePath = options.termsActivePath ?? defaultTermsActive(options.dataDir)
+  args.push('--terms-path', String(termsPath).replace(/\\/g, '/'))
+  args.push('--terms-active-path', String(activePath).replace(/\\/g, '/'))
+  return {
+    key: 'api-brain', role: 'api-brain', tag: '大脑·API', label: '大脑·API', color: '\x1b[94m',
+    script: join(ROOT, 'scripts', 'harness-side.mjs'), args,
   }
 }
 
@@ -1007,6 +1080,10 @@ export async function main(argv = process.argv.slice(2)) {
     const worker = workerStep(options)
     console.log(`  ${worker.color}${worker.label}${RESET}  ${worker.script.replace(ROOT, '.').replace(/\\/g, '/')} ${worker.args.join(' ')}`)
   }
+  if (options.apiTranslate !== false) {
+    const api = apiStep(options)
+    console.log(`  ${api.color}${api.label}${RESET}  ${api.script.replace(ROOT, '.').replace(/\\/g, '/')} ${api.args.join(' ')}`)
+  }
   console.log('')
   if (options.translateMode === 'queue') {
     console.log(`  切句/识别  每场一个**切句**进程（纯 CPU，不加载模型）→ 队列 → **一个**识别进程（模型只加载一次）`)
@@ -1023,6 +1100,10 @@ export async function main(argv = process.argv.slice(2)) {
   console.log(`  分流音频   ${options.dataDir.replace(/\\/g, '/')}/audio/<房间id>.pcm  ← 每场都分流，与串行无关`)
   console.log(`  翻译后端   ${options.offline ? '离线例句表（只认得剧本 14 句）' : '真实模型（deepseek-official）'}`)
   console.log(`  校对       ${options.proofread ? '开启（每句多一次模型调用）' : '关闭（加 --proofread 打开）'}`)
+  console.log(`  外部接口   ${options.apiTranslate === false
+    ? 'POST /translate 已关（--no-api-translate）：调用会回 503'
+    : `POST /translate（一句文字 → 译文；请求头 X-Leion-Secret 与手机同一个密钥）`
+      + `  ← 由「大脑·API」服务：${apiTranslateFiles(options.dataDir).inbox.replace(/\\/g, '/')}`}`)
   if (options.transcriber) {
     if (options.translateMode === 'queue') {
       console.log(`  识别       一份模型（全局唯一）${options.whisperModel} / ${options.device} / ${options.computeType}`)
@@ -1097,6 +1178,10 @@ export async function main(argv = process.argv.slice(2)) {
   let stopping = false
   let timer = null
   let worker = null                  // 队列模式下全局唯一的识别消费者
+  /** 5.125：给外部调用方翻译链路用的常驻「大脑·API」（`--no-api-translate` 时为 null） */
+  let apiBrain = null
+  /** 大脑·API 连续重启次数：它挂掉只影响 `/translate`，所以重启而不是全体停 */
+  let apiBrainRestarts = 0
   let tickCount = 0
   let maxRoomsWarned = false
   /**
@@ -1214,6 +1299,27 @@ export async function main(argv = process.argv.slice(2)) {
 
   function onChildExit(step, roomId, code, signal) {
     if (roomId === null) {
+      // 5.125：**大脑·API 是唯一一个"挂了不连累别人"的全局进程**。
+      // 它只服务外部调用方的 `POST /translate`：它没了，会议室该照常出字幕。
+      // 所以这里不 shutdown，而是退避重启几次；实在起不来就说明白（接口会回 503）。
+      if (step.role === 'api-brain') {
+        apiBrainRestarts += 1
+        if (apiBrainRestarts > 5) {
+          console.error('')
+          console.error('  ⚠️ 大脑·API 连续退出 5 次，**不再重启**（会议不受影响，'
+            + '但 external `POST /translate` 会一直回 503）。先看日志：')
+          console.error(`     ${join(LOGS_DIR, `${step.key}.log`).replace(ROOT, '.').replace(/\\/g, '/')}`)
+          return
+        }
+        const delayMs = Math.min(30000, 1000 * (2 ** (apiBrainRestarts - 1)))
+        console.error(`  ⚠️ 大脑·API 退出了（code=${code ?? '-'} signal=${signal ?? '-'}）：`
+          + `会议不受影响，${Math.round(delayMs / 1000)} 秒后重启（第 ${apiBrainRestarts}/5 次）`)
+        setTimeout(() => {
+          if (stopping) return
+          apiBrain = spawnStep(apiStep(options), null)
+        }, delayMs)
+        return
+      }
       // roomId === null = **全局**进程（转发、识别消费者）。它们没有"别的房间能顶上"：
       // 转发死了手机连不上；识别消费者死了所有房间都没字幕。所以一律全体停。
       console.error('')
@@ -1281,6 +1387,12 @@ export async function main(argv = process.argv.slice(2)) {
   if (options.transcriber && options.translateMode === 'queue') {
     mkdirSync(options.queueDir, { recursive: true })
     worker = spawnStep(workerStep(options), null)
+  }
+  // 5.125：外部调用方的翻译入口。**先清旧状态再起**（与房间管线同一个顺序）：
+  // 不清的话上一次运行留在收件箱里的行会被重新翻译一遍，调用方会先收到一句旧译文。
+  if (options.apiTranslate !== false) {
+    prepareApiTranslateFiles(apiTranslateFiles(options.dataDir))
+    apiBrain = spawnStep(apiStep(options), null)
   }
 
   async function tick() {

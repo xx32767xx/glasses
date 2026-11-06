@@ -64,6 +64,10 @@ import { APP_VERSION } from '../lib/app-version.generated.mjs'
 import {
   ASR_HTTP_LIMITS, normalizeRequest as normalizeAsrRequest, transcribeOnce,
 } from '../lib/asr-http.mjs'
+import { apiTranslateBus, apiTranslateInbox } from '../lib/paths.mjs'
+import {
+  TRANSLATE_HTTP_LIMITS, normalizeTranslateRequest, translateOnce,
+} from '../lib/translate-http.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
 
@@ -77,7 +81,7 @@ const UTTERANCE_SWEEP_MS = 60 * 60 * 1000
  * **电脑上跑的还是旧版进程**（没有 `/auth/*` 端点）。与其让人对着 404 猜，
  * 不如让这一端把自己的能力报出来，手机据此说人话。
  */
-export const RELAY_FEATURES = ['hello', 'say', 'audio', 'frame', 'status', 'diag', 'lint', 'terms', 'settings', 'auth', 'org', 'floor-ws', 'frame-ws', 'room-closed-push', 'session-push']
+export const RELAY_FEATURES = ['hello', 'say', 'audio', 'frame', 'status', 'diag', 'lint', 'terms', 'settings', 'auth', 'org', 'floor-ws', 'frame-ws', 'room-closed-push', 'session-push', 'asr-http', 'translate-http']
 
 /**
  * 默认数据目录：和 scripts/harness-side.mjs 指向同一对文件，两边靠它对接。
@@ -96,6 +100,14 @@ const MAX_BODY_BYTES = 8 * 1024
  * 真正的大小判断留给 `normalizeRequest`（它能给出"太大了，请切成句"这种人话）。
  */
 const MAX_ASR_BODY_BYTES = Math.ceil(ASR_HTTP_LIMITS.maxAudioBytes * 4 / 3) + 64 * 1024
+
+/**
+ * `/translate` 的请求体上限（5.125）。文字比音频小得多，给 256 KB 已经足够宽。
+ *
+ * <p>真正的大小判断仍然留给 `normalizeTranslateRequest`（它会说"这是给一句话用的，
+ * 请自己切句"），这里的上限只负责"不让人往内存里灌 100 MB"。
+ */
+const MAX_TRANSLATE_BODY_BYTES = 256 * 1024
 
 /** `/asr/models` 只列这三门（与 relay 的 LANGS 一致）。 */
 const ASR_HTTP_LANGS = ASR_HTTP_LIMITS.languages
@@ -740,6 +752,14 @@ export async function startRelay(rawOptions = {}) {
     busRaw: '',
     /** 5.117：当前有几个 `/asr/transcribe` 请求在飞（识别进程串行，压多了只会一起慢） */
     asrInFlight: 0,
+    /**
+     * 5.125：当前有几个 `/translate` 请求在飞。
+     *
+     * <p>为什么也要限：大脑是串行的（同传不能并发），而接口这里还会再串一道
+     * （`translateOnce` 内部排队，保证"帧与请求"能对上号）。上限只用来给调用方
+     * 一个**明确的 429**，而不是让它们排到天荒地老还以为是网络慢。
+     */
+    translateInFlight: 0,
     /** 总线是目录（每房间一份）还是单文件（4.86） */
     busIsDir: String(options.bus).endsWith('/') || String(options.bus).endsWith('\\')
       || (existsSync(options.bus) && statSync(options.bus).isDirectory()),
@@ -2298,6 +2318,66 @@ export async function startRelay(rawOptions = {}) {
           send(response, 500, { ok: false, error: String(error?.message ?? error) })
         } finally {
           state.asrInFlight -= 1
+        }
+        return
+      }
+
+      // ── 5.125：给外部调用方的「一句文字 → 译文」HTTP 接口 ──────────────────
+      //
+      // 与 `/asr/*` 同一套道理：**不另起服务、不另造一套翻译**。
+      // relay 已经是唯一对外端口（鉴权、限流都在这一层），翻译则复用**同一个大脑**
+      // （`大脑·API`：它读 `api-translate/inbox.jsonl`、写 `api-translate/bus.json`）——
+      // 术语表、校对、切行规则、翻译后端全是同一份，所以接口与会议不会出现两套真相。
+      //
+      // 那一对文件**不在** `--bus` 目录里，所以 relay 不会把它当一场会的字幕。
+      if (request.method === 'GET' && url.pathname === '/translate/info') {
+        const inbox = apiTranslateInbox(String(options.dataDir))
+        const bus = apiTranslateBus(String(options.dataDir))
+        send(response, 200, {
+          ok: true,
+          endpoint: 'POST /translate',
+          from: TRANSLATE_HTTP_LIMITS.langs,
+          to: TRANSLATE_HTTP_LIMITS.langs,
+          limits: TRANSLATE_HTTP_LIMITS,
+          pipeline: { inbox, bus, running: existsSync(inbox) },
+          note: 'one request = one sentence; the translator is serial, so calls are queued',
+        })
+        return
+      }
+
+      if (request.method === 'POST' && url.pathname === '/translate') {
+        let body
+        try {
+          body = await readBody(request, MAX_TRANSLATE_BODY_BYTES)
+        } catch (error) {
+          // 读到一半就拒的：剩下的数据还在路上，必须关连接
+          sendAndClose(request, response, error.statusCode ?? 400,
+            { ok: false, error: String(error.message) })
+          return
+        }
+        const parsed = normalizeTranslateRequest(body)
+        if (parsed.ok !== true) {
+          send(response, 400, { ok: false, error: parsed.error })
+          return
+        }
+        if (state.translateInFlight >= TRANSLATE_HTTP_LIMITS.maxInFlight) {
+          // 与 `/asr/*` 一样：外部调用方收英文，机器可读的码在 `error` 里。
+          send(response, 429, {
+            ok: false,
+            error: 'too-many-requests',
+            hint: `at most ${TRANSLATE_HTTP_LIMITS.maxInFlight} in-flight translation requests `
+              + '(the translator is single-threaded; extra requests only make everything slower)',
+          })
+          return
+        }
+        state.translateInFlight += 1
+        try {
+          const result = await translateOnce({ dataDir: String(options.dataDir) }, parsed)
+          send(response, result.status, result.json)
+        } catch (error) {
+          send(response, 500, { ok: false, error: String(error?.message ?? error) })
+        } finally {
+          state.translateInFlight -= 1
         }
         return
       }
