@@ -2973,6 +2973,33 @@ def main():
         check("不认识的错误码**不编解释**（原样带出来，但不加一句猜的下一步）",
               "Weird.Unknown" in unknown["reason"] and "QcloudASRFullAccess" not in unknown["reason"],
               unknown["reason"])
+
+        # 5.126：真密钥打通后，错误码表按官方文档补齐（这几条都是"下一步该去控制台做什么"）
+        check("错误码表覆盖官方文档里最常见的几条（服务没开通 / 资源包 / 引擎编码 / 音频太长）",
+              all(code in whisper_stream.TENCENT_ERROR_HINTS for code in (
+                  "FailedOperation.UserNotRegistered", "FailedOperation.UserHasNoAmount",
+                  "FailedOperation.UserHasNoFreeAmount",
+                  "InvalidParameterValue.ErrorInvalidEngservice",
+                  "InvalidParameterValue.ErrorVoicedataTooLong")),
+              str(sorted(whisper_stream.TENCENT_ERROR_HINTS)))
+        _TencentStub.reply = {"Response": {"Error": {
+            "Code": "FailedOperation.UserNotRegistered", "Message": "服务未开通"}, "RequestId": "stub-6"}}
+        not_registered = tencent.transcribe(tencent_handle, offline_audio, "pt-BR", {"engine": "tencent"})
+        check("服务没开通 → 说清「控制台开通语音识别」（与 CAM 授权是两件事）",
+              "FailedOperation.UserNotRegistered" in not_registered["reason"]
+              and "开通" in not_registered["reason"], not_registered["reason"])
+
+        # ⚠️ 60 秒是腾讯一句话识别的**硬上限**（文档与实测都写了）。超限段必须在
+        #    **任何网络请求之前**就被拒：白等一次 20 秒超时，日志还更容易看错。
+        _TencentStub.seen.clear()
+        long_audio = np.zeros(16000 * 61, dtype=np.float32)
+        long_result = tencent.transcribe(tencent_handle, long_audio, "pt-BR", {"engine": "tencent"})
+        check("超过 60 秒的段在发请求之前就拒（连端点都没打）",
+              long_result["empty"] is True and "60" in long_result["reason"]
+              and len(_TencentStub.seen) == 0,
+              f"{long_result['reason']} / 实际请求数 {len(_TencentStub.seen)}")
+        _TencentStub.reply = {"Response": {"Result": "olá mundo", "RequestId": "stub-1"}}
+
         _TencentStub.status = 500
         _TencentStub.reply = {"Oops": True}
         broken = tencent.transcribe(tencent_handle, offline_audio, "pt-BR", {"engine": "tencent"})

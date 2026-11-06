@@ -1570,6 +1570,11 @@ TENCENT_ENGINE_BY_LANG = {"en-US": "16k_en", "zh-CN": "16k_zh", "pt-BR": "16k_pt
 #    仍是 whisper 那一份（large-v3），照原样当引擎编码发过去 —— 腾讯返回的是
 #    "引擎类型不对"，而在现场它和"密钥错"看起来一模一样。所以**先看形状**再说。
 TENCENT_ENGINE_CODE_RE = re.compile(r"^(8k|16k)_[A-Za-z0-9_-]+$")
+# ⚠️ 5.126：腾讯一句话识别的**硬上限**（官方文档「接口描述」第 7 条）：
+#   音频时长 ≤ 60 秒、音频文件 ≤ 3 MB（base64 之后也算）。我们在发请求**之前**就判，
+#   不让一次注定失败的调用跑完 20 秒超时；错误码也翻成人话（见 TENCENT_ERROR_HINTS）。
+TENCENT_MAX_AUDIO_SECONDS = 60.0
+TENCENT_MAX_VOICEDATA_BYTES = 3 * 1024 * 1024
 
 
 def tencent_endpoint():
@@ -1591,8 +1596,8 @@ def tencent_endpoint():
 
 
 # 腾讯云错误码 → "下一步该干什么"（docs/25 §6 第 3 条：报错误就要说人话并给出下一步）。
-# ⚠️ 只收**已确认/文档明确**的几条；表里没有的错误码就**不添一句解释**，
-#    原样把腾讯的 JSON 带出来 —— 宁可少说，也不许把"看起来像"的推断当事实写进日志。
+# ⚠️ 只收**已确认/文档明确**的几条（错误码取自官方「一句话识别」文档 §6）；表里没有的错误码
+#    就**不添一句解释**，原样把腾讯的 JSON 带出来 —— 宁可少说，也不许把"看起来像"的推断当事实写进日志。
 TENCENT_ERROR_HINTS = {
     "AuthFailure.UnauthorizedOperation": (
         "鉴权已通过，但**没有权限**：控制台开通「语音识别」，并给这个 SecretId 授权 "
@@ -1603,9 +1608,17 @@ TENCENT_ERROR_HINTS = {
         "再核对这台机器的系统时间（偏差超过 5 分钟就会失败）"),
     "AuthFailure.SecretIdNotFound": (
         "SecretId 不存在：核对控制台「访问管理 → API 密钥」，注意别把 SecretKey 填进 SecretId"),
+    "FailedOperation.UserNotRegistered": "语音识别服务**没开通**：控制台 → 语音识别 → 开通服务（与 CAM 授权是两件事）",
+    "FailedOperation.ServiceIsolate": "账号欠费或被隔离：控制台结清/解冻后再试",
+    "FailedOperation.UserHasNoAmount": "资源包耗尽：控制台购买资源包或开通后付费",
+    "FailedOperation.UserHasNoFreeAmount": "免费额度用完了：控制台开通后付费或购买资源包",
     "LimitExceeded": "被限流/超配额：降低并发或稍后再试",
     "RequestLimitExceeded": "被限流/超配额：降低并发或稍后再试",
-    "FailedOperation.ServiceIsolate": "账号欠费或被隔离：控制台结清/解冻后再试",
+    "InvalidParameterValue.ErrorInvalidEngservice": (
+        "引擎编码无效：把 model 写成官方那几个（16k_en / 16k_zh / 16k_pt / 8k_zh…，见 docs/26 §2.4）"),
+    "InvalidParameterValue.ErrorVoicedataTooLong": "音频超过 60 秒：切成更短的段再发（管线的段是 0.6–30 秒）",
+    "InvalidParameterValue.ErrorInvalidVoicedata": "这段音频腾讯认不了：确认是 16k 单声道 16bit 的 wav/pcm（我们发的是 wav 容器）",
+    "InvalidParameter.ErrorContentlength": "DataLen 与 Data 不匹配：这是代码问题（原始字节数 vs base64 长度），把这条报给维护者",
 }
 
 
@@ -1782,7 +1795,20 @@ class TencentEngine(AsrEngine):
 
         code = self.engine_code(profile, language)
         url, host = tencent_endpoint()
+        # ⚠️ 5.126：先判腾讯的硬上限（≤60 秒 / ≤3 MB）。这一步在**任何网络请求之前** ——
+        #    超限的段腾讯必然回 ErrorVoicedataTooLong，白等一次超时、日志还更容易看错。
+        seconds = len(audio) / 16000.0
+        if seconds > TENCENT_MAX_AUDIO_SECONDS:
+            return {"text": "", "empty": True,
+                    "reason": f"这段音频 {seconds:.1f}s，超过腾讯一句话识别的 {TENCENT_MAX_AUDIO_SECONDS:.0f}s 上限："
+                              "切成更短的段再发（管线里切出来的段是 0.6–30s，不会撞到这条）",
+                    "resolved_language": language}
         wav = pcm16_wav_bytes(audio)
+        if len(wav) > TENCENT_MAX_VOICEDATA_BYTES:
+            return {"text": "", "empty": True,
+                    "reason": f"这段 wav 有 {len(wav)} 字节，超过腾讯的 "
+                              f"{TENCENT_MAX_VOICEDATA_BYTES // (1024 * 1024)} MB 上限：切成更短的段再发",
+                    "resolved_language": language}
         payload = {
             "EngSerViceType": code,
             "SourceType": 1,               # 1 = 音频数据（0 是音频 URL）
