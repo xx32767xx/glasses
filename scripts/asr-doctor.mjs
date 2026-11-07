@@ -23,6 +23,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { ENGINE_LANGUAGES, describeKeyShape, listEngineOptions, loadStrategyTable } from '../lib/asr-engines.mjs'
+import { resolveTencentSecret } from '../lib/tencent-secret.mjs'
 
 function parseArgs(argv) {
   const args = { dataDir: '', json: '' }
@@ -238,9 +239,14 @@ function main() {
   // ⚠️ 5.98：密钥"设了"不等于"能用"。长 key 复制时被折成两行 → 中间那个换行会一路
   //    送到 Authorization 头上，实机报的是第三方 traceback（InvalidHeaderValue），
   //    看不出任何线索。这里在**启动前**就看形状，只说长度与问题类型，不打印密钥。
+  //
+  // ⚠️ 5.128：腾讯那把**也认 `TENCENT_ASR_SECRET_FILE`**（引擎一直认，体检原来不认）——
+  //    现场踩过：asr.env 里只写了文件路径，体检却报"缺 secretId / 缺 secretKey"，
+  //    看起来像没配上，实际识别进程能读能通。一份配置两种读法，必然出现"一个说通一个说没配"。
   const dashscopeKey = describeKeyShape(process.env.DASHSCOPE_API_KEY, { expectPrefix: 'sk-' })
-  const tencentId = describeKeyShape(process.env.TENCENT_ASR_SECRET_ID, { expectPrefix: 'AKID' })
-  const tencentKey = describeKeyShape(process.env.TENCENT_ASR_SECRET_KEY)
+  const tencentSecret = resolveTencentSecret(process.env)
+  const tencentId = describeKeyShape(tencentSecret.secretId, { expectPrefix: 'AKID' })
+  const tencentKey = describeKeyShape(tencentSecret.secretKey)
   // 5.124：端点现在是**可覆盖**的（离线演练指向本地假服务 / 专线域名）。体检时必须把
   // 「这次会打到哪」说出来 —— 否则"改了环境变量还在连官方域名"这种错只能靠翻代码发现。
   const tencentEndpoint = (process.env.TENCENT_ASR_ENDPOINT ?? '').trim()
@@ -283,11 +289,13 @@ function main() {
     {
       name: 'tencent',
       ready: tencentId.ok && tencentKey.ok,
-      // ⚠️ 只说"有没有设置/形状对不对"，**绝不打印密钥**
+      // ⚠️ 只说"有没有设置/形状对不对 / 值来自哪一层"，**绝不打印密钥**
       needs: [
+        `来源=${tencentSecret.from === '' ? '（没有）' : tencentSecret.from}`,
+        ...(tencentSecret.problem === '' ? [] : [tencentSecret.problem]),
         ...keyBits('secretId（TENCENT_ASR_SECRET_ID）', tencentId),
         ...keyBits('secretKey（TENCENT_ASR_SECRET_KEY）', tencentKey),
-        `region=${process.env.TENCENT_ASR_REGION ?? 'ap-shanghai（缺省）'}`,
+        `region=${(process.env.TENCENT_ASR_REGION ?? tencentSecret.region) || 'ap-shanghai（缺省）'}`,
         `端点=${tencentEndpoint || 'https://asr.tencentcloudapi.com（缺省）'}`,
       ].join('；'),
       detail: '云端·一句话识别',
