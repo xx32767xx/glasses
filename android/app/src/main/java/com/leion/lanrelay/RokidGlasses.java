@@ -95,7 +95,14 @@ public final class RokidGlasses {
     public RokidGlasses(Context context, Listener listener) {
         this.appContext = context.getApplicationContext();
         this.listener = listener;
-        this.manager = CxrSessionManager.Companion.getInstance(appContext);
+        // ⚠️ 构造**不许抛**：它在 MainActivity.setupGlasses() 里被调，一抛就是"App 打不开"。
+        //    取不到管理器就当"这台机器不支持"，由 status/isAppInstalled 把原因说出来。
+        try {
+            this.manager = CxrSessionManager.Companion.getInstance(appContext);
+        } catch (Throwable error) {
+            this.manager = null;
+            this.status = "Rokid SDK 初始化失败（" + error.getClass().getSimpleName() + "）";
+        }
     }
 
     /** 手机装没装 Rokid AI App（没装就谈不上投屏；这是环境检查，不涉及投屏状态）。 */
