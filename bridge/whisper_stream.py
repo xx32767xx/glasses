@@ -1695,6 +1695,27 @@ def pcm16_wav_bytes(audio, rate=16000):
     return buffer.getvalue()
 
 
+def secret_file_read_error(path, error):
+    """把"读密钥文件失败"说成一句能照做的话 —— 权限错是这一类里最常见的一种（5.132）。
+
+    <p>真机现场：`/etc/leion/tencent.csv` 是 `600` 归 root，而**服务不是 root 跑的**
+    （或 `/etc/leion` 是 700），于是 python 侧 `open()` 直接
+    `PermissionError: [Errno 13] Permission denied`，日志里每段一句、读起来像"腾讯坏了"。
+    光说"读失败"不够：这里把两种修法都写清楚，并给出"先确认服务用户是谁"的命令。
+    """
+    message = (f"读密钥文件失败（{TencentEngine.ENV_FILE}={path}）："
+               f"{type(error).__name__}: {error}")
+    if isinstance(error, PermissionError):
+        message += (
+            "\n→ **服务用户读不到这个文件**。先确认服务用户：`systemctl show leion -p User`，然后二选一："
+            "① 让它能读 —— `sudo chown <服务用户> " + str(path) + "`（仍保持 600）或 "
+            "`sudo chgrp <服务用户> " + str(path) + " && sudo chmod 640 " + str(path) + "`；"
+            "② 更省事：把 TENCENT_ASR_SECRET_ID / TENCENT_ASR_SECRET_KEY 直接写进 "
+            "/etc/leion/secrets.env —— 那份由 **systemd(以 root) 解析**，任何服务用户都能拿到。"
+            "改完必须 `sudo systemctl restart leion`")
+    return RuntimeError(message)
+
+
 class TencentEngine(AsrEngine):
     """腾讯云一句话识别（云端，按句调用）。**密钥从环境变量读，不进仓库。**"""
 
@@ -1769,9 +1790,7 @@ class TencentEngine(AsrEngine):
             except RuntimeError:
                 raise
             except Exception as error:                              # noqa: BLE001
-                raise RuntimeError(
-                    f"读密钥文件失败（{self.ENV_FILE}={os.environ.get(self.ENV_FILE)}）："
-                    f"{type(error).__name__}: {error}") from error
+                raise secret_file_read_error(os.environ.get(self.ENV_FILE), error) from error
             secret_id = secret_id or from_file.get("secretid", "")
             secret_key = secret_key or from_file.get("secretkey", "")
             region = region or from_file.get("region", "")

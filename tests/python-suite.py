@@ -3112,6 +3112,19 @@ def main():
             else:
                 os.environ[name] = value
 
+    # 5.132：**服务用户读不到密钥文件**（600 归 root，而服务不是 root 跑的）——
+    # 真机现场就是这样，日志里每段一句 PermissionError，读起来像"腾讯坏了"。
+    perm = whisper_stream.secret_file_read_error(
+        "/etc/leion/tencent.csv", PermissionError(13, "Permission denied", "/etc/leion/tencent.csv"))
+    perm_text = str(perm)
+    check("权限错 → 说清「服务用户读不到」并给出两条修法（chown/640 或改用环境变量）",
+          "PermissionError" in perm_text and "systemctl show leion -p User" in perm_text
+          and "TENCENT_ASR_SECRET_ID" in perm_text and "secrets.env" in perm_text, perm_text)
+    other = whisper_stream.secret_file_read_error(
+        "/etc/leion/tencent.csv", FileNotFoundError(2, "No such file or directory"))
+    check("别的读失败不硬套权限建议（只说清了哪个文件、什么错）",
+          "读密钥文件失败" in str(other) and "systemctl show leion" not in str(other), str(other))
+
     # 5.84：葡语走 DashScope Fun-ASR —— 缺 websockets / 缺 key 都必须大声报错
     funasr = engines["funasr"]
     check("funasr 的 describe 带模型名（没写时如实说未指定，不编一个）",
