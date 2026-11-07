@@ -125,8 +125,8 @@ android {
     // 4.74：帧里若带 roomId 则不用推断（为多房间并发预留）；并发现状与三步路径见 docs/21 §4.74。
     // 4.76：并发第一步——帧带 roomId，/frame?room= 按房间取；音频上传带 room 作为归属线索。见 docs/21 §4.75。
     // 4.57：三语的一处安全细节——房间页在**正在开麦上传时不自动 recreate**（换语言会把这一段发言打断）。
-        versionCode = 281
-        versionName = "4.252"
+        versionCode = 282
+        versionName = "4.253"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），
@@ -210,21 +210,23 @@ dependencies {
   // 放进 libs/ 才能离线构建 —— 与 platform AAR 的处理方式一致。
   implementation(files("libs/client-l-1.1.2.aar"))
 
-  // ⚠️ Rokid 那个 AAR 是 **Kotlin** 写的（字节码引用 kotlin.Unit / kotlin.Function1 /
-  //    kotlinx.coroutines.flow.StateFlow），而我们这个 App 是**纯 Java**、原来一个 Kotlin 类都没有
-  //    —— 所以这三份必须随 APK 一起进去，否则一投屏就 `NoClassDefFoundError: kotlin/Unit`
-  //    （实测：上一版 APK 里 `kotlin/Unit` 与 `kotlinx/coroutines/...` 一个都没有）。
+  // ⚠️ **不要**把 kotlin-stdlib / kotlinx-coroutines 放进 libs/，也不要写成 Maven 坐标。
   //
-  //    为什么用 `files(...)` 而不是坐标：这台机器的 Gradle 代理是死的
-  //    （`Connect to 127.0.0.1:33210 failed: Connection refused`）。
-  //    曾经写成 `implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.8.1")`，
-  //    而缓存里只有 1.7.3 → Gradle 去联网 → 构建直接失败在 `mergeDebugJavaResource`。
-  //    放进 libs/ 之后完全不碰网络（与两个 AAR 同一处理方式）。
+  //    Rokid 那个 AAR 是 Kotlin 写的（字节码引用 kotlin.Unit / kotlin.Function1 /
+  //    kotlinx.coroutines.flow.StateFlow），而我们是纯 Java —— 看着"必须自带 Kotlin 运行时"，
+  //    但**它已经在依赖图里了**：上面 `force("androidx.activity:activity:1.9.0")` 与 lifecycle
+  //    那一串本身就是 Kotlin 写的（activity 1.9 → lifecycle-runtime-ktx → coroutines），
+  //    它们会把 kotlin-stdlib 与 kotlinx-coroutines 一并带进来。
   //
-  //    版本取自 `~/.gradle/caches` 里**已存在**的那几份（换版本先去缓存里确认有）。
-  implementation(files("libs/kotlin-stdlib-2.2.0.jar"))
-  implementation(files("libs/kotlinx-coroutines-core-jvm-1.7.3.jar"))
-  implementation(files("libs/kotlinx-coroutines-android-1.7.3.jar"))
+  //    两次构建失败都把这件事证得很直接（别再重复踩）：
+  //      ① 写成坐标且版本 1.8.1（缓存里只有 1.7.3）→ 联网 → 代理是死的
+  //         （`Connect to 127.0.0.1:33210 failed`）→ 失败在 `mergeDebugJavaResource`；
+  //      ② 改成 libs/ 里的 jar → **同一份字节被塞了两次**：
+  //         `2 files found with path 'kotlin/annotation/annotation.kotlin_builtins'`。
+  //
+  //    要确认它到底在不在图里（别猜）：
+  //      ./gradlew :app:dependencies --configuration debugRuntimeClasspath | grep -E 'kotlin-stdlib|coroutines'
+  //    真缺了再往 libs/ 加**对应那一份**，同时把传递依赖里的同名模块 exclude 掉。
 
   // AAR 的 classes.jar 直接引用了这些 AndroidX 包（grep 过，见 docs/09 第 5 节）。
   // glide **不需要** —— 样例注释说"合并清单依赖 Glide"，但实测 AAR 里 0 处引用 Glide。

@@ -1250,25 +1250,29 @@ CUSTOM_VIEW 只用到 `sessionType` / `terminatingGracePeriodMs` / `viewData`，
 不做"选哪种眼镜"的开关，因为两种眼镜的物理前提不同（USB vs 蓝牙），谁在场是客观事实。
 两条链路**不允许同时投屏**（都会往镜片上写字，同时开会让"镜片上到底是什么"说不清）。
 
-#### 依赖：三份 jar 也必须放 `libs/`（构建踩过一次）
+#### 依赖：Kotlin 运行时**已经在依赖图里**，不要自带（连续踩了两次）
 
 Rokid 的 AAR 是 **Kotlin** 写的（引用 `kotlin.Unit` / `kotlin.Function1` /
-`kotlinx.coroutines.flow.StateFlow`），而我们这个 App 是**纯 Java** ——
-实测上一版 APK 里 `kotlin/Unit` 与 `kotlinx/coroutines/...` **一个都没有**，
-所以这三份 jar 必须随 APK 一起进去：
+`kotlinx.coroutines.flow.StateFlow`），而我们的 App 是纯 Java。看起来"必须自带 Kotlin 运行时"，
+实际上**它已经通过 AndroidX 传进来了**：`force("androidx.activity:activity:1.9.0")` 与 lifecycle
+那一串本身就是 Kotlin 写的（activity 1.9 → lifecycle-runtime-ktx → coroutines）。
 
-```
-android/app/libs/kotlin-stdlib-2.2.0.jar
-android/app/libs/kotlinx-coroutines-core-jvm-1.7.3.jar
-android/app/libs/kotlinx-coroutines-android-1.7.3.jar
+两次构建失败把这件事证得很直接：
+
+| 做法 | 结果 |
+|---|---|
+| `implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.8.1")` | 缓存里只有 **1.7.3** → Gradle 联网 → 代理是死的（`Connect to 127.0.0.1:33210 failed`）→ 失败在 `mergeDebugJavaResource` |
+| 把 2.2.0 / 1.7.3 三份 jar 放进 `libs/` 再 `files(...)` | **同一份字节被塞了两次**：`2 files found with path 'kotlin/annotation/annotation.kotlin_builtins'` |
+
+所以现在的做法是：**什么都不加**。要确认它确实在图里（不要猜）：
+
+```bash
+./gradlew :app:dependencies --configuration debugRuntimeClasspath | grep -E 'kotlin-stdlib|coroutines'
+#   期望能看到 kotlin-stdlib:2.2.0 与 kotlinx-coroutines-core-jvm:1.7.3（都是缓存里已有的）
 ```
 
-**为什么用 `files(...)` 而不是 Maven 坐标**：这台机器的 Gradle 代理是死的
-（`Connect to 127.0.0.1:33210 failed: Connection refused`）。第一版写成了
-`implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.8.1")`，
-而缓存里只有 **1.7.3** → Gradle 去联网 → 构建直接失败在
-`Execution failed for task ':app:mergeDebugJavaResource'`。放进 `libs/` 之后完全不碰网络。
-版本同理：取 `~/.gradle/caches` 里**已存在**的那几份，别凭"最新版"写。
+真出现 `NoClassDefFoundError: kotlin/…` 时，才往 `libs/` 加**对应那一份**，
+并同时把传递依赖里的同名模块 `exclude` 掉 —— 否则一定撞上上面第二条。
 
 ### 13.5 这次踩到的两个坑（都已钉住）
 
