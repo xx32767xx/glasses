@@ -1250,6 +1250,26 @@ CUSTOM_VIEW 只用到 `sessionType` / `terminatingGracePeriodMs` / `viewData`，
 不做"选哪种眼镜"的开关，因为两种眼镜的物理前提不同（USB vs 蓝牙），谁在场是客观事实。
 两条链路**不允许同时投屏**（都会往镜片上写字，同时开会让"镜片上到底是什么"说不清）。
 
+#### 依赖：三份 jar 也必须放 `libs/`（构建踩过一次）
+
+Rokid 的 AAR 是 **Kotlin** 写的（引用 `kotlin.Unit` / `kotlin.Function1` /
+`kotlinx.coroutines.flow.StateFlow`），而我们这个 App 是**纯 Java** ——
+实测上一版 APK 里 `kotlin/Unit` 与 `kotlinx/coroutines/...` **一个都没有**，
+所以这三份 jar 必须随 APK 一起进去：
+
+```
+android/app/libs/kotlin-stdlib-2.2.0.jar
+android/app/libs/kotlinx-coroutines-core-jvm-1.7.3.jar
+android/app/libs/kotlinx-coroutines-android-1.7.3.jar
+```
+
+**为什么用 `files(...)` 而不是 Maven 坐标**：这台机器的 Gradle 代理是死的
+（`Connect to 127.0.0.1:33210 failed: Connection refused`）。第一版写成了
+`implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.8.1")`，
+而缓存里只有 **1.7.3** → Gradle 去联网 → 构建直接失败在
+`Execution failed for task ':app:mergeDebugJavaResource'`。放进 `libs/` 之后完全不碰网络。
+版本同理：取 `~/.gradle/caches` 里**已存在**的那几份，别凭"最新版"写。
+
 ### 13.5 这次踩到的两个坑（都已钉住）
 
 **① `'[' + '{'` 在 Java 里是 int 加法。**
