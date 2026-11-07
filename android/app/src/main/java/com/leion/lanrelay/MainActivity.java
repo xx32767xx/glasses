@@ -177,6 +177,15 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private GlassesSubtitleView glassesView = null;
     private String glassesStatus = "未初始化";
     private boolean glassesConnected = false;
+    /**
+     * Rokid CXR-L 眼镜（**投屏译文**，5.127）。与亮亮那套**机制完全不同**：
+     * 那边"投屏一个 View"，这边"发 JSON 让镜片端自己渲染一个 TextView"。
+     *
+     * <p>两套都编译进 App，但同一时刻只用一套 —— 两条都是"投屏"，同时开就会让
+     * "镜片上到底是什么"说不清（这也是 {@link #toggleGlassesCast()} 的取舍依据）。
+     */
+    private RokidGlasses rokid = null;
+    private String rokidStatus = "Rokid：未初始化";
 
     private long lastSpeechAt = 0;
 
@@ -422,6 +431,21 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         // 免得用户切了之后重启 App、或重新投屏时又回到缺省值。
         glasses.setCameraPreviewBackground(glassesCameraBackground());
 
+        // ── Rokid CXR-L（5.127）：另一套机制，另一条分支 ─────────────────────
+        //
+        // 为什么放在最后建：它的回调里会调 renderGlassesRealStatus()，
+        // 而那个方法要读 glasses / glassesView 的状态 —— 先建它们、再建它。
+        rokid = new RokidGlasses(this, (status, casting) -> {
+            rokidStatus = status;
+            // 亮亮正在投屏时不让 Rokid 也开：两条链路都是"投屏"，
+            // 同时开会变成"镜片上到底显示的是哪一路"说不清（排障时尤其致命）。
+            if (casting && glasses != null && glasses.isCasting()) {
+                rokid.stop();
+                rokidStatus = "Rokid：亮亮正在投屏，两套不能同时开";
+            }
+            renderGlassesRealStatus();
+        });
+
         requestGlassesPermissions();
     }
 
@@ -572,6 +596,12 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         if (glasses != null) {
             glasses.destroy();
             glasses = null;
+        }
+        // Rokid 那边同理（"谁创建谁关闭"）：会话不关会让 Rokid AI App 以为我们还占着，
+        // 下一次连接会直接掉进 SESSION_ALREADY_EXISTS。幂等，可重复调。
+        if (rokid != null) {
+            rokid.close();
+            rokid = null;
         }
         super.onDestroy();
         // 录音线程先停：它持有麦克风与 AudioRecord，退出前不释放会留个坏状态
@@ -3833,18 +3863,35 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
      * 那正是"点了没反应"最典型的成因：代码什么都没做，界面也什么都不说。
      */
     private void toggleGlassesCast() {
-        if (glasses == null || glassesView == null) {
-            glassesStatus = "模块未就绪";
-        } else if (glasses.isCasting()) {
+        boolean leionCasting = glasses != null && glasses.isCasting();
+        boolean rokidCasting = rokid != null && rokid.isCasting();
+        if (leionCasting) {
             glasses.stopCast();
             glassesStatus = "已停止投屏";
-        } else if (glasses.isConnected()) {
+        } else if (rokidCasting) {
+            rokid.stop();
+            rokidStatus = "Rokid：已停止投屏";
+        } else if (glasses != null && glasses.isConnected()) {
             glassesStatus = "正在投屏";
             applyGlassesCanvasSize();
             glasses.requestCast(glassesView.getView());
-        } else {
+        } else if (glasses != null && glasses.getDeviceCount() > 0) {
             // 设备列表和连接状态分开报：这两个数字对不上才是真正要查的问题
             glassesStatus = "眼镜未连接（检测到 " + glasses.getDeviceCount() + " 个设备）";
+        } else if (rokid != null) {
+            // ── 没有亮亮眼镜 → 试 Rokid（另一套机制：蓝牙 + Rokid AI App） ────────
+            //
+            // 为什么按"有没有设备"来分而不是做成一个"选哪种眼镜"的开关：
+            // 两种眼镜的物理前提完全不同（亮亮是 USB 插着、Rokid 是蓝牙连在 Rokid AI App 里），
+            // 谁在场是**客观事实**，让用户再手动选一次只会多一个出错的地方。
+            if (rokid.isAppInstalled()) {
+                rokid.start(this);
+                rokidStatus = rokid.status();
+            } else {
+                rokidStatus = rokid.compatibilityNote();
+            }
+        } else {
+            glassesStatus = "模块未就绪";
         }
         renderGlassesRealStatus();
     }
@@ -3859,17 +3906,25 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
      */
     private void renderGlassesRealStatus() {
         if (glassesRealStatus == null) return;
-        boolean casting = glasses != null && glasses.isCasting();
-        String dot = glassesConnected ? "● " : "○ ";
-        glassesRealStatus.setText(dot + glassesStatus);
+        boolean leionCasting = glasses != null && glasses.isCasting();
+        boolean rokidCasting = rokid != null && rokid.isCasting();
+        boolean casting = leionCasting || rokidCasting;
+        // 只有"真的在投屏"或"亮亮已连上"才算亮灯；Rokid 只是装了 AI App 不算（它还没连上）。
+        boolean linked = glassesConnected || rokidCasting;
+        // 两条链路谁在管这一行就说谁：亮亮优先（USB 更确定），其次 Rokid，最后亮亮的状态。
+        String line;
+        if (leionCasting || (glassesConnected && !rokidCasting)) line = glassesStatus;
+        else if (rokidCasting || rokid != null) line = rokidStatus;
+        else line = glassesStatus;
+        glassesRealStatus.setText((linked ? "● " : "○ ") + line);
         glassesRealStatus.setTextColor(getColor(
-                glassesConnected ? (casting ? R.color.ok : R.color.brand) : R.color.ink_soft));
+                linked ? (casting ? R.color.ok : R.color.brand) : R.color.ink_soft));
         if (glassesRealToggle != null) {
             glassesRealToggle.setText(casting ? R.string.glasses_real_stop : R.string.glasses_real_cast);
             // 没连眼镜时按钮暗着，但**不禁用**：点了会明确说"眼镜未连接"，
             // 而不是让人对着一个点不动的按钮猜
             glassesRealToggle.setTextColor(getColor(
-                    glassesConnected ? R.color.brand : R.color.ink_faint));
+                    linked ? R.color.brand : R.color.ink_faint));
         }
     }
 
@@ -3941,14 +3996,17 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
      * </ul>
      */
     private void pushToGlasses(String text, String source) {
-        if (glasses == null || glassesView == null) return;
-        if (!glasses.isCasting()) return;
+        // 两条链路各自判断"我现在在不在投屏"：亮亮是 USB 采样 View，Rokid 是发 JSON。
+        // **两条都没在投屏就什么都不做** —— 不能影响手机端。
+        boolean leionCasting = glasses != null && glassesView != null && glasses.isCasting();
+        boolean rokidCasting = rokid != null && rokid.isCasting();
+        if (!leionCasting && !rokidCasting) return;
 
         String show = text == null || text.isEmpty() ? source : text;
         if (show == null) show = "";
         boolean partial = lastFramePartial;
 
-        // ★ 增量帧**不推给眼镜**。
+        // ★ 增量帧**不推给眼镜**（两套一视同仁）。
         //
         //   为什么：真机日志显示每个增量帧都只有 1~3 个字符（"Ol" / "V" / "S" / "Na"）。
         //   原因是节流 —— partialThrottleMs=400，而短句的翻译在 400ms 内就完成了，
@@ -3967,16 +4025,23 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             return;
         }
 
-        glassesView.setSubtitle(show);
-        scheduleGlassesRefresh();
+        if (leionCasting) {
+            glassesView.setSubtitle(show);
+            scheduleGlassesRefresh();
+        }
+        if (rokidCasting) {
+            // 投屏译文：Rokid 那一路只送**译文**这一侧（原文留在手机上）。
+            rokid.push(show);
+        }
 
         // 把"我实际投上去的是什么"回传给电脑，和"电脑发了什么"放进同一份日志。
         //
         // 为什么必须两边并排：电脑端日志能证明它发了定稿帧，但手机有没有**应用**、
         // 应用成了什么，从那边完全看不见 —— 两边各自看都正常，合起来才是问题。
         if (client != null) {
-            client.sendDiag("投屏：定稿 → "
-                    + (show.length() > 80 ? show.substring(0, 80) + "…" : show));
+            client.sendDiag("投屏：定稿"
+                    + (leionCasting && rokidCasting ? "（亮亮+Rokid）" : rokidCasting ? "（Rokid）" : "")
+                    + " → " + (show.length() > 80 ? show.substring(0, 80) + "…" : show));
         }
     }
 
@@ -4098,6 +4163,19 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
+    /**
+     * Rokid 授权结果**可能从 onActivityResult 回来**（官方 Sample 的注释：
+     * 「CXR-L 当前授权流程依赖把结果转发到 onActivityResult」）。
+     *
+     * <p>样例是把**所有**结果都转给 `parseAuthorizationResult`（它自己判断是不是授权结果），
+     * 这里照做 —— 但它返回 null 的时候我们**不认领**这次结果，交回给系统继续派发。
+     */
+    @Override
+    public void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (rokid != null && rokid.handleActivityResult(resultCode, data)) return;
+        super.onActivityResult(requestCode, resultCode, data);
     }
 
     @Override

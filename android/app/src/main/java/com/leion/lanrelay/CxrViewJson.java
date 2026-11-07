@@ -1,15 +1,12 @@
 package com.leion.lanrelay;
 
-import java.util.ArrayList;
-import java.util.List;
-
 /**
- * CxrViewJson —— 把"要显示在 Rokid 眼镜镜片上的几行字"编成 CXR CustomView 的 JSON（5.51）。
+ * CxrViewJson —— 把"要显示在 Rokid 眼镜镜片上的那一句译文"编成 CXR-L CustomView 的 JSON（5.127）。
  * ============================================================================
- * <b>背景（已确认的事实）</b>：Rokid 的 CXR SDK 只提供**设备协同 + 显示**，
- * **不提供 ASR，也不提供翻译**。所以分工是固定的：
+ * <b>背景（已确认的事实，来自官方 Sample 与 AAR 字节码）</b>：Rokid 的 CXR-L SDK 提供
+ * **设备协同 + 显示**，**不提供 ASR、也不提供翻译**。所以分工是固定的：
  * <pre>
- *   眼镜麦克风（将来）→ 我们的服务器 whisper 识别 → 我们的大脑翻译 → 这几行字 → 眼镜显示
+ *   手机麦克风/眼镜麦克风 → 我们的服务器 whisper 识别 → 我们的大脑翻译 → 这句译文 → 眼镜显示
  *                                    ↑ 这两个环节 Rokid 不参与
  * </pre>
  *
@@ -17,115 +14,124 @@ import java.util.List;
  * 因为协议形状错了在真机上只会表现成"镜片上什么都没有"，没有报错 —— 那种错误只能靠
  * 直接跑测试钉住（见 tests/java/CxrViewJsonCheck.java）。
  *
- * 协议形状（来自 Rokid CXR-L SDK 的 CustomView 示例）：
+ * 协议形状（逐字取自官方 Sample 的 `SelfViewJson` / `UpdateViewJson` / `TextViewProps`）：
  * <pre>
  *   打开一页：{"type":"LinearLayout","props":{"id":…},"children":[{"type":"TextView","props":{…}}]}
- *   增量更新：[{"action":"update","id":"sub0","props":{"text":"…"}}]
+ *   增量更新：[{"action":"update","id":"subtitle_text","props":{"text":"…"}}]
  * </pre>
- * 两句都**只认字符串**，所以所有数字/颜色都要写成字符串（`"16sp"`、`"#FFFFFFFF"`）。
+ * 四条硬约束（每一条都写错了就"镜片上没字"，而且不报错）：
+ * <ol>
+ *   <li><b>只认字符串</b>：尺寸要 `"40sp"`、颜色要 8 位 ARGB `"#FF00FF00"`、宽高要
+ *       `"match_parent"` / `"wrap_content"` / `"240dp"`。给数字会被眼镜端拒绝。</li>
+ *   <li><b>JSON 必须是紧凑单行</b>：官方 Sample 注释写明"多行缩进的 JSON 会让
+ *       `customView_open` **静默失败**"（1.0.4 真机验证过的差异）。这里的拼接天然是单行。</li>
+ *   <li><b>id 只能字母/数字/下划线</b>，且在 `props` 里（不是与 `type` 平级）。</li>
+ *   <li><b>颜色只需要绿通道</b>：官方 Sample 的 `processColorToGrayToGreen` 把任何颜色转成
+ *       灰度再塞进绿通道 —— 镜片是**绿光单色屏**。所以这里直接给绿通道量（`#FF00GG00`），
+ *       避免"给了白色、镜片上却是暗的"。</li>
+ * </ol>
+ *
+ * <p><b>为什么只有一行字</b>：这一版只做「投屏译文」。官方 Sample 里 `TextView` 会按
+ * `layout_width=match_parent` 自动换行，行数由**文字长度**决定 —— 比在代码里估"几行"可靠。
+ * 需要原文+译文两行时，照同样的形状再加一个 TextView 即可（id 换一个）。
  */
 public final class CxrViewJson {
 
-    /** 镜片上最多显示几行（我们的手机端是 3 行预算，这里保持一致）。 */
-    public static final int MAX_LINES = 3;
     /** 根容器 id（增量更新时按 id 找节点）。 */
-    public static final String ROOT_ID = "leion_subtitle";
-    /** 第 n 行的节点 id 前缀：sub0 / sub1 / sub2。 */
-    public static final String LINE_ID_PREFIX = "sub";
+    public static final String ROOT_ID = "leion_root";
+    /** 那一行译文的节点 id。更新时**必须**用同一个 id，否则永远更新不到。 */
+    public static final String TEXT_ID = "subtitle_text";
+    /** 缺省字号（sp，字符串）。16sp 是官方缺省；镜片上偏小，这里从 32 起。 */
+    public static final String DEFAULT_TEXT_SIZE = "32sp";
+    /**
+     * 缺省文字颜色：绿通道最亮（`#FF00FF00`）。
+     *
+     * <p>不写白色：官方 Sample 会把颜色转成灰度再塞进绿通道（镜片是绿光单色屏），
+     * 直接给"绿通道量"少一层转义歧义 —— 见类注释第 ④ 条。
+     */
+    public static final String DEFAULT_TEXT_COLOR = "#FF00FF00";
+    /** 背景：纯黑（不遮住透视的真实世界；镜片上也只剩绿字）。 */
+    public static final String BACKGROUND_COLOR = "#FF000000";
 
     private CxrViewJson() {
     }
 
-    /** 某一行的样式：原文用小字灰、译文用大字白（眼镜是单色屏也看得清的对比）。 */
-    public static final class Line {
-        public final String text;
-        public final String textSize;
-        public final String textColor;
-
-        public Line(String text, String textSize, String textColor) {
-            this.text = text == null ? "" : text;
-            this.textSize = textSize == null ? "16sp" : textSize;
-            this.textColor = textColor == null ? "#FFFFFFFF" : textColor;
-        }
-    }
-
     /**
-     * 打开镜片上那一页：一个竖向 LinearLayout，里面每一行一个 TextView。
+     * 打开镜片上那一页：黑色竖向容器 + 一行自动换行的 TextView。
      *
-     * <p>为什么固定三行而不是按内容动态增删节点：镜片上的视图树**反复增删节点**容易闪，
-     * 而"固定三个槽位 + 只改文字"是最稳的形态（与手机端"同一句原位更新"同一个思路）。
-     *
-     * @param lines 要显示的行（最多 {@link #MAX_LINES} 行；空的会被略过）
-     * @return 一页 CustomView 的 JSON
+     * @param text     初始文字（可以是空串：空 = 镜片上只有黑底，等第一句译文）
+     * @param textSize 字号，字符串形态（`"32sp"`）；给纯数字会自动补 `sp`
+     * @return 一页 CustomView 的 JSON（紧凑单行）
      */
-    public static String openView(List<Line> lines) {
-        StringBuilder json = new StringBuilder();
-        json.append('{').append(quote("type")).append(':').append(quote("LinearLayout"))
-            .append(',').append(quote("props")).append(":{")
-            .append(quote("id")).append(':').append(quote(ROOT_ID)).append(',')
-            .append(quote("layout_width")).append(':').append(quote("match_parent")).append(',')
-            .append(quote("layout_height")).append(':').append(quote("match_parent")).append(',')
-            .append(quote("orientation")).append(':').append(quote("vertical")).append(',')
-            .append(quote("backgroundColor")).append(':').append(quote("#FF000000"))
-            .append("},").append(quote("children")).append(":[");
-        List<Line> shown = normalize(lines);
-        for (int index = 0; index < shown.size(); index += 1) {
-            if (index > 0) json.append(',');
-            json.append(textNode(index, shown.get(index)));
-        }
-        json.append("]}");
-        return json.toString();
+    public static String openView(String text, String textSize) {
+        String size = normalizeSize(textSize);
+        return '{'
+                + quote("type") + ':' + quote("LinearLayout") + ','
+                + quote("props") + ":{"
+                + quote("id") + ':' + quote(ROOT_ID) + ','
+                + quote("layout_width") + ':' + quote("match_parent") + ','
+                + quote("layout_height") + ':' + quote("match_parent") + ','
+                + quote("orientation") + ':' + quote("vertical") + ','
+                + quote("backgroundColor") + ':' + quote(BACKGROUND_COLOR)
+                + "},"
+                + quote("children") + ":["
+                + textNode(text, size)
+                + "]}";
     }
 
     /**
      * 增量更新：只发改动的文字（`action=update`）。
      *
-     * @return `[{"action":"update","id":"sub0","props":{"text":"…"}}, …]`
+     * <p><b>空串也要发</b>：空串表示"这一句清掉"，是正常的收尾动作；
+     * 反过来"跳过空串"会让镜片上一直留着上一句 —— 那比不显示更糟。
      */
-    public static String updateView(List<Line> lines) {
-        StringBuilder json = new StringBuilder("[");
-        List<Line> shown = normalize(lines);
-        for (int index = 0; index < shown.size(); index += 1) {
-            if (index > 0) json.append(',');
-            json.append('{').append(quote("action")).append(':').append(quote("update")).append(',')
-                .append(quote("id")).append(':').append(quote(LINE_ID_PREFIX + index)).append(',')
-                .append(quote("props")).append(":{")
-                .append(quote("text")).append(':').append(quote(shown.get(index).text))
-                .append("}}");
-        }
-        json.append(']');
-        return json.toString();
+    public static String updateText(String text) {
+        // ⚠️ 用字符串字面量而不是 char：`'[' + '{' ...` 在 Java 里是 **int 加法**，
+        //    会拼出一个 "214{…" 的串（`[` = 91、`{` = 123），镜片端只会静默不显示。
+        //    这条是 tests/java/CxrViewJsonCheck.java 第一个逮出来的 —— 真机上的表现只是"没字"。
+        return "["
+                + '{' + quote("action") + ':' + quote("update") + ','
+                + quote("id") + ':' + quote(TEXT_ID) + ','
+                + quote("props") + ":{"
+                + quote("text") + ':' + quote(nullToEmpty(text))
+                + "}}"
+                + "]";
     }
 
-    /** 第 n 行的节点 id（增量更新与打开视图必须用同一套 id，否则更新会落空）。 */
-    public static String lineId(int index) {
-        return LINE_ID_PREFIX + index;
+    /** 一句现成的更新 JSON（给"清屏"用：文字为空）。 */
+    public static String clearText() {
+        return updateText("");
     }
 
-    private static String textNode(int index, Line line) {
-        return '{' + quote("type") + ':' + quote("TextView") + ','
-            + quote("props") + ":{"
-            + quote("id") + ':' + quote(lineId(index)) + ','
-            + quote("layout_width") + ':' + quote("match_parent") + ','
-            + quote("layout_height") + ':' + quote("wrap_content") + ','
-            + quote("text") + ':' + quote(line.text) + ','
-            + quote("textSize") + ':' + quote(line.textSize) + ','
-            + quote("textColor") + ':' + quote(line.textColor)
-            + "}}";
+    /** 那一行译文的节点（自动换行：宽度铺满、高度随内容）。 */
+    private static String textNode(String text, String size) {
+        return '{'
+                + quote("type") + ':' + quote("TextView") + ','
+                + quote("props") + ":{"
+                + quote("id") + ':' + quote(TEXT_ID) + ','
+                + quote("layout_width") + ':' + quote("match_parent") + ','
+                + quote("layout_height") + ':' + quote("wrap_content") + ','
+                + quote("text") + ':' + quote(nullToEmpty(text)) + ','
+                + quote("textSize") + ':' + quote(size) + ','
+                + quote("textColor") + ':' + quote(DEFAULT_TEXT_COLOR)
+                + "}}";
     }
 
-    /** 去掉空行、裁到 {@link #MAX_LINES}（**最新的在最后**，所以裁掉的是最旧的）。 */
-    private static List<Line> normalize(List<Line> lines) {
-        List<Line> kept = new ArrayList<>();
-        if (lines != null) {
-            for (Line line : lines) {
-                if (line == null) continue;
-                if (line.text.trim().isEmpty()) continue;
-                kept.add(line);
-            }
-        }
-        while (kept.size() > MAX_LINES) kept.remove(0);
-        return kept;
+    /**
+     * 把字号规整成协议要的形状：`"32sp"`。
+     *
+     * <p>纯数字补 `sp`；已经是 `NNsp` 的原样；其它（写错成 `"32px"` / `"big"`）退回缺省 ——
+     * 这里的取舍是"宁可偏大/偏小，也不要整包 JSON 被拒"（被拒的表现同样是镜片上没字）。
+     */
+    static String normalizeSize(String textSize) {
+        String raw = textSize == null ? "" : textSize.trim();
+        if (raw.matches("[0-9]+")) return raw + "sp";
+        if (raw.matches("[0-9]+sp")) return raw;
+        return DEFAULT_TEXT_SIZE;
+    }
+
+    private static String nullToEmpty(String text) {
+        return text == null ? "" : text;
     }
 
     /**
@@ -133,8 +139,8 @@ public final class CxrViewJson {
      *
      * <p>为什么自己写而不是用 org.json：这个类要能在**没有 Android SDK 的机器上**
      * 编译执行（见 tests/java/CxrViewJsonCheck.java），而 desktop 的 org.json 是 stub。
-     * 转义必须覆盖 `"`、`\`、换行、制表 —— 译文里出现引号很常见，漏了就整包 JSON 坏掉，
-     * 而眼镜那边的表现只是"不显示"。
+     * 转义必须覆盖 `"`、`\`、换行、制表与控制字符 —— 译文里出现引号很常见，
+     * 漏了就整包 JSON 坏掉，而眼镜那边的表现只是"不显示"。
      */
     public static String quote(String raw) {
         StringBuilder out = new StringBuilder(raw == null ? 2 : raw.length() + 2);

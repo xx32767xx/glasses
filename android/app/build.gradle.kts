@@ -4,6 +4,10 @@
 //   · 眼镜 SDK 的 AAR 引用了 460 次 androidx.* → gradle.properties 必须开 useAndroidX
 //   · AAR 的 jni/ 只有 arm64-v8a → 必须限制 abiFilters，否则其他架构构建报错
 //   · AAR 自己声明 minSdkVersion=24 → 我们正好是 24，不用动
+//   · **Rokid CXR-L 那个 AAR 声明 minSdkVersion=28（5.127）** → 我们的 minSdk 因此从
+//     24 提到 28。代价要说清：Android 7.0/7.1/8.0（API 24~27）的机器装不上了。
+//     取舍理由是两条 SDK 只有其中一个能选：要么不接 Rokid（保持 24），要么接它（28）。
+//     用户那批手机都在 Android 12 以上，所以选后者。
 plugins {
   id("com.android.application")
 }
@@ -14,7 +18,7 @@ android {
 
   defaultConfig {
     applicationId = "com.leion.lanrelay"
-    minSdk = 24
+    minSdk = 28
     targetSdk = 34
     // 显示那一块（字号固定值化、投屏样例、排版自检）到此收口，版本进 4.0，
     // 下一阶段的重点转到**准确率**。versionCode 从 29 起继续递增，
@@ -121,8 +125,8 @@ android {
     // 4.74：帧里若带 roomId 则不用推断（为多房间并发预留）；并发现状与三步路径见 docs/21 §4.74。
     // 4.76：并发第一步——帧带 roomId，/frame?room= 按房间取；音频上传带 room 作为归属线索。见 docs/21 §4.75。
     // 4.57：三语的一处安全细节——房间页在**正在开麦上传时不自动 recreate**（换语言会把这一段发言打断）。
-        versionCode = 277
-        versionName = "4.248"
+        versionCode = 278
+        versionName = "4.249"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），
@@ -195,6 +199,24 @@ dependencies {
   // 注意：这里用 implementation(files(...)) 而不是 flatDir 仓库，
   // 因为 AAR 的清单要被合并（它带了 USB 授权 Activity 和一堆 Service）。
   implementation(files("libs/platform-4.8.0.4-release.aar"))
+
+  // Rokid CXR-L（5.127）：**只做投屏译文**。它和亮亮那套是两套完全不同的机制 ——
+  // 亮亮是"把我们的 View 采样成画面"，Rokid 是"按 JSON 让镜片端渲染 CustomView"。
+  // AAR 只有 171 KB、没有原生库，清单里只声明 minSdk 28 + 两条 <queries>，
+  // 不会像 platform 那个 AAR 一样带进一堆权限与固件。
+  //
+  // 为什么用**本地 AAR** 而不是官方样例那种 `maven(https://maven.rokid.com/…)`：
+  // 本机到 maven 仓库的 TLS 时通时不通（和 HF 镜像那个自签证书是同一类问题），
+  // 放进 libs/ 才能离线构建 —— 与 platform AAR 的处理方式一致。
+  implementation(files("libs/client-l-1.1.2.aar"))
+
+  // ⚠️ Rokid 那个 AAR 是 **Kotlin** 写的：它的字节码引用 kotlin.Unit / Function1 /
+  //    StateFlow（会话状态）。而 `files(...)` 形式的本地 AAR **没有 POM**，Gradle 看不见
+  //    传递依赖 —— 必须显式写出来，否则"编译能过、一投屏就 NoClassDefFoundError"。
+  //    版本取**本机缓存里已有的**（离线可构建）：kotlin-stdlib 2.2.0 / coroutines 1.8.1。
+  implementation("org.jetbrains.kotlin:kotlin-stdlib:2.2.0")
+  implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.8.1")
+  implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
   // AAR 的 classes.jar 直接引用了这些 AndroidX 包（grep 过，见 docs/09 第 5 节）。
   // glide **不需要** —— 样例注释说"合并清单依赖 Glide"，但实测 AAR 里 0 处引用 Glide。

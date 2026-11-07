@@ -1161,3 +1161,132 @@ androidx.lifecycle.LifecycleOwner / androidx.localbroadcastmanager.content
 
 所以真正要同行的是 **AndroidX**，不是 Glide。**以代码为准，别信注释。**
 
+
+---
+
+## 13. Rokid CXR-L（**只做投屏译文**，5.127）
+
+> 这一节是**另一套眼镜**：Rokid 的 CXR-L（`com.rokid.cxr:client-l:1.1.2`）。
+> 用户的要求很窄："**把 Rokid 眼镜的显示做了，只考虑投屏译文**" —— 所以这一节只讲
+> 「一句译文怎么上镜片」，不涉及眼镜麦克风、相机、按键、AI 助手。
+
+### 13.1 机制完全不同：不是"投屏一个 View"，是"发 JSON 让镜片端渲染"
+
+| | 亮亮 Glass3（第 1~10 节） | Rokid CXR-L（这一节） |
+|---|---|---|
+| 连接 | **USB**（手机插着眼镜） | **蓝牙**（眼镜必须在 **Rokid AI App** 里连上） |
+| 显示机制 | `IGlassDisplay.createCaptureScreen(ctx, view)`：SDK **采样我们那块 View** | `CxrSession` + `SessionConfig.viewData`：我们发 **JSON**，镜片端自己渲染 |
+| 改一行字 | 改 View 再触发重绘 | `session.customViewUpdate(增量 JSON)` |
+| 我们要做的东西 | 一个 View（字号/折行/翻页全自己算） | 两个 JSON 生成函数（打开视图 / 更新文字） |
+| 尺寸 | 必须等于眼镜分辨率（`DeviceInfo`），否则"数据越界" | 不用管：`match_parent` 由镜片端排版 |
+| 依赖 | 22 MB AAR + 固件 | **171 KB** AAR，无原生库、无固件、无额外权限 |
+
+所以两边**不能共用代码**，只能共用"哪一句译文"这个输入 —— `MainActivity.pushToGlasses(...)`
+就是那个汇合点。
+
+### 13.2 API（**从 AAR 字节码 javap 出来的**，不是照样例推测）
+
+```java
+// 管理器（Kotlin 伴生对象 → Java 侧走静态字段 Companion）
+CxrSessionManager manager = CxrSessionManager.Companion.getInstance(appContext);
+boolean installed = manager.isRokidAppInstalled(context);
+RokidAppStatus status = manager.checkRokidAppCompatibility(context);   // Compatible / NotInstalled / VersionTooLow
+boolean bt = manager.isGlassesBtConnected();                            // 系统蓝牙配对 ≠ 在 AI App 里连上
+manager.requestAuthorization(activity, Arrays.asList(GlassPermission.CAMERA, MICROPHONE, MEDIA),
+        result -> { ...; return Unit.INSTANCE; });                      // kotlin.jvm.functions.Function1
+AuthResult r = manager.parseAuthorizationResult(resultCode, intent);    // onActivityResult 那条路
+
+// 会话
+CxrSession session = manager.create(new SessionConfig(
+        SessionType.CUSTOM_VIEW, null, AiInterceptMode.ALLOW_WITH_PAUSE, 5000L,
+        new SessionTimeouts(), viewJson, null, null, null));            // 9 个参数，见下
+session.addLifecycleCallback(cbk);                                        // ISessionLifecycleCbk（6 个方法）
+session.connect(token);                                                   // void
+SessionResult<Unit> r2 = session.customViewUpdate(updateJson);            // ⚠️ **同步**，不是挂起函数
+session.close();                                                          // 谁创建谁关闭
+```
+
+`SessionConfig` 的 9 个参数依次是：
+`sessionType, glassesPackageName, aiInterceptMode, terminatingGracePeriodMs, timeouts,
+viewData, viewIconData, glassesActivityName, glassesApkPath`。
+CUSTOM_VIEW 只用到 `sessionType` / `terminatingGracePeriodMs` / `viewData`，其余给 `null`。
+
+> ⚠️ 与亮亮那次一样：**签名一律 javap，别照样例推**。Kotlin 的伴生对象、`@JvmStatic`、
+> 默认参数在 Java 侧看起来都不一样；`customViewUpdate` 看着像挂起函数（样例里包在 `launch` 里），
+> 实际返回 `SessionResult<Unit>`，是同步调用。
+
+### 13.3 协议：两个 JSON，四条硬约束
+
+```json
+// 打开一页（建会话时随 SessionConfig.viewData 给出）
+{"type":"LinearLayout","props":{"id":"leion_root","layout_width":"match_parent",
+ "layout_height":"match_parent","orientation":"vertical","backgroundColor":"#FF000000"},
+ "children":[{"type":"TextView","props":{"id":"subtitle_text","layout_width":"match_parent",
+ "layout_height":"wrap_content","text":"","textSize":"32sp","textColor":"#FF00FF00"}}]}
+
+// 增量更新（之后每句译文一条）
+[{"action":"update","id":"subtitle_text","props":{"text":"今天下午三点开会"}}]
+```
+
+四条硬约束，每条写错的表现都只是"镜片上什么都没有"（**没有报错、没有日志**）：
+
+1. **只认字符串**：尺寸 `"32sp"`、颜色 `"#FF00FF00"`、宽高 `"match_parent"`。给数字会被拒。
+2. **必须是紧凑单行**：官方 Sample 注释原话「多行缩进的 JSON 会让 `customView_open`
+   **静默失败**（1.0.4 真机验证）」。所以拼接出来就是一行，别美化。
+3. **id 只能字母/数字/下划线，而且写在 `props` 里**（不是与 `type` 平级）。
+4. **颜色只需要绿通道**：官方 Sample 的 `processColorToGrayToGreen()` 把任何颜色转成灰度再塞进
+   绿通道 —— 镜片是**绿光单色屏**。所以这里直接给 `#FF00GG00`，不写白色。
+
+### 13.4 我们这边怎么接（代码位置）
+
+| 做什么 | 在哪 |
+|---|---|
+| 两个 JSON 的生成（**纯 Java、不 import android**） | `android/app/src/main/java/com/leion/lanrelay/CxrViewJson.java` |
+| 会话生命周期 / 授权 / 连接 / 推文字 | `android/.../RokidGlasses.java` |
+| 什么时候推、推哪一句、和亮亮怎么分流 | `MainActivity.pushToGlasses(...)` / `toggleGlassesCast()` |
+| 可执行验证（23 条） | `tests/java/CxrViewJsonCheck.java`（由 `tests/tts-suite.mjs` 跑起来） |
+
+分流规则（`toggleGlassesCast`）：**亮亮插着就用亮亮；没有亮亮设备且手机装了 Rokid AI App 就用 Rokid**。
+不做"选哪种眼镜"的开关，因为两种眼镜的物理前提不同（USB vs 蓝牙），谁在场是客观事实。
+两条链路**不允许同时投屏**（都会往镜片上写字，同时开会让"镜片上到底是什么"说不清）。
+
+### 13.5 这次踩到的两个坑（都已钉住）
+
+**① `'[' + '{'` 在 Java 里是 int 加法。**
+`updateText()` 第一版写成 `return '[' + '{' + quote(...)`，拼出来是 `"214{\"action\"…"` ——
+`[` 是 91、`{` 是 123，`char + char` 变成 `int` 再和 String 拼。真机上的表现只是"镜片上没字"，
+和"JSON 写错"完全一样。现在测试里有一条专门盯它（`passed=23` 里的那条），
+`tts-suite` 也有一条源码级检查。
+
+**② 授权结果要从 `onActivityResult` 转发。**
+官方 Sample 的注释：「CXR-L 当前授权流程依赖把结果转发到 onActivityResult」。
+所以 `MainActivity` 加了 `onActivityResult` 覆写，把所有结果交给
+`manager.parseAuthorizationResult(...)`（它自己判断是不是授权结果，返回 null 就不认领）。
+
+### 13.6 一个产品级代价：`minSdk` 24 → 28
+
+Rokid 那个 AAR 的清单写死 `minSdkVersion="28"`。把它作为依赖引进来，我们的 `minSdk` 就必须 ≥ 28
+（两条 SDK 之间只能选一个）。取舍：Android 7.0/7.1/8.0（API 24~27）的机器从此装不上；
+用户那批手机都在 Android 12 以上，所以选接 Rokid。**这一条是产品决定，写在这里避免以后被当成 bug 查。**
+
+### 13.7 还没验证的（必须真机）
+
+| 项 | 为什么必须真机 | 怎么验 |
+|---|---|---|
+| 镜片上**真的出字** | JSON 协议只有镜片端认不认这一条判据 | 接 Rokid 眼镜 → 点「投屏」→ 说一句 → 看镜片 |
+| `sp` 字号在绿光单色屏上的观感 | 绿光屏的"看得清"和手机屏不是一回事 | 按屏高 1/10 起的，戴上后调 `CxrViewJson` 的缺省或 `RokidGlasses.fontSizeSp()` |
+| 蓝牙链路的延迟 | 一句译文从 `customViewUpdate` 到镜片亮起，不知道多少毫秒 | 电脑日志记"发出去的时刻"，镜片侧只能靠肉眼 |
+| AI 助手打断（`ALLOW_WITH_PAUSE`） | 眼镜自带的 AI 助手会暂停我们的会话 | 会话暂停/恢复的日志（`onSessionPaused/Resumed`）已在状态行里 |
+| 退出后能否重连 | 会话不关会让下一次 `create` 掉进 `SESSION_ALREADY_EXISTS` | 已按"退出就 close"实现，实际行为待验 |
+
+### 13.8 本机怎么自检（没有设备也能跑）
+
+```bash
+# ① 协议 JSON 的 23 条可执行断言（真编译、真运行）
+node tests/tts-suite.mjs 2>&1 | grep -A3 "镜片显示 JSON"
+# ② 全量安卓源码的类型检查（含 Rokid 那套；AAR 的 classes.jar 在 classpath 里）
+javac @var/javac-check-all.txt      # 只有 deprecation 提示
+```
+
+> ⚠️ 与亮亮那条一样：**编译通过 ≠ 能跑**。`javac` 只能证明签名对、类型对；
+> 镜片上出不出字、字号合不合适，只有戴上才知道 —— 所以 13.7 那张表不许删。
