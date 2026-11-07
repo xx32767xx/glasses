@@ -2600,6 +2600,61 @@ def _cli_profile(args):
     }
 
 
+def probe_cloud_engines(table, engines):
+    """启动时探一次**云端引擎**的密钥（只读环境/文件，不联网、不加载模型）。
+
+    <p>为什么要有它：5.131 真机上 `en-US → en-tencent` 切完之后，表现是**每段**都打一行
+    「这一段要求的引擎/模型 tencent:16k_en 加载失败（…缺密钥…）」，而真正的原因
+    （服务环境里没有 `TENCENT_ASR_SECRET_FILE`）要在几十行滚动日志里翻才看得出来。
+    密钥是**静态配置**，跟这一段音频是什么无关 —— 这类错误应该在启动时就说清。
+
+    @returns 要打到 stderr 的若干行（没有问题时是空列表）
+    """
+    lines = []
+    used = _engines_used_by(table)
+    for key, hint in (
+        ("tencent", "变量应写进 /etc/leion/secrets.env（asr.env 是 make-env-file.py 生成的那份），"
+                    "改完要 restart；再核对：sudo tr '\\0' '\\n' < /proc/$(pgrep -f asr-worker | head -1)"
+                    "/environ | grep TENCENT"),
+        ("funasr", "检查 DASHSCOPE_API_KEY / DASHSCOPE_WS_URL 是否进了服务环境"
+                   "（/etc/leion/secrets.env），改完要 restart"),
+    ):
+        if key not in used:
+            continue
+        engine = (engines or {}).get(key)
+        if engine is None:
+            # 表里写了这个引擎但注册表里没有 —— resolve_engine 会在别处直接报错，这里不重复喊
+            continue
+        try:
+            engine.load({}, "cpu")
+        except Exception as error:                                  # noqa: BLE001
+            lines.append(f"[whisper_stream] ⚠️ 表里用到了云端引擎 {key}，但这台机器的环境里用不了它："
+                         f"{type(error).__name__}: {error}")
+            lines.append(f"[whisper_stream]    → {hint}")
+    return lines
+
+
+def _engines_used_by(table):
+    """这张表里用到了哪些**引擎**（default / strategies / languages 三层都看）。"""
+    used = set()
+
+    def add(entry):
+        if isinstance(entry, dict):
+            engine = str(entry.get("engine") or "").strip().lower()
+            if engine:
+                used.add(engine)
+
+    if not isinstance(table, dict):
+        return used
+    add(table.get("default"))
+    for group in ("strategies", "languages"):
+        bucket = table.get(group)
+        if isinstance(bucket, dict):
+            for entry in bucket.values():
+                add(entry)
+    return used
+
+
 def describe_asr_table(table, cli=None):
     """把模型表摊成一行（启动日志与热加载日志都用它）。
 
@@ -4422,6 +4477,17 @@ def main():
     except ValueError as error:
         print(f"[whisper_stream] ✗ {error}", file=sys.stderr)
         return 2
+
+    # 5.131：**云端引擎的密钥在启动时先探一次**。
+    #
+    # 为什么：真机现场（`en-US → en-tencent` 切完之后）的表现是——
+    #   每段都打一行「这一段要求的引擎/模型 tencent:16k_en 加载失败（…缺密钥…）」，
+    #   而要在几十行滚动日志里翻到那句才能知道"是密钥没进服务环境"。
+    # 密钥这类**静态配置**不该等到第一段音频才暴露：它跟音频内容无关，启动时就该说清。
+    # 探的方式与真正加载同一个函数（engine.load），而且云端引擎的 load 只读环境变量/文件、
+    # **不联网**，所以这一步没有副作用；本地 whisper/parakeet 不探（会真加载模型）。
+    for line in probe_cloud_engines(args.asr_table, engines):
+        print(line, file=sys.stderr)
 
     # 5.99：单独试识别 —— 一段（或一批）音频直接进引擎，不经切句/队列/大脑。
     # 放在这里：表已经读完，引擎注册表也有，但**还没加载启动模型** ——

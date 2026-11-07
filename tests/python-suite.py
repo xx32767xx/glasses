@@ -3077,6 +3077,41 @@ def main():
         _stub_server.server_close()
         _shutil_tencent.rmtree(tencent_offline_dir, ignore_errors=True)
 
+    # 5.131：表里用到了云端引擎，但服务环境里没有密钥 —— **启动时就该喊**，
+    # 不该等到第一段音频才在几十行日志里说一句"加载失败"。
+    startup_table = {
+        "default": {"model": "large-v3"},
+        "strategies": {"en-tencent": {"engine": "tencent", "model": "16k_en"}},
+        "languages": {"en-US": {"strategy": "en-tencent"}},
+    }
+    check("能认出这张表用到了哪些引擎（default / strategies / languages 三层）",
+          whisper_stream._engines_used_by(startup_table) == {"tencent"}
+          and whisper_stream._engines_used_by({"default": {"engine": "funasr"}}) == {"funasr"}
+          and whisper_stream._engines_used_by({}) == set(),
+          str(whisper_stream._engines_used_by(startup_table)))
+    _saved_probe = {name: os.environ.get(name) for name in ("TENCENT_ASR_SECRET_ID",
+                                                            "TENCENT_ASR_SECRET_KEY",
+                                                            "TENCENT_ASR_SECRET_FILE")}
+    try:
+        for name in _saved_probe:
+            os.environ.pop(name, None)
+        warnings = whisper_stream.probe_cloud_engines(startup_table, whisper_stream.build_engines(None, None))
+        joined = "\n".join(warnings)
+        check("缺密钥 → 启动时就喊出来（含 TENCENT_ASR_SECRET_ID 与「写进 secrets.env」的指路）",
+              "TENCENT_ASR_SECRET_ID" in joined and "secrets.env" in joined, joined)
+        os.environ["TENCENT_ASR_SECRET_ID"] = "AKIDprobe"
+        os.environ["TENCENT_ASR_SECRET_KEY"] = "probesecret"
+        check("密钥齐了 → 不喊（不制造噪声）",
+              whisper_stream.probe_cloud_engines(startup_table, whisper_stream.build_engines(None, None)) == [],
+              str(whisper_stream.probe_cloud_engines(startup_table,
+                                                     whisper_stream.build_engines(None, None))))
+    finally:
+        for name, value in _saved_probe.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
     # 5.84：葡语走 DashScope Fun-ASR —— 缺 websockets / 缺 key 都必须大声报错
     funasr = engines["funasr"]
     check("funasr 的 describe 带模型名（没写时如实说未指定，不编一个）",
