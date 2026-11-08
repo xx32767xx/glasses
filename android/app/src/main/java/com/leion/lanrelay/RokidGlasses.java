@@ -209,27 +209,26 @@ public final class RokidGlasses {
             report("Rokid：" + compatibilityNote(), false);
             return;
         }
-        // 5.134：**先看蓝牙权限**，再看"AI App 里连没连"。
-        //   顺序反了就会误报：没有权限时 isGlassesBtConnected() 也是 false，
-        //   于是被报成"眼镜没在 AI App 里连上"，让人一遍遍去 AI App 里重连（真机现场）。
+        // 5.134：先看蓝牙权限（Android 12+ 是运行时权限）。
         String[] missingBt = missingBluetoothPermissions();
         if (missingBt.length > 0) {
             report("Rokid：缺蓝牙权限（Android 12+ 的「附近的设备」）—— 已在弹授权，允许后再点开始投屏",
                     false);
             return;
         }
-        boolean btConnected = false;
-        try {
-            btConnected = manager.isGlassesBtConnected();
-        } catch (Throwable ignored) {
-            // 查不出来就继续：连接失败时会从 onConnectResult 里报明原因
-        }
-        if (!btConnected) {
-            // 这句要能区分两种情况：AI App 里没连 / 连了但状态没同步（把 AI App 拉起来再看）。
-            report("Rokid：蓝牙这一层还没连上 —— 请确认 Rokid AI App 里眼镜显示已连接（系统蓝牙配对不够），"
-                    + "然后回到 AI App 首页停一下再来试", false);
-            return;
-        }
+        // ⚠️⚠️ 5.135：**不要**在这里用 `manager.isGlassesBtConnected()` 当闸门。
+        //
+        //    反编译看得很清楚（`javap -c` 的字节码）：
+        //      CxrSessionManagerImpl.isGlassesBtConnected() =
+        //          session == null ? false : session.isGlassesBtConnected()
+        //      而 session 那次实现是 ExternalAppClient.isGlassBtConnected() —— 客户端在
+        //      **create()/connect() 之后**才被建出来。
+        //    所以**还没建会话时它一定是 false**。拿它做前置检查 = 永远拦住自己，
+        //    并且把"还没开始连"错报成"蓝牙没连上"（真机现场就卡在这，用户说 AI App 里明明能用）。
+        //    官方 Sample 也只会在**会话起来之后**（Hub 页）才刷新这个值。
+        //
+        //    正确做法：直接建会话 → connect；连接失败时由 `onConnectResult` 带着
+        //    SessionErrorCode（BT_NOT_CONNECTED / LINK_NOT_READY / …）说清是哪一层。
         if (started) return;
         if (token != null && !token.isEmpty()) {
             openSession();
@@ -386,6 +385,48 @@ public final class RokidGlasses {
         return code == null ? "?" : code.name();
     }
 
+    /**
+     * 把连接失败的错误码翻成"下一步去干什么"（5.135）。
+     *
+     * <p>为什么要翻：`onConnectResult(false, CODE)` 的 CODE 才是"卡在哪一层"的唯一判据。
+     * 原来只打枚举名，用户看到 `LINK_NOT_READY` 不知道该动哪里。
+     */
+    static String describeConnectError(SessionErrorCode code) {
+        if (code == null) return "原因未知（SDK 没给错误码）";
+        switch (code) {
+            case ROKID_APP_NOT_INSTALLED:
+                return "手机没装 Rokid AI App";
+            case ROKID_APP_VERSION_LOW:
+                return "Rokid AI App 版本过低，请升级";
+            case BT_NOT_CONNECTED:
+                return "AI App 里眼镜还没连上（系统蓝牙配对不算）——去 AI App 主界面确认眼镜显示已连接";
+            case LINK_NOT_READY:
+                return "AI App 的链路还没就绪 —— 把 Rokid AI App 切到前台停一两秒，再回来重试";
+            case LINK_LOST:
+                return "跟 AI App 的链路断了 —— 重开 AI App 再试";
+            case LINK_TIMEOUT:
+                return "跟 AI App 握手超时 —— 重开 AI App 再试";
+            case NOT_AUTHENTICATED:
+            case TOKEN_EXPIRED:
+                return "授权失效 —— 重新点「开始投屏」授权一次";
+            case CONNECT_FAILED:
+                return "连接失败（AI App 或眼镜侧拒绝）—— 拔插眼镜后重试";
+            case SCENE_OPEN_FAILED:
+                return "界面被镜片端拒了（CustomView 的 JSON 有问题）—— 把这条报给维护者";
+            case RESOURCE_PREPARE_FAILED:
+                return "眼镜侧资源准备失败 —— 拔插眼镜后重试";
+            case SESSION_ALREADY_EXISTS:
+                return "已经有一个会话在（上一次没关干净）—— 退出本页再进来";
+            case SESSION_PAUSED:
+                return "会话被暂停了（眼镜的 AI 助手插了一句）—— 等它说完会自动恢复";
+            case UNKNOWN:
+            case INTERNAL_ERROR:
+                return "SDK 内部错误 —— 记下这次现象报给维护者";
+            default:
+                return code.name();
+        }
+    }
+
     /** 状态只从主线程往界面推（SDK 回调在哪个线程来是不保证的）。 */
     private void report(String text, boolean casting) {
         status = text;
@@ -441,7 +482,9 @@ public final class RokidGlasses {
             if (success) {
                 report("Rokid：已连接（等会话就绪）", false);
             } else {
-                report("Rokid：连接失败（" + codeName(errorCode) + "）", false);
+                // 5.135：错误码是"卡在哪一层"的唯一判据，翻成人话再说下一步（别只丢枚举名）
+                report("Rokid：连接失败（" + codeName(errorCode) + "）—— "
+                        + describeConnectError(errorCode), false);
             }
         }
     };

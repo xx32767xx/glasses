@@ -1310,7 +1310,6 @@ Rokid 那个 AAR 的清单写死 `minSdkVersion="28"`。把它作为依赖引进
    并且在 `RokidGlasses.start()` 里**先查权限、再查 AI App 有没有连**——顺序反了就会误报。
 
 #### ② 能不能不走 Rokid AI App、直接用 SDK 连眼镜
-
 **不能**（在 CXR-L 这套 SDK 里）。证据是扒 AAR 的字符串表：
 
 ```
@@ -1322,6 +1321,35 @@ classes.jar 里有 com.rokid.sprite.aiapp.externalapp.* / IMediaStreamService / 
 （AIDL 服务 + 授权）：眼镜的蓝牙链路、自定义取景、AI 助手都归 AI App 管。
 要走别的路只能自己实现那套私有协议 —— 而它仍然要求 AI App 在后台承担蓝牙那一层，
 所以"绕开"不成立。**结论：手机必须装 Rokid AI App，并且眼镜要在 AI App 里连上。**
+
+#### ③ `isGlassesBtConnected()` **在 `create()` 之前一定是 false**（最坑的一条）
+
+5.134 那次我以为"先查蓝牙连没连、再建会话"更稳，结果是**把自己挡死了**：
+
+```
+AI App 里眼镜明明能用，我们的 App 永远报「蓝牙这一层还没连上」
+```
+
+反编译（`javap -c`）看得很清楚：
+
+```
+CxrSessionManagerImpl.isGlassesBtConnected():
+    session == null ? false : session.isGlassesBtConnected()
+
+CxrSessionImpl.isGlassesBtConnected():
+    return externalAppClient.isGlassBtConnected()      // 这个 client 在 create()/connect() 之后才存在
+```
+
+也就是说它是**会话级**状态，**没建会话时恒为 false**。拿它当前置闸门 = 永远进不去。
+官方 Sample 也只在会话起来之后（Hub 页 `refreshBtConnected()`）才读它。
+
+所以 5.135 的做法是：**不再拿它做前置检查**，直接 `create()` → `connect()`，
+连接失败时看 `ISessionLifecycleCbk.onConnectResult(false, code)` 的**错误码**
+（`BT_NOT_CONNECTED` / `LINK_NOT_READY` / `SCENE_OPEN_FAILED`…），
+并把它翻成人话（`RokidGlasses.describeConnectError`）。这才是"卡在哪一层"的唯一判据。
+
+> 顺带回答用户当时的猜测"是不是两个 App 切换导致的"：**不是**。
+> 是我们自己用了一个只有在会话建立后才有意义的值做前置判断。
 
 ### 13.7 还没验证的（必须真机）
 
