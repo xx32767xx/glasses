@@ -25,9 +25,14 @@ import android.widget.TextView;
  */
 public class GlassesCastActivity extends Activity {
 
+    /** 蓝牙运行时权限（Android 12+）：与 RokidGlasses.missingBluetoothPermissions 同一套。 */
+    private static final int REQUEST_BLUETOOTH = 2001;
+
     private RokidGlasses rokid = null;
     private TextView statusView = null;
     private Button toggleView = null;
+    /** 用户点了「开始投屏」但还差蓝牙权限：拿到权限后自动继续（免得再点一次）。 */
+    private boolean pendingStart = false;
 
     @Override
     protected void attachBaseContext(android.content.Context base) {
@@ -70,9 +75,36 @@ public class GlassesCastActivity extends Activity {
             render(rokid.status(), false);
             return;
         }
+        // 5.134：Android 12+ 先要蓝牙权限 —— 没权限时 SDK 查到的"眼镜连没连"永远是 false。
+        String[] missingBt = rokid.missingBluetoothPermissions();
+        if (missingBt.length > 0) {
+            pendingStart = true;
+            render(getString(R.string.glasses_cast_need_bt), false);
+            requestPermissions(missingBt, REQUEST_BLUETOOTH);
+            return;
+        }
         rokid.start(this);
         // start() 是异步的（授权要跳 AI App），状态由回调推回来；这里先把"正在做什么"写上去
         render(rokid.status(), false);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != REQUEST_BLUETOOTH) return;
+        boolean granted = grantResults.length > 0;
+        for (int result : grantResults) {
+            if (result != android.content.pm.PackageManager.PERMISSION_GRANTED) granted = false;
+        }
+        if (!granted) {
+            pendingStart = false;
+            render(getString(R.string.glasses_cast_need_bt), false);
+            return;
+        }
+        if (pendingStart) {
+            pendingStart = false;
+            toggle();
+        }
     }
 
     private void render(String status, boolean casting) {

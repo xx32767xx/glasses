@@ -8,6 +8,22 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <!--
+      5.134：Rokid 眼镜走的是**蓝牙** —— 眼镜先连在 Rokid AI App 上，我们再去连 AI App。
+      所以必须声明并**在运行时申请**蓝牙权限，否则 SDK 查到的"眼镜连没连"永远是 false：
+
+        现象：AI App 里明明显示眼镜已连接，我们的 App 却报「眼镜没在 Rokid AI App 里连上」。
+
+      Android 12+（API 31+）要 BLUETOOTH_CONNECT（+ SCAN）；老系统用 BLUETOOTH/ADMIN，
+      所以老的带 maxSdkVersion="30"。运行时申请在 GlassesCastActivity 里做。
+    -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <!-- 没有蓝牙的手机也能装（required=false）：眼镜只是可选项，不该拦住安装 -->
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+
+    <!--
       ══════════════════════════════════════════════════════════════════════════
       眼镜 SDK（platform-4.8.0.4-release.aar）会把自己的清单合并进来，
       带了一大堆权限。下面用 tools:node="remove" 删掉**确定用不到**的，

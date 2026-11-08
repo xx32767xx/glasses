@@ -3,6 +3,8 @@ package com.leion.lanrelay;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 
@@ -115,6 +117,29 @@ public final class RokidGlasses {
         }
     }
 
+    /**
+     * 蓝牙权限（5.134）：**Android 12+ 必须运行时申请**，否则查到的"眼镜连没连"永远是 false。
+     *
+     * <p>真机现场就是这条：AI App 里眼镜明明已连接，我们却报「没在 Rokid AI App 里连上」。
+     * 根因不是 AI App，也不是 SDK —— 是我们的清单里**一条蓝牙权限都没有**，
+     * 于是 `isGlassesBtConnected()` 拿到的是 false（或直接抛 SecurityException 被我们吞成 false）。
+     *
+     * @return 还需要申请的权限（空数组 = 齐了 / 老系统不需要）
+     */
+    public String[] missingBluetoothPermissions() {
+        if (Build.VERSION.SDK_INT < 31) return new String[0];
+        java.util.List<String> missing = new java.util.ArrayList<>();
+        for (String name : new String[] {
+                android.Manifest.permission.BLUETOOTH_CONNECT,
+                android.Manifest.permission.BLUETOOTH_SCAN,
+        }) {
+            if (appContext.checkSelfPermission(name) != PackageManager.PERMISSION_GRANTED) {
+                missing.add(name);
+            }
+        }
+        return missing.toArray(new String[0]);
+    }
+
     /** 兼容性一句话结论（装没装、版本够不够；只读，不发起任何会话）。 */
     public String compatibilityNote() {
         if (manager == null) return "Rokid SDK 未就绪";
@@ -184,14 +209,26 @@ public final class RokidGlasses {
             report("Rokid：" + compatibilityNote(), false);
             return;
         }
+        // 5.134：**先看蓝牙权限**，再看"AI App 里连没连"。
+        //   顺序反了就会误报：没有权限时 isGlassesBtConnected() 也是 false，
+        //   于是被报成"眼镜没在 AI App 里连上"，让人一遍遍去 AI App 里重连（真机现场）。
+        String[] missingBt = missingBluetoothPermissions();
+        if (missingBt.length > 0) {
+            report("Rokid：缺蓝牙权限（Android 12+ 的「附近的设备」）—— 已在弹授权，允许后再点开始投屏",
+                    false);
+            return;
+        }
+        boolean btConnected = false;
         try {
-            if (!manager.isGlassesBtConnected()) {
-                // 这条几乎一定会撞上：系统蓝牙配对 ≠ Rokid AI App 里连上。
-                report("Rokid：眼镜没在 Rokid AI App 里连上（系统蓝牙配对不够）", false);
-                return;
-            }
+            btConnected = manager.isGlassesBtConnected();
         } catch (Throwable ignored) {
             // 查不出来就继续：连接失败时会从 onConnectResult 里报明原因
+        }
+        if (!btConnected) {
+            // 这句要能区分两种情况：AI App 里没连 / 连了但状态没同步（把 AI App 拉起来再看）。
+            report("Rokid：蓝牙这一层还没连上 —— 请确认 Rokid AI App 里眼镜显示已连接（系统蓝牙配对不够），"
+                    + "然后回到 AI App 首页停一下再来试", false);
+            return;
         }
         if (started) return;
         if (token != null && !token.isEmpty()) {

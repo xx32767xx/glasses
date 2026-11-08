@@ -1288,10 +1288,40 @@ Rokid 的 AAR 是 **Kotlin** 写的（引用 `kotlin.Unit` / `kotlin.Function1` 
 `manager.parseAuthorizationResult(...)`（它自己判断是不是授权结果，返回 null 就不认领）。
 
 ### 13.6 一个产品级代价：`minSdk` 24 → 28
-
 Rokid 那个 AAR 的清单写死 `minSdkVersion="28"`。把它作为依赖引进来，我们的 `minSdk` 就必须 ≥ 28
 （两条 SDK 之间只能选一个）。取舍：Android 7.0/7.1/8.0（API 24~27）的机器从此装不上；
 用户那批手机都在 Android 12 以上，所以选接 Rokid。**这一条是产品决定，写在这里避免以后被当成 bug 查。**
+
+### 13.6b 现场问答两条：**为什么显示没连上** / **能不能绕开 Rokid AI App**
+
+#### ① AI App 里明明连上了，我们的 App 却说没连上
+
+第一版就是这样：我们的清单里**一条蓝牙权限都没有**，而 Android 12+ 的
+`BLUETOOTH_CONNECT` / `BLUETOOTH_SCAN` 是**运行时权限**。没有它：
+
+- 系统层面任何"已配对/已连接设备"的查询都会失败（或被 SDK 吞成 `false`）；
+- 于是 `isGlassesBtConnected()` 永远是 `false`，而我们的状态行把它报成
+  「眼镜没在 Rokid AI App 里连上」——**方向和真因完全相反**，让人去 AI App 里反复重连。
+
+修法（5.134，两件一起做才有用）：
+
+1. 清单里声明 `BLUETOOTH`（`maxSdkVersion=30`）、`BLUETOOTH_ADMIN`（同）、`BLUETOOTH_CONNECT`、`BLUETOOTH_SCAN`；
+2. `GlassesCastActivity` 里**运行时申请**（点「开始投屏」时弹，批准后自动继续），
+   并且在 `RokidGlasses.start()` 里**先查权限、再查 AI App 有没有连**——顺序反了就会误报。
+
+#### ② 能不能不走 Rokid AI App、直接用 SDK 连眼镜
+
+**不能**（在 CXR-L 这套 SDK 里）。证据是扒 AAR 的字符串表：
+
+```
+classes.jar 里 android/bluetooth、BluetoothAdapter、BluetoothGatt 的引用数：0
+classes.jar 里有 com.rokid.sprite.aiapp.externalapp.* / IMediaStreamService / AuthorizationHelper
+```
+
+也就是说这个 SDK **自己不做蓝牙**，它是一套**"去连 Rokid AI App"的客户端**
+（AIDL 服务 + 授权）：眼镜的蓝牙链路、自定义取景、AI 助手都归 AI App 管。
+要走别的路只能自己实现那套私有协议 —— 而它仍然要求 AI App 在后台承担蓝牙那一层，
+所以"绕开"不成立。**结论：手机必须装 Rokid AI App，并且眼镜要在 AI App 里连上。**
 
 ### 13.7 还没验证的（必须真机）
 

@@ -296,6 +296,7 @@ Microphone: phone microphone (in use)</string>
     <string name="glasses_cast_idle">Glasses not connected</string>
     <string name="glasses_cast_start">Start casting</string>
     <string name="glasses_cast_stop">Stop casting</string>
+    <string name="glasses_cast_need_bt">The “Nearby devices” permission is required to reach the glasses (Android 12+ Bluetooth). Tap “Start casting” to grant it, then try again.</string>
     <string name="glasses_cast_hint">Two things are required: (1) the Rokid AI App is installed on this phone; (2) the glasses are connected inside the Rokid AI App (system Bluetooth pairing is not enough). Once casting starts, translations appear on the lens sentence by sentence.</string>
     <string name="set_privacy">Privacy</string>
     <string name="set_privacy_link">Privacy policy (where audio and subtitles go)</string>
