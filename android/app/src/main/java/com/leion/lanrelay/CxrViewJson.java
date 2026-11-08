@@ -86,14 +86,25 @@ public final class CxrViewJson {
      * 反过来"跳过空串"会让镜片上一直留着上一句 —— 那比不显示更糟。
      */
     public static String updateText(String text) {
-        // ⚠️ 用字符串字面量而不是 char：`'[' + '{' ...` 在 Java 里是 **int 加法**，
-        //    会拼出一个 "214{…" 的串（`[` = 91、`{` = 123），镜片端只会静默不显示。
-        //    这条是 tests/java/CxrViewJsonCheck.java 第一个逮出来的 —— 真机上的表现只是"没字"。
+        return updateText(text, null);
+    }
+
+    /**
+     * 增量更新：文字 + 字号（5.138：字号要能手动调，调完**下一句立刻**按新字号渲染）。
+     *
+     * <p>为什么不重建会话去改字号：会话一旦建立，镜片端那份视图就固定了；
+     * 而 `props` 本来就可以只带变化的字段 —— 把 `textSize` 一起发过去最省也最快。
+     *
+     * @param textSize 形如 `"40sp"`；null/空 = 只更新文字（不动字号）
+     */
+    public static String updateText(String text, String textSize) {
+        String size = textSize == null || textSize.trim().isEmpty() ? "" : normalizeSize(textSize);
         return "["
                 + '{' + quote("action") + ':' + quote("update") + ','
                 + quote("id") + ':' + quote(TEXT_ID) + ','
                 + quote("props") + ":{"
                 + quote("text") + ':' + quote(nullToEmpty(text))
+                + (size.isEmpty() ? "" : ',' + quote("textSize") + ':' + quote(size))
                 + "}}"
                 + "]";
     }

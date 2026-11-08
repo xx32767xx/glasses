@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.os.Bundle;
 import android.view.View;
 import android.widget.Button;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 
 /**
@@ -27,10 +28,46 @@ public class GlassesCastActivity extends Activity {
 
     /** 蓝牙运行时权限（Android 12+）：与 RokidGlasses.missingBluetoothPermissions 同一套。 */
     private static final int REQUEST_BLUETOOTH = 2001;
+    /** 与 SettingsActivity / MainActivity 同一个偏好文件（"leion"）。 */
+    private static final String PREFS = "leion";
+    /** 字号偏好（sp）与步长/边界（5.138）。 */
+    private static final String KEY_FONT_SP = "rokiFontSp";
+    private static final int FONT_STEP_SP = 4;
+    private static final int FONT_MIN_SP = 16;
+    private static final int FONT_MAX_SP = 96;
+
+    /**
+     * 三语 × 短/中/长 的测试句（5.138）。
+     *
+     * <p>刻意硬编码在这里、**不跟着界面语言走**：它们是"被显示的内容"，不是 UI 文案 ——
+     * 葡语界面下也得能点中文测试句，否则验不了那种语言在镜片上的宽度与换行。
+     * 长度按"一屏能放几行"的感觉取：短≈10 字以内、中≈30、长≈80+。
+     */
+    private static final String[] SAMPLES_ZH = {
+            "今天下午三点开会。",
+            "今天的会议改到下午三点，地点在十二楼的会议室。",
+            "报告警告称，没有人能保证目前在伊拉克采取的任何行动能够阻止宗派战争、不断增长的暴力或走向混乱，"
+                    + "因此各方应当尽快回到谈判桌前，而不是继续在战场上寻找答案。",
+    };
+    private static final String[] SAMPLES_EN = {
+            "The meeting starts at three.",
+            "The meeting has been moved to three in the afternoon, in the twelfth-floor room.",
+            "The report warns that nobody can guarantee that any action taken in Iraq can stop the sectarian war, "
+                    + "the growing violence, or the slide into chaos, so all sides should return to the table.",
+    };
+    private static final String[] SAMPLES_PT = {
+            "A reunião é às três.",
+            "A reunião mudou para as três da tarde, na sala do décimo segundo andar.",
+            "O relatório adverte que ninguém pode garantir que qualquer ação tomada no Iraque consiga impedir "
+                    + "a guerra sectária, a violência crescente ou o caminho para o caos.",
+    };
 
     private RokidGlasses rokid = null;
     private TextView statusView = null;
     private Button toggleView = null;
+    /** 用户手动调过的字号（0 = 没调过，按屏高自动算）。 */
+    private int fontSp = 0;
+    private android.content.SharedPreferences prefs = null;
     /** 用户点了「开始投屏」但还差蓝牙权限：拿到权限后自动继续（免得再点一次）。 */
     private boolean pendingStart = false;
 
@@ -50,6 +87,7 @@ public class GlassesCastActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.page_glasses_cast);
+        prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
 
         statusView = findViewById(R.id.castStatus);
         toggleView = findViewById(R.id.castToggle);
@@ -74,7 +112,97 @@ public class GlassesCastActivity extends Activity {
             rokid.push(text);
             render(getString(R.string.glasses_cast_test_sent), false);
         });
+
+        // 5.138：字号 ± 与 三语×三档 测试句
+        fontSp = prefs.getInt(KEY_FONT_SP, 0);
+        if (fontSp > 0 && rokid != null) rokid.setFontSizeSp(fontSp);
+        findViewById(R.id.castFontMinus).setOnClickListener(v -> nudgeFont(-FONT_STEP_SP));
+        findViewById(R.id.castFontPlus).setOnClickListener(v -> nudgeFont(FONT_STEP_SP));
+        buildSampleChips();
+        renderFontValue();
+
         findViewById(R.id.castBack).setOnClickListener(v -> finish());
+    }
+
+    /** 调字号：写偏好 → 立刻用新字号把**当前这句**重推一次（投屏中马上能看到效果）。 */
+    private void nudgeFont(int delta) {
+        if (rokid == null) return;
+        int next = Math.max(FONT_MIN_SP, Math.min(FONT_MAX_SP, rokid.fontSp() + delta));
+        fontSp = next;
+        prefs.edit().putInt(KEY_FONT_SP, next).apply();
+        rokid.setFontSizeSp(next);
+        renderFontValue();
+        String last = rokid.lastPushedText();
+        if (rokid.isCasting() && last != null && !last.isEmpty()) rokid.push(last);
+    }
+
+    private void renderFontValue() {
+        TextView value = findViewById(R.id.castFontValue);
+        if (value == null) return;
+        int sp = rokid == null ? 32 : rokid.fontSp();
+        value.setText(sp + "sp");
+    }
+
+    /**
+     * 三语 × 短/中/长的测试句（点了就真的推上镜片）。
+     *
+     * <p>为什么这些句子**不跟着界面语言变**：它们是"被显示的内容"，不是 UI 文案 ——
+     * 在葡语界面下也得能点中文测试句，否则验不了那种语言在镜片上的宽度与换行。
+     */
+    private void buildSampleChips() {
+        LinearLayout host = findViewById(R.id.castSamples);
+        if (host == null) return;
+        host.removeAllViews();
+        String[][] rows = {
+                { getString(R.string.lang_zh), SAMPLES_ZH[0], SAMPLES_ZH[1], SAMPLES_ZH[2] },
+                { getString(R.string.lang_en), SAMPLES_EN[0], SAMPLES_EN[1], SAMPLES_EN[2] },
+                { getString(R.string.lang_pt_native), SAMPLES_PT[0], SAMPLES_PT[1], SAMPLES_PT[2] },
+        };
+        String[] lengths = {
+                getString(R.string.glasses_len_short),
+                getString(R.string.glasses_len_mid),
+                getString(R.string.glasses_len_long),
+        };
+        for (String[] row : rows) {
+            LinearLayout line = new LinearLayout(this);
+            line.setOrientation(LinearLayout.HORIZONTAL);
+            line.setLayoutParams(new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+            TextView lang = new TextView(this);
+            lang.setText(row[0]);
+            lang.setTextSize(13f);
+            lang.setTextColor(getColor(R.color.ink_soft));
+            lang.setWidth(dp(52));
+            line.addView(lang);
+            for (int index = 0; index < 3; index += 1) {
+                String text = row[index + 1];
+                Button chip = new Button(this);
+                chip.setText(lengths[index]);
+                chip.setTextSize(13f);
+                chip.setAllCaps(false);
+                chip.setTextColor(getColor(R.color.brand));
+                chip.setBackgroundResource(R.drawable.tap_pill);
+                chip.setPadding(dp(10), 0, dp(10), 0);
+                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT, dp(40));
+                if (index > 0) params.setMarginStart(dp(6));
+                chip.setLayoutParams(params);
+                chip.setOnClickListener(v -> {
+                    if (rokid == null || !rokid.isCasting()) {
+                        render(getString(R.string.glasses_cast_need_cast_first), false);
+                        return;
+                    }
+                    rokid.push(text);
+                    render(getString(R.string.glasses_cast_test_sent), false);
+                });
+                line.addView(chip);
+            }
+            host.addView(line);
+        }
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
     /** 开始 / 停止（同一个按钮）。 */

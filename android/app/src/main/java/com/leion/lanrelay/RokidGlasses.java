@@ -93,6 +93,10 @@ public final class RokidGlasses {
     private boolean started = false;
     private String status = STATUS_IDLE;
     private String lastText = null;
+    /** 上一次推送用的字号（判"同一句 + 新字号要不要重发"）。 */
+    private int pushedAtFontSp = 0;
+    /** 镜片字号（sp，5.138 起手动可调；默认按屏高算出来）。 */
+    private int fontSizeSp = 0;
 
     public RokidGlasses(Context context, Listener listener) {
         this.appContext = context.getApplicationContext();
@@ -295,7 +299,7 @@ public final class RokidGlasses {
         if (started) return;
         closeSession();   // 上一次的会话必须先收：同一个 manager 上第二次 create 会报 ALREADY_EXISTS
         try {
-            int fontSize = fontSizeSp();
+            int fontSize = fontSp();
             SessionConfig config = new SessionConfig(
                     SessionType.CUSTOM_VIEW,
                     null,                                   // 不做 CUSTOM_APP
@@ -320,15 +324,18 @@ public final class RokidGlasses {
         }
     }
 
-    /** 一句译文：只发一行字的增量更新。 */
+    /** 一句译文：只发一行字的增量更新（始终带上当前字号，见 5.138）。 */
     public void push(String text) {
         if (!started || session == null) return;
         String show = text == null ? "" : text;
-        // 同一句不发两次：CustomView 的更新会走一趟蓝牙链路，重复发只是白耗。
-        if (show.equals(lastText)) return;
+        // 同一句、同一字号不发两次：CustomView 的更新会走一趟蓝牙链路，重复发只是白耗。
+        // （调过字号之后 lastText 会被清空，所以"同一句 + 新字号"能立刻重发一次。）
+        if (show.equals(lastText) && pushedAtFontSp == fontSp()) return;
         lastText = show;
+        pushedAtFontSp = fontSp();
         try {
-            SessionResult<Unit> result = session.customViewUpdate(CxrViewJson.updateText(show));
+            SessionResult<Unit> result = session.customViewUpdate(
+                    CxrViewJson.updateText(show, fontSp() + "sp"));
             if (result != null && !result.isSuccess()) {
                 report("Rokid：更新失败（" + codeName(result.getCode()) + "）", started);
             }
@@ -372,13 +379,33 @@ public final class RokidGlasses {
         }
     }
 
-    /** 镜片上的字号：按屏高的 1/10（官方缺省 16sp 在镜片上偏小），夹在 24~64sp。 */
-    private int fontSizeSp() {
+    /**
+     * 镜片上的字号（sp）。
+     *
+     * <p>5.138：支持**手动调**（用户要求"像亮亮那样能调字号"）。取值优先级：
+     * 手动设过的（{@link #setFontSizeSp}）→ 按屏高 1/10 推一个 → 32sp。
+     *
+     * <p>为什么可以只有一个值（亮亮那边是中/葡分开）：亮亮的字号是**画布 px**，
+     * 和手机密度、画布尺寸强相关；而 sp 已经被系统归一过，镜片端又是它自己排版 ——
+     * 中葡在同一 sp 下的观感差异比亮亮小得多。真机上如果某种语言明显偏小，再拆也不迟。
+     */
+    public int fontSp() {
+        if (fontSizeSp > 0) return fontSizeSp;
         int[] size = displaySize();
         int height = size[1];
         if (height <= 0) return 32;
         int guess = Math.round(height / 10f);
         return Math.max(24, Math.min(64, guess));
+    }
+
+    /** 设字号（5.138）。投屏中改也立刻生效：下一条推送会带上新字号（不必重建会话）。 */
+    public void setFontSizeSp(int sp) {
+        fontSizeSp = Math.max(16, Math.min(96, sp));
+    }
+
+    /** 镜片上一次显示的文字（调字号后可以原样再推一次，立刻看到效果）。 */
+    public String lastPushedText() {
+        return lastText;
     }
 
     private String codeName(SessionErrorCode code) {

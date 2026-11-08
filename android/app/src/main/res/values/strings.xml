@@ -611,7 +611,12 @@
     <string name="glasses_cast_need_cast_first">先点「开始投屏」，等状态变成「投屏中」再试。</string>
     <string name="glasses_cast_test_text">这是一句测试字幕，能看到就说明文字能上镜片。</string>
     <string name="glasses_cast_test_sent">已推送一句测试文字，现在看镜片。</string>    <string name="glasses_cast_need_bt">需要「附近的设备」权限才能连眼镜（Android 12+ 的蓝牙权限）：点“开始投屏”会弹授权，允许后再试。</string>
-    <string name="glasses_cast_hint">需要两件事：① 手机装了 Rokid AI App；② 在 Rokid AI App 里把眼镜连上（系统蓝牙配对不够）。开始投屏后，镜片上会出现一句句译文。</string>
+    <string name="glasses_font_plus">＋</string>
+    <string name="glasses_font_minus">－</string>
+    <string name="glasses_cast_font_hint">调完字号，点下面任意一句测试句就能立刻看到效果（投屏中也不必重连）。</string>
+    <string name="glasses_len_short">短</string>
+    <string name="glasses_len_mid">中</string>
+    <string name="glasses_len_long">长</string>    <string name="glasses_cast_hint">需要两件事：① 手机装了 Rokid AI App；② 在 Rokid AI App 里把眼镜连上（系统蓝牙配对不够）。开始投屏后，镜片上会出现一句句译文。</string>
     <string name="set_privacy">隐私</string>
     <string name="set_privacy_link">隐私政策（音频与字幕去哪了）</string>
     <string name="set_clear">清空本机记录（原文与译文）</string>
