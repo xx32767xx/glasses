@@ -302,7 +302,7 @@ Microphone: phone microphone (in use)</string>
     <string name="glasses_cast_test_sent">Test sentence sent — look at the glasses now.</string>    <string name="glasses_cast_need_bt">The “Nearby devices” permission is required to reach the glasses (Android 12+ Bluetooth). Tap “Start casting” to grant it, then try again.</string>
     <string name="glasses_font_plus">+</string>
     <string name="glasses_font_minus">-</string>
-    <string name="glasses_cast_font_hint">After changing the size, tap any test sentence below to see it immediately (no need to reconnect while casting).</string>
+    <string name="glasses_cast_font_hint">Each language has its own size (10–44sp). Changes re-push the current page immediately; long text auto-pages every 3 s.</string>
     <string name="glasses_len_short">short</string>
     <string name="glasses_len_mid">medium</string>
     <string name="glasses_len_long">long</string>    <string name="glasses_cast_hint">Two things are required: (1) the Rokid AI App is installed on this phone; (2) the glasses are connected inside the Rokid AI App (system Bluetooth pairing is not enough). Once casting starts, translations appear on the lens sentence by sentence.</string>

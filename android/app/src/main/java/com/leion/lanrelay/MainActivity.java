@@ -954,7 +954,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
             //   那一侧就是译文；如果这一帧是"佩戴者自己说的话"（出站给对方），
             //   投上去的是它对应的显示侧。这样眼镜上的内容和手机永远一致，
             //   不会出现"眼镜和手机显示不同语言"。
-            pushToGlasses(text, source);
+            pushToGlasses(text, source, lang);
             if (session != null && session.active) {
                 String time = elapsedLabel();
                 SubtitleList.Segment segment = subtitles.submit(time, source, text, partial, watchNote, langLabelOf(lang));
@@ -3995,7 +3995,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
      *   <li><b>还在生成的增量帧加省略号</b>：和手机面板一样给佩戴者一个"还没说完"的提示</li>
      * </ul>
      */
-    private void pushToGlasses(String text, String source) {
+    private void pushToGlasses(String text, String source, String lang) {
         // 两条链路各自判断"我现在在不在投屏"：亮亮是 USB 采样 View，Rokid 是发 JSON。
         // **两条都没在投屏就什么都不做** —— 不能影响手机端。
         boolean leionCasting = glasses != null && glassesView != null && glasses.isCasting();
@@ -4031,7 +4031,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         }
         if (rokidCasting) {
             // 投屏译文：Rokid 那一路只送**译文**这一侧（原文留在手机上）。
-            rokid.push(show);
+            // 5.139：带上译文语言 -> 用哪门语言的字号（三种独立可调）、长句自动翻页。
+            rokid.push(show, lang);
         }
 
         // 把"我实际投上去的是什么"回传给电脑，和"电脑发了什么"放进同一份日志。

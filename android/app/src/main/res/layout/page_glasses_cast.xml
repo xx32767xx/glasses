@@ -70,49 +70,23 @@
             android:textColor="@color/ink"
             android:background="@drawable/tap_btn_secondary" />
 
-        <!-- 5.138：字号手动可调（用户要求"像亮亮那样能调字号"）＋
-             三语 × 三档测试句，用来在镜片上把"字多大、换行几行"调顺眼。 -->
-        <LinearLayout
+        <!-- 5.139：三种语言**各自独立**的字号（中/英/葡，各一行 － 数值 ＋，由代码生成）。
+             调完立刻用新字号把当前页重推一次，投屏中不必重连。 -->
+        <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="@dimen/space_section"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
+            android:text="@string/settings_font_size"
+            android:textColor="@color/ink"
+            android:textSize="@dimen/text_title"
+            android:textStyle="bold" />
 
-            <TextView
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/settings_font_size"
-                android:textColor="@color/ink"
-                android:textSize="@dimen/text_title"
-                android:textStyle="bold" />
-
-            <Button
-                android:id="@+id/castFontMinus"
-                android:layout_width="@dimen/touch_min"
-                android:layout_height="@dimen/touch_min"
-                android:text="@string/glasses_font_minus"
-                android:textColor="@color/ink"
-                android:background="@drawable/tap_btn_secondary" />
-
-            <TextView
-                android:id="@+id/castFontValue"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:minWidth="@dimen/touch_min"
-                android:gravity="center"
-                android:textColor="@color/ink"
-                android:textSize="@dimen/text_secondary" />
-
-            <Button
-                android:id="@+id/castFontPlus"
-                android:layout_width="@dimen/touch_min"
-                android:layout_height="@dimen/touch_min"
-                android:text="@string/glasses_font_plus"
-                android:textColor="@color/ink"
-                android:background="@drawable/tap_btn_secondary" />
-        </LinearLayout>
+        <LinearLayout
+            android:id="@+id/castFonts"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_gap_tiny"
+            android:orientation="vertical" />
 
         <TextView
             android:layout_width="match_parent"

@@ -93,10 +93,20 @@ public final class RokidGlasses {
     private boolean started = false;
     private String status = STATUS_IDLE;
     private String lastText = null;
+    /** 上一次推送的译文语言（决定用哪个字号）。 */
+    private String lastLang = null;
     /** 上一次推送用的字号（判"同一句 + 新字号要不要重发"）。 */
     private int pushedAtFontSp = 0;
-    /** 镜片字号（sp，5.138 起手动可调；默认按屏高算出来）。 */
-    private int fontSizeSp = 0;
+    /** 三种语言各自的字号（sp，5.139 起**分开可调**；0 = 没调过，按屏高自动算）。 */
+    private int fontSizeZh = 0;
+    private int fontSizeEn = 0;
+    private int fontSizePt = 0;
+    /** 自动翻页（5.139）：一句太长时按页轮播，免得镜片上只看到开头。 */
+    private static final long PAGE_MS = 3000L;
+    private final Handler pager = new Handler(Looper.getMainLooper());
+    private final java.util.List<String> pages = new java.util.ArrayList<>();
+    private int pageIndex = 0;
+    private Runnable pageTask = null;
 
     public RokidGlasses(Context context, Listener listener) {
         this.appContext = context.getApplicationContext();
@@ -299,7 +309,7 @@ public final class RokidGlasses {
         if (started) return;
         closeSession();   // 上一次的会话必须先收：同一个 manager 上第二次 create 会报 ALREADY_EXISTS
         try {
-            int fontSize = fontSp();
+            int fontSize = fontSpFor(null);
             SessionConfig config = new SessionConfig(
                     SessionType.CUSTOM_VIEW,
                     null,                                   // 不做 CUSTOM_APP
@@ -324,24 +334,143 @@ public final class RokidGlasses {
         }
     }
 
-    /** 一句译文：只发一行字的增量更新（始终带上当前字号，见 5.138）。 */
-    public void push(String text) {
+    /**
+     * 一句译文：拆页 → 推第一页 → 之后每 {@link #PAGE_MS} 毫秒翻一页（5.139）。
+     *
+     * <p>为什么要翻页：镜片一次放不下整句（尤其长句），而**镜片端不会自动滚动** ——
+     * 超出高度的部分直接被裁掉，读的人不知道后面还有。用户要求"过一段时间自动翻页"，
+     * 这也是这套 SDK 能做到的唯一方式：CXR-L 的会话回调里**没有功能键事件**
+     * （只有 lifecycle / audio / image / customCmd / glassesEvent），所以"按功能键翻页"做不到。
+     *
+     * @param lang 译文语言（zh-CN / en-US / pt-BR）；决定用哪个字号
+     */
+    public void push(String text, String lang) {
         if (!started || session == null) return;
         String show = text == null ? "" : text;
-        // 同一句、同一字号不发两次：CustomView 的更新会走一趟蓝牙链路，重复发只是白耗。
-        // （调过字号之后 lastText 会被清空，所以"同一句 + 新字号"能立刻重发一次。）
-        if (show.equals(lastText) && pushedAtFontSp == fontSp()) return;
+        cancelPaging();
         lastText = show;
-        pushedAtFontSp = fontSp();
+        lastLang = lang;
+        pages.clear();
+        pages.addAll(splitPages(show, fontSpFor(lang)));
+        pageIndex = 0;
+        sendPage();
+        if (pages.size() > 1) {
+            pageTask = new Runnable() {
+                @Override
+                public void run() {
+                    if (!started || session == null) return;
+                    pageIndex += 1;
+                    if (pageIndex >= pages.size()) return;   // 停在最后一页，等下一句
+                    sendPage();
+                    pager.postDelayed(this, PAGE_MS);
+                }
+            };
+            pager.postDelayed(pageTask, PAGE_MS);
+        }
+    }
+
+    /** 兼容旧调用（样例/测试推一句）：语言未知时按内容判断。 */
+    public void push(String text) {
+        push(text, guessLang(text));
+    }
+
+    /** 调过字号后把**当前页**按新字号重推一次（投屏中立刻能看到效果）。 */
+    public void repush() {
+        if (!started || session == null) return;
+        if (pages.isEmpty()) return;
+        int sp = fontSpFor(lastLang);
+        if (sp == pushedAtFontSp) return;
+        sendPage();
+    }
+
+    private void sendPage() {
+        if (session == null) return;
+        String page = pages.isEmpty() ? "" : pages.get(Math.min(pageIndex, pages.size() - 1));
+        int sp = fontSpFor(lastLang);
+        pushedAtFontSp = sp;
         try {
             SessionResult<Unit> result = session.customViewUpdate(
-                    CxrViewJson.updateText(show, fontSp() + "sp"));
+                    CxrViewJson.updateText(page, sp + "sp"));
             if (result != null && !result.isSuccess()) {
                 report("Rokid：更新失败（" + codeName(result.getCode()) + "）", started);
             }
         } catch (Throwable error) {
             report("Rokid：更新抛错：" + error.getClass().getSimpleName(), started);
         }
+    }
+
+    private void cancelPaging() {
+        if (pageTask != null) {
+            pager.removeCallbacks(pageTask);
+            pageTask = null;
+        }
+    }
+
+    /**
+     * 一句太长 → 拆成几页。
+     *
+     * <p>每页容量是个**估算**（镜片分辨率拿不到可靠的行列数）：中文按 `2400/sp` 个字、
+     * 拉丁按它的 1.7 倍（字母更窄）。切点在自然断点（标点/空格）附近回退，避免把词切断。
+     * 这是"能读"的下限做法 —— 真机上调完字号后如果发现某语言一页放得下更多/更少，
+     * 改这一个公式即可（`capacity()`）。
+     */
+    java.util.List<String> splitPages(String text, int sp) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        String body = text == null ? "" : text;
+        if (body.isEmpty()) {
+            out.add("");
+            return out;
+        }
+        int capacity = capacity(sp, containsCjk(body));
+        if (body.length() <= capacity) {
+            out.add(body);
+            return out;
+        }
+        int start = 0;
+        while (start < body.length()) {
+            int end = Math.min(body.length(), start + capacity);
+            if (end < body.length()) {
+                // 回退到最近的断点（最多回退 40% 的容量），避免把词/句从中间切断
+                int floor = start + Math.max(1, (int) (capacity * 0.6));
+                int cut = -1;
+                for (int at = end; at > floor; at -= 1) {
+                    char one = body.charAt(at - 1);
+                    if (one == ' ' || one == '，' || one == '。' || one == '！' || one == '？'
+                            || one == '；' || one == '、' || one == ',' || one == '.'
+                            || one == '!' || one == '?' || one == ';' || one == ':') {
+                        cut = at;
+                        break;
+                    }
+                }
+                if (cut > start) end = cut;
+            }
+            out.add(body.substring(start, end).trim());
+            start = end;
+            // 跳过页首的空白/标点，避免下一页开头孤零零一个逗号
+            while (start < body.length() && (body.charAt(start) == ' ' || body.charAt(start) == '\n')) {
+                start += 1;
+            }
+        }
+        return out;
+    }
+
+    /** 每页大概能放多少字符（估算，见 {@link #splitPages} 的说明）。 */
+    static int capacity(int sp, boolean cjk) {
+        int base = Math.max(12, Math.round(2400f / Math.max(1, sp)));
+        return cjk ? base : Math.round(base * 1.7f);
+    }
+
+    private static boolean containsCjk(String text) {
+        for (int index = 0; index < text.length(); index += 1) {
+            char one = text.charAt(index);
+            if (one >= 0x4E00 && one <= 0x9FFF) return true;
+        }
+        return false;
+    }
+
+    /** 语言未知时按内容猜（中文→zh，其余按拉丁）。只用于样例/测试推送。 */
+    private static String guessLang(String text) {
+        return containsCjk(text == null ? "" : text) ? "zh-CN" : "en-US";
     }
 
     /** 停止投屏（关会话）。可重复调用。 */
@@ -380,32 +509,50 @@ public final class RokidGlasses {
     }
 
     /**
-     * 镜片上的字号（sp）。
+     * 某门语言的镜片字号（sp）。
      *
-     * <p>5.138：支持**手动调**（用户要求"像亮亮那样能调字号"）。取值优先级：
-     * 手动设过的（{@link #setFontSizeSp}）→ 按屏高 1/10 推一个 → 32sp。
-     *
-     * <p>为什么可以只有一个值（亮亮那边是中/葡分开）：亮亮的字号是**画布 px**，
-     * 和手机密度、画布尺寸强相关；而 sp 已经被系统归一过，镜片端又是它自己排版 ——
-     * 中葡在同一 sp 下的观感差异比亮亮小得多。真机上如果某种语言明显偏小，再拆也不迟。
+     * <p>5.139：**三种语言各自独立**（用户要求"像亮亮那样分开调"）。取值：
+     * 手动设过的（{@link #setFontSize}）→ 按屏高 1/10 推一个 → 32sp。范围 10~44。
      */
-    public int fontSp() {
-        if (fontSizeSp > 0) return fontSizeSp;
+    public int fontSpFor(String lang) {
+        int manual = manualFontFor(lang);
+        if (manual > 0) return manual;
         int[] size = displaySize();
         int height = size[1];
-        if (height <= 0) return 32;
+        if (height <= 0) return DEFAULT_FONT_SP;
         int guess = Math.round(height / 10f);
-        return Math.max(24, Math.min(64, guess));
+        return clampFont(guess);
     }
 
-    /** 设字号（5.138）。投屏中改也立刻生效：下一条推送会带上新字号（不必重建会话）。 */
-    public void setFontSizeSp(int sp) {
-        fontSizeSp = Math.max(16, Math.min(96, sp));
+    /** 手动设某门语言的字号（投屏中改立刻生效：当前页会按新字号重推一次）。 */
+    public void setFontSize(String lang, int sp) {
+        int value = sp <= 0 ? 0 : clampFont(sp);
+        if (isPtLang(lang)) fontSizePt = value;
+        else if (isEnLang(lang)) fontSizeEn = value;
+        else fontSizeZh = value;
     }
 
-    /** 镜片上一次显示的文字（调字号后可以原样再推一次，立刻看到效果）。 */
-    public String lastPushedText() {
-        return lastText;
+    private int manualFontFor(String lang) {
+        if (isPtLang(lang)) return fontSizePt;
+        if (isEnLang(lang)) return fontSizeEn;
+        return fontSizeZh;
+    }
+
+    /** 字号上下界（用户定的：10~44）。 */
+    public static int clampFont(int sp) {
+        return Math.max(FONT_MIN_SP, Math.min(FONT_MAX_SP, sp));
+    }
+
+    public static final int FONT_MIN_SP = 10;
+    public static final int FONT_MAX_SP = 44;
+    private static final int DEFAULT_FONT_SP = 32;
+
+    private static boolean isPtLang(String lang) {
+        return lang != null && lang.toLowerCase(java.util.Locale.US).startsWith("pt");
+    }
+
+    private static boolean isEnLang(String lang) {
+        return lang != null && lang.toLowerCase(java.util.Locale.US).startsWith("en");
     }
 
     private String codeName(SessionErrorCode code) {

@@ -30,11 +30,11 @@ public class GlassesCastActivity extends Activity {
     private static final int REQUEST_BLUETOOTH = 2001;
     /** 与 SettingsActivity / MainActivity 同一个偏好文件（"leion"）。 */
     private static final String PREFS = "leion";
-    /** 字号偏好（sp）与步长/边界（5.138）。 */
-    private static final String KEY_FONT_SP = "rokiFontSp";
-    private static final int FONT_STEP_SP = 4;
-    private static final int FONT_MIN_SP = 16;
-    private static final int FONT_MAX_SP = 96;
+    /** 字号偏好与步长（5.139：三种语言各自独立；上下界 10~44 由 RokidGlasses.clampFont 统一夹）。 */
+    private static final String KEY_FONT_ZH = "rokiFontSpZh";
+    private static final String KEY_FONT_EN = "rokiFontSpEn";
+    private static final String KEY_FONT_PT = "rokiFontSpPt";
+    private static final int FONT_STEP_SP = 2;
 
     /**
      * 三语 × 短/中/长 的测试句（5.138）。
@@ -65,9 +65,9 @@ public class GlassesCastActivity extends Activity {
     private RokidGlasses rokid = null;
     private TextView statusView = null;
     private Button toggleView = null;
-    /** 用户手动调过的字号（0 = 没调过，按屏高自动算）。 */
-    private int fontSp = 0;
     private android.content.SharedPreferences prefs = null;
+    /** 三行字号各自的数值显示（中/英/葡，5.139 独立可调）。 */
+    private final java.util.Map<String, TextView> fontValueViews = new java.util.HashMap<>();
     /** 用户点了「开始投屏」但还差蓝牙权限：拿到权限后自动继续（免得再点一次）。 */
     private boolean pendingStart = false;
 
@@ -113,34 +113,102 @@ public class GlassesCastActivity extends Activity {
             render(getString(R.string.glasses_cast_test_sent), false);
         });
 
-        // 5.138：字号 ± 与 三语×三档 测试句
-        fontSp = prefs.getInt(KEY_FONT_SP, 0);
-        if (fontSp > 0 && rokid != null) rokid.setFontSizeSp(fontSp);
-        findViewById(R.id.castFontMinus).setOnClickListener(v -> nudgeFont(-FONT_STEP_SP));
-        findViewById(R.id.castFontPlus).setOnClickListener(v -> nudgeFont(FONT_STEP_SP));
+        // 5.139：字号（中/英/葡各自独立）+ 三语×三档 测试句
+        applySavedFonts();
+        buildFontRows();
         buildSampleChips();
-        renderFontValue();
 
         findViewById(R.id.castBack).setOnClickListener(v -> finish());
     }
 
-    /** 调字号：写偏好 → 立刻用新字号把**当前这句**重推一次（投屏中马上能看到效果）。 */
-    private void nudgeFont(int delta) {
+    /** 从偏好里恢复三种语言的字号（0 = 没设过，由 RokidGlasses 按屏高自动算）。 */
+    private void applySavedFonts() {
         if (rokid == null) return;
-        int next = Math.max(FONT_MIN_SP, Math.min(FONT_MAX_SP, rokid.fontSp() + delta));
-        fontSp = next;
-        prefs.edit().putInt(KEY_FONT_SP, next).apply();
-        rokid.setFontSizeSp(next);
-        renderFontValue();
-        String last = rokid.lastPushedText();
-        if (rokid.isCasting() && last != null && !last.isEmpty()) rokid.push(last);
+        rokid.setFontSize("zh-CN", prefs.getInt(KEY_FONT_ZH, 0));
+        rokid.setFontSize("en-US", prefs.getInt(KEY_FONT_EN, 0));
+        rokid.setFontSize("pt-BR", prefs.getInt(KEY_FONT_PT, 0));
     }
 
-    private void renderFontValue() {
-        TextView value = findViewById(R.id.castFontValue);
-        if (value == null) return;
-        int sp = rokid == null ? 32 : rokid.fontSp();
-        value.setText(sp + "sp");
+    /**
+     * 三行字号调节（中 / 英 / 葡，各一组 － 数值 ＋）。
+     *
+     * <p>为什么拆成三种语言：用户要求"像亮亮那样分开调"。真机上也确实需要 ——
+     * 汉字是方块字、拉丁字母 x-height 小，同一 sp 下观感差一档。
+     */
+    private void buildFontRows() {
+        LinearLayout host = findViewById(R.id.castFonts);
+        if (host == null || rokid == null) return;
+        host.removeAllViews();
+        fontValueViews.clear();
+        String[][] langs = {
+                { getString(R.string.lang_zh), "zh-CN", KEY_FONT_ZH },
+                { getString(R.string.lang_en), "en-US", KEY_FONT_EN },
+                { getString(R.string.lang_pt_native), "pt-BR", KEY_FONT_PT },
+        };
+        for (String[] one : langs) {
+            final String label = one[0];
+            final String lang = one[1];
+            final String key = one[2];
+            LinearLayout line = new LinearLayout(this);
+            line.setOrientation(LinearLayout.HORIZONTAL);
+            line.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            line.setLayoutParams(new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+            TextView name = new TextView(this);
+            name.setText(label);
+            name.setTextSize(13f);
+            name.setTextColor(getColor(R.color.ink_soft));
+            line.addView(name, new LinearLayout.LayoutParams(0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+            Button minus = new Button(this);
+            minus.setText(getString(R.string.glasses_font_minus));
+            styleFontButton(minus);
+            minus.setOnClickListener(v -> nudgeFont(lang, key, -FONT_STEP_SP));
+            line.addView(minus);
+
+            TextView value = new TextView(this);
+            value.setMinWidth(dp(56));
+            value.setGravity(android.view.Gravity.CENTER);
+            value.setTextSize(13f);
+            value.setTextColor(getColor(R.color.ink));
+            line.addView(value);
+            fontValueViews.put(lang, value);
+
+            Button plus = new Button(this);
+            plus.setText(getString(R.string.glasses_font_plus));
+            styleFontButton(plus);
+            plus.setOnClickListener(v -> nudgeFont(lang, key, FONT_STEP_SP));
+            line.addView(plus);
+
+            host.addView(line);
+        }
+        renderFontValues();
+    }
+
+    private void styleFontButton(Button button) {
+        button.setTextColor(getColor(R.color.ink));
+        button.setBackgroundResource(R.drawable.tap_btn_secondary);
+        button.setPadding(0, 0, 0, 0);
+        button.setLayoutParams(new LinearLayout.LayoutParams(dp(44), dp(44)));
+    }
+
+    private void renderFontValues() {
+        if (rokid == null) return;
+        for (java.util.Map.Entry<String, TextView> one : fontValueViews.entrySet()) {
+            one.getValue().setText(rokid.fontSpFor(one.getKey()) + "sp");
+        }
+    }
+
+    /** 调某门语言的字号：写偏好 → 立即用新字号把当前页重推（投屏中马上能看到效果）。 */
+    private void nudgeFont(String lang, String key, int delta) {
+        if (rokid == null) return;
+        int next = RokidGlasses.clampFont(rokid.fontSpFor(lang) + delta);
+        prefs.edit().putInt(key, next).apply();
+        rokid.setFontSize(lang, next);
+        renderFontValues();
+        rokid.repush();
     }
 
     /**
@@ -154,9 +222,9 @@ public class GlassesCastActivity extends Activity {
         if (host == null) return;
         host.removeAllViews();
         String[][] rows = {
-                { getString(R.string.lang_zh), SAMPLES_ZH[0], SAMPLES_ZH[1], SAMPLES_ZH[2] },
-                { getString(R.string.lang_en), SAMPLES_EN[0], SAMPLES_EN[1], SAMPLES_EN[2] },
-                { getString(R.string.lang_pt_native), SAMPLES_PT[0], SAMPLES_PT[1], SAMPLES_PT[2] },
+                { getString(R.string.lang_zh), "zh-CN", SAMPLES_ZH[0], SAMPLES_ZH[1], SAMPLES_ZH[2] },
+                { getString(R.string.lang_en), "en-US", SAMPLES_EN[0], SAMPLES_EN[1], SAMPLES_EN[2] },
+                { getString(R.string.lang_pt_native), "pt-BR", SAMPLES_PT[0], SAMPLES_PT[1], SAMPLES_PT[2] },
         };
         String[] lengths = {
                 getString(R.string.glasses_len_short),
@@ -174,8 +242,9 @@ public class GlassesCastActivity extends Activity {
             lang.setTextColor(getColor(R.color.ink_soft));
             lang.setWidth(dp(52));
             line.addView(lang);
+            final String sampleLang = row[1];
             for (int index = 0; index < 3; index += 1) {
-                String text = row[index + 1];
+                String text = row[index + 2];
                 Button chip = new Button(this);
                 chip.setText(lengths[index]);
                 chip.setTextSize(13f);
@@ -192,7 +261,7 @@ public class GlassesCastActivity extends Activity {
                         render(getString(R.string.glasses_cast_need_cast_first), false);
                         return;
                     }
-                    rokid.push(text);
+                    rokid.push(text, sampleLang);
                     render(getString(R.string.glasses_cast_test_sent), false);
                 });
                 line.addView(chip);
