@@ -1274,6 +1274,50 @@ Rokid 的 AAR 是 **Kotlin** 写的（引用 `kotlin.Unit` / `kotlin.Function1` 
 真出现 `NoClassDefFoundError: kotlin/…` 时，才往 `libs/` 加**对应那一份**，
 并同时把传递依赖里的同名模块 `exclude` 掉 —— 否则一定撞上上面第二条。
 
+#### 依赖：`client-l` 只是薄壳，**原生库在 `cxr-service-bridge` 里**
+
+`client-l-1.1.2.aar` 只有 171 KB、`jni/` 目录**一个 .so 都没有** —— 我第一次接的时候
+就把它当成了完整 SDK，于是会话建不起来，报的是：
+
+```
+Rokid 建会话抛错 UnsatisfiedLinkError
+```
+
+真因在它的 POM 里（`com/rokid/cxr/client-l/1.1.2/client-l-1.1.2.pom`）：
+
+```xml
+<dependency>
+  <groupId>com.rokid.cxr</groupId>
+  <artifactId>cxr-service-bridge</artifactId>
+  <version>1.0-20260715.121510-107</version>   <!-- compile 依赖 -->
+</dependency>
+<dependency> kotlin-stdlib 1.9.0 </dependency>
+<dependency> com.google.code.gson:2.10.1 </dependency>
+<dependency> kotlinx-coroutines-android 1.9.0 </dependency>
+```
+
+`cxr-service-bridge` 里装的正是那五个原生库（arm64-v8a + armeabi-v7a，和样例
+`keepDebugSymbols` 里列的完全一致）：
+
+```
+libcaps.so  libcxr-bridge-jni.so  libcxr-sock-proto-jni.so  libflora-cli.so  libmutils.so
+```
+
+而且**注意版本号是快照**：POM 锁的是 `1.0-20260715.121510-107`，
+仓库 `1.0-SNAPSHOT/` 目录下现在最新是 `…-110`。这里刻意取 **107**（SDK 编译时对着的那份），
+链接：`https://maven.rokid.com/repository/maven-public/com/rokid/cxr/cxr-service-bridge/1.0-SNAPSHOT/`。
+
+所以 `android/app/libs/` 里最终是这四样（都**离线可用**，不走 Gradle 的 maven 仓库）：
+
+| 文件 | 为什么 |
+|---|---|
+| `client-l-1.1.2.aar` | 会话/授权/CustomView 的 Kotlin 壳（171 KB） |
+| `cxr-service-bridge-1.0-20260715.121510-107.aar` | **五个原生库**（少了它 = UnsatisfiedLinkError） |
+| `gson-2.10.1.jar` | client-l 的 runtime 依赖（少了它 = NoClassDefFoundError） |
+| `kotlin-stdlib` / `kotlinx-coroutines` | **不要自带**（已在 AndroidX 依赖图里，见上一节） |
+
+> 我们的 `abiFilters` 只有 `arm64-v8a`，所以 bridge AAR 里的 armeabi-v7a 那半边不会进包（正合预期）。
+
 ### 13.5 这次踩到的两个坑（都已钉住）
 
 **① `'[' + '{'` 在 Java 里是 int 加法。**

@@ -125,8 +125,8 @@ android {
     // 4.74：帧里若带 roomId 则不用推断（为多房间并发预留）；并发现状与三步路径见 docs/21 §4.74。
     // 4.76：并发第一步——帧带 roomId，/frame?room= 按房间取；音频上传带 room 作为归属线索。见 docs/21 §4.75。
     // 4.57：三语的一处安全细节——房间页在**正在开麦上传时不自动 recreate**（换语言会把这一段发言打断）。
-        versionCode = 287
-        versionName = "4.258"
+        versionCode = 288
+        versionName = "4.259"
 
     // ⚠️ 必须只保留 arm64-v8a。眼镜 SDK 的 AAR 里**只有 arm64-v8a 的原生库**
     //    （libllvision_UVCCamera.so / liblcd.so / libllvision_usb100.so 等 22 个），
@@ -202,13 +202,23 @@ dependencies {
 
   // Rokid CXR-L（5.127）：**只做投屏译文**。它和亮亮那套是两套完全不同的机制 ——
   // 亮亮是"把我们的 View 采样成画面"，Rokid 是"按 JSON 让镜片端渲染 CustomView"。
-  // AAR 只有 171 KB、没有原生库，清单里只声明 minSdk 28 + 两条 <queries>，
-  // 不会像 platform 那个 AAR 一样带进一堆权限与固件。
   //
   // 为什么用**本地 AAR** 而不是官方样例那种 `maven(https://maven.rokid.com/…)`：
   // 本机到 maven 仓库的 TLS 时通时不通（和 HF 镜像那个自签证书是同一类问题），
   // 放进 libs/ 才能离线构建 —— 与 platform AAR 的处理方式一致。
   implementation(files("libs/client-l-1.1.2.aar"))
+
+  // ⚠️⚠️ 5.136：client-l 只是**薄壳**，它自己一个 .so 都没有。
+  //    它的 POM 声明了 `com.rokid.cxr:cxr-service-bridge:1.0-…`（compile 依赖）——
+  //    **原生库全在那里面**：libcaps.so / libcxr-bridge-jni.so / libcxr-sock-proto-jni.so /
+  //    libflora-cli.so / libmutils.so（arm64-v8a + armeabi-v7a，我们只要 arm64）。
+  //    少它一个的表现就是：`create()` 时 **UnsatisfiedLinkError**（会话建不起来）。
+  //    原来我把 client-l 当"完整 SDK"引进来，就是因为只看了这个 AAR 的 171 KB 包里没 jni/。
+  implementation(files("libs/cxr-service-bridge-1.0-20260715.121510-107.aar"))
+
+  // 5.136：gson 是 client-l POM 里的 runtime 依赖（2.10.1），我们原来没有 → 运行期
+  //    `NoClassDefFoundError: com/google/gson/...`。版本取自本机 Gradle 缓存，离线可构建。
+  implementation(files("libs/gson-2.10.1.jar"))
 
   // ⚠️ **不要**把 kotlin-stdlib / kotlinx-coroutines 放进 libs/，也不要写成 Maven 坐标。
   //
