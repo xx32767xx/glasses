@@ -4110,18 +4110,34 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
      */
     private void pushSample(String text) {
         // ⚠️ 顺序：先确认能投，再动视图。
-        if (glassesView == null || glasses == null) {
-            setSampleNote(getString(R.string.glasses_sample_need_cast), true);
-            return;
-        }
-        if (!glasses.isCasting()) {
+        // 谁能投：亮亮（USB 采样 View）或 Rokid（发 JSON 让镜片端渲染）。
+        // 5.137：原来这里只认亮亮 → **Rokid 上点样例什么都不会发生**，
+        // 而样例恰恰是"不开会也能验一句字上不上镜片"的唯一手段。两条都接。
+        boolean leionCasting = glassesView != null && glasses != null && glasses.isCasting();
+        boolean rokidCasting = rokid != null && rokid.isCasting();
+        if (!leionCasting && !rokidCasting) {
             setSampleNote(getString(R.string.glasses_sample_need_cast), true);
             return;
         }
         CrashLog.beginAction(this, "投屏样例");
-        glassesView.setSubtitle(text);
-        scheduleGlassesRefresh();
+        if (leionCasting) {
+            glassesView.setSubtitle(text);
+            scheduleGlassesRefresh();
+        }
+        if (rokidCasting) {
+            rokid.push(text);
+        }
         CrashLog.endAction(this);
+
+        // 排版结果只有亮亮那条路量得出来（它自己排 View）；Rokid 的换行由镜片端做。
+        if (!leionCasting) {
+            setSampleNote("已推送到眼镜（Rokid）", false);
+            if (client != null) {
+                client.sendDiag("投屏样例（Rokid）：" + text.length() + " 字｜"
+                        + (text.length() > 60 ? text.substring(0, 60) + "…" : text));
+            }
+            return;
+        }
 
         // 取**真实排版结果**（setSubtitle 里已经排过一遍了）
         int lines = glassesView.getRealLines();
