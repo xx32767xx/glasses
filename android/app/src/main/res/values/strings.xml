@@ -598,6 +598,16 @@
     <string name="set_proofread_title">译文校对（第二遍）</string>
     <string name="set_proofread_hint">以电脑端为准：这个开关真正生效的地方在服务器，手机只是遥控器。</string>
     <string name="set_loading">读取中…</string>
+    <!-- 5.133：Rokid 眼镜投屏（只投译文）。变量名/文案刻意与亮亮那套的 glasses_* 分开，
+         免得以后看到 "glasses" 还要先猜是哪一副。 -->
+    <string name="set_glasses">眼镜</string>
+    <string name="set_glasses_hint">用 Rokid 眼镜看译文：开启后镜片上会显示每一句的译文（只有译文）。</string>
+    <string name="set_glasses_open">眼镜投屏（Rokid）</string>
+    <string name="glasses_cast_title">眼镜投屏</string>
+    <string name="glasses_cast_idle">眼镜未连接</string>
+    <string name="glasses_cast_start">开始投屏</string>
+    <string name="glasses_cast_stop">停止投屏</string>
+    <string name="glasses_cast_hint">需要两件事：① 手机装了 Rokid AI App；② 在 Rokid AI App 里把眼镜连上（系统蓝牙配对不够）。开始投屏后，镜片上会出现一句句译文。</string>
     <string name="set_privacy">隐私</string>
     <string name="set_privacy_link">隐私政策（音频与字幕去哪了）</string>
     <string name="set_clear">清空本机记录（原文与译文）</string>

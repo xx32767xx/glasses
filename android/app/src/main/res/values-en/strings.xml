@@ -288,6 +288,15 @@ Microphone: phone microphone (in use)</string>
     <string name="set_proofread_title">Proofreading (second pass)</string>
     <string name="set_proofread_hint">The desktop side rules: the switch really acts on the server, the phone is only a remote.</string>
     <string name="set_loading">Loading…</string>
+    <!-- 5.133: Rokid glasses casting (translations only). -->
+    <string name="set_glasses">Glasses</string>
+    <string name="set_glasses_hint">Read translations on Rokid glasses: each sentence\'s translation appears on the lens (translation only).</string>
+    <string name="set_glasses_open">Cast to glasses (Rokid)</string>
+    <string name="glasses_cast_title">Cast to glasses</string>
+    <string name="glasses_cast_idle">Glasses not connected</string>
+    <string name="glasses_cast_start">Start casting</string>
+    <string name="glasses_cast_stop">Stop casting</string>
+    <string name="glasses_cast_hint">Two things are required: (1) the Rokid AI App is installed on this phone; (2) the glasses are connected inside the Rokid AI App (system Bluetooth pairing is not enough). Once casting starts, translations appear on the lens sentence by sentence.</string>
     <string name="set_privacy">Privacy</string>
     <string name="set_privacy_link">Privacy policy (where audio and subtitles go)</string>
     <string name="set_clear">Clear records on this phone (originals and translations)</string>

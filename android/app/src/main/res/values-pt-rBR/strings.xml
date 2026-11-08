@@ -288,6 +288,15 @@ Microfone: microfone do celular (em uso)</string>
     <string name="set_proofread_title">Revisão (segunda passada)</string>
     <string name="set_proofread_hint">O lado do computador manda: o interruptor age no servidor, o celular é só um controle.</string>
     <string name="set_loading">Carregando…</string>
+    <!-- 5.133: transmissão para os óculos Rokid (só traduções). -->
+    <string name="set_glasses">Óculos</string>
+    <string name="set_glasses_hint">Ver as traduções nos óculos Rokid: cada frase aparece na lente (só a tradução).</string>
+    <string name="set_glasses_open">Transmitir para os óculos (Rokid)</string>
+    <string name="glasses_cast_title">Transmitir para os óculos</string>
+    <string name="glasses_cast_idle">Óculos não conectados</string>
+    <string name="glasses_cast_start">Começar a transmitir</string>
+    <string name="glasses_cast_stop">Parar de transmitir</string>
+    <string name="glasses_cast_hint">São necessárias duas coisas: (1) o app Rokid AI instalado neste celular; (2) os óculos conectados dentro do app Rokid AI (o pareamento Bluetooth do sistema não basta). Depois de começar, as traduções aparecem na lente frase por frase.</string>
     <string name="set_privacy">Privacidade</string>
     <string name="set_privacy_link">Política de privacidade (para onde vão áudio e legendas)</string>
     <string name="set_clear">Limpar registros deste celular (originais e traduções)</string>

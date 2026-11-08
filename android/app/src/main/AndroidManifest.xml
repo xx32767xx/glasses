@@ -149,6 +149,15 @@
             android:exported="false"
             android:label="设置"
             android:configChanges="orientation|screenSize|keyboardHidden" />
+
+        <!-- 5.133：Rokid 眼镜投屏（只投译文）。从设置页进入，不对外导出。
+             为什么单独一个 Activity：Rokid 会话是**跟随界面**的（谁创建谁关闭），
+             塞进设置页会把设置页和一个长期会话绑在一起，退出设置就断投屏。 -->
+        <activity
+            android:name=".GlassesCastActivity"
+            android:exported="false"
+            android:label="眼镜投屏"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
         <!-- 4.71：导出的 docx 在缓存目录，要通过 FileProvider 交给别的 App 打开 -->
         <provider
             android:name="androidx.core.content.FileProvider"

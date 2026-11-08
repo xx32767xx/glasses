@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  page_glasses_cast.xml —— Rokid 眼镜投屏（5.133）。
+
+  为什么单独一页、并且**只做 Rokid**：用户已明确"以后都是 Rokid"。
+  旧界面的「眼镜显示预览」（overlay_glasses.xml）绑在 MainActivity 的底部导航上，
+  新入口根本进不去 —— 而 Rokid 投屏除了这里没有第二个入口（那等于没做）。
+
+  这一页只放四样：状态行 / 开始投屏按钮 / 一句人话说明 / 返回。
+  排版自检、字号微调、投屏样例**都没有**：那些是亮亮那条路（画布 px）的校准工具，
+  Rokid 的字号用 sp、换行由镜片端排版，搬过来只会误导。
+-->
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/page"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="@dimen/space_page">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/glasses_cast_title"
+            android:textColor="@color/ink"
+            android:textSize="@dimen/text_page_title"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/castStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_gap_small"
+            android:padding="@dimen/space_gap_small"
+            android:background="@drawable/bg_card"
+            android:minHeight="@dimen/touch_min"
+            android:text="@string/glasses_cast_idle"
+            android:textColor="@color/ink_soft"
+            android:textSize="@dimen/text_secondary" />
+
+        <Button
+            android:id="@+id/castToggle"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/height_field"
+            android:layout_marginTop="@dimen/space_gap_small"
+            android:text="@string/glasses_cast_start"
+            android:textColor="@color/ink"
+            android:background="@drawable/tap_btn_secondary" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_gap_small"
+            android:text="@string/glasses_cast_hint"
+            android:textColor="@color/ink_soft"
+            android:textSize="@dimen/text_secondary" />
+
+        <Button
+            android:id="@+id/castBack"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/touch_min"
+            android:layout_marginTop="@dimen/space_section"
+            android:text="@string/common_back"
+            android:textColor="@color/ink_soft"
+            android:background="@drawable/tap_btn_secondary" />
+    </LinearLayout>
+</ScrollView>
