@@ -64,6 +64,16 @@ public class GlassesCastActivity extends Activity {
         render(rokid.isAppInstalled() ? rokid.status() : rokid.compatibilityNote(), false);
 
         toggleView.setOnClickListener(v -> toggle());
+        // 5.261：投屏通了之后先验一句字 —— 不连电脑、不开会，把"会话/原生库"与"字幕链路"分开验。
+        findViewById(R.id.castTest).setOnClickListener(v -> {
+            if (rokid == null || !rokid.isCasting()) {
+                render(getString(R.string.glasses_cast_need_cast_first), false);
+                return;
+            }
+            String text = getString(R.string.glasses_cast_test_text);
+            rokid.push(text);
+            render(getString(R.string.glasses_cast_test_sent), false);
+        });
         findViewById(R.id.castBack).setOnClickListener(v -> finish());
     }
 

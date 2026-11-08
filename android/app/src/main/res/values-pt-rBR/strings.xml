@@ -296,7 +296,10 @@ Microfone: microfone do celular (em uso)</string>
     <string name="glasses_cast_idle">Óculos não conectados</string>
     <string name="glasses_cast_start">Começar a transmitir</string>
     <string name="glasses_cast_stop">Parar de transmitir</string>
-    <string name="glasses_cast_need_bt">É preciso a permissão “Dispositivos próximos” para falar com os óculos (Bluetooth no Android 12+). Toque em “Começar a transmitir” para autorizar e tente de novo.</string>
+    <string name="glasses_cast_test">Enviar uma frase de teste</string>
+    <string name="glasses_cast_need_cast_first">Toque em “Começar a transmitir” primeiro e espere o status ficar ativo.</string>
+    <string name="glasses_cast_test_text">Esta é uma legenda de teste. Se você consegue ler, o texto chega à lente.</string>
+    <string name="glasses_cast_test_sent">Frase de teste enviada — olhe os óculos agora.</string>    <string name="glasses_cast_need_bt">É preciso a permissão “Dispositivos próximos” para falar com os óculos (Bluetooth no Android 12+). Toque em “Começar a transmitir” para autorizar e tente de novo.</string>
     <string name="glasses_cast_hint">São necessárias duas coisas: (1) o app Rokid AI instalado neste celular; (2) os óculos conectados dentro do app Rokid AI (o pareamento Bluetooth do sistema não basta). Depois de começar, as traduções aparecem na lente frase por frase.</string>
     <string name="set_privacy">Privacidade</string>
     <string name="set_privacy_link">Política de privacidade (para onde vão áudio e legendas)</string>

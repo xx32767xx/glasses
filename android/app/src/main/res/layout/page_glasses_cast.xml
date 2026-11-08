@@ -59,6 +59,17 @@
             android:textColor="@color/ink_soft"
             android:textSize="@dimen/text_secondary" />
 
+        <!-- 5.261：投屏通了之后，先推一句固定文字验证"字能不能上镜片" ——
+             不用连电脑、不用开会，就能把"会话/授权/原生库"和"字幕链路"分开验。 -->
+        <Button
+            android:id="@+id/castTest"
+            android:layout_width="match_parent"
+            android:layout_height="@dimen/height_field"
+            android:layout_marginTop="@dimen/space_gap_small"
+            android:text="@string/glasses_cast_test"
+            android:textColor="@color/ink"
+            android:background="@drawable/tap_btn_secondary" />
+
         <Button
             android:id="@+id/castBack"
             android:layout_width="match_parent"
