@@ -22,7 +22,7 @@ import org.json.JSONObject;
  *
  * 规则（用户 2026-10-27 定）：
  *   - **打开 App 先看到登录/注册**，登录之后才看到 App 本体；
- *   - 旧界面（MainActivity）保留但不再是入口，首页里给一个「旧版界面」按钮（方便对比/回退）。
+ *   - 5.146：旧界面（MainActivity）已整屏下掉，首页不再有「旧版界面」入口。
  *
  * 设计取舍：先做成一个 Activity 内两态切换（登录态 / 已登录态），
  * 少一个 Activity 就少一处状态同步，稳定性优先。
@@ -180,6 +180,10 @@ public class HomeActivity extends android.app.Activity {
         serverInput.setText(host);
         secretInput.setText(secret);
         client = new LanClient(host, secret, null);
+        // 5.27：把本机 versionCode 设成**全局缺省**，之后新建的每个客户端都自带它 ——
+        // 版本门禁挡的是 /hello 与 /audio（写入路径），漏带任何一处都会被当旧版本拒掉。
+        // （5.146：原来这行在旧界面 MainActivity 里，随它一起搬到这里。）
+        LanClient.setDefaultAppVersionCode(String.valueOf(UpdateGuard.versionCode(this)));
 
         loginButton.setOnClickListener(v -> doLogin());
         sendCodeButton.setOnClickListener(v -> sendCode());
@@ -206,8 +210,6 @@ public class HomeActivity extends android.app.Activity {
         // 4.93：底部导航统一走 NavTabs.go —— 交叉淡化换页，不用默认的"从右侧推入覆盖"
         findViewById(R.id.homeNavHistory).setOnClickListener(v -> NavTabs.go(this, NavTabs.HISTORY));
         findViewById(R.id.homeNavMe).setOnClickListener(v -> NavTabs.go(this, NavTabs.ME));
-        findViewById(R.id.homeLegacy).setOnClickListener(v ->
-                startActivity(new Intent(this, MainActivity.class)));
         findViewById(R.id.homeLogout).setOnClickListener(v -> logout());
 
         refreshUiLangPills();

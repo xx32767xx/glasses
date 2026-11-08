@@ -30,7 +30,6 @@
     <string name="home_greeting">Vai ter reunião? Crie uma sala e envie o código de 6 dígitos.</string>
     <string name="home_rooms">Salas de reunião (criar / entrar)</string>
     <string name="home_settings">Configurações (servidor / idioma / revisão / privacidade)</string>
-    <string name="home_legacy">Tela antiga (comparar / voltar)</string>
     <string name="home_logout">Sair da conta</string>
     <string name="st_offline_keep">Offline: servidor inacessível (%1$s); sua sessão foi mantida</string>
     <string name="st_session_expired">Sessão expirada, entre novamente</string>
@@ -65,7 +64,6 @@
     <string name="interp_backend_scripted">Demonstração</string>
     <string name="interp_backend_relay">Reconhecimento e tradução no servidor</string>
     <string name="interp_status_hint">Toque no botão para começar. Esta tela hoje é uma demonstração com roteiro; o reconhecimento real ainda não está ligado.</string>
-    <string name="interp_hint_relay">Toque no botão para começar. Reconhecimento e tradução rodam no servidor (mesmo fluxo das reuniões); cada frase costuma voltar em um ou dois segundos.</string>
     <string name="interp_empty">Nada aqui ainda. Toque em Iniciar abaixo para ver o fluxo.</string>
     <string name="interp_start">Iniciar</string>
     <string name="interp_stop">Parar</string>
@@ -82,7 +80,6 @@
     <string name="interp_tab_history">Histórico</string>
     <string name="interp_read_title">Idioma que eu leio</string>
     <string name="interp_partner_title">Idioma do interlocutor</string>
-    <string name="interp_open_settings">Abrir ajustes (servidor e chave)</string>
     <string name="interp_where">Reconhecimento e tradução rodam no servidor: %1$s (%2$s)</string>
     <string name="interp_where_engine">Servidor %1$s · %2$s · pedido de modelo \"%3$s\" (o servidor escolhe pela sala, depois pela tabela dele, depois pelo padrão; veja no log de reconhecimento qual foi carregado)</string>
     <string name="interp_where_unavailable">\"Interlocutor fala %1$s\" não está disponível agora: %2$s</string>
@@ -151,15 +148,18 @@
     <string name="rooms_title">Salas de reunião</string>
     <string name="rooms_my_lang_title">Em que idioma eu falo na reunião</string>
     <string name="rooms_hear_title">Traduções que quero ler</string>
+        <!-- 5.146：房间页顶部那格"我说中文 · 面对面"的拼法（建/入会页的胶囊不再带"我说"前缀） -->
+    <string name="rooms_mode_tag_lang">Falo %1$s</string>
+    <string name="rooms_mode_tag">Falo %1$s · %2$s</string>
     <string name="rooms_hear_on">✓ %1$s</string>
     <string name="rooms_hear_locked">Este é o idioma que você fala; a fala dos outros é traduzida para ele, então não pode ser desmarcado.</string>
-    <string name="rooms_speak_zh">Eu falo chinês</string>
-    <string name="rooms_speak_pt">Eu falo português</string>
-    <string name="rooms_speak_en">Eu falo inglês</string>
-    <string name="rooms_speak_en_on">Eu falo inglês ✓</string>
+    <string name="rooms_speak_zh">Chinês</string>
+    <string name="rooms_speak_pt">Português</string>
+    <string name="rooms_speak_en">Inglês</string>
+    <string name="rooms_speak_en_on">Inglês ✓</string>
     <string name="rooms_auto_hint">Não é preciso escolher o idioma de destino: cada pessoa já escolheu "Eu falo chinês / português / inglês" ao entrar, e cada uma recebe no próprio idioma (uma tradução por idioma na reunião).</string>
-    <string name="rooms_speak_zh_on">Eu falo chinês ✓</string>
-    <string name="rooms_speak_pt_on">Eu falo português ✓</string>
+    <string name="rooms_speak_zh_on">Chinês ✓</string>
+    <string name="rooms_speak_pt_on">Português ✓</string>
     <string name="rooms_create_title">Criar reunião</string>
     <string name="rooms_hint_name">Nome da reunião (ex.: negociação em São Paulo)</string>
     <string name="rooms_create">Criar (gera um código de 6 dígitos)</string>

@@ -30,12 +30,13 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { ROOT } from '../lib/paths.mjs'
 
-/** 文件 → 要检查的字段（这些字段都只有一处 `= new ...` 构造赋值）。 */
+/** 文件 → 要检查的字段（这些字段都只有一处 `= new ...` 构造赋值）。
+ *  5.146：旧界面（MainActivity）已下掉，改为盯「我的」页 —— 它同样先构造 client 再使用。 */
 const TARGETS = [
   {
-    file: join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay', 'MainActivity.java'),
-    label: 'MainActivity',
-    fields: ['glasses', 'glassesView', 'client', 'records', 'subtitles', 'pageHost', 'overlayHost'],
+    file: join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay', 'MeActivity.java'),
+    label: 'MeActivity',
+    fields: ['client'],
   },
 ]
 
@@ -253,36 +254,19 @@ export async function runAndroidOrderSuite({ it, check }) {
 
   // ── 页面构建：buildXxxPage() 必须真的被调用 ──────────────────────────────
   //
-  // 4.4 的一次真实闪退就是这条没守住：`buildTermsPage()` 写好了却**没有被调用**，
-  // 于是 `termsPage` 是 null，`showPage()` 第一行 setVisibility 就空指针 ——
-  // **打开 App 就闪退**，而编译毫无怨言（私有方法没人调用只是警告）。
-  //
-  // 这类错误机械可查：文件里每个 `private void build…Page()` 都必须至少被调用一次。
-  const pageFile = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay', 'MainActivity.java')
+  // 4.4 的一次真实闪退就是这条没守住（`buildTermsPage()` 写了却没被调用 → 空指针）。
+  // 5.146：那套"页面缓存 + showPage"机制只存在于已下掉的旧界面（MainActivity），
+  // 现在每个页面都是独立 Activity，setContentView 即构建 —— 这条断言随之作废。
+  const pageFile = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay', 'HomeActivity.java')
   const pageSource = stripComments(readFileSync(pageFile, 'utf-8'))
 
-  await it('每个 build…Page() 都必须被调用（写了不调用 = 打开就闪退）', () => {
-    const declared = [...pageSource.matchAll(/private\s+void\s+(build\w*Page)\s*\(\s*\)/g)].map(m => m[1])
-    check('至少找到了 build*Page 方法', declared.length > 0, declared.join(','))
-    for (const name of declared) {
-      const callPattern = new RegExp(`(^|[^.\\w])${name}\\s*\\(\\s*\\)`, 'm')
-      // 去掉声明本身再找调用，避免"声明被当成调用"
-      const withoutDeclaration = pageSource.replace(
-        new RegExp(`private\\s+void\\s+${name}\\s*\\(\\s*\\)`, 'g'), '')
-      check(`${name} 有被调用`, callPattern.test(withoutDeclaration),
-        `${name} 声明了但没有任何调用点 —— 那个页面永远是 null`)
-    }
-  })
-
-  await it('页面切换对"还没建出来的页面"免疫（不因缺页面而闪退）', () => {
-    // showPage 里不能裸着 setVisibility：要么判空，要么走统一的 showOnly()
-    const showPageBody = pageSource.slice(pageSource.indexOf('private void showPage(Page page)'))
-    const body = showPageBody.slice(0, showPageBody.indexOf('\n    }', 200))
-    const bare = body
-      .split('\n')
-      .filter(line => /\.setVisibility\s*\(/.test(line))
-      .filter(line => !/showOnly\(|!=\s*null|==\s*null/.test(line))
-    check('showPage 里没有裸 setVisibility', bare.length === 0, bare.join(' | '))
+  await it('旧界面的页面缓存机制已随 MainActivity 一起下掉（5.146）', () => {
+    check('HomeActivity 里不再有 build*Page 方法',
+      !/private\s+void\s+build\w*Page\s*\(/.test(pageSource))
+    check('App 不再引用 MainActivity',
+      !/MainActivity\.class/.test(pageSource)
+      && !/\.MainActivity/.test(readFileSync(join(ROOT, 'android', 'app', 'src', 'main',
+        'AndroidManifest.xml'), 'utf-8')))
   })
 
   // 反向自检：把"用在前、构造在后"的假代码喂给检查函数，它必须报出来。
@@ -746,7 +730,6 @@ export async function runAndroidOrderSuite({ it, check }) {
     const arbiter = readFileSync(join(javaDir, 'AudioCaptureArbiter.java'), 'utf-8')
     const uploader = readFileSync(join(javaDir, 'MicUploader.java'), 'utf-8')
     const source = readFileSync(join(javaDir, 'AudioSource.java'), 'utf-8')
-    const legacy = readFileSync(join(javaDir, 'MainActivity.java'), 'utf-8')
 
     // ① 房间页只有一个 releaseAudio() 出口
     check('有 releaseAudio()（唯一的音频出口）', /private void releaseAudio\(\)/.test(room))
@@ -778,9 +761,7 @@ export async function runAndroidOrderSuite({ it, check }) {
       /AudioCaptureArbiter\.attach\(AudioCaptureArbiter\.OWNER_ROOM, mic\)/.test(room))
     check('启动失败要把租约还回去（否则一条幽灵录音挡住别人）',
       /mic = null;[\s\S]{0,200}?AudioCaptureArbiter\.release\(AudioCaptureArbiter\.OWNER_ROOM\)/.test(room))
-    // ④ 旧版界面也不能绕过
-    check('旧版界面同样申请/交还', /OWNER_LEGACY\)/.test(legacy)
-      && /AudioCaptureArbiter\.release\(AudioCaptureArbiter\.OWNER_LEGACY\)/.test(legacy))
+    // ④ 5.146：旧界面已下掉，OWNER_LEGACY 随之不再有人使用
     // ⑤ 仲裁器本身的规则
     check('同一时刻只有一个持有者',
       /if \(holder != null\) \{[\s\S]{0,400}?return describeDenied/.test(arbiter),
@@ -800,7 +781,7 @@ export async function runAndroidOrderSuite({ it, check }) {
       /FLAG_KEEP_SCREEN_ON/.test(room) && /mic\.start\(\)[\s\S]{0,400}?addFlags/.test(room))
     check('关麦/释放时撤掉常亮', /releaseAudio[\s\S]{0,600}?clearFlags\(android\.view\.WindowManager\.LayoutParams\.FLAG_KEEP_SCREEN_ON\)/.test(room))
     // ⑦ 不许在别处直接开录音
-    for (const f of ['RoomActivity.java', 'MainActivity.java', 'HomeActivity.java', 'HistoryActivity.java']) {
+    for (const f of ['RoomActivity.java', 'HomeActivity.java', 'HistoryActivity.java']) {
       const text = readFileSync(join(javaDir, f), 'utf-8')
       check(`${f} 里没有裸 new AudioRecord（都得经 MicUploader/GlassesMic）`,
         /new AudioRecord\(/.test(text) === false)
@@ -1150,24 +1131,24 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('渐变两端用 token', /brand_grad_start/.test(btn) && /brand_grad_end/.test(btn))
   })
 
-  await it('旧版界面：入口默认隐藏、代码保留、且被标注为参考实现（4.48）', () => {
+  await it('旧版界面已整屏下掉（5.146）：代码 / 布局 / 入口 / 清单条目都不许剩', () => {
     const layoutDir = join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout')
     const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
     const home = readFileSync(join(layoutDir, 'page_home.xml'), 'utf-8')
     const homeJava = readFileSync(join(javaDir, 'HomeActivity.java'), 'utf-8')
-    const main = readFileSync(join(javaDir, 'MainActivity.java'), 'utf-8')
+    const manifest = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'AndroidManifest.xml'), 'utf-8')
 
-    // 入口隐藏：按钮还在（能一键放出来），但默认看不见
-    const legacyBlock = home.slice(home.indexOf('@+id/homeLegacy'))
-    check('旧版入口默认隐藏', /visibility="gone"/.test(legacyBlock.slice(0, 900)),
-      '用户要求"暂时不再显示"')
-    check('隐藏方式是一个属性，不用改 Java',
-      /homeLegacy[\s\S]{0,1600}MainActivity\.class/.test(homeJava),
-      'HomeActivity 的点击监听必须一直有效')
-
-    // 冻结标注：不能悄悄变了语义，也不能被人当成"死代码"删掉
-    check('MainActivity 头部标了冻结', /已冻结（4\.48/.test(main), '没有标注就会被当成死代码删掉')
-    check('标注说清了它是参考实现', /参考实现/.test(main))
+    check('首页没有「旧版界面」入口', !/@\+id\/homeLegacy/.test(home) && !/MainActivity\.class/.test(homeJava))
+    check('清单里没有 MainActivity', !/\.MainActivity/.test(manifest))
+    check('旧界面的类文件已删除',
+      ['MainActivity.java', 'GlassesSdk.java', 'GlassesSubtitleView.java', 'GlassesMic.java']
+        .every((name) => !existsSync(join(javaDir, name))))
+    check('旧界面的布局已删除',
+      ['activity_main.xml', 'page_settings.xml', 'page_live.xml', 'overlay_glasses.xml',
+        'overlay_connect.xml', 'overlay_account.xml', 'overlay_fullscreen.xml',
+        'sheet_language.xml', 'sheet_output.xml', 'page_records.xml', 'page_record_detail.xml',
+        'page_summary.xml', 'page_terms.xml']
+        .every((name) => !existsSync(join(layoutDir, name))))
   })
 
   await it('集成契约 v3：能力并入主 App（采集→ASR 后端→翻译+播报），两种 ASR 同形状', () => {
@@ -1877,12 +1858,12 @@ export async function runAndroidOrderSuite({ it, check }) {
     // 有服务器地址时说"识别与翻译都在服务器上跑"，没填地址时说"演示回放（不是真翻译）"。
     const interpJava = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java',
       'com', 'leion', 'lanrelay', 'InterpreterActivity.java'), 'utf-8')
-    check('翻译官页仍写明走哪条路（摘要行，不再靠右上角徽标）',
-      /interpWhere/.test(interpLayout) && /interp_where/.test(interpJava)
+    check('翻译官页仍写明走哪条路（状态行，不再靠右上角徽标）',
+      !/interpWhere/.test(interpLayout) && /interp_where/.test(interpJava)
       && /backendText\(picked\.backend\)/.test(interpJava))
 
     // 已支持语言：中文 / 英语 / 巴西葡萄牙语（5.144：英语补上；页脚那句"更多语言"已删）
-    const supported = home.slice(home.indexOf('home_supported_title'), home.indexOf('@+id/homeLegacy'))
+    const supported = home.slice(home.indexOf('home_supported_title'), home.indexOf('@+id/homeLogout'))
     check('已支持语言卡片有标题', /home_supported_title/.test(supported))
     check('标签列出中文 / 英语 / 巴西葡萄牙语',
       /@string\/lang_zh_full/.test(supported) && /@string\/lang_en_full/.test(supported)
@@ -2424,7 +2405,6 @@ export async function runAndroidOrderSuite({ it, check }) {
     const relay = readFileSync(join(ROOT, 'relay', 'lan-relay.mjs'), 'utf-8')
     const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
     const client = readFileSync(join(javaDir, 'LanClient.java'), 'utf-8')
-    const main = readFileSync(join(javaDir, 'MainActivity.java'), 'utf-8')
     // 注释里会提到旧写法，所以判"有没有旧代码"时先剥注释
     const roomCode = room.replace(/\/\*[\s\S]*?\*\//g, '').split('\n')
       .filter(line => line.trim().startsWith('//') === false).join('\n')
@@ -2452,8 +2432,7 @@ export async function runAndroidOrderSuite({ it, check }) {
       /frame\.isNull\("speakerName"\)/.test(client) && /"null"\.equals\(value\)/.test(client),
       'optString 直接把 null 读成了字符串')
     check('WS 那条路也走同一个取值函数', /LanClient\.speakerNameOf\(frame\)/.test(room))
-    check('旧页面（同传 App）跟着改了签名', /final String speakerName, final String notice\) \{/.test(main),
-      'MainActivity 没跟上')
+    // 5.146：旧页面（MainActivity）已下掉，这条签名断言随它一起作废
 
     // ③ 4.96：上传音频时自报发言人（用户提的那条路）
     check('上传 URL 带上 speaker', /append\("&speaker="\)/.test(client), '没把发言人带上去')

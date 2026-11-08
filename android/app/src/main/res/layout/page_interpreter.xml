@@ -246,27 +246,7 @@
                 </LinearLayout>
             </LinearLayout>
 
-            <!-- 识别与翻译在哪（只读摘要）：用户最常问的就是"这是真翻译还是演示" -->
-            <TextView
-                android:id="@+id/interpWhere"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="@dimen/space_gap"
-                android:background="@drawable/bg_card"
-                android:padding="@dimen/space_gap_small"
-                android:textColor="@color/ink_soft"
-                android:textSize="@dimen/text_caption" />
 
-            <TextView
-                android:id="@+id/interpOpenSettings"
-                android:layout_width="match_parent"
-                android:layout_height="@dimen/touch_min"
-                android:layout_marginTop="@dimen/space_gap_small"
-                android:background="@drawable/tap_btn_secondary"
-                android:gravity="center"
-                android:text="@string/interp_open_settings"
-                android:textColor="@color/ink_soft"
-                android:textSize="@dimen/text_secondary" />
         </LinearLayout>
     </ScrollView>
 

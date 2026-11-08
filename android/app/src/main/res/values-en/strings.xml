@@ -30,7 +30,6 @@
     <string name="home_greeting">Meeting today? Create a room and send the 6-digit code over.</string>
     <string name="home_rooms">Meeting rooms (create / join)</string>
     <string name="home_settings">Settings (server / language / proofreading / privacy)</string>
-    <string name="home_legacy">Legacy screen (compare / fall back)</string>
     <string name="home_logout">Sign out</string>
     <string name="st_offline_keep">Offline: cannot reach the server (%1$s); your session is kept</string>
     <string name="st_session_expired">Your session expired, please sign in again</string>
@@ -65,7 +64,6 @@
     <string name="interp_backend_scripted">Scripted demo</string>
     <string name="interp_backend_relay">Server ASR + translation</string>
     <string name="interp_status_hint">Tap the button to start. This screen currently plays a scripted demo; real recognition is not wired up yet.</string>
-    <string name="interp_hint_relay">Tap the button to start. Recognition and translation both run on the server (same pipeline as meetings); a sentence usually comes back in a second or two.</string>
     <string name="interp_empty">Nothing here yet. Tap Start below to walk through the flow.</string>
     <string name="interp_start">Start</string>
     <string name="interp_stop">Stop</string>
@@ -82,7 +80,6 @@
     <string name="interp_tab_history">History</string>
     <string name="interp_read_title">Language I read</string>
     <string name="interp_partner_title">Partner\'s language</string>
-    <string name="interp_open_settings">Open settings (server and key)</string>
     <string name="interp_where">Recognition and translation run on the server: %1$s (%2$s)</string>
     <string name="interp_where_engine">Server %1$s · %2$s · model request \"%3$s\" (the server picks by room request, then its own model table, then its default; check the recognition log for what was actually loaded)</string>
     <string name="interp_where_unavailable">\"Partner speaks %1$s\" is not available now: %2$s</string>
@@ -151,15 +148,18 @@
     <string name="rooms_title">Meeting rooms</string>
     <string name="rooms_my_lang_title">Which language I speak in the meeting</string>
     <string name="rooms_hear_title">Translations I want to read</string>
+        <!-- 5.146：房间页顶部那格"我说中文 · 面对面"的拼法（建/入会页的胶囊不再带"我说"前缀） -->
+    <string name="rooms_mode_tag_lang">I speak %1$s</string>
+    <string name="rooms_mode_tag">I speak %1$s · %2$s</string>
     <string name="rooms_hear_on">✓ %1$s</string>
     <string name="rooms_hear_locked">This is the language you speak, so others\' speech is translated into it for you; it cannot be unchecked.</string>
-    <string name="rooms_speak_zh">I speak Chinese</string>
-    <string name="rooms_speak_pt">I speak Portuguese</string>
-    <string name="rooms_speak_en">I speak English</string>
-    <string name="rooms_speak_en_on">I speak English ✓</string>
+    <string name="rooms_speak_zh">Chinese</string>
+    <string name="rooms_speak_pt">Portuguese</string>
+    <string name="rooms_speak_en">English</string>
+    <string name="rooms_speak_en_on">English ✓</string>
     <string name="rooms_auto_hint">No need to pick a target language: everyone already chose "I speak Chinese / Portuguese / English" when joining, and each person receives their own language (one translation per language in the meeting).</string>
-    <string name="rooms_speak_zh_on">I speak Chinese ✓</string>
-    <string name="rooms_speak_pt_on">I speak Portuguese ✓</string>
+    <string name="rooms_speak_zh_on">Chinese ✓</string>
+    <string name="rooms_speak_pt_on">Portuguese ✓</string>
     <string name="rooms_create_title">Create a meeting</string>
     <string name="rooms_hint_name">Meeting name (e.g. São Paulo deal)</string>
     <string name="rooms_create">Create (generates a 6-digit code)</string>

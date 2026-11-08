@@ -1496,7 +1496,11 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         String langText = langLabelOf(lang == null ? "" : lang);
         String modeText = "remote".equals(mode) ? getString(R.string.attend_mode_remote)
                 : ("onsite".equals(mode) ? getString(R.string.attend_mode_onsite) : "");
-        modeTag.setText(modeText.isEmpty() ? langText : langText + " · " + modeText);
+        // 5.146：建/入会页的语言胶囊已去掉"我说"前缀（用户要求），
+        // 所以这里靠格式化文案把"我说…"补回来 —— 否则顶部那格只剩"中文 · 面对面"。
+        modeTag.setText(modeText.isEmpty()
+                ? getString(R.string.rooms_mode_tag_lang, langText)
+                : getString(R.string.rooms_mode_tag, langText, modeText));
     }
 
     /**

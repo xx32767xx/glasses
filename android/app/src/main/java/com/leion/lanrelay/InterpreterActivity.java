@@ -95,7 +95,6 @@ public class InterpreterActivity extends android.app.Activity {
     private TextView tabConfig;
     private TextView tabLive;
     private TextView tabHistory;
-    private TextView whereView;
     private Switch ttsSwitch;
     private LinearLayout historyList;
     private ScrollView historyScroll;
@@ -128,7 +127,6 @@ public class InterpreterActivity extends android.app.Activity {
         tabConfig = findViewById(R.id.interpTabConfig);
         tabLive = findViewById(R.id.interpTabLive);
         tabHistory = findViewById(R.id.interpTabHistory);
-        whereView = findViewById(R.id.interpWhere);
         ttsSwitch = findViewById(R.id.interpTtsSwitch);
         historyList = findViewById(R.id.interpHistoryList);
         historyScroll = findViewById(R.id.interpHistoryScroll);
@@ -235,13 +233,7 @@ public class InterpreterActivity extends android.app.Activity {
         }
         Log.i("LeionInterp", "🧭 路由表 → " + router.describe() + "（我读 " + lang + "，对方说 " + partner + "）");
         refreshMeta();
-        refreshWhere();
-        // 第一句提示要说**这一场实际会怎么跑**，而不是一句写死的文案
-        AsrRouter.Resolution first = router.resolve(partner);
-        boolean hasRelay = first != null && first.ok() && first.backend instanceof RelayPipelineBackend;
-        if (statusView != null) {
-            statusView.setText(getString(hasRelay ? R.string.interp_hint_relay : R.string.interp_status_hint));
-        }
+        refreshRoute();
     }
 
     /**
@@ -355,9 +347,6 @@ public class InterpreterActivity extends android.app.Activity {
         findViewById(R.id.interpPartnerZh).setOnClickListener(v -> setPartnerLang(InterpreterLang.ZH));
         findViewById(R.id.interpPartnerPt).setOnClickListener(v -> setPartnerLang(InterpreterLang.PT));
         findViewById(R.id.interpPartnerEn).setOnClickListener(v -> setPartnerLang(InterpreterLang.EN));
-        // 5.145：设置页已并入「我的」（服务器地址/密钥那一块），这里指过去
-        findViewById(R.id.interpOpenSettings).setOnClickListener(v ->
-                startActivity(new android.content.Intent(this, MeActivity.class)));
         if (TtsFeature.enabled() && ttsSwitch != null) {
             ttsSwitch.setChecked(getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("ttsRead", false));
             ttsSwitch.setOnCheckedChangeListener((button, checked) -> {
@@ -427,7 +416,7 @@ public class InterpreterActivity extends android.app.Activity {
         styleChip(findViewById(R.id.interpPartnerEn), InterpreterLang.EN.equals(partner), allows(options, InterpreterLang.EN));
 
         refreshMeta();
-        refreshWhere();
+        refreshRoute();
     }
 
     private static boolean allows(String[] options, String one) {
@@ -451,25 +440,26 @@ public class InterpreterActivity extends android.app.Activity {
         view.setEnabled(enabled);
     }
 
-    private void refreshWhere() {
-        if (whereView == null) return;
-        // 5.39：这里说的必须是**表判出来的**结果，不是猜测：「对方说 X」会交给谁，
-        // 以及不可用时到底为什么不满足（未实现的后端 / 没填服务器地址 / 表里没这一条）。
+    private void refreshRoute() {
+        // 5.146（用户要求）：配置页那块「识别与翻译在哪」的白框已删除；
+        // 这条信息改由**状态行**承担 —— 打开页面就能看到"这一场实际会怎么跑"，
+        // 而且它本来就要随路由判定实时变化（不可用时直接说为什么不可用）。
+        if (statusView == null) return;
         String problem = routeProblemOf(partner);
         AsrRouter.Resolution picked = router == null ? null : router.resolve(partner);
         boolean relay = picked != null && picked.ok() && picked.backend instanceof RelayPipelineBackend;
+        String text;
         if (!problem.isEmpty()) {
-            whereView.setText(getString(R.string.interp_where_unavailable, langText(partner), problem));
-            return;
-        }
-        if (relay) {
+            text = getString(R.string.interp_where_unavailable, langText(partner), problem);
+        } else if (relay) {
             RelayPipelineBackend backendRelay = (RelayPipelineBackend) picked.backend;
             String engine = backendRelay.engine().isEmpty() ? "" : backendRelay.engine();
-            whereView.setText(getString(engine.isEmpty() ? R.string.interp_where
-                    : R.string.interp_where_engine, serverUrl(), backendText(picked.backend), engine));
+            text = getString(engine.isEmpty() ? R.string.interp_where
+                    : R.string.interp_where_engine, serverUrl(), backendText(picked.backend), engine);
         } else {
-            whereView.setText(getString(R.string.interp_where_demo));
+            text = getString(R.string.interp_where_demo);
         }
+        if (!running) statusView.setText(text);
     }
 
     // ── 历史 ──────────────────────────────────────────────────────────────

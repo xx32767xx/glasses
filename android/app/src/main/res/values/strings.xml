@@ -321,7 +321,6 @@
     <string name="home_greeting">今天要开会吗？建一间房，把 6 位邀请码发给对方。</string>
     <string name="home_rooms">会议房间（创建 / 加入）</string>
     <string name="home_settings">设置（服务器 / 语言 / 校对 / 隐私）</string>
-    <string name="home_legacy">旧版界面（对比 / 回退）</string>
     <string name="home_logout">退出登录</string>
     <string name="st_offline_keep">离线：连不上服务器（%1$s），登录状态先保留</string>
     <string name="st_session_expired">登录已失效，请重新登录</string>
@@ -362,7 +361,6 @@
     <string name="interp_backend_scripted">演示回放</string>
     <string name="interp_backend_relay">服务器识别 + 翻译</string>
     <string name="interp_status_hint">点下面的按钮开始；本页目前是演示回放（按剧本出字），尚未接入真实识别。</string>
-    <string name="interp_hint_relay">点下面的按钮开始；识别与翻译都在服务器上跑（与会议同一条链路），说完一句约一两秒出译文。</string>
     <string name="interp_empty">还没有内容。点下面的「开始」看一遍流程。</string>
     <string name="interp_start">开始</string>
     <string name="interp_stop">停止</string>
@@ -384,7 +382,6 @@
     <string name="interp_tab_history">历史</string>
     <string name="interp_read_title">我读的语言</string>
     <string name="interp_partner_title">对方说的语言</string>
-    <string name="interp_open_settings">打开设置（服务器地址 / 密钥）</string>
     <string name="interp_where">识别与翻译都在服务器上跑：%1$s（%2$s）</string>
     <!-- 5.39：路由表（asr-routes.json）判出来的结果；引擎偏好只记录、服务器尚未支持 -->
     <string name="interp_where_engine">服务器 %1$s · %2$s · 模型请求「%3$s」（服务器会按「房间请求 → 它自己的模型表 → 默认」选模型；实际用了哪个看识别日志）</string>
@@ -464,16 +461,19 @@
     <!-- 5.55：「我说一种、我想看多种」。自己说的那门锁定勾选 —— 含义不是"想看自己的原文"，
          而是"别人说的要按我读得懂的语言给我"。 -->
     <string name="rooms_hear_title">我想看的译文</string>
+        <!-- 5.146：房间页顶部那格"我说中文 · 面对面"的拼法（建/入会页的胶囊不再带"我说"前缀） -->
+    <string name="rooms_mode_tag_lang">我说%1$s</string>
+    <string name="rooms_mode_tag">我说%1$s · %2$s</string>
     <string name="rooms_hear_on">✓ %1$s</string>
     <string name="rooms_hear_locked">这一门是你说的语言，别人说的话会译成它给你，所以不能取消。</string>
-    <string name="rooms_speak_zh">我说中文</string>
-    <string name="rooms_speak_pt">我说葡语</string>
-    <string name="rooms_speak_en">我说英语</string>
-    <string name="rooms_speak_en_on">我说英语 ✓</string>
+    <string name="rooms_speak_zh">中文</string>
+    <string name="rooms_speak_pt">葡语</string>
+    <string name="rooms_speak_en">英语</string>
+    <string name="rooms_speak_en_on">英语 ✓</string>
     <!-- 5.03：译成哪种语言**不用选** —— 按每位成员入会时选的语言自动分发 -->
     <string name="rooms_auto_hint">译成哪种语言不用选：每个人入会时已经选过「我说中文 / 葡语 / 英语」，对方读到的是他自己那种语言（有几种语言就译几份）。</string>
-    <string name="rooms_speak_zh_on">我说中文 ✓</string>
-    <string name="rooms_speak_pt_on">我说葡语 ✓</string>
+    <string name="rooms_speak_zh_on">中文 ✓</string>
+    <string name="rooms_speak_pt_on">葡语 ✓</string>
     <string name="rooms_create_title">创建会议</string>
     <string name="rooms_hint_name">会议名称（例如：圣保罗洽谈）</string>
     <string name="rooms_create">创建（生成 6 位邀请码）</string>

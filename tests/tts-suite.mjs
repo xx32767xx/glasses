@@ -365,9 +365,9 @@ export async function runTtsSuite({ it, check }) {
     check('右上角的后端小字已删除（徽标不占返回按钮的位置）', !/interpBackend/.test(interp))
     check('页面代码里也不再引用那个徽标', !/R\.id\.interpBackend/.test(
       readFileSync(join(JAVA_SRC, 'InterpreterActivity.java'), 'utf-8')))
-    // 删掉了徽标，但"这一路走的什么"仍要能看见 —— 配置块里的摘要那行不能一起删
-    check('摘要行还在（删徽标 ≠ 让页面不再说走哪条路）',
-      /interpWhere/.test(interp) && /interp_where/.test(
+    // 5.146：配置页那块摘要白框已按用户要求删除；信息改由状态行写（interp_where* 仍在用）
+    check('摘要信息还在（只是从白框挪到了状态行）',
+      !/interpWhere/.test(interp) && /interp_where/.test(
         readFileSync(join(JAVA_SRC, 'InterpreterActivity.java'), 'utf-8')))
   })
 
@@ -386,7 +386,7 @@ export async function runTtsSuite({ it, check }) {
     check('启动时设一次全局缺省（不依赖"某个页面记得调"）',
       /static void setDefaultAppVersionCode/.test(client)
       && /LanClient\.setDefaultAppVersionCode\(String\.valueOf\(UpdateGuard\.versionCode\(this\)\)\)/
-        .test(readFileSync(join(JAVA_SRC, 'MainActivity.java'), 'utf-8')))
+        .test(readFileSync(join(JAVA_SRC, 'HomeActivity.java'), 'utf-8')))
 
     // 门禁范围：只挡"会写进数据"的两条。读字幕（/frame）与手输一句话（/say）
     // 不该因为版本号抖动把整场字幕断掉 —— 用户提的方案（只在登录界面拦）落地成这个窄化版。
@@ -750,10 +750,12 @@ export async function runTtsSuite({ it, check }) {
     check('三套剧本（中/葡/英）', /startsWith\("pt"\)/.test(scripted) && /startsWith\("en"\)/.test(scripted))
 
     // ③ 页面：明写"这一路走的什么"，不许"看着能用其实没接"
-    // 5.43：用户要求删掉右上角的后端小字（位置留给返回胶囊），所以这条不再检查徽标，
-    // 而是检查"这件事还有没有别处说清" —— 摘要行（interpWhere）+ 状态行文案。
-    check('页面仍写明走哪条路（摘要行 + 后端名走资源）',
-      /interpWhere/.test(layout) && /interp_backend_relay/.test(layout === null ? '' : readFileSync(
+    // 5.43：右上角的后端小字按用户要求删了；5.146：配置页的摘要白框也删了 ——
+    // 这条信息现在由**状态行**承担（interp_where* 仍在代码里），"说清"这件事不能一起消失。
+    const interpJava = readFileSync(join(JAVA_SRC, 'InterpreterActivity.java'), 'utf-8')
+    check('页面仍写明走哪条路（状态行 + 后端名走资源）',
+      !/interpWhere/.test(layout) && /interp_where/.test(interpJava)
+      && /interp_backend_relay/.test(readFileSync(
         join(ROOT, 'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml'), 'utf-8')))
     check('右上角的后端小字已按用户要求删除', !/interpBackend/.test(layout))
     check('状态行说清"目前是演示回放"', /尚未接入真实识别/.test(readFileSync(join(ROOT,
