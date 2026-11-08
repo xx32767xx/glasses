@@ -60,6 +60,7 @@
     <string name="set_tts_read_hint">Com fone ou óculos, a tradução é falada para você. Sem fone nada sai pelo alto-falante. Enquanto lê, a voz do outro lado pausa.</string>
     <string name="st_tts_on">Leitura da tradução ativada (precisa de fone ou óculos)</string>
     <string name="st_tts_off">Leitura da tradução desativada</string>
+    <string name="st_locked_self">Sua fala foi bloqueada pelo anfitrião; toque em Desbloquear para liberar você mesmo</string>
     <string name="interp_back">Voltar</string>
     <string name="interp_backend_scripted">Demonstração</string>
     <string name="interp_backend_relay">Reconhecimento e tradução no servidor</string>

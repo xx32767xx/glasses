@@ -60,6 +60,7 @@
     <string name="set_tts_read_hint">With earphones or glasses on, the translation is spoken to you. Nothing plays through the loudspeaker. The other side\'s voice pauses while it speaks.</string>
     <string name="st_tts_on">Reading translations aloud is on (needs earphones or glasses)</string>
     <string name="st_tts_off">Reading translations aloud is off</string>
+    <string name="st_locked_self">Your speech was locked by the host; tap Unlock to release it yourself</string>
     <string name="interp_back">Back</string>
     <string name="interp_backend_scripted">Scripted demo</string>
     <string name="interp_backend_relay">Server ASR + translation</string>

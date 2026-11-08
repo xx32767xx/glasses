@@ -131,6 +131,13 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     private boolean holding = false;
     private boolean locked = false;
     private boolean pollScheduled = false;
+    /**
+     * 5.143：我（持麦者）被锁定这件事**是否已经提示过**。
+     *
+     * <p>为什么要一个开关：`takingChanged` 在每次推送/轮询都会跑一遍，不去重的话
+     * 每 2 秒弹一次"发言已锁定"，比不提示还糟。
+     */
+    private boolean lockedSelfNotified = false;
     private MicUploader mic;
     /** 4.76：实时传声——播放别人的声音。 */
     private RoomAudioPlayer audioPlayer;
@@ -220,6 +227,10 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         if (mic == null) UiLang.trackShown(this);
         // 5.140：回到本页时刷一次投屏状态，并挂上监听（投屏中途开始/停止也能实时反映）
         refreshCastState();
+        // 5.143：回到本页立刻同步一次发言权与房间信息。WS 断线重连的空档里，
+        // "谁拿着麦 / 锁没锁"可能已经变了，光靠 10 秒看门狗会让界面停在旧状态上。
+        if (client != null) scheduleFloorPoll(0L);
+        if (client != null) loadRoomHeader();
         if (rokidListener == null) {
             rokidListener = (status, casting) -> ui.post(this::refreshCastState);
             RokidGlasses.shared(this).addListener(rokidListener);
@@ -741,6 +752,29 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         lockButton.setAlpha(canLock ? 1f : 0.5f);
         speakerBar.setText(anyHolder ? (getString(R.string.room_speaker_prefix) + holder
                 + (isLocked ? getString(R.string.room_locked_suffix) : "")) : getString(R.string.room_no_speaker));
+
+        // 5.143：锁定状态必须**一眼看得见**（用户报的：A 锁了正在说话的 B，B 的界面还像没锁）。
+        //
+        // 之前唯一的信号是图标（上锁 ↔ 解锁）与发言条末尾的「（已锁定）」——
+        // 图标一换，持麦者只会以为"这个按钮现在叫解锁"，完全读不出"我被锁了"。
+        // 现在加三样，且都只在**真的变化**时才动（不然每 2 秒弹一次）：
+        //   ① 图标染色（锁着 = 品牌色）；
+        //   ② 提示行写清楚"谁锁了、你能不能自己解"；
+        //   ③ 第一次变成"我被锁"时弹一次 Toast。
+        if (lockButton != null) {
+            lockButton.setImageTintList(isLocked
+                    ? android.content.res.ColorStateList.valueOf(getColor(R.color.brand))
+                    : null);
+        }
+        boolean lockedMine = isLocked && holding;
+        if (lockedMine && !lockedSelfNotified) {
+            lockedSelfNotified = true;
+            String note = getString(R.string.st_locked_self);
+            if (hintLine != null) hintLine.setText(note);
+            Toast.makeText(this, note, Toast.LENGTH_SHORT).show();
+        } else if (!isLocked) {
+            lockedSelfNotified = false;
+        }
     }
 
     /**

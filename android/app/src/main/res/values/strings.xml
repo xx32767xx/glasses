@@ -354,6 +354,8 @@
     <string name="set_tts_read_hint">戴上耳机或眼镜后，译文会念给你听；没有耳机时不外放。朗读时会暂停对方原声。</string>
     <string name="st_tts_on">已开启朗读译文（需要耳机或眼镜）</string>
     <string name="st_tts_off">已关闭朗读译文</string>
+    <!-- 5.143：持麦者被发起者锁定时，界面必须明确说一句（"仍显示未解锁"那个 bug） -->
+    <string name="st_locked_self">你的发言已被发起者锁定；点「解锁」可以自行解除</string>
     <!-- 5.31：同传翻译官页（识别后端可换：5.36 起默认是服务器识别 + 翻译） -->
     <string name="interp_back">返回</string>
     <string name="interp_backend_scripted">演示回放</string>
