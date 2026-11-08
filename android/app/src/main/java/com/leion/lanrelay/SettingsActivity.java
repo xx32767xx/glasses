@@ -127,10 +127,7 @@ public class SettingsActivity extends android.app.Activity {
         }
         findViewById(R.id.setAppPrivacy).setOnClickListener(v ->
                 startActivity(new android.content.Intent(this, PrivacyActivity.class)));
-        // 5.133：Rokid 眼镜投屏（只投译文）。之前它只有旧界面（MainActivity）的入口，
-        //        新入口里**根本进不去** —— 用户拿到的包上没有任何地方能开始投屏。
-        findViewById(R.id.setAppGlasses).setOnClickListener(v ->
-                startActivity(new android.content.Intent(this, GlassesCastActivity.class)));
+        // 5.139：眼镜投屏入口已挪到「我的」页（用户要求：它属于设备，不属于设置）。原本在这里。
         findViewById(R.id.setAppClearRecords).setOnClickListener(v -> clearRecords());
         findViewById(R.id.setAppBack).setOnClickListener(v -> finish());
 

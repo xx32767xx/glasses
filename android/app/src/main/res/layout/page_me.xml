@@ -266,8 +266,7 @@
 
                 <!-- 帮助与反馈 -->
                 <LinearLayout
-                    android:id="@+id/meRowHelp"
-                    android:layout_width="match_parent"
+                    android:id="@+id/meRowHelp"                    android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:clickable="true"
                     android:focusable="true"
@@ -295,6 +294,57 @@
                             android:layout_height="wrap_content"
                             android:layout_marginTop="@dimen/space_gap_tiny"
                             android:text="@string/me_help_desc"
+                            android:textColor="@color/ink_soft"
+                            android:textSize="@dimen/text_caption" />
+                    </LinearLayout>
+
+                    <ImageView
+                        android:layout_width="@dimen/icon_size_nav"
+                        android:layout_height="@dimen/icon_size_nav"
+                        android:layout_marginStart="@dimen/space_gap_small"
+                        android:contentDescription="@null"
+                        android:src="@drawable/ic_chevron"
+                        android:tint="@color/ink_faint" />
+                </LinearLayout>
+
+                <!-- 眼镜投屏（5.139 起放在「我的」里 —— 用户要求：它属于设备，不属于设置） -->
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/stroke_hairline"
+                    android:layout_marginStart="@dimen/space_card"
+                    android:layout_marginEnd="@dimen/space_card"
+                    android:background="@color/line_soft" />
+
+                <LinearLayout
+                    android:id="@+id/meRowGlasses"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center_vertical"
+                    android:minHeight="@dimen/touch_min"
+                    android:orientation="horizontal"
+                    android:padding="@dimen/space_card">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="@string/glasses_entry_title"
+                            android:textColor="@color/ink"
+                            android:textSize="@dimen/text_body"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/space_gap_tiny"
+                            android:text="@string/glasses_entry_desc"
                             android:textColor="@color/ink_soft"
                             android:textSize="@dimen/text_caption" />
                     </LinearLayout>

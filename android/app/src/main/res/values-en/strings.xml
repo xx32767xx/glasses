@@ -292,7 +292,9 @@ Microphone: phone microphone (in use)</string>
     <string name="set_glasses">Glasses</string>
     <string name="set_glasses_hint">Read translations on Rokid glasses: each sentence\'s translation appears on the lens (translation only).</string>
     <string name="set_glasses_open">Cast to glasses (Rokid)</string>
-    <string name="glasses_cast_title">Cast to glasses</string>
+        <string name="glasses_entry_title">Cast to glasses</string>
+    <string name="glasses_entry_desc">Show translations on Rokid glasses (adjustable font size, long text auto-pages)</string>
+<string name="glasses_cast_title">Cast to glasses</string>
     <string name="glasses_cast_idle">Glasses not connected</string>
     <string name="glasses_cast_start">Start casting</string>
     <string name="glasses_cast_stop">Stop casting</string>

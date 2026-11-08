@@ -257,35 +257,6 @@
                 android:background="@drawable/tap_btn_secondary" />
         </LinearLayout>
 
-        <!-- ── 眼镜投屏（5.133：Rokid）──────────────────────────────────
-             为什么放在设置页：旧界面（MainActivity）的「眼镜显示预览」在新入口里根本进不去，
-             而 Rokid 投屏**没有任何别的地方能打开** —— 没有入口就等于没做。 -->
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="@dimen/space_section"
-            android:text="@string/set_glasses"
-            android:textColor="@color/ink"
-            android:textSize="@dimen/text_title"
-            android:textStyle="bold" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="@dimen/space_gap_tiny"
-            android:text="@string/set_glasses_hint"
-            android:textColor="@color/ink_soft"
-            android:textSize="@dimen/text_secondary" />
-
-        <Button
-            android:id="@+id/setAppGlasses"
-            android:layout_width="match_parent"
-            android:layout_height="@dimen/height_field"
-            android:layout_marginTop="@dimen/space_gap_tiny"
-            android:text="@string/set_glasses_open"
-            android:textColor="@color/ink"
-            android:background="@drawable/tap_btn_secondary" />
-
         <!-- ── 隐私 ──────────────────────────────────────────────────── -->
         <TextView
             android:layout_width="match_parent"

@@ -89,6 +89,9 @@ public class MeActivity extends android.app.Activity {
         findViewById(R.id.meRowService).setOnClickListener(v ->
                 startActivity(new Intent(this, SettingsActivity.class)));
         findViewById(R.id.meRowHelp).setOnClickListener(v -> showHelp());
+        // 5.139：眼镜投屏入口（用户要求：眼镜属于"设备"，放在「我的」而不是设置里）
+        findViewById(R.id.meRowGlasses).setOnClickListener(v ->
+                startActivity(new Intent(this, GlassesCastActivity.class)));
         findViewById(R.id.meLogout).setOnClickListener(v -> confirmLogout());
 
         // 底部导航（4.93）：统一走 NavTabs.go —— 交叉淡化换页（不是默认的"从右侧推入覆盖"），

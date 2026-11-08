@@ -603,7 +603,10 @@
     <string name="set_glasses">眼镜</string>
     <string name="set_glasses_hint">用 Rokid 眼镜看译文：开启后镜片上会显示每一句的译文（只有译文）。</string>
     <string name="set_glasses_open">眼镜投屏（Rokid）</string>
-    <string name="glasses_cast_title">眼镜投屏</string>
+        <!-- 5.139：眼镜投屏入口（从设置挪到「我的」） -->
+    <string name="glasses_entry_title">眼镜投屏</string>
+    <string name="glasses_entry_desc">把译文投到 Rokid 眼镜上看（可调字号、长句自动翻页）</string>
+<string name="glasses_cast_title">眼镜投屏</string>
     <string name="glasses_cast_idle">眼镜未连接</string>
     <string name="glasses_cast_start">开始投屏</string>
     <string name="glasses_cast_stop">停止投屏</string>
