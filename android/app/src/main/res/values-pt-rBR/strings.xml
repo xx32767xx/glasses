@@ -596,4 +596,10 @@ Servidor %2$s</string>
     <string name="filter_unknown_speaker">Falante desconhecido</string>
     <string name="srv_not_interpreter">Essa sessão não é do intérprete simultâneo</string>
     <string name="srv_interpreter_need_host">A sessão não tem responsável</string>
+    <!-- 5.142: modo desenvolvedor (controles de depuração só aparecem com ele ligado) -->
+    <string name="settings_developer">Desenvolvedor</string>
+    <string name="settings_developer_mode">Modo desenvolvedor</string>
+    <string name="settings_developer_hint">Mostra as opções de experimento e diagnóstico</string>
+    <string name="settings_developer_on">Modo desenvolvedor ativado: a página de projeção mostra os testes</string>
+    <string name="settings_developer_off">Modo desenvolvedor desativado</string>
 </resources>

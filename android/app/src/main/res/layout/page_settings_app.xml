@@ -257,6 +257,61 @@
                 android:background="@drawable/tap_btn_secondary" />
         </LinearLayout>
 
+        <!-- ── 开发者（5.142）───────────────────────────────────────────
+             开关本身只是一行；它管的是**别的页面上那些调试控件**（投屏页的测试句、
+             旧界面的眼镜预览/诊断）。默认关：日常使用者不该看到排障工具。 -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_section"
+            android:text="@string/settings_developer"
+            android:textColor="@color/ink_soft"
+            android:textSize="@dimen/text_caption" />
+
+        <LinearLayout
+            android:id="@+id/setAppDevRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_gap_tiny"
+            android:background="@drawable/tap_card"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:padding="@dimen/space_card">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/settings_developer_mode"
+                    android:textColor="@color/ink"
+                    android:textSize="@dimen/text_body"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap_tiny"
+                    android:text="@string/settings_developer_hint"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_caption" />
+            </LinearLayout>
+
+            <Switch
+                android:id="@+id/setAppDevSwitch"
+                android:layout_width="wrap_content"
+                android:layout_height="@dimen/touch_min"
+                android:clickable="false"
+                android:contentDescription="@string/settings_developer_mode"
+                android:focusable="false" />
+        </LinearLayout>
+
         <!-- ── 隐私 ──────────────────────────────────────────────────── -->
         <TextView
             android:layout_width="match_parent"

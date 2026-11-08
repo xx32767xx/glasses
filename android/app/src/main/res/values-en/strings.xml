@@ -596,4 +596,10 @@ Server %2$s</string>
     <string name="filter_unknown_speaker">Unknown speaker</string>
     <string name="srv_not_interpreter">That session is not an interpreter session</string>
     <string name="srv_interpreter_need_host">The session has no owner</string>
+    <!-- 5.142: developer mode (debug controls only show when it is on) -->
+    <string name="settings_developer">Developer</string>
+    <string name="settings_developer_mode">Developer mode</string>
+    <string name="settings_developer_hint">Shows the experiment and diagnostic options</string>
+    <string name="settings_developer_on">Developer mode on: the cast page now shows test items</string>
+    <string name="settings_developer_off">Developer mode off</string>
 </resources>

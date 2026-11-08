@@ -97,8 +97,10 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private static final String KEY_THEME = "theme";            // system / light / dark
     private static final String KEY_SCALE = "fontScale";
     private static final String KEY_BILINGUAL = "bilingual";
-    /** 开发者模式：关掉时设置页不显示「实验」「诊断」。 */
-    private static final String KEY_DEVELOPER = "developer";
+    /*
+     * 开发者模式的持久化键在 {@link DevMode}（5.142）：新设置页与旧界面共用同一个偏好，
+     * 键名从本文件的 "developer" 换成了 DevMode.KEY —— 两个开关必须同一个真相。
+     */
     /**
      * 热词表的用户名：电脑按它区分"这是谁的表"（docs/15 §8.3）。
      * 留空 → 电脑侧回落到 `default`；之所以默认空而不是设备名，
@@ -255,6 +257,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
     private View experimentsCard;
     private View diagnosticsHeader;
     private View diagnosticsCard;
+    /** 5.142：旧界面设置页的「眼镜显示预览」整行（它也是开发者用途，跟着同一个开关走）。 */
+    private View glassesPreviewRow;
     /** 开发者模式：关着时「实验」「诊断」两段整体隐藏。 */
     private boolean developerMode = false;
 
@@ -306,7 +310,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         sourceLang = prefs.getString(KEY_LANG, "pt-BR");
         fontScale = prefs.getFloat(KEY_SCALE, 1f);
         bilingual = prefs.getBoolean(KEY_BILINGUAL, true);
-        developerMode = prefs.getBoolean(KEY_DEVELOPER, false);
+        developerMode = DevMode.enabled(this);   // 5.142：与设置页共用同一个偏好
 
         pageHost = findViewById(R.id.pageHost);
         overlayHost = findViewById(R.id.overlayHost);
@@ -3239,7 +3243,9 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
 
         settingsPage.findViewById(R.id.settingsConnectRow).setOnClickListener(v -> openConnectPage());
         settingsPage.findViewById(R.id.settingsOutputRow).setOnClickListener(v -> openOutputSheet());
-        settingsPage.findViewById(R.id.settingsGlassesRow).setOnClickListener(v -> openGlassesPreview());
+        // 5.142：「眼镜显示预览」也是开发者用途（它只是"没有真眼镜时看排版"的面板）
+        glassesPreviewRow = settingsPage.findViewById(R.id.settingsGlassesRow);
+        glassesPreviewRow.setOnClickListener(v -> openGlassesPreview());
         settingsPage.findViewById(R.id.settingsTypeRow).setOnClickListener(v -> promptManualText());
         settingsAccountState = settingsPage.findViewById(R.id.settingsAccountState);
         settingsPage.findViewById(R.id.settingsAccountRow).setOnClickListener(v -> openAccountPage());
@@ -3280,7 +3286,9 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
      */
     private void setDeveloperMode(boolean enabled) {
         developerMode = enabled;
-        prefs.edit().putBoolean(KEY_DEVELOPER, enabled).apply();
+        // 5.142：与设置页那个开关**共用同一个偏好**（DevMode）——
+        // 两个界面各存一份的话，改了一边另一边不知道，用户会以为开关没生效。
+        DevMode.set(this, enabled);
         if (developerSwitch.isChecked() != enabled) developerSwitch.setChecked(enabled);
         applyDeveloperMode();
     }
@@ -3291,6 +3299,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         experimentsCard.setVisibility(visibility);
         diagnosticsHeader.setVisibility(visibility);
         diagnosticsCard.setVisibility(visibility);
+        // 5.142：眼镜预览面板同属调试用途（真眼镜那条路在「我的 → 眼镜投屏」）
+        if (glassesPreviewRow != null) glassesPreviewRow.setVisibility(visibility);
     }
 
     private void refreshSettingsPage() {

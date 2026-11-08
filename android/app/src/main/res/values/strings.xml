@@ -153,6 +153,8 @@
     <string name="settings_developer">开发者</string>
     <string name="settings_developer_mode">开发者模式</string>
     <string name="settings_developer_hint">打开后显示实验与诊断选项</string>
+    <string name="settings_developer_on">开发者模式已打开：投屏页会显示测试项</string>
+    <string name="settings_developer_off">开发者模式已关闭</string>
     <string name="settings_experiments">实验</string>
     <string name="settings_type_text">手动输入</string>
     <string name="settings_type_text_hint">把链路验证和语音识别解耦：语音坏了也能确认后面是好的</string>

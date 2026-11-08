@@ -43,6 +43,14 @@ public class SettingsActivity extends android.app.Activity {
     private Button proofreadButton;
     /** 5.30：朗读译文开关（存 prefs 的 `ttsRead`，房间页读它）。 */
     private Button ttsReadButton;
+    /** 5.142：开发者模式开关（值在 {@link DevMode}，别的页面读它决定要不要显示调试控件）。 */
+    private android.widget.Switch devSwitch;
+
+    /** 5.142：把开关外观对齐当前值（整行可点，Switch 自己只显示）。 */
+    private void applyDevSwitch(boolean enabled) {
+        if (devSwitch == null) return;
+        devSwitch.setChecked(enabled);
+    }
 
     /** 开关按钮的外观：文字直说"现在是什么状态"，别只靠颜色。 */
     private void applyTtsReadButton(boolean enabled) {
@@ -106,7 +114,15 @@ public class SettingsActivity extends android.app.Activity {
         langPtButton.setOnClickListener(v -> setSpeakLanguage("pt-BR"));
         langEnButton.setOnClickListener(v -> setSpeakLanguage("en-US"));
         proofreadButton.setOnClickListener(v -> toggleProofread());
-        // 5.30：朗读译文（默认关；房间页据此决定要不要念）
+        // 5.142：开发者模式（这台设备的调试开关；别的页面的调试控件都看它）。
+        devSwitch = findViewById(R.id.setAppDevSwitch);
+        applyDevSwitch(DevMode.enabled(this));
+        findViewById(R.id.setAppDevRow).setOnClickListener(v -> {
+            boolean next = DevMode.toggle(this);
+            applyDevSwitch(next);
+            status.setText(getString(next ? R.string.settings_developer_on
+                    : R.string.settings_developer_off));
+        });
         // 5.38：整块先停用（{@link TtsFeature}：用户定的「先不使用」）。
         // 停用时**连标题和说明一起隐藏**（只藏按钮会留下"朗读译文 / 戴上耳机后…"
         // 两行悬在那里，看起来像删了按钮的 bug）。
