@@ -33,6 +33,15 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     /** WS 推送通道活着时，轮询退化成"看门狗"：只防推送通道假死，不必跑那么勤。 */
     private static final long FLOOR_POLL_WATCHDOG_MS = 10000L;
     private static final long HEARTBEAT_MS = 5000L;
+    /**
+     * 顶部房间信息（人数 / 主题 / 角色）的刷新周期（5.143）。
+     *
+     * <p>为什么要单独一条：人数是**别人动作**的结果，没有推送可用；而 `loadRoomHeader`
+     * 原来只在进房间时跑一次，于是"我先到、别人后进来"这种最常见的场景里，
+     * 先进来的人永远看不到人数变化（抽屉里会刷新，顶部那一行不会）。
+     * 5 秒一次的小 JSON 换来"人数是对的"，值得。
+     */
+    private static final long HEADER_TICK_MS = 5000L;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private LanClient client;
@@ -338,6 +347,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // 原来这行写在 client = new LanClient(...) 之前，于是线程里 NPE、被 catch 静默吞掉，
         // 表现就是顶部一直是「#------」占位、角色永远显示「参与者」。
         loadRoomHeader();
+        // 5.143：进房间后**定时**再拉一次（人数会变，而它没有推送可用）。
+        scheduleHeaderTick();
 
         // 5.07：顶部那一行「#邀请码 复制邀请 我说中文 发起者」里的**语言标签原来永远是中文** ——
         // 布局里写死的缺省值（`@string/rooms_speak_zh`），而 `modeTag` 拿到之后从没被赋过值。
@@ -1150,6 +1161,25 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 applyPipelineState(pipeline);
             });
         }, "room-header").start();
+    }
+
+    /**
+     * 顶部房间信息的**定时**刷新（5.143）。
+     *
+     * <p>修的是用户报的那个 bug：「一个人之后新来的，新来的显示正常，但**一开始在的那个人**
+     * 界面里人数不变」。根因很简单 —— 人数只在进房间（以及打开抽屉）时拉过一次，没有任何东西
+     * 会再问一次；而服务端不推"成员变化"（它推的是发言权与字幕帧）。
+     *
+     * <p>为什么用 5 秒轮询而不是加一条 WS 消息：成员变化是**低频、无实时要求**的信息，
+     * 一个几 KB 的 GET 已经足够；加协议面的代价（服务端、老客户端兼容、断线重连）比这大得多。
+     * 抽屉开着时本来就有 2 秒刷新，这条只管顶部那一行与语言/角色。
+     */
+    private void scheduleHeaderTick() {
+        ui.postDelayed(() -> {
+            if (isFinishing() || client == null) return;   // 已退出：别再问
+            loadRoomHeader();
+            scheduleHeaderTick();
+        }, HEADER_TICK_MS);
     }
 
     /**
