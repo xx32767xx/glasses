@@ -121,14 +121,6 @@
                 android:textSize="@dimen/text_body"
                 android:textStyle="bold" />
 
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="@dimen/space_gap_tiny"
-                android:text="@string/interp_read_hint"
-                android:textColor="@color/ink_faint"
-                android:textSize="@dimen/text_caption" />
-
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -179,14 +171,6 @@
                 android:textColor="@color/ink"
                 android:textSize="@dimen/text_body"
                 android:textStyle="bold" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="@dimen/space_gap_tiny"
-                android:text="@string/interp_partner_hint"
-                android:textColor="@color/ink_faint"
-                android:textSize="@dimen/text_caption" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -260,14 +244,6 @@
                         android:layout_height="wrap_content"
                         android:showText="false" />
                 </LinearLayout>
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="@dimen/space_gap_tiny"
-                    android:text="@string/interp_tts_hint"
-                    android:textColor="@color/ink_faint"
-                    android:textSize="@dimen/text_caption" />
             </LinearLayout>
 
             <!-- 识别与翻译在哪（只读摘要）：用户最常问的就是"这是真翻译还是演示" -->

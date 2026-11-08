@@ -9,7 +9,7 @@
     <string name="lang_zh">Chinese</string>
     <string name="lang_en">English</string>
     <string name="lang_pt_br">Brazilian Portuguese</string>
-    <string name="home_subtitle">Chinese ↔ Brazilian Portuguese · simultaneous interpreting</string>
+    <string name="home_subtitle">Chinese · English · Portuguese (Brazil) · live interpreting</string>
     <string name="home_slogan">After Babel: different languages, talk freely.</string>
     <string name="home_my_lang">My language</string>
     <string name="home_hint_user">Username</string>
@@ -81,10 +81,7 @@
     <string name="interp_tab_live">Live</string>
     <string name="interp_tab_history">History</string>
     <string name="interp_read_title">Language I read</string>
-    <string name="interp_read_hint">Translations are shown in this language; speech playback uses it too.</string>
     <string name="interp_partner_title">Partner\'s language</string>
-    <string name="interp_partner_hint">Picked automatically from your reading language; change it when your partner speaks the other one.</string>
-    <string name="interp_tts_hint">Played only through earphones or glasses, never through the phone speaker; without earphones you get subtitles only.</string>
     <string name="interp_open_settings">Open settings (server and key)</string>
     <string name="interp_where">Recognition and translation run on the server: %1$s (%2$s)</string>
     <string name="interp_where_engine">Server %1$s · %2$s · model request \"%3$s\" (the server picks by room request, then its own model table, then its default; check the recognition log for what was actually loaded)</string>
@@ -126,7 +123,6 @@
     <string name="common_back">Back</string>
     <!-- 5.04: separate create / join pages; three required fields each (plus libraries on create) -->
     <string name="create_room_title">Create a meeting</string>
-    <string name="create_room_intro">Fill in the topic, how you attend and your language; the term base is optional.</string>
     <string name="create_topic_label">Meeting topic</string>
     <string name="create_topic_hint">e.g. Delivery sync with the São Paulo team</string>
     <string name="create_room_submit">Create meeting</string>
@@ -138,7 +134,6 @@
     <string name="create_libs_empty">No term bases on the server yet</string>
     <string name="create_libs_read_failed">Could not load term bases: %1$s (the meeting still works)</string>
     <string name="join_room_title">Join a meeting</string>
-    <string name="join_room_intro">Enter the 6-digit invite code from the host, then pick how you attend and your language.</string>
     <string name="join_code_label">Invite code</string>
     <string name="join_code_hint">6 digits</string>
     <string name="join_room_submit">Join meeting</string>
@@ -287,9 +282,7 @@ Microphone: phone microphone (in use)</string>
     <string name="set_status_hint">Save after changing the server address or key; proofreading follows the desktop side.</string>
     <string name="brand_version">TransLink · v%1$s(%2$d)</string>
     <string name="set_save_conn">Save connection settings</string>
-    <string name="set_lang_hint">Sets recognition and translation direction: I speak Chinese and the other side is translated into Portuguese, or the reverse.</string>
     <string name="set_proofread_title">Proofreading (second pass)</string>
-    <string name="set_proofread_hint">The desktop side rules: the switch really acts on the server, the phone is only a remote.</string>
     <string name="set_loading">Loading…</string>
     <!-- 5.133: Rokid glasses casting (translations only). -->
     <string name="set_glasses">Glasses</string>
@@ -307,7 +300,6 @@ Microphone: phone microphone (in use)</string>
     <string name="glasses_cast_test_sent">Test sentence sent — look at the glasses now.</string>    <string name="glasses_cast_need_bt">The “Nearby devices” permission is required to reach the glasses (Android 12+ Bluetooth). Tap “Start casting” to grant it, then try again.</string>
     <string name="glasses_font_plus">+</string>
     <string name="glasses_font_minus">-</string>
-    <string name="glasses_cast_font_hint">Each language has its own size (10–44sp). Changes re-push the current page immediately; long text auto-pages every 3 s.</string>
     <string name="glasses_len_short">short</string>
     <string name="glasses_len_mid">medium</string>
     <string name="glasses_len_long">long</string>    <string name="glasses_cast_hint">Two things are required: (1) the Rokid AI App is installed on this phone; (2) the glasses are connected inside the Rokid AI App (system Bluetooth pairing is not enough). Once casting starts, translations appear on the lens sentence by sentence.</string>
@@ -434,15 +426,14 @@ If you do not want to be recorded, do not tap Start. To delete records on the ph
     <string name="state_online">Online</string>
     <string name="state_offline">Offline</string>
     <string name="card_create_title">Create a session</string>
-    <string name="card_create_desc">Open a room and share a 6-digit code</string>
     <string name="card_join_title">Join a session</string>
-    <string name="card_join_desc">Enter the code you were given</string>
     <string name="card_interp_title">Interpreter</string>
     <string name="card_interp_desc">Built for the glasses and long-form speaking</string>
     <string name="card_interp_soon">Coming soon</string>
     <string name="home_supported_title">Supported languages</string>
+    <string name="lang_zh_full">Simplified Chinese</string>
+    <string name="lang_en_full">English</string>
     <string name="lang_pt_full">Brazilian Portuguese</string>
-    <string name="home_supported_more">More languages on the way</string>
     <string name="nav_home">Home</string>
     <string name="nav_history">History</string>
     <string name="nav_me">Me</string>

@@ -105,6 +105,7 @@
     <string name="lang_zh_short">简体中文</string>
     <string name="lang_pt_full">葡萄牙语（巴西）</string>
     <string name="lang_zh_full">简体中文</string>
+    <string name="lang_en_full">英语</string>
     <string name="lang_pt_note">对方说的语言</string>
     <string name="lang_zh_note">译成这个语言</string>
     <string name="swap_sides">交换翻译方向</string>
@@ -298,7 +299,7 @@
     <string name="lang_zh">中文</string>
     <string name="lang_en">English</string>
     <string name="lang_pt_br">巴西葡语</string>
-    <string name="home_subtitle">中 ↔ 巴西葡语 同声传译</string>
+    <string name="home_subtitle">中 · 英 · 葡 实时同声传译</string>
     <string name="home_slogan">巴别塔之后，不同语言，自在交流。</string>
     <string name="home_my_lang">我的语言</string>
     <string name="home_hint_user">用户名</string>
@@ -382,10 +383,7 @@
     <string name="interp_tab_live">收听</string>
     <string name="interp_tab_history">历史</string>
     <string name="interp_read_title">我读的语言</string>
-    <string name="interp_read_hint">译文用这门语言显示，朗读也用它。</string>
     <string name="interp_partner_title">对方说的语言</string>
-    <string name="interp_partner_hint">默认按「我读的语言」自动推；对方说的是另一种时，在这里改。</string>
-    <string name="interp_tts_hint">仅通过耳机或眼镜播放，不使用手机外放；没有耳机时只显示字幕。</string>
     <string name="interp_open_settings">打开设置（服务器地址 / 密钥）</string>
     <string name="interp_where">识别与翻译都在服务器上跑：%1$s（%2$s）</string>
     <!-- 5.39：路由表（asr-routes.json）判出来的结果；引擎偏好只记录、服务器尚未支持 -->
@@ -436,7 +434,6 @@
       加入页必填：邀请码 + 我的参会方式 + 我的参会语言。
     -->
     <string name="create_room_title">创建会议</string>
-    <string name="create_room_intro">填好主题、参会方式和参会语言就能开会；术语库可以不选。</string>
     <string name="create_topic_label">会议主题</string>
     <string name="create_topic_hint">例如：和圣保罗团队对齐交付</string>
     <string name="create_room_submit">创建会议</string>
@@ -448,7 +445,6 @@
     <string name="create_libs_empty">电脑上还没有术语库</string>
     <string name="create_libs_read_failed">读不到术语库：%1$s（不影响开会）</string>
     <string name="join_room_title">加入会议</string>
-    <string name="join_room_intro">输入发起人给你的 6 位邀请码，再选你的参会方式和语言。</string>
     <string name="join_code_label">邀请码</string>
     <string name="join_code_hint">6 位数字</string>
     <string name="join_room_submit">加入会议</string>
@@ -600,9 +596,7 @@
     <string name="set_status_hint">服务器地址与密钥改了要保存；校对开关以电脑端为准。</string>
     <string name="brand_version">译连 TransLink · v%1$s(%2$d)</string>
     <string name="set_save_conn">保存连接设置</string>
-    <string name="set_lang_hint">决定识别与翻译方向：我说中文，对方的话译成葡语；反之亦然。</string>
     <string name="set_proofread_title">译文校对（第二遍）</string>
-    <string name="set_proofread_hint">以电脑端为准：这个开关真正生效的地方在服务器，手机只是遥控器。</string>
     <string name="set_loading">读取中…</string>
     <!-- 5.133：Rokid 眼镜投屏（只投译文）。变量名/文案刻意与亮亮那套的 glasses_* 分开，
          免得以后看到 "glasses" 还要先猜是哪一副。 -->
@@ -622,7 +616,6 @@
     <string name="glasses_cast_test_sent">已推送一句测试文字，现在看镜片。</string>    <string name="glasses_cast_need_bt">需要「附近的设备」权限才能连眼镜（Android 12+ 的蓝牙权限）：点“开始投屏”会弹授权，允许后再试。</string>
     <string name="glasses_font_plus">＋</string>
     <string name="glasses_font_minus">－</string>
-    <string name="glasses_cast_font_hint">三种语言各调各的（10–44sp）。调完立刻重推当前页，投屏中不必重连；长句会每 3 秒自动翻页。</string>
     <string name="glasses_len_short">短</string>
     <string name="glasses_len_mid">中</string>
     <string name="glasses_len_long">长</string>    <string name="glasses_cast_hint">需要两件事：① 手机装了 Rokid AI App；② 在 Rokid AI App 里把眼镜连上（系统蓝牙配对不够）。开始投屏后，镜片上会出现一句句译文。</string>
@@ -753,14 +746,11 @@
     <string name="state_online">在线</string>
     <string name="state_offline">离线</string>
     <string name="card_create_title">创建同传会议</string>
-    <string name="card_create_desc">建一间房，生成 6 位邀请码给对方</string>
     <string name="card_join_title">加入同传会议</string>
-    <string name="card_join_desc">用对方给的邀请码进房</string>
     <string name="card_interp_title">同传翻译官</string>
     <string name="card_interp_desc">面向眼镜与连续讲话的同传场景</string>
     <string name="card_interp_soon">即将上线</string>
     <string name="home_supported_title">已支持语言</string>
-    <string name="home_supported_more">更多语言持续扩展中</string>
     <string name="nav_home">首页</string>
     <string name="nav_history">历史</string>
     <string name="nav_me">我的</string>

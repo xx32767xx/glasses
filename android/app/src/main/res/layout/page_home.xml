@@ -481,17 +481,6 @@
                         android:textColor="@color/ink"
                         android:textSize="@dimen/text_title"
                         android:textStyle="bold" />
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="@dimen/space_gap_tiny"
-                        android:gravity="center"
-                        android:maxLines="2"
-                        android:minLines="2"
-                        android:text="@string/card_create_desc"
-                        android:textColor="@color/ink_soft"
-                        android:textSize="@dimen/text_caption" />
                 </LinearLayout>
 
                 <LinearLayout
@@ -525,17 +514,6 @@
                         android:textColor="@color/ink"
                         android:textSize="@dimen/text_title"
                         android:textStyle="bold" />
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="@dimen/space_gap_tiny"
-                        android:gravity="center"
-                        android:maxLines="2"
-                        android:minLines="2"
-                        android:text="@string/card_join_desc"
-                        android:textColor="@color/ink_soft"
-                        android:textSize="@dimen/text_caption" />
                 </LinearLayout>
             </LinearLayout>
 
@@ -603,7 +581,10 @@
                 </LinearLayout>
             </LinearLayout>
 
-            <!-- ── 已支持语言 ─────────────────────────────────────────── -->
+            <!-- ── 已支持语言 ───────────────────────────────────────────
+                 5.144：三语并列（中 / 英 / 葡），一行一颗、左对齐竖排 ——
+                 横排三颗在 360dp 上必然挤成两行或截断，竖排是最稳的形式。
+                 页脚那句"更多语言持续扩展中"已去掉：正式场合的界面不写这种话。 -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -620,45 +601,44 @@
                     android:textSize="@dimen/text_body"
                     android:textStyle="bold" />
 
-                <LinearLayout
-                    android:layout_width="match_parent"
+                <TextView
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="@dimen/space_gap_small"
-                    android:orientation="horizontal">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:background="@drawable/bg_chip_brand"
-                        android:paddingStart="@dimen/space_gap"
-                        android:paddingTop="@dimen/space_gap_tiny"
-                        android:paddingEnd="@dimen/space_gap"
-                        android:paddingBottom="@dimen/space_gap_tiny"
-                        android:text="@string/lang_zh"
-                        android:textColor="@color/brand"
-                        android:textSize="@dimen/text_secondary" />
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="@dimen/space_gap_small"
-                        android:background="@drawable/bg_chip_brand"
-                        android:paddingStart="@dimen/space_gap"
-                        android:paddingTop="@dimen/space_gap_tiny"
-                        android:paddingEnd="@dimen/space_gap"
-                        android:paddingBottom="@dimen/space_gap_tiny"
-                        android:text="@string/lang_pt_full"
-                        android:textColor="@color/brand"
-                        android:textSize="@dimen/text_secondary" />
-                </LinearLayout>
+                    android:background="@drawable/bg_chip_brand"
+                    android:paddingStart="@dimen/space_gap"
+                    android:paddingTop="@dimen/space_gap_tiny"
+                    android:paddingEnd="@dimen/space_gap"
+                    android:paddingBottom="@dimen/space_gap_tiny"
+                    android:text="@string/lang_zh_full"
+                    android:textColor="@color/brand"
+                    android:textSize="@dimen/text_secondary" />
 
                 <TextView
-                    android:layout_width="match_parent"
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="@dimen/space_gap_small"
-                    android:text="@string/home_supported_more"
-                    android:textColor="@color/ink_faint"
-                    android:textSize="@dimen/text_caption" />
+                    android:layout_marginTop="@dimen/space_gap_tiny"
+                    android:background="@drawable/bg_chip_brand"
+                    android:paddingStart="@dimen/space_gap"
+                    android:paddingTop="@dimen/space_gap_tiny"
+                    android:paddingEnd="@dimen/space_gap"
+                    android:paddingBottom="@dimen/space_gap_tiny"
+                    android:text="@string/lang_en_full"
+                    android:textColor="@color/brand"
+                    android:textSize="@dimen/text_secondary" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap_tiny"
+                    android:background="@drawable/bg_chip_brand"
+                    android:paddingStart="@dimen/space_gap"
+                    android:paddingTop="@dimen/space_gap_tiny"
+                    android:paddingEnd="@dimen/space_gap"
+                    android:paddingBottom="@dimen/space_gap_tiny"
+                    android:text="@string/lang_pt_full"
+                    android:textColor="@color/brand"
+                    android:textSize="@dimen/text_secondary" />
             </LinearLayout>
 
             <!-- ── 弱化效用入口（不属于核心任务，所以只留文字链接）──────── -->

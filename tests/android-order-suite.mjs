@@ -1860,9 +1860,11 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('两张卡同级（weight=1 + 同最小高度）',
       /android:layout_weight="1"/.test(createBlock) && /android:layout_weight="1"/.test(joinBlock)
       && /card_task_min_height/.test(createBlock) && /card_task_min_height/.test(joinBlock))
-    check('卡里都有名称与简短说明',
-      /card_create_title/.test(createBlock) && /card_create_desc/.test(createBlock)
-      && /card_join_title/.test(joinBlock) && /card_join_desc/.test(joinBlock))
+    // 5.144：卡片上只留名称 —— 那两句说明（"建一间房，生成邀请码…"）与标题同义，
+    // 正式场合的界面上属于噪音，已删。断言反过来：**不许再出现**说明行。
+    check('卡里只有名称（说明小字已删）',
+      /card_create_title/.test(createBlock) && !/card_create_desc/.test(createBlock)
+      && /card_join_title/.test(joinBlock) && !/card_join_desc/.test(joinBlock))
     check('两张卡都带图标', /ic_card_create/.test(createBlock) && /ic_card_join/.test(joinBlock))
     check('创建/加入进房间列表的对应一半',
       /homeCardCreate\)\.setOnClickListener\(v -> openRooms\("create"\)\)/.test(java)
@@ -1891,12 +1893,13 @@ export async function runAndroidOrderSuite({ it, check }) {
       /interpWhere/.test(interpLayout) && /interp_where/.test(interpJava)
       && /backendText\(picked\.backend\)/.test(interpJava))
 
-    // 已支持语言：中文 / 巴西葡萄牙语 / 扩展提示
+    // 已支持语言：中文 / 英语 / 巴西葡萄牙语（5.144：英语补上；页脚那句"更多语言"已删）
     const supported = home.slice(home.indexOf('home_supported_title'), home.indexOf('@+id/homeLegacy'))
     check('已支持语言卡片有标题', /home_supported_title/.test(supported))
-    check('标签列出中文与巴西葡萄牙语',
-      /@string\/lang_zh/.test(supported) && /@string\/lang_pt_full/.test(supported))
-    check('有语言扩展提示', /home_supported_more/.test(supported))
+    check('标签列出中文 / 英语 / 巴西葡萄牙语',
+      /@string\/lang_zh_full/.test(supported) && /@string\/lang_en_full/.test(supported)
+      && /@string\/lang_pt_full/.test(supported))
+    check('不再写"更多语言持续扩展中"这种话', !/home_supported_more/.test(home))
 
     // 底部三项一级导航
     const navXml = readFileSync(join(resDir, 'layout', 'inc_bottom_nav.xml'), 'utf-8')
@@ -2095,15 +2098,14 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('界面：非 pending 才给「删除记录」', /if \(!"pending"\.equals\(status\)\) \{[\s\S]{0,600}terms_delete/.test(terms))
     check('删除有二次确认并说明只删记录', /confirmDelete\(/.test(terms) && /terms_delete_confirm/.test(terms))
 
-    // ② 三语对齐：两张任务卡的说明锁 2 行（中文比英文短一行时最容易露馅）
+    // ② 三语对齐：卡片名称锁 2 行（中文比英文短一行时最容易露馅）
     const home = readFileSync(join(resDir, 'layout', 'page_home.xml'), 'utf-8')
     // 按控件切块再看属性：minLines/maxLines 写在 android:text 之前，不能用"文本之后 N 个字符"取
     const textViews = [...home.matchAll(/<TextView[\s\S]*?\/>/g)].map((m) => m[0])
     const cardBlock = (name) => textViews.filter((block) => block.includes(`@string/card_${name}`))
+    // 5.144：说明小字已删（与标题同义），卡里只剩名称
     const descs = [...cardBlock('create_desc'), ...cardBlock('join_desc')]
-    check('两张卡都有说明', descs.length === 2, String(descs.length))
-    check('两张卡的说明都锁 2 行（minLines + maxLines）',
-      descs.every((block) => /android:minLines="2"/.test(block) && /android:maxLines="2"/.test(block)))
+    check('两张卡不再有说明行', descs.length === 0, String(descs.length))
     const titles = [...cardBlock('create_title'), ...cardBlock('join_title')]
     check('名称允许换行但不截断（maxLines=2）', titles.length === 2
       && titles.every((block) => /android:maxLines="2"/.test(block)))

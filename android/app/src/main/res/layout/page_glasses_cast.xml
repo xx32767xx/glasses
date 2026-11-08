@@ -88,14 +88,6 @@
             android:layout_marginTop="@dimen/space_gap_tiny"
             android:orientation="vertical" />
 
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="@dimen/space_gap_tiny"
-            android:text="@string/glasses_cast_font_hint"
-            android:textColor="@color/ink_soft"
-            android:textSize="@dimen/text_secondary" />
-
         <!-- 三语 × 短/中/长的测试句（点一下就真的推到镜片） -->
         <LinearLayout
             android:id="@+id/castSamples"
