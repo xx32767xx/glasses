@@ -148,12 +148,9 @@
     <string name="common_close">Close</string>
     <string name="common_cancel">Cancel</string>
     <string name="ui_lang_title">Interface language</string>
-    <string name="ui_lang_hint">Only changes the wording of buttons and titles; does not change the language I speak.</string>
     <string name="rooms_title">Meeting rooms</string>
     <string name="rooms_my_lang_title">Which language I speak in the meeting</string>
-    <string name="rooms_my_lang_hint">This is both what you speak and what you read: what you say is translated into the language of each listener, and what others say is translated into yours.</string>
     <string name="rooms_hear_title">Translations I want to read</string>
-    <string name="rooms_hear_hint">Pick as many as you like. The language you speak is always included (others\' speech is translated into it for you); tick more to read several translations at once.</string>
     <string name="rooms_hear_on">✓ %1$s</string>
     <string name="rooms_hear_locked">This is the language you speak, so others\' speech is translated into it for you; it cannot be unchecked.</string>
     <string name="rooms_speak_zh">I speak Chinese</string>
@@ -278,18 +275,13 @@ Microphone: phone microphone (in use)</string>
     <string name="toast_no_invite">No invite code yet</string>
     <string name="clip_invite_label">Invite code</string>
     <string name="toast_invite_copied">Invite code copied: %1$s</string>
-    <string name="set_title">Settings</string>
-    <string name="set_status_hint">Save after changing the server address or key; proofreading follows the desktop side.</string>
     <string name="brand_version">TransLink · v%1$s(%2$d)</string>
     <string name="set_save_conn">Save connection settings</string>
-    <string name="set_proofread_title">Proofreading (second pass)</string>
-    <string name="set_loading">Loading…</string>
     <!-- 5.133: Rokid glasses casting (translations only). -->
     <string name="set_glasses">Glasses</string>
     <string name="set_glasses_hint">Read translations on Rokid glasses: each sentence\'s translation appears on the lens (translation only).</string>
     <string name="set_glasses_open">Cast to glasses (Rokid)</string>
         <string name="glasses_entry_title">Cast to glasses</string>
-    <string name="glasses_entry_desc">Show translations on Rokid glasses (adjustable font size, long text auto-pages)</string>
 <string name="glasses_cast_title">Cast to glasses</string>
     <string name="glasses_cast_idle">Glasses not connected</string>
     <string name="glasses_cast_start">Start casting</string>
@@ -304,7 +296,6 @@ Microphone: phone microphone (in use)</string>
     <string name="glasses_len_mid">medium</string>
     <string name="glasses_len_long">long</string>    <string name="glasses_cast_hint">Two things are required: (1) the Rokid AI App is installed on this phone; (2) the glasses are connected inside the Rokid AI App (system Bluetooth pairing is not enough). Once casting starts, translations appear on the lens sentence by sentence.</string>
     <string name="set_privacy">Privacy</string>
-    <string name="set_privacy_link">Privacy policy (where audio and subtitles go)</string>
     <string name="set_clear">Clear records on this phone (originals and translations)</string>
     <string name="st_conn_empty">The server address cannot be empty, e.g. http://117.50.180.93:8788</string>
     <string name="st_secret_empty">The shared key cannot be empty (it is in the server start-all banner)</string>
@@ -454,7 +445,6 @@ Cast / speaker: not connected
 Server: %3$s
 State: %4$s</string>
     <string name="me_terms_title">Term bases</string>
-    <string name="me_terms_desc">Browse term bases and request additions, edits or deletions (approved by an admin)</string>
     <string name="terms_lib_hint">You cannot edit a term base directly: submit a request and an admin approves it before it is applied.</string>
     <string name="terms_lib_loading">Loading term bases…</string>
     <string name="terms_lib_empty">The server has no term base yet (one is created when interpreting starts)</string>
@@ -489,25 +479,6 @@ State: %4$s</string>
     <string name="terms_kind_delete">Delete</string>
     <string name="terms_load_failed">Could not load term bases: %1$s</string>
     <string name="terms_need_login">Sign in to manage term bases</string>
-    <string name="me_service_title">Translation service and validity</string>
-    <string name="me_service_summary">%1$s · proofreading %2$s · account %3$s</string>
-    <string name="me_service_no_host">No server configured</string>
-    <string name="me_service_proof_on">on</string>
-    <string name="me_service_proof_off">off</string>
-    <string name="me_service_proof_unknown">unknown</string>
-    <string name="me_service_expires">Valid until %1$s</string>
-    <string name="me_service_permanent">No expiry</string>
-    <string name="me_service_unknown">Expiry unknown (the server did not say)</string>
-    <string name="me_service_disabled">Disabled</string>
-    <string name="me_help_title">Help and feedback</string>
-    <string name="me_help_desc">FAQ, privacy policy and how to reach us</string>
-    <string name="me_help_body">· No subtitles: check the online state on the home screen, then whether the other side is speaking.
-· Cannot speak: check the microphone and the recording permission under My device.
-· For anything that needs the desktop side, send the administrator the version and server address below.
-
-Version %1$s
-Server %2$s</string>
-    <string name="me_help_privacy">Privacy policy</string>
     <string name="me_logout_confirm">After signing out this device must sign in again to hold meetings.</string>
     <string name="me_logged_out">Signed out</string>
     <string name="srv_role_cannot_role">This account (%1$s) is not allowed to do this (%2$s)</string>
@@ -535,7 +506,7 @@ Server %2$s</string>
     <string name="srv_pending_withdraw_first">Withdraw a pending request first, then delete it</string>
     <string name="srv_write_failed">The server could not write the change; check the relay log</string>
     <string name="srv_db_outdated">The server database is missing a newer field; restart the relay once and it upgrades itself</string>
-    <string name="hist_retention">Records are kept for %1$d days (set by the server)</string>
+    <string name="hist_retention">Records are kept for %1$d days</string>
     <string name="hist_empty">No history yet · hold a meeting and it shows up here once it ends</string>
     <string name="hist_type_meeting">Meeting</string>
     <string name="hist_type_interpreter">Interpreter</string>

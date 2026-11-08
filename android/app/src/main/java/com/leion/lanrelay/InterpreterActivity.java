@@ -355,8 +355,9 @@ public class InterpreterActivity extends android.app.Activity {
         findViewById(R.id.interpPartnerZh).setOnClickListener(v -> setPartnerLang(InterpreterLang.ZH));
         findViewById(R.id.interpPartnerPt).setOnClickListener(v -> setPartnerLang(InterpreterLang.PT));
         findViewById(R.id.interpPartnerEn).setOnClickListener(v -> setPartnerLang(InterpreterLang.EN));
+        // 5.145：设置页已并入「我的」（服务器地址/密钥那一块），这里指过去
         findViewById(R.id.interpOpenSettings).setOnClickListener(v ->
-                startActivity(new android.content.Intent(this, SettingsActivity.class)));
+                startActivity(new android.content.Intent(this, MeActivity.class)));
         if (TtsFeature.enabled() && ttsSwitch != null) {
             ttsSwitch.setChecked(getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("ttsRead", false));
             ttsSwitch.setOnCheckedChangeListener((button, checked) -> {

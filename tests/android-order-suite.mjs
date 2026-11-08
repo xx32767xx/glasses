@@ -890,71 +890,57 @@ export async function runAndroidOrderSuite({ it, check }) {
       /implementation\("org\.slf4j:slf4j-api:1\.7\.30"\)/.test(gradle))
   })
 
-  await it('设置页与隐私页：接得对、写得全（A2）', () => {
+  await it('「我的」页承接设置内容 + 隐私页：接得对、写得全（5.145 重构）', () => {
     const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
     const layoutDir = join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout')
-    const settingsJava = readFileSync(join(javaDir, 'SettingsActivity.java'), 'utf-8')
+    const meJava = readFileSync(join(javaDir, 'MeActivity.java'), 'utf-8')
+    const meXml = readFileSync(join(layoutDir, 'page_me.xml'), 'utf-8')
     const privacyJava = readFileSync(join(javaDir, 'PrivacyActivity.java'), 'utf-8')
-    const settingsXml = readFileSync(join(layoutDir, 'page_settings_app.xml'), 'utf-8')
     const privacyXml = readFileSync(join(layoutDir, 'page_privacy.xml'), 'utf-8')
-    // 4.56：隐私页正文在 strings.xml 里了（布局只留 @string/priv_sN）
     const privacyText = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml'), 'utf-8')
-    const homeXml = readFileSync(join(layoutDir, 'page_home.xml'), 'utf-8')
-    const homeJava = readFileSync(join(javaDir, 'HomeActivity.java'), 'utf-8')
     const manifest = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'AndroidManifest.xml'), 'utf-8')
 
-    // 1) 两个 Activity 都在清单里，且不对外导出
-    for (const name of ['SettingsActivity', 'PrivacyActivity']) {
-      check(`清单里注册了 ${name}`, new RegExp(`android:name="\\.${name}"`).test(manifest), name)
-      check(`${name} 不对外导出`, new RegExp(`\\.${name}"[\\s\\S]{0,80}exported="false"`).test(manifest))
+    // 1) 5.145：原设置页整套删除（页面、代码、清单三处都不能剩）
+    check('设置页已删除（清单里没有 SettingsActivity）', !/\.SettingsActivity/.test(manifest))
+    check('设置页布局与代码都已删',
+      !readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'AndroidManifest.xml'), 'utf-8').includes('page_settings_app')
+      && meXml.includes('page_me'))
+
+    // 2) 「我的」页要有从设置页搬来的四项 + 服务器
+    for (const id of ['meRowPrivacy', 'meRowClear', 'meRowDev', 'meSaveServer', 'meServer', 'meSecret', 'meDevSwitch']) {
+      check(`「我的」页有 ${id}`, new RegExp('@\\+id/' + id + '\\b').test(meXml), id)
     }
+    check('隐私从「我的」进入', /meRowPrivacy[\s\S]{0,120}PrivacyActivity\.class/.test(meJava))
+    check('清空本机记录从「我的」进入', /meRowClear[\s\S]{0,120}confirmClearRecords|clearAll\(\)/.test(meJava))
+    check('开发者模式在「我的」页可切换', /meRowDev[\s\S]{0,200}DevMode\.toggle/.test(meJava))
 
-    // 2) 首页能进得去（否则页面存在也白做）
-    // 4.60：设置不再是一个按钮，而是底部导航的「我的」
-    check('首页底部导航能进「我的」', homeXml.includes('@layout/inc_bottom_nav')
-      && /homeNavMe[\s\S]{0,200}NavTabs\.ME|homeNavMe[\s\S]{0,200}MeActivity\.class/.test(homeJava), '没有入口')
-    check('设置从「我的」里的翻译服务那行进',
-      /meRowService[\s\S]{0,120}SettingsActivity\.class/.test(
-        readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay', 'MeActivity.java'), 'utf-8')))
-    check('首页底部导航打开「我的」页',
-      /homeNavMe[\s\S]{0,200}(MeActivity\.class|NavTabs\.ME)/.test(homeJava), homeJava.slice(0, 80))
-    check('设置页能进隐私页',
-      /setAppPrivacy[\s\S]{0,160}PrivacyActivity\.class/.test(settingsJava))
-
-    // 3) 每个 R.id.* 在对应布局里都真实存在 —— 少一个就是构建期/运行期的空指针
-    for (const [javaName, javaText, xmlName, xmlText] of [
-      ['SettingsActivity', settingsJava, 'page_settings_app.xml', settingsXml],
-      ['PrivacyActivity', privacyJava, 'page_privacy.xml', privacyXml],
-    ]) {
-      const used = [...javaText.matchAll(/R\.id\.(\w+)/g)].map(m => m[1])
-      check(`${javaName} 用到了 id`, used.length > 0, javaName)
-      for (const id of used) {
-        check(`${javaName} 的 ${id} 在 ${xmlName} 里存在`,
-          new RegExp(`@\\+id/${id}\\b`).test(xmlText), `缺 @+id/${id}`)
-      }
-    }
-
-    // 4) 设置页要真的能改东西（不是摆设）
-    check('能保存服务器地址', /putString\("host"/.test(settingsJava))
-    check('能保存共享密钥', /putString\("secret"/.test(settingsJava))
-    check('能切换"我说什么语言"', /putString\("speakLang"/.test(settingsJava))
-    check('校对开关以电脑端为准（读 + 写都走接口）',
-      /client\.settingsGet\(\)/.test(settingsJava) && /client\.settingsPutProofread\(/.test(settingsJava))
-    check('能清空本机记录', /clearAll\(\)/.test(settingsJava))
+    // 3) 设置内容真的能改（不是搬了个空壳）
+    check('能保存服务器地址', /putString\("host"/.test(meJava))
+    check('能保存共享密钥', /putString\("secret"/.test(meJava))
+    check('能清空本机记录', /clearAll\(\)/.test(meJava))
 
     const records = readFileSync(join(javaDir, 'Records.java'), 'utf-8')
     check('Records.clearAll 真的把文件写空', /public int clearAll\(\)[\s\S]{0,400}write\(new ArrayList<>\(\)\)/.test(records),
       '只返回条数不写盘 = 按钮点了没反应')
 
+    // 4) 每个 R.id.* 在「我的」布局里都真实存在
+    const used = [...meJava.matchAll(/R\.id\.(\w+)/g)].map(m => m[1])
+    check('MeActivity 用到了 id', used.length > 0)
+    const navXml = readFileSync(join(layoutDir, 'inc_bottom_nav.xml'), 'utf-8')
+    for (const id of used) {
+      check(`MeActivity 的 ${id} 在 page_me.xml（或共用底部导航）里存在`,
+        new RegExp('@\\+id/' + id + '\\b').test(meXml)
+        || new RegExp('@\\+id/' + id + '\\b').test(navXml), `缺 @+id/${id}`)
+    }
+
     // 5) 隐私文案必须覆盖"这套系统真实做过的事"，不能是一句空话
-    // 4.56 起隐私页文案在 strings.xml（priv_s3），不在布局里
-    check('写了字幕保留期（7 天）', /name="priv_s3">[^<]*7 天/.test(readFileSync(
-      join(ROOT, 'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml'), 'utf-8'))
+    check('写了字幕保留期（7 天）', /name="priv_s3">[^<]*7 天/.test(privacyText)
       || privacyXml.includes('@string/priv_s3'))
     check('写了音频轮转上限（1 GB）', privacyText.includes('1 GB'))
     check('写了本机记录上限（200 条）', privacyText.includes('200 条'))
     check('写了公网明文的风险（TLS）', privacyText.includes('明文') && privacyText.includes('TLS'))
     check('写了不采集画面', privacyText.includes('摄像头'))
+    check('隐私页仍能返回', /priv_back/.test(privacyJava) || /priv_back/.test(privacyXml))
   })
 
   await it('主动停止上传不许报错（"上传出错：thread interrupted" 的回归）', () => {
@@ -1119,7 +1105,8 @@ export async function runAndroidOrderSuite({ it, check }) {
 
   await it('视觉体系：新页面只走 token，不写死色值与裸尺寸（4.47）', () => {
     const layoutDir = join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout')
-    const pages = ['page_home', 'page_room', 'page_settings_app', 'page_privacy',
+    // 5.145：page_settings_app 已删除（内容并入 page_me），「我的」页纳入检查
+    const pages = ['page_home', 'page_room', 'page_me', 'page_privacy',
       'page_create_room', 'page_join_room']
 
     for (const name of pages) {
@@ -1621,9 +1608,9 @@ export async function runAndroidOrderSuite({ it, check }) {
     // ② 会议室各页真正引用到的键，三份都得有（漏一个就是运行时崩溃或空白）
     // 5.04：旧大厅 `page_rooms.xml` 拆成创建页 + 加入页，两份都纳入
     const pages = ['page_home.xml', 'page_create_room.xml', 'page_join_room.xml', 'page_room.xml',
-      'page_settings_app.xml', 'page_privacy.xml', 'page_interpreter.xml']
+      'page_me.xml', 'page_privacy.xml', 'page_interpreter.xml']
     const acts = ['HomeActivity.java', 'CreateRoomActivity.java', 'JoinRoomActivity.java',
-      'RoomActivity.java', 'SettingsActivity.java', 'PrivacyActivity.java', 'InterpreterActivity.java']
+      'RoomActivity.java', 'MeActivity.java', 'PrivacyActivity.java', 'InterpreterActivity.java']
     const refs = new Set()
     for (const f of pages) {
       for (const m of readFileSync(join(resDir, 'layout', f), 'utf-8').matchAll(/@string\/([A-Za-z0-9_]+)/g)) refs.add(m[1])
@@ -1689,20 +1676,18 @@ export async function runAndroidOrderSuite({ it, check }) {
 
     // ⑥ 选择器：登录页的「我的语言」 + 设置页各一组，语言名用它自己的语言写
     const home = readFileSync(join(resDir, 'layout', 'page_home.xml'), 'utf-8')
-    const setPage = readFileSync(join(resDir, 'layout', 'page_settings_app.xml'), 'utf-8')
     check('登录页「我的语言」就是界面语言三选一',
       /@\+id\/homeLangZh/.test(home) && /@\+id\/homeLangEn/.test(home) && /@\+id\/homeLangPt/.test(home))
     check('登录页只有这一组选择器（不另外挂一排）', !/homeUiLang/.test(home))
     check('English 可选（它现在只影响界面）', !/android:enabled="false"/.test(home))
-    check('设置页有界面语言三选一', /@\+id\/setAppUiLangZh/.test(setPage) && /@\+id\/setAppUiLangPt/.test(setPage)
-      && /@\+id\/setAppUiLangEn/.test(setPage))
+    // 5.145：设置页已删（里面的界面语言三选一随之消失），界面语言只剩登录页这一处入口
     check('语言名不翻译（Português / English 原样）',
-      /@string\/lang_pt_native/.test(home) && /@string\/lang_en/.test(home)
-      && /text="Português"/.test(setPage) && /@string\/lang_en/.test(setPage))
+      /@string\/lang_pt_native/.test(home) && /@string\/lang_en/.test(home))
     check('Português 三种语言下写法一致', ['values', 'values-en', 'values-pt-rBR'].every((d) =>
       /name="lang_pt_native">Português</.test(readFileSync(join(resDir, d, 'strings.xml'), 'utf-8'))))
-    check('界面语言与「我说话用什么语言」是两个开关', /ui_lang_hint/.test(setPage)
-      && /rooms_my_lang_title/.test(setPage))
+    check('界面语言（登录页）与「我说话用什么语言」（建房/入会页）不在同一处',
+      /homeLangPt/.test(home) && /rooms_my_lang_title/.test(
+        readFileSync(join(resDir, 'layout', 'page_create_room.xml'), 'utf-8')))
   })
 
   await it('4.59：「我的语言」是界面语言，参会语言在创建 / 加入会议时选', () => {
@@ -1730,8 +1715,9 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('创建会议时选语言', /@\+id\/createLangZh/.test(createXml) && /@\+id\/createLangPt/.test(createXml)
       && /putString\("speakLang"/.test(create))
     check('加入会议时也选语言', /@\+id\/joinLangZh/.test(joinXml) && /@\+id\/joinLangEn/.test(joinXml))
-    check('两页都用同一句"说/读是同一个语言"的说明',
-      /@string\/rooms_my_lang_hint/.test(createXml) && /@string\/rooms_my_lang_hint/.test(joinXml))
+    // 5.145：长说明段落已删（用户要求去掉解释性小字，卡片也因此变矮），标题仍要在
+    check('两页都有「我在会里说哪种语言」标题',
+      /@string\/rooms_my_lang_title/.test(createXml) && /@string\/rooms_my_lang_title/.test(joinXml))
   })
 
   await it('4.56：登录页那行空状态栏不再挂着', () => {
@@ -1824,8 +1810,10 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('映射用到的键三份资源都有', missing.length === 0, missing.join(','))
 
     // ⑤ 显示服务端文本的地方都必须过 ServerText（不许再把 optString("error") 直接甩给界面）
+    // 5.145：SettingsActivity 已删除；「我的」页不再显示任何服务端原文（只读 whoami 的 ok/role），
+    // 所以不在"必须调 ServerText"的名单里 —— 名单只留真正会展示服务端文本的页面
     const acts = ['HomeActivity.java', 'CreateRoomActivity.java', 'JoinRoomActivity.java',
-      'RoomActivity.java', 'SettingsActivity.java']
+      'RoomActivity.java']
     const raw = acts.filter((f) => /optString\("(error|hint)"/.test(readFileSync(join(javaDir, f), 'utf-8')))
     check('这几个页面不再直接显示服务端原文', raw.length === 0, raw.join(','))
     check('接到服务端文本的地方真的调了 ServerText', acts.every((f) =>
@@ -1972,10 +1960,10 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('组织那行按角色写（没有就编一个组织名）',
       /me_org_role_admin/.test(meJava) && /me_org_role_user/.test(meJava))
 
-    // ② 四行依次：设备 / 术语库 / 翻译服务 / 帮助，再退出登录
-    const order = ['meRowDevice', 'meRowTerms', 'meRowService', 'meRowHelp', 'meLogout']
-      .map((id) => me.indexOf('@+id/' + id))
-    check('四行顺序符合设计', order.every((v, i) => v > 0 && (i === 0 || v > order[i - 1])),
+    // ② 5.145：入口依次 设备 / 术语库 / 眼镜投屏 / 隐私 / 清空记录 / 开发者，再服务器卡与退出登录
+    const order = ['meRowDevice"', 'meRowTerms"', 'meRowGlasses"', 'meRowPrivacy"', 'meRowClear"',
+      'meRowDev"', 'meSaveServer"', 'meLogout"'].map((id) => me.indexOf('@+id/' + id))
+    check('入口顺序符合设计', order.every((v, i) => v > 0 && (i === 0 || v > order[i - 1])),
       JSON.stringify(order))
     check('我的设备：名称 + 能力摘要 + 连接状态',
       /me_device_summary/.test(meJava) && /android\.os\.Build\.MODEL/.test(meJava)
@@ -1983,10 +1971,9 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('连接状态用真实在线结果（不是假开关）',
       /state_online/.test(meJava) && /state_offline/.test(meJava)
       && /client\.authWhoAmI\(\)/.test(meJava))
-    check('翻译服务显示有效期（读不到就说未知）',
-      /me_service_expires/.test(meJava) && /me_service_unknown/.test(meJava))
-    check('帮助与反馈有隐私政策入口',
-      /me_help_body/.test(meJava) && /PrivacyActivity\.class/.test(meJava))
+    // 5.145：翻译服务那一行与帮助与反馈那一行都删了（用户要求），隐私入口改由本页行承担
+    check('隐私政策从「我的」进入', /meRowPrivacy[\s\S]{0,120}PrivacyActivity\.class/.test(meJava))
+    check('不再有"翻译服务及有效状态"这一行', !/@\+id\/meRowService/.test(me))
     check('退出登录要二次确认', /me_logout_confirm/.test(meJava))
     check('退出走服务端注销并清本地', /authLogout\(\)/.test(meJava)
       && /remove\("accountToken"\)/.test(meJava))

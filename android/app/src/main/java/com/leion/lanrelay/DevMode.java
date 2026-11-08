@@ -18,7 +18,9 @@ import android.content.SharedPreferences;
  * <p><b>为什么存在 SharedPreferences 而不是服务端</b>：它是**这台设备的调试开关**，
  * 不是会议室的状态。服务端不需要知道谁的手机开了开发者模式。
  *
- * <p>开关入口在「我的 → 翻译服务及有效状态 → 设置」页（{@link SettingsActivity}）。
+ * <p>开关入口在「我的」页（{@link MeActivity}，5.145 起从设置页搬来；
+ * 那个设置页已删除，内容都并在「我的」里）。旧界面（{@link MainActivity}）的设置页
+ * 里也有同一个开关，两边共用这一份偏好。
  */
 public final class DevMode {
 

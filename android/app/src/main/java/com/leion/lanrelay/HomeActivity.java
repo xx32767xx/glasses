@@ -745,10 +745,18 @@ public class HomeActivity extends android.app.Activity {
         }
         return raw;
     }
-    /** 状态区追加一行调试信息（同时写 logcat），没有 adb 也能看到。 */
+    /**
+     * 状态区追加一行调试信息（同时写 logcat）。
+     *
+     * <p>5.145：**只有开发者模式**才把它显示到屏幕上 —— 以前登录一次就会把
+     * "tap login host=… secretLen=…" 这类行画进顶部那块白卡，正常用户看到的
+     * 是一个莫名其妙的解释框（用户报的"首页最上方的白框"）。
+     * logcat 那一行始终写，排障不受影响。
+     */
     private void debugLine(final String text) {
         String stamp = new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(new java.util.Date());
         Log.i("LeionHome", text);
+        if (!DevMode.enabled(this)) return;
         runOnUiThread(new Runnable() {
             public void run() {
                 debugLines.addLast(stamp + " " + text);

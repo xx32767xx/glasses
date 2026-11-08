@@ -133,8 +133,10 @@ export async function runEnglishSuite({ it, check, assert }) {
     const zh = readFileSync(join(resDir, 'values', 'strings.xml'), 'utf-8')
     check('三语文案都在', /rooms_speak_en/.test(zh) && /lang_en_short/.test(zh)
       && /attend_mode_remote/.test(zh))
-    const settingsXml = readFileSync(join(resDir, 'layout', 'page_settings_app.xml'), 'utf-8')
-    check('设置页也能选英语当说话语言', /@\+id\/setAppLangEn/.test(settingsXml))
+    // 5.145：设置页已删除（内容并入「我的」）。说话语言本来就不在设置页 —— 它在建房/入会页，
+    // 界面语言在登录页；原来那条"设置页也能选英语"的断言随页面一起作废。
+    check('设置页已不存在（说话语言只在建房/入会页选）',
+      !readFileSync(join(resDir, 'layout', 'page_me.xml'), 'utf-8').includes('setAppLangEn'))
     // 服务端仍然**支持**显式目标语言（管理员/CLI/以后的高级设置），但手机不传：
     // 不传就是"按房间里每种语言的听众各译一份"，这与 §5.01 的多语言分发是同一条路。
     const lanClient = readFileSync(join(process.cwd(), 'android', 'app', 'src', 'main', 'java',

@@ -7,21 +7,28 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import org.json.JSONObject;
 
 /**
- * 「我的」页面（4.62，结构由用户给定）。
+ * 「我的」页面（4.62 结构 → 5.145 重构）。
  *
  * <pre>
  *   页面标题「我的」
- *   蓝绿色渐变个人卡片：头像 / 姓名 / 组织（角色）/ 服务版本
- *   一张白卡里四行：我的设备 · 术语库管理 · 翻译服务及有效状态 · 帮助与反馈
+ *   蓝绿色渐变个人卡片：头像 / 姓名 / 角色 / 版本
+ *   白卡一：我的设备 · 术语库管理 · 眼镜投屏 · 隐私政策 · 清空本机记录 · 开发者模式
+ *   白卡二：服务器（地址 / 密钥 / 保存）
  *   退出登录
  *   底部一级导航
  * </pre>
+ *
+ * <p>5.145（用户要求）：原来点「翻译服务及有效状态」进的那一页设置，去掉
+ * 「我在会里说哪种语言 / 界面语言 / 译文校对」三项与顶部状态白框之后，剩下的
+ * （服务器、隐私、清空本机记录、开发者模式）**搬到了本页**，那个设置页随之删除。
+ * 「帮助与反馈」那一行也删掉了 —— 里面的内容已经太旧（用户要求整段去掉）。
  *
  * <p>⚠️ 这里**不实现**任何"改库"能力：术语库只能提申请（见 {@link TermLibActivity}）。
  */
@@ -38,16 +45,14 @@ public class MeActivity extends android.app.Activity {
     private TextView versionView;
     private TextView deviceSummary;
     private TextView deviceState;
-    private TextView serviceSummary;
+    private EditText serverInput;
+    private EditText secretInput;
+    private android.widget.Switch devSwitch;
 
     private String userName = "";
     private String host = "";
-    /** 服务端说的账号状态与到期时间（4.62 加进 whoami；老服务端没有这两项）。 */
-    private String accountStatus = "";
-    private String accountExpiresAt = "";
+    private String secret = "";
     private boolean online = false;
-    /** 服务端的校对开关：null = 还没读到。 */
-    private Boolean proofread = null;
 
     @Override
     protected void attachBaseContext(android.content.Context base) {
@@ -58,7 +63,7 @@ public class MeActivity extends android.app.Activity {
     protected void onResume() {
         super.onResume();
         UiLang.trackShown(this);
-        refreshAll();     // 从设置页回来时，服务摘要可能变了
+        refreshAll();
     }
 
     @Override
@@ -72,30 +77,43 @@ public class MeActivity extends android.app.Activity {
         versionView = findViewById(R.id.meVersion);
         deviceSummary = findViewById(R.id.meDeviceSummary);
         deviceState = findViewById(R.id.meDeviceState);
-        serviceSummary = findViewById(R.id.meServiceSummary);
+        serverInput = findViewById(R.id.meServer);
+        secretInput = findViewById(R.id.meSecret);
+        devSwitch = findViewById(R.id.meDevSwitch);
 
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         userName = prefs.getString("termsUser", "");
         host = prefs.getString("host", "");
         if (host == null || host.isEmpty()) host = getString(R.string.default_server_url);
+        secret = prefs.getString("secret", "");
+        serverInput.setText(host);
+        secretInput.setText(secret);
 
         String token = prefs.getString("accountToken", "");
-        client = new LanClient(host, prefs.getString("secret", ""), null);
+        client = new LanClient(host, secret, null);
         if (token != null && !token.isEmpty()) client.setToken(token);
 
         findViewById(R.id.meRowDevice).setOnClickListener(v -> showDeviceDetail());
         findViewById(R.id.meRowTerms).setOnClickListener(v ->
                 startActivity(new Intent(this, TermLibActivity.class)));
-        findViewById(R.id.meRowService).setOnClickListener(v ->
-                startActivity(new Intent(this, SettingsActivity.class)));
-        findViewById(R.id.meRowHelp).setOnClickListener(v -> showHelp());
         // 5.139：眼镜投屏入口（用户要求：眼镜属于"设备"，放在「我的」而不是设置里）
         findViewById(R.id.meRowGlasses).setOnClickListener(v ->
                 startActivity(new Intent(this, GlassesCastActivity.class)));
+        // 5.145：隐私 / 清空本机记录 / 开发者模式从设置页搬到这里
+        findViewById(R.id.meRowPrivacy).setOnClickListener(v ->
+                startActivity(new Intent(this, PrivacyActivity.class)));
+        findViewById(R.id.meRowClear).setOnClickListener(v -> confirmClearRecords());
+        applyDevSwitch(DevMode.enabled(this));
+        findViewById(R.id.meRowDev).setOnClickListener(v -> {
+            boolean next = DevMode.toggle(this);
+            applyDevSwitch(next);
+            Toast.makeText(this, getString(next ? R.string.settings_developer_on
+                    : R.string.settings_developer_off), Toast.LENGTH_SHORT).show();
+        });
+        findViewById(R.id.meSaveServer).setOnClickListener(v -> saveConnection());
         findViewById(R.id.meLogout).setOnClickListener(v -> confirmLogout());
 
-        // 底部导航（4.93）：统一走 NavTabs.go —— 交叉淡化换页（不是默认的"从右侧推入覆盖"），
-        // 并且栈里最多留「首页 + 当前页」，来回点不会叠出一串页面。
+        // 底部导航（4.93）：统一走 NavTabs.go —— 交叉淡化换页，栈里最多留「首页 + 当前页」。
         findViewById(R.id.homeNavHome).setOnClickListener(v -> NavTabs.go(this, NavTabs.HOME));
         findViewById(R.id.homeNavMe).setOnClickListener(v -> { });
         findViewById(R.id.homeNavHistory).setOnClickListener(v -> NavTabs.go(this, NavTabs.HISTORY));
@@ -103,14 +121,15 @@ public class MeActivity extends android.app.Activity {
 
         refreshAll();
         fetchAccount();
-        fetchProofread();
+    }
+
+    private void applyDevSwitch(boolean enabled) {
+        if (devSwitch != null) devSwitch.setChecked(enabled);
     }
 
     // ── 个人卡片 ────────────────────────────────────────────────────────
     /**
-     * 返回键也走同一套淡化（4.93）。
-     *
-     * <p>不写这一条的话：点导航切页是淡化，按返回键却还是"从右侧推回"——
+     * 返回键也走同一套淡化（4.93）：点导航切页是淡化，按返回键却还是"从右侧推回"，
      * 同一件事两种动画，看着像两个不同的机制在抢。
      */
     @Override
@@ -127,11 +146,10 @@ public class MeActivity extends android.app.Activity {
         versionView.setText(getString(R.string.me_version, appVersion(),
                 appVersionCode()));
         refreshDevice();
-        refreshService();
     }
 
     /**
-     * 组织那一行：服务端只告诉我们角色（admin / user / dev）。
+     * 角色那一行：服务端只告诉我们角色（admin / user / dev）。
      *
      * <p>为什么不显示"某某公司"：这套系统里没有组织信息，编一个组织名等于骗人。
      * 角色 + 账号类型是真实有的信息。
@@ -190,33 +208,6 @@ public class MeActivity extends android.app.Activity {
                 .show();
     }
 
-    // ── 翻译服务及有效状态 ──────────────────────────────────────────────
-    private void refreshService() {
-        if (serviceSummary == null) return;
-        String proof = proofread == null ? getString(R.string.me_service_proof_unknown)
-                : getString(proofread ? R.string.me_service_proof_on : R.string.me_service_proof_off);
-        serviceSummary.setText(getString(R.string.me_service_summary,
-                host == null || host.isEmpty() ? getString(R.string.me_service_no_host) : host,
-                proof, validityText()));
-    }
-
-    /** 有效期那句话：老服务端不返回 expiresAt → 明确说"未知"，不假装长期有效。 */
-    private String validityText() {
-        if ("disabled".equals(accountStatus)) return getString(R.string.me_service_disabled);
-        if (accountExpiresAt == null || accountExpiresAt.isEmpty()) {
-            return getString(R.string.me_service_unknown);
-        }
-        try {
-            // 服务端给的是 ISO-8601（2026-11-05T10:00:00.000Z），只取日期部分给人看
-            String date = accountExpiresAt;
-            int cut = date.indexOf('T');
-            if (cut > 0) date = date.substring(0, cut);
-            return getString(R.string.me_service_expires, date);
-        } catch (Exception error) {
-            return getString(R.string.me_service_unknown);
-        }
-    }
-
     private void fetchAccount() {
         new Thread(() -> {
             JSONObject body = null;
@@ -231,8 +222,6 @@ public class MeActivity extends android.app.Activity {
                 if (online) {
                     String role = result.optString("role", "");
                     String user = result.optString("user", userName);
-                    accountStatus = result.optString("status", "");
-                    accountExpiresAt = result.optString("expiresAt", "");
                     getSharedPreferences(PREFS, MODE_PRIVATE).edit()
                             .putString("role", role).putString("termsUser", user).apply();
                     userName = user;
@@ -242,35 +231,56 @@ public class MeActivity extends android.app.Activity {
         }, "me-account").start();
     }
 
-    private void fetchProofread() {
-        new Thread(() -> {
-            Boolean value = null;
-            try {
-                JSONObject body = client.settingsGet();
-                if (body != null && body.optBoolean("ok", false)) {
-                    value = body.optBoolean("proofread", false);
-                }
-            } catch (Exception ignored) {
-                // 读不到就显示"未知"，不猜
-            }
-            final Boolean read = value;
-            if (read == null) return;
-            ui.post(() -> {
-                proofread = read;
-                refreshService();
-            });
-        }, "me-proofread").start();
+    // ── 服务器（5.145：从设置页搬来）─────────────────────────────────────
+    private void saveConnection() {
+        String nextHost = normalizeHost(serverInput.getText().toString());
+        String nextSecret = secretInput.getText().toString().trim();
+        if (nextHost.isEmpty()) {
+            Toast.makeText(this, getString(R.string.st_conn_empty), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (nextSecret.isEmpty()) {
+            Toast.makeText(this, getString(R.string.st_secret_empty), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        boolean changedHost = !nextHost.equals(prefs.getString("host", ""));
+        prefs.edit().putString("host", nextHost).putString("secret", nextSecret).apply();
+        host = nextHost;
+        secret = nextSecret;
+        // 客户端是按"地址 + 密钥"建出来的，换了就必须重建，否则还在用旧的
+        client = new LanClient(nextHost, nextSecret, null);
+        String token = prefs.getString("accountToken", "");
+        if (token != null && !token.isEmpty()) client.setToken(token);
+        Toast.makeText(this, getString(changedHost ? R.string.st_saved_relogin : R.string.st_saved),
+                Toast.LENGTH_SHORT).show();
+        fetchAccount();
     }
 
-    // ── 帮助与反馈 ──────────────────────────────────────────────────────
-    private void showHelp() {
+    private static String normalizeHost(String raw) {
+        String text = raw == null ? "" : raw.trim();
+        if (text.isEmpty()) return "";
+        if (!text.startsWith("http://") && !text.startsWith("https://")) {
+            text = "http://" + text;
+        }
+        while (text.endsWith("/")) {
+            text = text.substring(0, text.length() - 1);
+        }
+        return text;
+    }
+
+    // ── 清空本机记录（5.145：从设置页搬来）──────────────────────────────
+    private void confirmClearRecords() {
         new android.app.AlertDialog.Builder(this)
-                .setTitle(R.string.me_help_title)
-                .setMessage(getString(R.string.me_help_body,
-                        appVersion(), host == null || host.isEmpty() ? "—" : host))
-                .setPositiveButton(R.string.me_help_privacy, (dialog, which) ->
-                        startActivity(new Intent(this, PrivacyActivity.class)))
-                .setNegativeButton(R.string.common_close, null)
+                .setTitle(getString(R.string.clear_title))
+                .setMessage(getString(R.string.clear_msg))
+                .setNegativeButton(getString(R.string.common_cancel), null)
+                .setPositiveButton(getString(R.string.clear_positive), (dialog, which) -> {
+                    int removed = new Records(this).clearAll();
+                    Toast.makeText(this, removed > 0
+                            ? getString(R.string.st_cleared, removed)
+                            : getString(R.string.st_no_records), Toast.LENGTH_SHORT).show();
+                })
                 .show();
     }
 

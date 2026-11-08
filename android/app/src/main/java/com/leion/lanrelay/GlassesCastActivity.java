@@ -109,12 +109,8 @@ public class GlassesCastActivity extends Activity {
         render(rokid.isAppInstalled() ? rokid.status() : rokid.compatibilityNote(), false);
 
         toggleView.setOnClickListener(v -> toggle());
-        // 5.142：测试控件（推一句固定文字 / 三语测试句）只在**开发者模式**下显示 ——
-        // 它们的作用是"不连电脑也能验镜片出字不出字"，日常使用者不需要看到。
-        // 隐藏而不是删：排障时它就是唯一不需要开会的验证手段（见 DevMode 文件头）。
-        boolean dev = DevMode.enabled(this);
-        findViewById(R.id.castTest).setVisibility(dev ? View.VISIBLE : View.GONE);
-        findViewById(R.id.castSamples).setVisibility(dev ? View.VISIBLE : View.GONE);
+        // 5.145（用户要求）：本页**不受开发者模式影响**，测试项永远显示 ——
+        // "镜片出不出字"是投屏功能的唯一判据，它不该被一个开关藏起来。
         // 5.261：投屏通了之后先验一句字 —— 不连电脑、不开会，把"会话/原生库"与"字幕链路"分开验。
         findViewById(R.id.castTest).setOnClickListener(v -> {
             if (rokid == null || !rokid.isCasting()) {
@@ -129,7 +125,7 @@ public class GlassesCastActivity extends Activity {
         // 5.139：字号（中/英/葡各自独立）+ 三语×三档 测试句
         applySavedFonts();
         buildFontRows();
-        if (dev) buildSampleChips();
+        buildSampleChips();
 
         findViewById(R.id.castBack).setOnClickListener(v -> finish());
     }

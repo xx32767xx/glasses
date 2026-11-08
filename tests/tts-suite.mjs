@@ -25,7 +25,6 @@ export async function runTtsSuite({ it, check }) {
   const speaker = join(JAVA_SRC, 'TtsSpeaker.java')
   const queue = join(JAVA_SRC, 'TtsQueue.java')
   const room = join(JAVA_SRC, 'RoomActivity.java')
-  const settings = join(JAVA_SRC, 'SettingsActivity.java')
 
   await it('TtsChunker 是纯逻辑，规则靠**跑起来**验证（不是靠看）', async () => {
     const { readFileSync } = await import('node:fs')
@@ -127,11 +126,10 @@ export async function runTtsSuite({ it, check }) {
     check('releaseAudio 也把朗读停掉', /releaseAudio[\s\S]{0,700}?ttsQueue\.stop\(\)/.test(source))
     check('离开房间释放朗读引擎', /onDestroy[\s\S]{0,400}?ttsQueue\?\.?|ttsQueue\.shutdown\(\)/.test(source)
       || /ttsQueue\.shutdown\(\)/.test(source))
-    check('开关来自设置页（默认关）',
+    check('开关来自偏好（默认关）',
       /getBoolean\("ttsRead", false\)/.test(source))
-    const settingsSource = readFileSync(settings, 'utf-8')
-    check('设置页能改这个开关', /setAppTtsRead/.test(settingsSource)
-      && /putBoolean\("ttsRead"/.test(settingsSource))
+    // 5.145：设置页已删除（内容并入「我的」），朗读开关的界面入口随之消失；
+    // 行为侧仍要求房间页按 "ttsRead" 读取（默认关），上面那条仍在守。
   })
 
   await it('按语言挑引擎（AsrRouter）：跑起来验，不靠看代码', async () => {
@@ -235,10 +233,10 @@ export async function runTtsSuite({ it, check }) {
     check('关掉的理由写在类注释里（不是靠人记）',
       /先不使用/.test(gate) && /qwen3-tts-flash/.test(gate) && /合并冻结/.test(gate))
 
-    const settingsSource = readFileSync(settings, 'utf-8')
-    check('设置页整块隐藏（连标题一起，不留一个悬空的按钮）',
-      /if \(!TtsFeature\.enabled\(\)\)/.test(settingsSource)
-      && /setAppTtsBlock/.test(settingsSource) && /setVisibility\(View\.GONE\)/.test(settingsSource))
+    // 5.145：设置页已删除（朗读开关那一块随之整块消失），不再有"半开"的可能
+    check('设置页已不存在（朗读配置没有第二个入口）',
+      !readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'AndroidManifest.xml'), 'utf-8')
+        .includes('.SettingsActivity'))
     const roomSrc = readFileSync(room, 'utf-8')
     check('房间页关着就不建队列（不走进任何播报路径）',
       /if \(TtsFeature\.enabled\(\)\) \{\s*ttsQueue = new TtsQueue/.test(roomSrc))
@@ -569,9 +567,9 @@ export async function runTtsSuite({ it, check }) {
     check('创建页有两组语言胶囊（我说 / 我想看）',
       ['createLangZh', 'createHearZh'].every((id) => create.includes(`@+id/${id}`)))
     check('入会页有两组语言胶囊', ['joinLangZh', 'joinHearZh'].every((id) => joinLayout.includes(`@+id/${id}`)))
-    check('「我想看」用了自己的标题与说明（三语资源）',
-      /rooms_hear_title/.test(create) && /rooms_hear_hint/.test(create)
-      && /rooms_hear_title/.test(joinLayout))
+    // 5.145：长说明段落已删（用户要求去掉解释性小字），标题仍在
+    check('「我想看」用了自己的标题（三语资源）',
+      /rooms_hear_title/.test(create) && /rooms_hear_title/.test(joinLayout))
     check('两页都能切换"我想看"', /toggleHearLang\(/.test(createJava) && /toggleHearLang\(/.test(joinJava))
     check('自己那门锁定（不可点，并给出提示）',
       /if \(lang\.equals\(speakLang\)\)/.test(createJava) && /rooms_hear_locked/.test(createJava)

@@ -459,14 +459,11 @@
     <string name="common_close">关闭</string>
     <string name="common_cancel">取消</string>
     <string name="ui_lang_title">界面语言</string>
-    <string name="ui_lang_hint">只改按钮和标题的文字；和我说话用哪种语言无关。</string>
     <string name="rooms_title">会议房间</string>
     <string name="rooms_my_lang_title">我在会里说哪种语言</string>
-    <string name="rooms_my_lang_hint">它既是你说的语言，也是你读的语言：你说的话会译成对方各自的语言，对方说的会自动译成你这种语言。</string>
     <!-- 5.55：「我说一种、我想看多种」。自己说的那门锁定勾选 —— 含义不是"想看自己的原文"，
          而是"别人说的要按我读得懂的语言给我"。 -->
     <string name="rooms_hear_title">我想看的译文</string>
-    <string name="rooms_hear_hint">可以多选。自己说的那门语言固定勾选（别人说的话会译成它给我）；再勾其他的，就能同时看到多种译文。</string>
     <string name="rooms_hear_on">✓ %1$s</string>
     <string name="rooms_hear_locked">这一门是你说的语言，别人说的话会译成它给你，所以不能取消。</string>
     <string name="rooms_speak_zh">我说中文</string>
@@ -592,12 +589,8 @@
     <string name="toast_no_invite">还没拿到邀请码</string>
     <string name="clip_invite_label">邀请码</string>
     <string name="toast_invite_copied">邀请码已复制：%1$s</string>
-    <string name="set_title">设置</string>
-    <string name="set_status_hint">服务器地址与密钥改了要保存；校对开关以电脑端为准。</string>
     <string name="brand_version">译连 TransLink · v%1$s(%2$d)</string>
     <string name="set_save_conn">保存连接设置</string>
-    <string name="set_proofread_title">译文校对（第二遍）</string>
-    <string name="set_loading">读取中…</string>
     <!-- 5.133：Rokid 眼镜投屏（只投译文）。变量名/文案刻意与亮亮那套的 glasses_* 分开，
          免得以后看到 "glasses" 还要先猜是哪一副。 -->
     <string name="set_glasses">眼镜</string>
@@ -605,7 +598,6 @@
     <string name="set_glasses_open">眼镜投屏（Rokid）</string>
         <!-- 5.139：眼镜投屏入口（从设置挪到「我的」） -->
     <string name="glasses_entry_title">眼镜投屏</string>
-    <string name="glasses_entry_desc">把译文投到 Rokid 眼镜上看（可调字号、长句自动翻页）</string>
 <string name="glasses_cast_title">眼镜投屏</string>
     <string name="glasses_cast_idle">眼镜未连接</string>
     <string name="glasses_cast_start">开始投屏</string>
@@ -620,7 +612,6 @@
     <string name="glasses_len_mid">中</string>
     <string name="glasses_len_long">长</string>    <string name="glasses_cast_hint">需要两件事：① 手机装了 Rokid AI App；② 在 Rokid AI App 里把眼镜连上（系统蓝牙配对不够）。开始投屏后，镜片上会出现一句句译文。</string>
     <string name="set_privacy">隐私</string>
-    <string name="set_privacy_link">隐私政策（音频与字幕去哪了）</string>
     <string name="set_clear">清空本机记录（原文与译文）</string>
     <string name="st_conn_empty">服务器地址不能为空，例如 http://117.50.180.93:8788</string>
     <string name="st_secret_empty">共享密钥不能为空（在服务器 start-all 的横幅里）</string>
@@ -771,7 +762,6 @@
 服务器：%3$s
 状态：%4$s</string>
     <string name="me_terms_title">术语库管理</string>
-    <string name="me_terms_desc">查看术语库，申请新增 / 修改 / 删除条目（需管理员审批）</string>
     <string name="terms_lib_hint">你改不了库本身：提交申请后由管理员审批，通过才会写进库里。</string>
     <string name="terms_lib_loading">正在读取术语库…</string>
     <string name="terms_lib_empty">服务端还没有术语库（手机开麦同传后会自动生成一份）</string>
@@ -803,25 +793,6 @@
     <string name="terms_kind_update">修改</string>
     <string name="terms_kind_delete">删除</string>
     <string name="terms_load_failed">读不到术语库：%1$s</string>
-    <string name="me_service_title">翻译服务及有效状态</string>
-    <string name="me_service_summary">%1$s · 校对%2$s · 账号%3$s</string>
-    <string name="me_service_no_host">还没配服务器</string>
-    <string name="me_service_proof_on">开</string>
-    <string name="me_service_proof_off">关</string>
-    <string name="me_service_proof_unknown">未知</string>
-    <string name="me_service_expires">有效期至 %1$s</string>
-    <string name="me_service_permanent">长期有效</string>
-    <string name="me_service_unknown">有效期未知（服务端未提供）</string>
-    <string name="me_service_disabled">已停用</string>
-    <string name="me_help_title">帮助与反馈</string>
-    <string name="me_help_desc">常见问题、隐私政策与反馈渠道</string>
-    <string name="me_help_body">· 听不到字幕：先看首页的在线状态，再看对方是否正在发言。
-· 开不了麦：检查「我的设备」里的麦克风与录音权限。
-· 需要电脑端配合的问题，把下面的版本号与服务器地址一起发给管理员。
-
-版本 %1$s
-服务器 %2$s</string>
-    <string name="me_help_privacy">隐私政策</string>
     <string name="me_logout_confirm">退出后这台设备要重新登录才能开会。</string>
     <string name="me_logged_out">已退出登录</string>
     <string name="srv_role_cannot_role">当前账号（%1$s）没有权限做这件事（%2$s）</string>
@@ -848,7 +819,7 @@
     <string name="srv_pending_withdraw_first">待审批的申请请先撤回，再删除</string>
     <string name="srv_write_failed">服务端写入失败，看一下 relay 日志</string>
     <string name="srv_db_outdated">服务器的数据库结构过旧（缺少新字段），重启一次 relay 会自动升级</string>
-    <string name="hist_retention">记录保存 %1$d 天（由服务端设定）</string>
+    <string name="hist_retention">记录保存 %1$d 天</string>
     <string name="hist_empty">还没有历史记录 · 开一场会议，结束之后会出现在这里</string>
     <string name="hist_type_meeting">同传会议</string>
     <string name="hist_type_interpreter">同传翻译官</string>
