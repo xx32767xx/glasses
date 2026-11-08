@@ -865,8 +865,8 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('有 FloorSocket（WS 客户端）', socket.includes('extends WebSocketClient'), '没接 Java-WebSocket')
     check('推送通道在房间页被启动', /private void startFloorSocket\(/.test(room) && /startFloorSocket\(host, secret, token\)/.test(room),
       '没有连上去就等于没做')
-    check('离开房间时断开（不能留下野连接）', /onDestroy[\s\S]{0,400}floorSocket\.stop\(\)/.test(room),
-      'Activity 销毁要停掉它')
+    check('离开房间时断开（不能留下野连接）', /onDestroy[\s\S]{0,900}floorSocket\.stop\(\)/.test(room),
+      'Activity 销毁要停掉它（5.140 起 onDestroy 里先摘投屏监听，窗口相应放宽）')
 
     // 关键：轮询与推送必须走同一条应用路径 —— 否则"推送很快但忘了停上传"这种不对称 bug 会重演（4.34）
     check('两处入口都走 applyFloorState',
@@ -1489,10 +1489,14 @@ export async function runAndroidOrderSuite({ it, check }) {
     // 抽屉：人员与设备
     check('有抽屉覆盖层', /@\+id\/roomDrawer\b/.test(room))
     check('抽屉列成员', /@\+id\/roomMembersList/.test(room) && /renderMembers/.test(activity))
-    check('抽屉列设备状态', /@\+id\/roomDrawerDevices/.test(room)
-      && /drawerDevices\.setText\(getString\(R\.string\.room_devices_detail\)\)/.test(activity)
+    // 5.140：设备行要**按真实投屏状态**写 —— 用户实测"开着 Rokid 投屏，侧边栏仍写手机屏"，
+    //        根因是这行原来是写死的一句话，根本没去问投屏状态。
+    check('抽屉列设备状态（按真实投屏状态写，不是写死）',
+      /@\+id\/roomDrawerDevices/.test(room)
+      && /private void refreshCastState\(\)/.test(activity)
+      && /room_cast_rokid/.test(activity) && /room_devices_rokid/.test(activity)
       && readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml'), 'utf-8')
-        .includes('未接入'))
+        .includes('Rokid 眼镜投屏中'))
   })
 
   await it('房间页四个修复：顶部信息 / 成员形状 / 不显示调试文本（4.53）', () => {

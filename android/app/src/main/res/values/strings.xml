@@ -517,7 +517,9 @@
     <string name="room_locked_suffix">（已锁定）</string>
     <string name="room_cast">投屏</string>
     <string name="room_cast_value">手机屏</string>
-    <string name="room_audio">扩声</string>
+    <string name="room_cast_phone">手机屏</string>
+    <string name="room_cast_rokid">Rokid 眼镜</string>
+    <string name="room_devices_rokid">扩展屏（眼镜 / 投屏器）：Rokid 眼镜投屏中</string>    <string name="room_audio">扩声</string>
     <string name="room_audio_none">未接入</string>
     <string name="room_mic">收音</string>
     <string name="room_mic_phone">手机麦</string>

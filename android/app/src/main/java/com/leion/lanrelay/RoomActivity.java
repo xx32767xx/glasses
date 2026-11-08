@@ -61,6 +61,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
 
     // ── 右侧悬浮条与「人员与设备」抽屉 ──
     private TextView castState;
+    /** 5.140：投屏状态监听（进页挂、退页摘）。 */
+    private RokidGlasses.Listener rokidListener = null;
     private TextView audioState;
     private TextView micState;
     private LinearLayout infoBar;
@@ -207,8 +209,30 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // 4.56：换语言会 recreate 本页，而本顿重建会**打断正在进行的发言**。
         // 所以只有没开麦时才自检；开着麦就先用旧语言，等这一段说完再说。
         if (mic == null) UiLang.trackShown(this);
+        // 5.140：回到本页时刷一次投屏状态，并挂上监听（投屏中途开始/停止也能实时反映）
+        refreshCastState();
+        if (rokidListener == null) {
+            rokidListener = (status, casting) -> ui.post(this::refreshCastState);
+            RokidGlasses.shared(this).addListener(rokidListener);
+        }
     }
 
+    /**
+     * 侧边栏里那两处「投屏」到底写什么 —— **按真实状态**（5.140）。
+     *
+     * <p>只问一件事：Rokid 会话在不在投屏。在 = 写「Rokid 眼镜」，不在 = 写「手机屏」。
+     * 亮亮那套是 USB 采样 View、属于 MainActivity 的实例，本页看不到它，所以这里只报 Rokid；
+     * 真要两套都报，就该把亮亮也挪成应用级单例（那是另一件事，先别混进来）。
+     */
+    private void refreshCastState() {
+        if (castState == null) return;
+        RokidGlasses glasses = RokidGlasses.shared(this);
+        boolean casting = glasses.isCasting();
+        castState.setText(getString(casting ? R.string.room_cast_rokid : R.string.room_cast_phone));
+        if (drawerDevices != null) {
+            drawerDevices.setText(getString(casting ? R.string.room_devices_rokid : R.string.room_devices_detail));
+        }
+    }
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -260,11 +284,12 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
 
         addSystemEvent(getString(R.string.sys_meeting_started));
 
-        // 外设（投屏/扩声）**还没接入**：这里只把事实写清楚，不做假开关。
-        castState.setText(getString(R.string.room_cast_value));
+        // 外设（投屏/扩声）：**按真实状态写**，不写死。
+        // 5.140：原来这里写死"手机屏 / 未接入"—— 用户开了 Rokid 投屏，侧边栏还显示手机，
+        //        原因是它压根没去问投屏状态（也拿不到：Rokid 实例以前是每页各建一个）。
         audioState.setText(getString(R.string.room_audio_none));
         micState.setText(getString(R.string.room_mic_phone));
-        drawerDevices.setText(getString(R.string.room_devices_detail));
+        refreshCastState();
         startedAtMs = System.currentTimeMillis();
         startTimer();
         updateMicButton();
@@ -378,6 +403,11 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
 
     @Override
     protected void onDestroy() {
+        // 5.140：本页只是"看投屏状态"，走的时候把监听摘掉（会话本身要留着跨页面）
+        if (rokidListener != null) {
+            RokidGlasses.shared(this).removeListener(rokidListener);
+            rokidListener = null;
+        }
         // 5.28：退出房间的**唯一**音频收口（见 releaseAudio 的说明）
         releaseAudio();
         // 5.30：朗读引擎也要放掉（否则 TTS 服务会跟着进程活很久）

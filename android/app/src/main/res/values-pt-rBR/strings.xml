@@ -207,7 +207,9 @@
     <string name="room_locked_suffix"> (bloqueado)</string>
     <string name="room_cast">Tela</string>
     <string name="room_cast_value">Tela do celular</string>
-    <string name="room_audio">Som</string>
+    <string name="room_cast_phone">Tela do celular</string>
+    <string name="room_cast_rokid">Óculos Rokid</string>
+    <string name="room_devices_rokid">Tela externa (óculos / transmissor): transmitindo para os óculos Rokid</string>    <string name="room_audio">Som</string>
     <string name="room_audio_none">Não conectado</string>
     <string name="room_mic">Microfone</string>
     <string name="room_mic_phone">Mic do celular</string>

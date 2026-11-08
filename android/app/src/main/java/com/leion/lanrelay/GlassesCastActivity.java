@@ -66,6 +66,8 @@ public class GlassesCastActivity extends Activity {
     private TextView statusView = null;
     private Button toggleView = null;
     private android.content.SharedPreferences prefs = null;
+    /** 本页的状态监听（摘掉时用，5.140）。 */
+    private RokidGlasses.Listener castListener = null;
     /** 三行字号各自的数值显示（中/英/葡，5.139 独立可调）。 */
     private final java.util.Map<String, TextView> fontValueViews = new java.util.HashMap<>();
     /** 用户点了「开始投屏」但还差蓝牙权限：拿到权限后自动继续（免得再点一次）。 */
@@ -92,11 +94,16 @@ public class GlassesCastActivity extends Activity {
         statusView = findViewById(R.id.castStatus);
         toggleView = findViewById(R.id.castToggle);
 
-        // ⚠️ 先构造、再使用（本仓库的 android-order 检查会盯这条）：
-        //    `rokid.xxx` 只能出现在下面这行赋值之后。
-        rokid = new RokidGlasses(this, (status, casting) -> {
-            render(status, casting);
-        });
+        // 5.140：**应用级单例** —— 投屏要跨页面活着（离开本页不能把会话关掉）。
+        // ⚠️ 先赋值、再使用（本仓库的 android-order 检查会盯这条）。
+        rokid = RokidGlasses.shared(this);
+        castListener = new RokidGlasses.Listener() {
+            @Override
+            public void onRokidStatus(String status, boolean casting) {
+                render(status, casting);
+            }
+        };
+        rokid.addListener(castListener);
 
         // 进来就把"为什么现在还投不了"说清楚，别让人对着按钮猜。
         render(rokid.isAppInstalled() ? rokid.status() : rokid.compatibilityNote(), false);
@@ -334,10 +341,13 @@ public class GlassesCastActivity extends Activity {
     @Override
     protected void onDestroy() {
         // 谁创建谁关闭：不关会让 Rokid AI App 以为会话还在，下次 create 会 ALREADY_EXISTS。
-        if (rokid != null) {
-            rokid.close();
-            rokid = null;
+        if (rokid != null && castListener != null) {
+            // 只摘监听，**不停会话**：投屏要跨页面活着（会话由用户点「停止投屏」结束，
+            // 或进程退出时由 MainActivity.onDestroy 收尾）。
+            rokid.removeListener(castListener);
+            castListener = null;
         }
+        rokid = null;
         super.onDestroy();
     }
 

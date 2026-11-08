@@ -207,7 +207,9 @@
     <string name="room_locked_suffix"> (locked)</string>
     <string name="room_cast">Screen</string>
     <string name="room_cast_value">Phone screen</string>
-    <string name="room_audio">Sound</string>
+    <string name="room_cast_phone">Phone screen</string>
+    <string name="room_cast_rokid">Rokid glasses</string>
+    <string name="room_devices_rokid">External display (glasses / caster): casting to Rokid glasses</string>    <string name="room_audio">Sound</string>
     <string name="room_audio_none">Not connected</string>
     <string name="room_mic">Mic</string>
     <string name="room_mic_phone">Phone mic</string>

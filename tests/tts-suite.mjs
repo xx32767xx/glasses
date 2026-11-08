@@ -536,6 +536,24 @@ export async function runTtsSuite({ it, check }) {
     const report = readFileSync(log, 'utf-8')
     check('23 条协议断言全通过（形状/id 一致/转义/紧凑单行/绿通道）',
       /passed=23 failed=0/.test(report), report.trim().slice(-300))
+
+    // 5.140：两件事被用户实测报出来 —— 翻译官页的译文不上镜片 / 会议页侧边栏写死"手机屏"。
+    //        根因同一个：**Rokid 投屏以前是每页各建一个实例**，离开投屏页会话就关，
+    //        别的页面手里也没有它。所以这里钉四条：单例、投屏页不关会话、跨页推、状态如实。
+    const rokidSrc = readFileSync(join(JAVA_SRC, 'RokidGlasses.java'), 'utf-8')
+    const castSrc = readFileSync(join(JAVA_SRC, 'GlassesCastActivity.java'), 'utf-8')
+    const interpSrc = readFileSync(join(JAVA_SRC, 'InterpreterActivity.java'), 'utf-8')
+    const roomSrc = readFileSync(join(JAVA_SRC, 'RoomActivity.java'), 'utf-8')
+    check('Rokid 是应用级单例（shared() + 监听列表；投屏要跨页面活着）',
+      /public static RokidGlasses shared\(Context/.test(rokidSrc)
+        && /CopyOnWriteArrayList/.test(rokidSrc) && /addListener\(/.test(rokidSrc))
+    check('投屏页 onDestroy 不关会话（否则离开这一页投屏就断）',
+      !/onDestroy[\s\S]{0,600}rokid\.close\(\)/.test(castSrc))
+    check('翻译官页把定稿译文推给眼镜（增量帧不推）',
+      /pushIfCasting\(/.test(interpSrc) && /!partial && !translated\.isEmpty\(\)/.test(interpSrc))
+    check('会议页侧边栏按真实投屏状态写设备（refreshCastState，不再写死手机屏）',
+      /private void refreshCastState\(\)/.test(roomSrc)
+        && /room_cast_rokid/.test(roomSrc) && /room_devices_rokid/.test(roomSrc))
   })
 
   await it('5.55：语言选择拆两行（我说一种 / 我想看多种），说话语言锁定在"我想看"里', async () => {

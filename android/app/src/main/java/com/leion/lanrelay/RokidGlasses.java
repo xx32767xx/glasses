@@ -84,7 +84,10 @@ public final class RokidGlasses {
     }
 
     private final Context appContext;
-    private final Listener listener;
+    /** 5.140：**应用级单例**（原来每个 Activity 各建一个）。 */
+    private static volatile RokidGlasses INSTANCE = null;
+    /** 多个界面同时看状态（投屏页 / 会议页 / 翻译官页），所以是列表不是单个。 */
+    private final java.util.List<Listener> listeners = new java.util.concurrent.CopyOnWriteArrayList<>();
     private final Handler main = new Handler(Looper.getMainLooper());
 
     private CxrSessionManager manager = null;
@@ -108,9 +111,39 @@ public final class RokidGlasses {
     private int pageIndex = 0;
     private Runnable pageTask = null;
 
-    public RokidGlasses(Context context, Listener listener) {
+    /**
+     * 应用级单例（5.140）。
+     *
+     * <p>为什么必须是单例：Rokid 的会话是"谁创建谁关闭"，而**投屏要跨页面活着** ——
+     * 用户在「我的 → 眼镜投屏」里开了投屏，然后去会议页/翻译官页说话，那两页也得能把译文推上去。
+     * 原来每个 Activity 各 new 一个，于是：① 离开投屏页就关会话，投屏直接断；
+     * ② 会议页侧边栏看到的永远是"未接入"（它手里根本没有那个实例）。
+     */
+    public static RokidGlasses shared(Context context) {
+        RokidGlasses one = INSTANCE;
+        if (one == null) {
+            synchronized (RokidGlasses.class) {
+                one = INSTANCE;
+                if (one == null) {
+                    one = new RokidGlasses(context.getApplicationContext());
+                    INSTANCE = one;
+                }
+            }
+        }
+        return one;
+    }
+
+    /** 加一个状态监听（界面进来时加、走时摘；不要在里面做 SDK 调用）。 */
+    public void addListener(Listener one) {
+        if (one != null && !listeners.contains(one)) listeners.add(one);
+    }
+
+    public void removeListener(Listener one) {
+        if (one != null) listeners.remove(one);
+    }
+
+    private RokidGlasses(Context context) {
         this.appContext = context.getApplicationContext();
-        this.listener = listener;
         // ⚠️ 构造**不许抛**：它在 MainActivity.setupGlasses() 里被调，一抛就是"App 打不开"。
         //    取不到管理器就当"这台机器不支持"，由 status/isAppInstalled 把原因说出来。
         try {
@@ -180,6 +213,21 @@ public final class RokidGlasses {
     /** 是否正在投屏（会话已 Started）。和亮亮的 isCasting() 同义，只是机制不同。 */
     public boolean isCasting() {
         return started;
+    }
+
+    /**
+     * 有译文就推到镜片（5.140）：会议页 / 翻译官页只要在说话，就调这一个。
+     *
+     * <p>为什么要有这个便捷入口：那两页不该关心"Rokid 会话有没有起来、字号多少、要不要翻页"，
+     * 只该问一句"我现在有译文，你推得出去吗"。这两页此前**根本没有投屏那条路**，
+     * 所以翻译官页的译文一句都没上过镜片（用户实测报的正是这个）。
+     *
+     * @return true = 真的推了；false = 没在投屏（调用方什么都不用管）
+     */
+    public boolean pushIfCasting(String text, String lang) {
+        if (!started || session == null) return false;
+        push(text, lang);
+        return true;
     }
 
     /** 当前状态文字（给界面那一行）。 */
@@ -604,11 +652,13 @@ public final class RokidGlasses {
     /** 状态只从主线程往界面推（SDK 回调在哪个线程来是不保证的）。 */
     private void report(String text, boolean casting) {
         status = text;
-        if (listener == null) return;
+        if (listeners.isEmpty()) return;
         main.post(new Runnable() {
             @Override
             public void run() {
-                listener.onRokidStatus(text, casting);
+                for (Listener one : listeners) {
+                    one.onRokidStatus(text, casting);
+                }
             }
         });
     }

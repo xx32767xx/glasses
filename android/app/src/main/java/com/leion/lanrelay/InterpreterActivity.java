@@ -781,6 +781,12 @@ public class InterpreterActivity extends android.app.Activity {
                 // （原文帧 + 增量译文帧 + 定稿译文帧）→ 屏幕上冒出好几张卡、还互相闪烁。
                 // SubtitleList 的规则是：**原文相同就是同一条**，增量→定稿→校对都在原位更新。
                 submitCard(src, translated, partial, langTag);
+                // 5.140：**定稿译文也要投到眼镜上**（用户实测：翻译官页的译文一句都没上过镜片）。
+                // 口径与房间页一致：增量帧不推（镜片只显示定稿），只推译文那一侧。
+                if (!partial && !translated.isEmpty()) {
+                    RokidGlasses.shared(InterpreterActivity.this)
+                            .pushIfCasting(translated, langTag == null || langTag.isEmpty() ? lang : langTag);
+                }
                 // 只朗读**定稿且非空**的译文；partial 是半句，念出来很怪（与房间页一致）
                 if (!partial && ttsQueue != null && !translated.isEmpty()) {
                     ttsQueue.offer(translated, langTag == null || langTag.isEmpty() ? lang : langTag);

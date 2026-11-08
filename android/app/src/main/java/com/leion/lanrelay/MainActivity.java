@@ -185,6 +185,7 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
      * "镜片上到底是什么"说不清（这也是 {@link #toggleGlassesCast()} 的取舍依据）。
      */
     private RokidGlasses rokid = null;
+    private RokidGlasses.Listener mainRokidListener = null;
     private String rokidStatus = "Rokid：未初始化";
 
     private long lastSpeechAt = 0;
@@ -435,7 +436,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         //
         // 为什么放在最后建：它的回调里会调 renderGlassesRealStatus()，
         // 而那个方法要读 glasses / glassesView 的状态 —— 先建它们、再建它。
-        rokid = new RokidGlasses(this, (status, casting) -> {
+        rokid = RokidGlasses.shared(this);
+        mainRokidListener = (status, casting) -> {
             rokidStatus = status;
             // 亮亮正在投屏时不让 Rokid 也开：两条链路都是"投屏"，
             // 同时开会变成"镜片上到底显示的是哪一路"说不清（排障时尤其致命）。
@@ -444,7 +446,8 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
                 rokidStatus = "Rokid：亮亮正在投屏，两套不能同时开";
             }
             renderGlassesRealStatus();
-        });
+        };
+        rokid.addListener(mainRokidListener);
 
         requestGlassesPermissions();
     }
@@ -600,6 +603,9 @@ public class MainActivity extends Activity implements LanClient.Listener, MicUpl
         // Rokid 那边同理（"谁创建谁关闭"）：会话不关会让 Rokid AI App 以为我们还占着，
         // 下一次连接会直接掉进 SESSION_ALREADY_EXISTS。幂等，可重复调。
         if (rokid != null) {
+            // 5.140：进程退出才收会话；这里只是摘监听 + 关会话（应用级单例，别 leave 成半死状态）
+            if (mainRokidListener != null) rokid.removeListener(mainRokidListener);
+            mainRokidListener = null;
             rokid.close();
             rokid = null;
         }
