@@ -156,7 +156,29 @@ def check_nemo():
     return nemo_asr
 
 
-def run_production_path(wav, model_name, runs, device):
+def read_raw_pcm_16k(path, rate=SAMPLE_RATE, seconds=None):
+    """读**裸 PCM**（16-bit 小端单声道，管线落盘就是这种）→ float32 [-1,1]。
+
+    <p>为什么提供这条路：服务器上现成的音频大多是 `<data-dir>/audio/<房间>/<说话人>.pcm`
+    或评测包里的裸 pcm，不一定有 ffmpeg、也不一定想先转格式。给一段 pcm 就能直接量。
+    """
+    try:
+        with open(str(path), "rb") as handle:
+            raw = handle.read()
+    except OSError as error:
+        fail(f"读不了这个 pcm：{type(error).__name__}: {error}")
+    if len(raw) % 2 != 0:
+        fail(f"这个 pcm 的字节数是奇数（{len(raw)}），不像 16-bit 单声道")
+    import numpy as np
+    audio = np.frombuffer(raw, dtype="<i2").astype("float32") / 32768.0
+    if seconds is not None and seconds > 0:
+        audio = audio[: int(seconds * rate)]
+    if audio.size == 0:
+        fail("这段 pcm 是空的（或 --seconds 取到了 0 个样点）")
+    return audio
+
+
+def run_production_path(audio, source_label, model_name, runs, device):
     """按生产代码路径跑：ParakeetEngine + runtime=nemo + fp16。"""
     line("③ 生产路径实测（ParakeetEngine / runtime=nemo）")
     sys.path.insert(0, str(ROOT / "bridge"))
@@ -178,9 +200,8 @@ def run_production_path(wav, model_name, runs, device):
     print(f"  模型         {model_name}")
     print(f"  加载          {load_ms / 1000:.1f} s（首次含下载；之后走缓存）")
 
-    audio = read_wav_16k(wav)
     audio_seconds = audio.size / SAMPLE_RATE
-    print(f"  音频         {wav}（{audio_seconds:.2f} s）")
+    print(f"  音频         {source_label}（{audio_seconds:.2f} s）")
 
     # 预热一次：第一次跑包含 cuDNN 选核与显存分配，不能算进 RTF
     first = engine.transcribe(handle, audio, "en-US", profile)
@@ -211,6 +232,11 @@ def run_production_path(wav, model_name, runs, device):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="parakeet GPU（NeMo）开工自检")
     parser.add_argument("--wav", default="", help="16k 单声道 16-bit wav；不给就只检查环境")
+    parser.add_argument("--pcm", default="",
+                        help="裸 PCM（16-bit 小端单声道，管线 audio/<房间>/<说话人>.pcm 就是这种）")
+    parser.add_argument("--pcm-rate", type=int, default=SAMPLE_RATE, help="裸 PCM 的采样率（缺省 16000）")
+    parser.add_argument("--seconds", type=float, default=0.0,
+                        help="只取前 N 秒（缺省 0 = 整段；长录音建议 6~10 秒，贴近真实段长）")
     parser.add_argument("--model", default=DEFAULT_MODEL, help=f"NeMo 模型名或 .nemo 路径（缺省 {DEFAULT_MODEL}）")
     parser.add_argument("--device", default="cuda", help="cuda / cuda:0 / cpu（缺省 cuda）")
     parser.add_argument("--runs", type=int, default=3, help="转写重复次数（缺省 3，取中位数）")
@@ -223,14 +249,24 @@ def main(argv=None):
     check_torch(args.device)
     check_nemo()
 
-    if args.wav == "":
+    if args.wav == "" and args.pcm == "":
         line("④ 下一步")
-        print("  环境没问题。要量速度就带一段英语 wav 再跑一次：")
+        print("  环境没问题。要量速度就带一段英语音频再跑一次（二选一）：")
         print("    python scripts/parakeet-gpu-doctor.py --wav var/tmp/en-sample.wav")
-        print("  服务器上没有英语样本的话，从任意一段 16k 单声道 wav 转一段即可。")
+        print("    python scripts/parakeet-gpu-doctor.py --pcm /var/lib/leion/test/audio/<房间>/<说话人>.pcm --seconds 6")
+        print("  服务器上现成的音频大多是裸 pcm（管线落盘就是 16k/单声道/16-bit），不用先转格式。")
+        print("  ⚠️ 第一次跑会下载模型（约 2.4 GB；HF_HOME 与产线一致时会进 /opt/leion/models）。")
         return 0
 
-    run_production_path(args.wav, args.model, args.runs, args.device)
+    if args.pcm != "":
+        audio = read_raw_pcm_16k(args.pcm, args.pcm_rate, args.seconds or None)
+        source_label = f"{args.pcm}（裸 pcm {args.pcm_rate} Hz）"
+    else:
+        audio = read_wav_16k(args.wav)
+        if args.seconds and args.seconds > 0:
+            audio = audio[: int(args.seconds * SAMPLE_RATE)]
+        source_label = args.wav
+    run_production_path(audio, source_label, args.model, args.runs, args.device)
 
     line("④ 下一步：把英语切到这条路上（服务端策略表，热生效）")
     print('  ① 先确认策略表里有 en-parakeet-gpu：')
