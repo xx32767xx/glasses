@@ -294,6 +294,11 @@ Microfone: microfone do celular (em uso)</string>
     <string name="glasses_font_minus">-</string>
     <string name="glasses_len_short">curta</string>
     <string name="glasses_len_mid">média</string>
+        <!-- 5.148：开发者模式可见的"本场用哪套识别策略" -->
+    <string name="room_strategy_label">Estratégia de ASR (dev)</string>
+    <string name="room_strategy_locked">definida às %1$s (fixada na criação desta sala)</string>
+    <string name="room_strategy_live">tabela global (sem snapshot desta sala)</string>
+    <string name="interp_strategy_label">Estratégia de ASR (dev)</string>
     <string name="glasses_len_long">longa</string>    <string name="glasses_cast_hint">São necessárias duas coisas: (1) o app Rokid AI instalado neste celular; (2) os óculos conectados dentro do app Rokid AI (o pareamento Bluetooth do sistema não basta). Depois de começar, as traduções aparecem na lente frase por frase.</string>
     <string name="set_privacy">Privacidade</string>
     <string name="set_clear">Limpar registros deste celular (originais e traduções)</string>

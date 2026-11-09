@@ -297,6 +297,23 @@
             android:textColor="@color/accent"
             android:textSize="@dimen/text_caption" />
 
+        <!-- 5.148：**开发者模式**才显示的"本场用哪套识别策略"（冻结快照优先）。
+             默认 gone；由 RoomActivity 在 DevMode 打开时填内容并显示。 -->
+        <TextView
+            android:id="@+id/roomStrategy"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="@dimen/space_gap_tiny"
+            android:background="@drawable/bg_card"
+            android:paddingStart="@dimen/space_gap_small"
+            android:paddingTop="@dimen/space_gap_tiny"
+            android:paddingEnd="@dimen/space_gap_small"
+            android:paddingBottom="@dimen/space_gap_tiny"
+            android:text=""
+            android:textColor="@color/ink_faint"
+            android:textSize="@dimen/text_caption"
+            android:visibility="gone" />
+
         <!-- ══ 底部固定操作区：开麦胶囊 · 锁定 · 原文开关 · 退出 ══════ -->
         <LinearLayout
             android:layout_width="match_parent"

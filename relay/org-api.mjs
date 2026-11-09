@@ -636,11 +636,14 @@ export async function handleOrg(input) {
     if (method === 'GET') {
       // 5.15：把"这一场有没有在翻译 / 为什么没跑"一并给客户端（`start-multi` 写的侧车）
       const pipeline = typeof input.pipelineOf === 'function' ? input.pipelineOf(room.id) : null
+      // 5.148：这场会用哪套识别策略（房间冻结快照优先；没有快照回落全局表）。
+      // 给开发模式面板看 —— 界面上"冻结的"与"当前表"要靠 source 分清，不能猜。
+      const strategy = typeof input.strategyOf === 'function' ? input.strategyOf(room.id) : null
       return {
         status: 200,
         json: {
           ok: true, room, members: listMembers(root, room.id),
-          libraryIds: roomLibraries(root, room.id), pipeline,
+          libraryIds: roomLibraries(root, room.id), pipeline, strategy,
         },
       }
     }

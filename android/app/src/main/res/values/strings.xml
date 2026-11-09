@@ -610,6 +610,11 @@
     <string name="glasses_font_minus">－</string>
     <string name="glasses_len_short">短</string>
     <string name="glasses_len_mid">中</string>
+        <!-- 5.148：开发者模式可见的"本场用哪套识别策略" -->
+    <string name="room_strategy_label">识别策略（开发者）</string>
+    <string name="room_strategy_locked">冻结于 %1$s（本场创建时固定）</string>
+    <string name="room_strategy_live">全局表（本场没有冻结快照）</string>
+    <string name="interp_strategy_label">识别策略（开发者）</string>
     <string name="glasses_len_long">长</string>    <string name="glasses_cast_hint">需要两件事：① 手机装了 Rokid AI App；② 在 Rokid AI App 里把眼镜连上（系统蓝牙配对不够）。开始投屏后，镜片上会出现一句句译文。</string>
     <string name="set_privacy">隐私</string>
     <string name="set_clear">清空本机记录（原文与译文）</string>

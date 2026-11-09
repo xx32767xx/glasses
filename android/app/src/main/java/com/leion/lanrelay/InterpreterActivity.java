@@ -56,6 +56,8 @@ public class InterpreterActivity extends android.app.Activity {
 
     private TextView statusView;
     private TextView metaView;
+    /** 5.148：开发者模式下显示"本场会话用哪套识别策略"（默认隐藏）。 */
+    private TextView strategyView;
     private TextView emptyView;
     private ScrollView scroll;
     private LinearLayout list;
@@ -114,6 +116,7 @@ public class InterpreterActivity extends android.app.Activity {
 
         statusView = findViewById(R.id.interpStatus);
         metaView = findViewById(R.id.interpMeta);
+        strategyView = findViewById(R.id.interpStrategy);
         emptyView = findViewById(R.id.interpEmpty);
         scroll = findViewById(R.id.interpScroll);
         list = findViewById(R.id.interpSubtitles);
@@ -440,6 +443,62 @@ public class InterpreterActivity extends android.app.Activity {
         view.setEnabled(enabled);
     }
 
+    /**
+     * 5.148：拉一次本场会话的服务端详情，把"用哪套识别策略"填进开发者行。
+     *
+     * <p>为什么值得看：换了模型之后"字幕风格变了 / 变慢了"，第一件事就是确认
+     * 这一场到底跑的是哪个模型、是**冻结快照**还是**当前表**（两者必须能分清）。
+     */
+    private void refreshStrategyLine() {
+        if (strategyView == null) return;
+        if (!DevMode.enabled(this) || !(backend instanceof RelayPipelineBackend)) {
+            strategyView.setVisibility(View.GONE);
+            return;
+        }
+        final String sessionId = ((RelayPipelineBackend) backend).sessionId();
+        if (sessionId == null || sessionId.isEmpty()) {
+            strategyView.setVisibility(View.GONE);
+            return;
+        }
+        new Thread(() -> {
+            org.json.JSONObject info = null;
+            try {
+                info = client.orgRoomInfo(sessionId);
+            } catch (Exception ignored) {
+                // 拉不到就不显示：这一行是排障辅助，不是主流程
+            }
+            final org.json.JSONObject read = info;
+            ui.post(() -> renderStrategyLine(read == null || read.isNull("strategy")
+                    ? null : read.optJSONObject("strategy")));
+        }, "interp-strategy").start();
+    }
+
+    /** 把服务端给的 strategy 画成一行（对方说的语言 + 我读的语言各一条）。 */
+    private void renderStrategyLine(org.json.JSONObject strategy) {
+        if (strategyView == null) return;
+        org.json.JSONObject languages = strategy == null ? null : strategy.optJSONObject("languages");
+        if (languages == null) {
+            strategyView.setVisibility(View.GONE);
+            return;
+        }
+        StringBuilder out = new StringBuilder(getString(R.string.interp_strategy_label));
+        for (String one : new String[]{partner, lang}) {
+            org.json.JSONObject profile = languages.optJSONObject(one);
+            if (profile == null) continue;
+            out.append('\n').append(langText(one)).append("  ")
+                    .append(profile.optString("engine", "?"))
+                    .append(" / ").append(profile.optString("model", "?"));
+            String compute = profile.optString("compute_type", "");
+            if (!compute.isEmpty()) out.append(" / ").append(compute);
+        }
+        String lockedAt = strategy.optString("lockedAt", "");
+        out.append('\n').append(lockedAt.isEmpty()
+                ? getString(R.string.room_strategy_live)
+                : getString(R.string.room_strategy_locked, lockedAt));
+        strategyView.setText(out.toString());
+        strategyView.setVisibility(View.VISIBLE);
+    }
+
     private void refreshRoute() {
         // 5.146（用户要求）：配置页那块「识别与翻译在哪」的白框已删除；
         // 这条信息改由**状态行**承担 —— 打开页面就能看到"这一场实际会怎么跑"，
@@ -654,6 +713,7 @@ public class InterpreterActivity extends android.app.Activity {
         if (ttsQueue != null) ttsQueue.stop();
         toggleButton.setText(getString(R.string.interp_start));
         statusView.setText(getString(R.string.interp_stopped));
+        if (strategyView != null) strategyView.setVisibility(View.GONE);
         // 5.37：这一场刚结束 → 历史里多了一条。让下次进「历史」时重新读，
         // 否则用户结束一场再翻历史会看不到它（那一块是懒加载、只读一次的）。
         historyLoaded = false;

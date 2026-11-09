@@ -1568,6 +1568,35 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('Switch 默认打开', /android:checked="true"/.test(room))
   })
 
+  await it('5.148：开发者模式下才显示"本场用哪套识别策略"', () => {
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const room = readFileSync(join(resDir, 'layout', 'page_room.xml'), 'utf-8')
+    const interp = readFileSync(join(resDir, 'layout', 'page_interpreter.xml'), 'utf-8')
+    const roomJava = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+    const interpJava = readFileSync(join(javaDir, 'InterpreterActivity.java'), 'utf-8')
+
+    // ① 两个页面各有一行"策略"，且**默认隐藏**（非开发者看不到）
+    for (const [name, xml, id] of [['房间页', room, 'roomStrategy'], ['翻译官页', interp, 'interpStrategy']]) {
+      const at = xml.indexOf('@+id/' + id)
+      check(`${name}有策略行`, at > 0)
+      check(`${name}的策略行默认隐藏`, /android:visibility="gone"/.test(xml.slice(at, at + 900)))
+      check(`${name}的策略行用 token（不写死尺寸/颜色）`, /@dimen\//.test(xml.slice(at, at + 900))
+        && /@color\//.test(xml.slice(at, at + 900)))
+    }
+
+    // ② 显示与否只看 DevMode（不写成"永远显示"）
+    check('房间页按开发者模式决定是否显示', /DevMode\.enabled\(this\)/.test(roomJava)
+      && /strategyView\.setVisibility\(View\.GONE\)/.test(roomJava))
+    check('翻译官页同样按开发者模式决定', /DevMode\.enabled\(this\)/.test(interpJava))
+    check('房间页从房间详情里取 strategy（服务端给的是快照优先）',
+      /optJSONObject\("strategy"\)/.test(roomJava))
+    check('翻译官页用会话 id 拉房间详情（演示回放没有会话 → 不显示）',
+      /sessionId\(\)/.test(interpJava) && /orgRoomInfo\(sessionId\)/.test(interpJava))
+    check('界面上要能分清"冻结的"与"当前表"',
+      /room_strategy_locked/.test(roomJava) && /room_strategy_live/.test(roomJava))
+  })
+
   await it('4.56：界面三语（中文 / 巴葡 / 英文）', () => {
     const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
     const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')

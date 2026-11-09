@@ -294,6 +294,11 @@ Microphone: phone microphone (in use)</string>
     <string name="glasses_font_minus">-</string>
     <string name="glasses_len_short">short</string>
     <string name="glasses_len_mid">medium</string>
+        <!-- 5.148：开发者模式可见的"本场用哪套识别策略" -->
+    <string name="room_strategy_label">ASR strategy (dev)</string>
+    <string name="room_strategy_locked">locked at %1$s (fixed when this room was created)</string>
+    <string name="room_strategy_live">global table (no snapshot for this room)</string>
+    <string name="interp_strategy_label">ASR strategy (dev)</string>
     <string name="glasses_len_long">long</string>    <string name="glasses_cast_hint">Two things are required: (1) the Rokid AI App is installed on this phone; (2) the glasses are connected inside the Rokid AI App (system Bluetooth pairing is not enough). Once casting starts, translations appear on the lens sentence by sentence.</string>
     <string name="set_privacy">Privacy</string>
     <string name="set_clear">Clear records on this phone (originals and translations)</string>

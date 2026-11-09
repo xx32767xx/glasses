@@ -51,6 +51,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     private TextView statusLine;
     private TextView speakerBar;
     private TextView hintLine;
+    /** 5.148：开发者模式下显示"本场用哪套识别策略"（默认隐藏）。 */
+    private TextView strategyView;
     private Button micButton;
     private android.widget.ImageButton lockButton;
 
@@ -268,6 +270,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         statusLine = findViewById(R.id.roomStatus);
         speakerBar = findViewById(R.id.roomSpeaker);
         hintLine = findViewById(R.id.roomHint);
+        strategyView = findViewById(R.id.roomStrategy);
         micButton = findViewById(R.id.roomMic);
         lockButton = findViewById(R.id.roomLock);
 
@@ -1172,6 +1175,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             final org.json.JSONArray members = info.optJSONArray("members");
             final org.json.JSONObject pipeline =
                     info.isNull("pipeline") ? null : info.optJSONObject("pipeline");
+            final org.json.JSONObject strategy =
+                    info.isNull("strategy") ? null : info.optJSONObject("strategy");
             ui.post(() -> {
                 if (room != null) {
                     String code = room.optString("code", "");
@@ -1193,8 +1198,60 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 // 5.15：这一场到底有没有在翻译？被 `--max-rooms` 挡住时要**明说**，
                 // 否则手机上就是"说了半天什么都没出来"，看起来像坏了。
                 applyPipelineState(pipeline);
+                // 5.148：开发者模式才显示"本场用哪套识别策略"（冻结快照优先）
+                renderStrategy(strategy);
             });
         }, "room-header").start();
+    }
+
+    /**
+     * 5.148：**开发者模式**下显示这一场实际用哪套识别策略（按语言一行）。
+     *
+     * <p>为什么值得占一行：换了模型之后"字幕风格变了 / 变慢了"这类问题，
+     * 第一个要回答的就是"这场到底跑的是哪个模型"。服务端给的是**冻结快照**
+     * （`source=room-strategy`）或**当前全局表**（`source=asr-models.json`）——
+     * 两者必须能分清，否则又变成"日志说假话"。
+     */
+    private void renderStrategy(org.json.JSONObject strategy) {
+        if (strategyView == null) return;
+        if (!DevMode.enabled(this) || strategy == null) {
+            strategyView.setVisibility(View.GONE);
+            return;
+        }
+        org.json.JSONObject languages = strategy.optJSONObject("languages");
+        if (languages == null) {
+            strategyView.setVisibility(View.GONE);
+            return;
+        }
+        StringBuilder out = new StringBuilder(getString(R.string.room_strategy_label));
+        out.append('\n');
+        int rows = 0;
+        for (final String lang : new String[]{"zh-CN", "en-US", "pt-BR"}) {
+            org.json.JSONObject one = languages.optJSONObject(lang);
+            if (one == null) continue;
+            if (rows > 0) out.append('\n');
+            rows += 1;
+            out.append(langLabelOf(lang)).append("  ")
+                    .append(one.optString("engine", "?"))
+                    .append(" / ").append(one.optString("model", "?"));
+            String compute = one.optString("compute_type", "");
+            if (!compute.isEmpty()) out.append(" / ").append(compute);
+        }
+        String lockedAt = strategy.optString("lockedAt", "");
+        if (rows > 0) {
+            out.append('\n').append(lockedAt.isEmpty()
+                    ? getString(R.string.room_strategy_live)
+                    : getString(R.string.room_strategy_locked, shortTime(lockedAt)));
+        }
+        strategyView.setText(out.toString());
+        strategyView.setVisibility(rows > 0 ? View.VISIBLE : View.GONE);
+    }
+
+    /** `2026-11-09T09:12:33.482Z` → `09:12`（只给人看个先后，不追求完整时间）。 */
+    private static String shortTime(String iso) {
+        int cut = iso.indexOf('T');
+        if (cut < 0 || iso.length() < cut + 6) return iso;
+        return iso.substring(cut + 1, cut + 6);
     }
 
     /**

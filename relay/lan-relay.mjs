@@ -46,6 +46,8 @@ import {
 } from '../lib/paths.mjs'
 import { lintTranslation } from '../lib/translation-lint.mjs'
 import { handleOrg } from './org-api.mjs'
+import { loadStrategyTable } from '../lib/asr-engines.mjs'
+import { lockRoomStrategy, readRoomStrategy, resolveAllLanguages } from '../lib/room-strategy.mjs'
 import { createWsHub } from '../lib/ws-hub.mjs'
 import { publishMeetingTerms, readCurrentMeeting } from '../lib/meeting-terms.mjs'
 import { loadSelection } from './org-api.mjs'
@@ -2887,10 +2889,56 @@ export async function startRelay(rawOptions = {}) {
           // readBody 已经解析好 JSON 并返回对象（解析失败会抛 400），别再 JSON.parse 一次
           body = await readBody(request)
         }
+
+        /**
+         * 5.148：一场会议**此刻**用哪套识别策略（给房间详情/开发模式面板显示）。
+         *
+         * <p>优先级就是识别侧那一条：房间冻结快照 > 全局策略表。
+         * 没有快照（老会议、或建房时没写成）时回落全局表，`source` 会照实写出来 ——
+         * 界面上"这是冻结的"和"这是当前表"必须能分清。
+         */
+        const strategyOf = (roomId) => {
+          try {
+            const { table } = loadStrategyTable(options.dataDir)
+            const snapshot = readRoomStrategy(options.dataDir, roomId)
+            return {
+              source: snapshot ? 'room-strategy' : 'asr-models.json',
+              lockedAt: snapshot ? String(snapshot.lockedAt ?? '') : '',
+              lockedBy: snapshot ? String(snapshot.lockedBy ?? '') : '',
+              languages: resolveAllLanguages(table, snapshot),
+            }
+          } catch (error) {
+            debug(`[策略] 解析房间 ${roomId} 的策略失败（不影响主流程）：${error?.message ?? error}`)
+            return null
+          }
+        }
+
+        /**
+         * 5.148：**建房那一刻**把当前策略抄一份冻结下来（幂等，不覆盖）。
+         *
+         * <p>为什么在这里做、而不是在 org-api：org-api 是纯函数（可逐条测），
+         * 写入侧车属于 relay 的副作用（与 `room-langs/`、`room-pipeline/` 同一套做法）。
+         */
+        const lockStrategy = (roomId, by) => {
+          // 具体动作在 lib/room-strategy.mjs（读表 → 快照 → 落盘幂等 → 审计），这里只管说话
+          const locked = lockRoomStrategy(options.dataDir, roomId, { by })
+          if (locked.ok !== true) {
+            debug(`[策略] 冻结失败（会议照常进行，但这场会没有快照）：${locked.error}`)
+            return
+          }
+          if (locked.existed !== true && locked.snapshot) {
+            debug(`[策略] 已冻结这场会议（${roomId}）：`
+              + Object.entries(locked.snapshot.languages)
+                .map(([lang, one]) => `${lang}=${one.strategy}/${one.model || '默认'}`).join('、'))
+          }
+        }
+
         const result = await handleOrg({
           // path 要**带 query**：/org/history?limit=20 的 limit 就在这后面
           method: request.method, path: url.pathname + (url.search ?? ''), body, user, role,
           root: options.dataDir,
+          // 5.148：房间详情里带上"这场会用哪套识别策略"（冻结快照优先）
+          strategyOf,
           // 5.66：让 org-api（纯函数、走磁盘）也能在终端上说人话 ——
           // "手机换了识别引擎"这件事必须一眼看得见，否则排查只能靠翻文件。
           log: (line) => console.log(`[转发] ${line}`),
@@ -2965,6 +3013,14 @@ export async function startRelay(rawOptions = {}) {
         // 轮询仍然是兜底：WS 只负责"快点知道"，不替代 GET /floor。
         // heartbeat 不推：它只刷新租约，可见状态没变，推了只是白费流量。
         if (result.status < 400 && request.method === 'POST') {
+          // ── 5.148：新会议/翻译官会话 → 立刻冻结此刻的识别策略 ────────────────
+          // 只认"新开的"这两条路：入会（/org/rooms/join）不冻结 —— 它继承房间已有的快照。
+          if (url.pathname === '/org/rooms' && typeof result.json?.room?.id === 'string') {
+            lockStrategy(result.json.room.id, user)
+          } else if (url.pathname === '/org/interpreter/start'
+            && typeof result.json?.session?.id === 'string') {
+            lockStrategy(result.json.session.id, user)
+          }
           const floorMatch = /^\/org\/rooms\/([^/]+)\/floor$/.exec(url.pathname)
           if (floorMatch !== null) {
             if (body.action !== 'heartbeat') {
