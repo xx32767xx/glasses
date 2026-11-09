@@ -58,6 +58,7 @@ leion-pro 的 ASR 收件箱：
 """
 
 import argparse
+import contextlib
 import json
 import os
 import queue
@@ -1219,6 +1220,35 @@ def resolve_asr_profile(language, cli, table=None):
     return profile
 
 
+@contextlib.contextmanager
+def _nemo_temp_wav(audio, rate=16000):
+    """把 float32 [-1,1] 的段写成一个临时 16-bit 单声道 wav（给"只认路径"的 NeMo 版本）。
+
+    <p>为什么放在模块级别而不是引擎类里：它是纯 I/O 工具，与"哪门语言/哪个引擎"无关；
+    而且测试可以直接 import 它做往返验证（写出去再读回来，样点数与幅度都对得上）。
+    """
+    import tempfile
+    import wave
+
+    import numpy as np
+
+    pcm = np.clip(np.asarray(audio, dtype="float32"), -1.0, 1.0)
+    handle, path = tempfile.mkstemp(prefix="leion-nemo-", suffix=".wav")
+    os.close(handle)
+    try:
+        with wave.open(path, "wb") as fp:
+            fp.setnchannels(1)
+            fp.setsampwidth(2)
+            fp.setframerate(int(rate))
+            fp.writeframes((pcm * 32767.0).astype("<i2").tobytes())
+        yield path
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
 class AsrEngine:
     """一个**识别引擎**的最小接口（5.50）。
 
@@ -1528,19 +1558,48 @@ class ParakeetEngine(AsrEngine):
                 "resolved_language": "en"}
 
     def transcribe_nemo(self, handle, audio, language):
-        """NeMo 的 `transcribe` 在不同版本返回 str 或 Hypothesis —— 两种都要吃得下。"""
+        """NeMo 的 `transcribe` 在不同版本返回 str 或 Hypothesis —— 两种都要吃得下。
+
+        <p>5.147：NeMo 对不同**输入形态**的支持按版本不同 —— 新版本直接吃 float32 ndarray，
+        老版本只认**文件路径**。这条路径此前从没在真 GPU 上跑过（P40 上没装 NeMo），
+        所以按"先数组、失败一次就改用临时 wav 并记住"处理：只降级一次，
+        记在 handle 里（`nemo_audio_mode`），不会每段都抛一条异常、刷满日志。
+        """
         model = handle["model"]
+        if handle.get("nemo_audio_mode", "array") == "array":
+            try:
+                return self._nemo_result(model.transcribe([audio]), language, "parakeet(NeMo)")
+            except Exception as error:                               # noqa: BLE001
+                first = f"{type(error).__name__}: {error}"
+                if not self._nemo_paths_only(error):
+                    return {"text": "", "empty": True,
+                            "reason": f"NeMo 转写失败：{first}",
+                            "resolved_language": language}
+                # 只认路径的 NeMo 版本：切成临时 wav，并记下来（后续段不再试数组）
+                handle["nemo_audio_mode"] = "wav"
+                print(f"⚠️ NeMo 不吃 ndarray（{first}）→ 改用临时 wav 送转写", file=sys.stderr)
         try:
-            result = model.transcribe([audio])
-        except Exception as error:                                  # noqa: BLE001
+            with _nemo_temp_wav(audio) as path:
+                return self._nemo_result(model.transcribe([path]), language, "parakeet(NeMo)")
+        except Exception as error:                                   # noqa: BLE001
             return {"text": "", "empty": True,
-                    "reason": f"NeMo 转写失败：{type(error).__name__}: {error}",
+                    "reason": f"NeMo 转写失败（wav 模式）：{type(error).__name__}: {error}",
                     "resolved_language": language}
+
+    @staticmethod
+    def _nemo_paths_only(error):
+        """这句异常是不是"NeMo 只认文件路径"那一类（决定要不要降级成 wav）。"""
+        text = f"{type(error).__name__}: {error}".lower()
+        return any(word in text for word in ('path', 'file', 'str', 'os.pathlike', 'not a valid'))
+
+    @staticmethod
+    def _nemo_result(result, language, who):
+        """NeMo 可能返回 str 列表、Hypothesis 列表，或单条 —— 统一成我们的 {"text"} 形状。"""
         first = result[0] if isinstance(result, (list, tuple)) and result else result
         text = getattr(first, "text", first)
         text = str(text or "").strip()
         return {"text": text, "empty": text == "",
-                "reason": None if text else "parakeet(NeMo) 没出字",
+                "reason": None if text else f"{who} 没出字",
                 "resolved_language": "en"}
 
 

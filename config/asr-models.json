@@ -89,11 +89,11 @@
       "langs": ["en-US"]
     },
     "en-parakeet-gpu": {
-      "note": "同一份 Parakeet 的 **GPU 路线**（5.77）：NeMo 2.x + torch。8 核 Haswell 上 CPU 版大约 RTF 0.3~0.8（17 秒的段要 5~14 秒），上产线得靠这条。⚠️ P40 是 Pascal（无 FP16 张量核心），别写 compute_type=fp16。需要 pip install -U \"nemo_toolkit[asr]\" torch。",
+      "note": "同一份 Parakeet 的 **GPU 路线**（5.77 / 5.147）：NeMo 2.x + torch，走 CUDA。2026-11-09 换到 **Tesla V100S 32G（Volta，有 FP16 张量核）**，所以 compute_type 写 fp16 —— P40 那台是 Pascal，必须 fp32，别照抄老机器的值。需要 pip install -U \"nemo_toolkit[asr]\"（装之前把当前 torch 版本钉住，别让它顺手升级）。装完先跑 `python scripts/parakeet-gpu-doctor.py --wav <16k 单声道 wav>` 验一遍再切策略。",
       "engine": "parakeet",
       "runtime": "nemo",
       "model": "nvidia/parakeet-tdt-0.6b-v2",
-      "compute_type": "fp32",
+      "compute_type": "fp16",
       "langs": ["en-US"]
     },
     "en-tencent": {

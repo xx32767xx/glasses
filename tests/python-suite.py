@@ -2696,6 +2696,62 @@ def main():
     check("NeMo 转写抛错时变成空结果+原因（不让整条流水线崩）",
           parakeet.transcribe_nemo({"model": object()}, None, "en")["empty"] is True)
 
+    # 5.147：NeMo 的 `transcribe()` 对**输入形态**的支持按版本不同 —— 新版本吃 ndarray，
+    # 老版本只认文件路径。这条路径此前从没在真 GPU 上跑过，所以先把"降级一次并记住"钉住。
+    import numpy as _np
+    with whisper_stream._nemo_temp_wav(_np.linspace(-0.5, 0.5, 800, dtype="float32")) as wav_path:
+        with wave.open(wav_path, "rb") as fp:
+            check("临时 wav 的格式对（16000 Hz / 1 声道 / 2 字节）",
+                  (fp.getframerate(), fp.getnchannels(), fp.getsampwidth()) == (16000, 1, 2),
+                  str((fp.getframerate(), fp.getnchannels(), fp.getsampwidth())))
+            frames = fp.readframes(fp.getnframes())
+        check("临时 wav 的样点数与输入一致", len(frames) // 2 == 800, str(len(frames) // 2))
+        peak = max(abs(int.from_bytes(frames[i:i + 2], "little", signed=True))
+                   for i in range(0, len(frames), 2))
+        check("幅度没溢出 16bit 上下界（clamp 生效）", peak <= 32767, str(peak))
+        check("临时 wav 用路径读得到（不是要随手删掉的空文件）", os.path.getsize(wav_path) > 44)
+    del samples
+
+    class _PathOnlyModel:
+        """模拟"只认文件路径"的 NeMo 版本：给 ndarray 就抛 TypeError。"""
+
+        def __init__(self):
+            self.calls = []
+
+        def transcribe(self, audios):
+            self.calls.append(type(audios[0]).__name__)
+            if not isinstance(audios[0], str):
+                raise TypeError("expected str, bytes or os.PathLike object, not ndarray")
+            return ["path mode ok"]
+
+    path_only = _PathOnlyModel()
+    handle = {"model": path_only}
+    got = parakeet.transcribe_nemo(handle, _np.zeros(1600, dtype="float32"), "en")
+    check("只认路径的 NeMo：自动降级成临时 wav 并出字", got["text"] == "path mode ok",
+          str(got))
+    check("降级只发生一次（第一次给数组失败、第二次直接给路径）",
+          path_only.calls == ["ndarray", "str"], str(path_only.calls))
+    check("降级被记住在句柄里（后面的段不再白试一次数组）",
+          handle.get("nemo_audio_mode") == "wav", str(handle))
+
+    class _RealBugModel:
+        """模拟与"路径"无关的真失败：报错必须如实带出来，不能拿去当路径重试。"""
+
+        def __init__(self):
+            self.calls = 0
+
+        def transcribe(self, audios):
+            self.calls += 1
+            raise RuntimeError("CUDA out of memory")
+
+    real_bug = _RealBugModel()
+    bad = parakeet.transcribe_nemo({"model": real_bug}, _np.zeros(160, dtype="float32"), "en")
+    check("与路径无关的失败不当成「版本差异」重试（只调用一次）", real_bug.calls == 1,
+          str(real_bug.calls))
+    check("真失败的原因原样带回（含异常类型与原文）",
+          "CUDA out of memory" in str(bad.get("reason")) and bad["empty"] is True,
+          str(bad.get("reason")))
+
     # 5.79：命令行要能指定引擎 —— 否则"用同一批音频离线量 parakeet"就做不到
     # （单文件/麦克风模式原来直接调 whisper 专用函数，引擎加载了也用不上）
     cli_args = whisper_stream.parse_args(["--file", "x.wav", "--engine", "parakeet",
