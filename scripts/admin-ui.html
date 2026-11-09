@@ -175,6 +175,16 @@
           ⚠️ 切句参数（停顿时长）<b>不冻结</b>：改完下一段就生效。
         </div>
         <div id="models"></div>
+
+        <h2>策略定义（模型 + 精度） <span class="tag">换策略 = 换模型</span></h2>
+        <div class="mono">
+          模型名与精度<b>挂在策略上</b>：上面给语言选了一个策略，它用什么模型/精度就由这里这一行决定。
+          想用本地下载的权重就把模型名写成绝对路径（例如
+          <code>/opt/leion/models/parakeet-tdt-0.6b-v2.nemo</code>），这样不依赖 HuggingFace 缓存目录。
+          ⚠️ 保存时会<b>清掉语言行里的模型/精度覆盖</b>（之前"换策略、模型名不变"就是它压着的）。
+        </div>
+        <div id="modelStrategies"></div>
+
         <div class="row" style="margin-top:8px">
           <button class="btn ghost" onclick="validateModels()">验证（不保存）</button>
           <button class="btn ok" onclick="saveModels()">保存（只影响新会议）</button>
@@ -334,7 +344,14 @@ function modelStrategyNames() {
   return [...names];
 }
 
-function buildModelRow(lang, label, current) {
+/**
+ * 5.149：语言行**只选策略**，模型名与精度由「策略」定义决定。
+ *
+ * 为什么改：之前这里让每门语言单独填模型/精度，保存时会写进 `languages[lang]` 那一层 ——
+ * 而那一层的优先级**高于策略**。于是"换了策略、模型名不变"：覆盖值一直压着新的策略定义。
+ * 现在改成"策略绑模型+精度"：语言只说用哪个策略，模型/精度在下面的策略表里改。
+ */
+function buildLanguageRow(lang, label, current) {
   const row = document.createElement('div');
   row.className = 'row';
 
@@ -355,35 +372,73 @@ function buildModelRow(lang, label, current) {
   }
   row.appendChild(select);
 
-  // 模型名：空 = 沿用策略里写的那个；填了就是**本语言覆盖**（例如指到本地的 .nemo 文件）
-  const model = document.createElement('input');
-  model.id = 'mdModel_' + lang;
-  model.value = current.model || '';
-  model.placeholder = '模型名 / 本地路径（空=沿用策略）';
-  model.style.width = '300px';
-  row.appendChild(model);
-
-  const compute = document.createElement('input');
-  compute.id = 'mdCompute_' + lang;
-  compute.value = current.compute_type || '';
-  compute.placeholder = 'compute_type（float16 / int8_float32 / fp16 …）';
-  compute.style.width = '240px';
-  row.appendChild(compute);
-
   const info = document.createElement('span');
   info.className = 'tag';
-  info.textContent = [current.engine, current.model, current.runtime, current.availability || current.available]
-    .filter(Boolean).join(' · ') || '（这条策略没解析出模型）';
+  info.textContent = [current.engine, current.model, current.runtime, current.compute_type,
+    current.available].filter(Boolean).join(' · ') || '（这条策略没解析出模型）';
   row.appendChild(info);
   return row;
 }
 
-function renderModels(data) {
-  const host = document.getElementById('models');
-  host.innerHTML = '';
-  for (const [lang, label] of MODEL_LANGS) {
-    host.appendChild(buildModelRow(lang, label, (data.languages || {})[lang] || {}));
+/** 一条「策略」= 引擎 + runtime + 模型 + 精度（语言行只引用它的名字）。 */
+function buildStrategyRow(name, layer, problemsFor) {
+  const row = document.createElement('div');
+  row.className = 'row';
+
+  const title = document.createElement('div');
+  title.className = 'mono';
+  title.style.width = '150px';
+  title.textContent = name;
+  row.appendChild(title);
+
+  const field = (id, value, placeholder, width) => {
+    const input = document.createElement('input');
+    input.id = id;
+    input.value = value === undefined || value === null ? '' : String(value);
+    input.placeholder = placeholder;
+    input.style.width = width;
+    row.appendChild(input);
+    return input;
+  };
+
+  field('stEngine_' + name, layer.engine, 'engine（whisper/parakeet/funasr/tencent）', '150px');
+  field('stRuntime_' + name, layer.runtime, 'runtime（parakeet: onnx/nemo）', '130px');
+  field('stModel_' + name, layer.model, '模型名 或 本地路径（如 /opt/leion/models/x.nemo）', '330px');
+  field('stCompute_' + name, layer.compute_type, 'compute_type（float16 / int8_float32 / fp16）', '230px');
+
+  if (problemsFor && problemsFor.length) {
+    const tag = document.createElement('span');
+    tag.className = 'tag';
+    tag.textContent = '⚠️ ' + problemsFor.join('；');
+    row.appendChild(tag);
   }
+  return row;
+}
+
+function renderModels(data) {
+  const table = modelTable || {};
+  const strategies = (table.strategies && typeof table.strategies === 'object') ? table.strategies : {};
+
+  const langsHost = document.getElementById('models');
+  langsHost.innerHTML = '';
+  for (const [lang, label] of MODEL_LANGS) {
+    langsHost.appendChild(buildLanguageRow(lang, label, (data.languages || {})[lang] || {}));
+  }
+
+  const strategiesHost = document.getElementById('modelStrategies');
+  strategiesHost.innerHTML = '';
+  // default 也是一层（语言可以选它）；其余是 strategies 里的具名策略
+  strategiesHost.appendChild(buildStrategyRow('default', table.default || {}, []));
+  for (const name of Object.keys(strategies).sort()) {
+    strategiesHost.appendChild(buildStrategyRow(name, strategies[name] || {}, []));
+  }
+  if (Object.keys(strategies).length === 0) {
+    const hint = document.createElement('div');
+    hint.className = 'mono';
+    hint.textContent = '（还没有具名策略：点「初始化示例表」可以写入 en-parakeet-gpu / pt-funasr 等候选）';
+    strategiesHost.appendChild(hint);
+  }
+
   const meta = document.getElementById('modelsMeta');
   if (data.source && data.source.found) {
     meta.textContent = data.source.problem ? ('⚠️ 表读不了：' + data.source.problem) : ('表在：' + data.source.path);
@@ -413,23 +468,52 @@ async function loadModels() {
 }
 
 /** 把界面上三行拼成一份完整表（后端的 PUT 是**整张表**，见 docs/33 §5）。 */
+/**
+ * 把界面拼回一份完整表（后端 PUT 是**整张表**，见 docs/33 §5）。
+ *
+ * 5.149：语义改成"策略绑模型 + 精度"：
+ *   · 语言行**只写 strategy**，并且**删掉** languages[lang].model / compute_type
+ *     —— 那两层的优先级高于策略，留着就会压住新策略（"换了策略模型不变"的根因）；
+ *   · 模型/精度/引擎/runtime 写在 default 与 strategies[名字] 上。
+ */
 function modelEditedTable() {
   const next = JSON.parse(JSON.stringify(modelTable || { version: 2 }));
   next.languages = next.languages && typeof next.languages === 'object' ? next.languages : {};
   for (const [lang] of MODEL_LANGS) {
     const select = document.getElementById('mdStrategy_' + lang);
-    const model = document.getElementById('mdModel_' + lang);
-    const compute = document.getElementById('mdCompute_' + lang);
     if (!select) continue;
     const layer = next.languages[lang] && typeof next.languages[lang] === 'object'
       ? { ...next.languages[lang] } : {};
     layer.strategy = select.value;
-    const modelText = model ? model.value.trim() : '';
-    if (modelText === '') delete layer.model; else layer.model = modelText;
-    const text = compute ? compute.value.trim() : '';
-    if (text === '') delete layer.compute_type; else layer.compute_type = text;
+    // 清掉旧的"语言级覆盖"，让策略说话
+    delete layer.model;
+    delete layer.compute_type;
     next.languages[lang] = layer;
   }
+
+  const applyLayer = (layer, prefix) => {
+    const nextLayer = layer && typeof layer === 'object' ? { ...layer } : {};
+    const read = (id) => {
+      const input = document.getElementById(id);
+      return input ? input.value.trim() : '';
+    };
+    const engine = read('stEngine_' + prefix);
+    const runtime = read('stRuntime_' + prefix);
+    const model = read('stModel_' + prefix);
+    const compute = read('stCompute_' + prefix);
+    if (engine === '') delete nextLayer.engine; else nextLayer.engine = engine;
+    if (runtime === '') delete nextLayer.runtime; else nextLayer.runtime = runtime;
+    if (model === '') delete nextLayer.model; else nextLayer.model = model;
+    if (compute === '') delete nextLayer.compute_type; else nextLayer.compute_type = compute;
+    return nextLayer;
+  };
+
+  next.default = applyLayer(next.default, 'default');
+  const strategies = next.strategies && typeof next.strategies === 'object' ? next.strategies : {};
+  for (const name of Object.keys(strategies)) {
+    strategies[name] = applyLayer(strategies[name], name);
+  }
+  next.strategies = strategies;
   return next;
 }
 

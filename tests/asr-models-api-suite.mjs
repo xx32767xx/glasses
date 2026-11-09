@@ -250,5 +250,13 @@ export async function runAsrModelsApiSuite({ it, check }) {
       /closeRoom/.test(html) && /api\('\/org\/accounts\//.test(html))
     check('面板有「初始化示例表」按钮', /onclick="seedModels\(\)"/.test(html))
     check('面板会显示服务端的 note（"还没有表"只提示一句）', /data\.note/.test(html))
+    // 5.149：语言行**只选策略**；模型/精度挂在策略上 —— 这是"换策略、模型名不变"的修法
+    check('语言行只有策略下拉（没有 mdModel_/mdCompute_ 这种语言级覆盖输入）',
+      !/mdModel_/.test(html) && !/mdCompute_/.test(html))
+    check('有一块「策略定义（模型 + 精度）」用来编辑 default 与具名策略',
+      /策略定义（模型 \+ 精度）/.test(html) && /id="modelStrategies"/.test(html)
+      && /stModel_/.test(html) && /stCompute_/.test(html))
+    check('保存时会清掉 languages 行里的模型/精度覆盖（否则压住新策略）',
+      /delete layer\.model/.test(html) && /delete layer\.compute_type/.test(html))
   })
 }
