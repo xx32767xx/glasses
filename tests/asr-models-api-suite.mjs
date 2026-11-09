@@ -13,7 +13,7 @@
 
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { VAR_DIR } from '../lib/paths.mjs'
+import { ROOT, VAR_DIR } from '../lib/paths.mjs'
 import { resolveDataDir } from '../lib/store.mjs'
 import { handleOrg } from '../relay/org-api.mjs'
 import { auditPath } from '../lib/room-strategy.mjs'
@@ -197,5 +197,58 @@ export async function runAsrModelsApiSuite({ it, check }) {
     check('此时 table 是空的（不编一份假的）', Object.keys(read.json.table).length === 0,
       JSON.stringify(Object.keys(read.json.table)))
     writeFileSync(join(root, 'asr-models.json'), JSON.stringify(sampleTable(), null, 2), 'utf-8')
+  })
+
+  await it('根本没有表时只给一句 note（不按三门语言各报一条"没写模型名"）', async () => {
+    const emptyRoot = join(BASE, 'no-table')
+    mkdirSync(emptyRoot, { recursive: true })
+    const read = await handleOrg({ root: emptyRoot, method: 'GET', path: '/org/asr/models', user: 'boss@x', role: 'admin' })
+    check('200 且 source.found=false', read.status === 200 && read.json.source.found === false,
+      JSON.stringify(read.json.source))
+    check('有一条 note 说明"用的是内置缺省"', typeof read.json.note === 'string'
+      && /缺省/.test(read.json.note), String(read.json.note))
+    check('**不再**冒出三条"策略表里没写模型名"', (read.json.warnings || []).length === 0,
+      JSON.stringify(read.json.warnings))
+    check('languages 为空（不编数据）', Object.keys(read.json.languages || {}).length === 0)
+  })
+
+  await it('策略表里的中文是乱码时，明确提示"文件可能被按 GBK 存过"', async () => {
+    const mojibakeRoot = join(BASE, 'mojibake')
+    mkdirSync(mojibakeRoot, { recursive: true })
+    // 用乱码字构造一份"看起来像表、中文全坏"的文件（模拟 Windows 上按 GBK 另存过）
+    const broken = sampleTable()
+    broken._comment = ['\u953B\u9428\u9384\u935B']  // 乱码字（用转义写，保持本文件 UTF-8 干净）
+    writeFileSync(join(mojibakeRoot, 'asr-models.json'), JSON.stringify(broken, null, 2), 'utf-8')
+    const read = await handleOrg({ root: mojibakeRoot, method: 'GET', path: '/org/asr/models', user: 'boss@x', role: 'admin' })
+    check('提示里点名"乱码"与"GBK"',
+      (read.json.warnings || []).some((one) => /乱码/.test(one) && /GBK/.test(one)),
+      JSON.stringify(read.json.warnings))
+  })
+
+  await it('初始化示例表：写入一份带全部候选策略的 UTF-8 模板（换机器后能直接选）', async () => {
+    const seedRoot = join(BASE, 'seed')
+    mkdirSync(seedRoot, { recursive: true })
+    const seeded = await handleOrg({ root: seedRoot, method: 'POST', path: '/org/asr/models/seed', user: 'boss@x', role: 'admin', body: {} })
+    check('200 且表里有 en-parakeet-gpu', seeded.status === 200
+      && seeded.json.table.strategies && seeded.json.table.strategies['en-parakeet-gpu'] !== undefined,
+      JSON.stringify(Object.keys(seeded.json.table.strategies || {})))
+    check('写盘的是 UTF-8 且没有乱码',
+      !/锛|鐨|鏄|鍦|浜|鎴/.test(readFileSync(join(seedRoot, 'asr-models.json'), 'utf-8')))
+    check('没有原文件时不产生备份（backup 为空）', seeded.json.backup === '', String(seeded.json.backup))
+    const again = await handleOrg({ root: seedRoot, method: 'POST', path: '/org/asr/models/seed', user: 'boss@x', role: 'admin', body: {} })
+    check('重复初始化会先备份', typeof again.json.backup === 'string' && again.json.backup.includes('.bak-'),
+      String(again.json.backup))
+    const denied = await handleOrg({ root: seedRoot, method: 'POST', path: '/org/asr/models/seed', user: 'dev@x', role: 'dev', body: {} })
+    check('dev 不能初始化 → 403', denied.status === 403, String(denied.status))
+  })
+
+  await it('管理页前端：对象体统一序列化（"请求体不是合法 JSON" 的根因）+ 示例表按钮', () => {
+    const html = readFileSync(join(ROOT, 'scripts', 'admin-ui.html'), 'utf-8')
+    check('api() 会把对象体 JSON.stringify（调用方传对象不再变成 [object Object]）',
+      /typeof body !== 'string'\) body = JSON\.stringify\(body\)/.test(html))
+    check('结束会议/改账号状态/续期都走同一个 api()（不会再出现裸对象体）',
+      /closeRoom/.test(html) && /api\('\/org\/accounts\//.test(html))
+    check('面板有「初始化示例表」按钮', /onclick="seedModels\(\)"/.test(html))
+    check('面板会显示服务端的 note（"还没有表"只提示一句）', /data\.note/.test(html))
   })
 }

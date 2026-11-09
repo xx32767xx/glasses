@@ -1800,6 +1800,7 @@ export async function runAndroidOrderSuite({ it, check }) {
       // 报错正文是给管理员看的技术细节（哪一行结构不对），不做三语映射，
       // 与 4.99 的'清理失败'同一条规矩。
       '表结构有问题，已拒绝保存', '写表失败：', '只支持 GET /org/asr/models',
+      '读不到示例表 config/asr-models.json：',
     ]
     const ignore = (raw) => IGNORE.some((i) => raw.startsWith(i))
     const matched = (raw) => exact.includes(raw) || pre.some((p) => raw.startsWith(p))

@@ -25,9 +25,13 @@
  */
 
 import { join } from 'node:path'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { loadStrategyTable, saveStrategyTable, validateStrategyTable } from '../lib/asr-engines.mjs'
 import { appendAudit, auditPath } from '../lib/room-strategy.mjs'
+
+/** 仓库根（`config/asr-models.json` 这类示例文件在这儿）。 */
+const ROOT_DIR = fileURLToPath(new URL('..', import.meta.url))
 import { DEV_TTL_DAYS, allowed, createAccountWithPassword, listAccounts, loadAccounts, renewAccount, saveAccounts, setStatusByUsername, updateAccounts } from '../lib/accounts.mjs'
 import { readJson, writeJsonAtomic } from '../lib/store.mjs'
 import { listLibraries, loadLibrary, loadCategories, saveLibrary, importLibraries } from '../lib/libraries.mjs'
@@ -507,18 +511,70 @@ export async function handleOrg(input) {
     if (method === 'GET' && segments.length === 3) {
       if (allowed(role, 'model.read') !== true) return deny(role, 'model.read')
       const loaded = loadStrategyTable(root)
-      const report = validateStrategyTable(loaded.table ?? {}, {})
+      // 没有表 / 表读坏了：**只说一句**（不要按三门语言各报一条"没写模型名"——
+      // 那是把"根本还没有表"说成"三条策略都配错"，看的人会去改错地方）。
+      if (loaded.table === null) {
+        return {
+          status: 200,
+          json: {
+            ok: true, table: {}, languages: {}, problems: [], warnings: [],
+            note: loaded.problem
+              ? `策略表读不了（${loaded.problem}）→ 现在用的是内置缺省（whisper / large-v3）`
+              : '服务器上还没有策略表 → 现在用的是内置缺省（whisper / large-v3）；'
+                + '点「初始化示例表」可以写入一份带全部候选策略的模板',
+            source: { found: loaded.found, path: loaded.path, problem: loaded.problem },
+          },
+        }
+      }
+      const report = validateStrategyTable(loaded.table, {})
+      // 5.148：文件里中文像乱码时**明说**（Windows 上按 GBK 存过、或从别的机器拷坏了）——
+      // 否则界面上只会看到"策略名/备注读不懂"，没人知道该重新生成那份表。
+      const MOJIBAKE = ['锛', '鐨', '鏄', '鍦', '浜', '鎴', '缁', '杩', '璇', '瑁', '璁', '闇'] // mojibake-ok：这一行列的就是乱码字本身，不是文件坏了
+      let rawTable = ''
+      try { rawTable = readFileSync(loaded.path, 'utf-8') } catch { rawTable = '' }
+      if (MOJIBAKE.some((marker) => rawTable.includes(marker))) {
+        report.warnings.push('策略表里的中文像是乱码（文件可能被按 GBK 存过）→ 建议点「初始化示例表」重建一份')
+      }
       return {
         status: 200,
         json: {
           ok: true,
-          table: loaded.table ?? {},
+          table: loaded.table,
           languages: report.languages,
           problems: report.problems,
           warnings: report.warnings,
+          note: '',
           // 读不到/读坏了要说清楚：管理页据此提示"现在根本没表"
           source: { found: loaded.found, path: loaded.path, problem: loaded.problem },
         },
+      }
+    }
+    if (method === 'POST' && segments[3] === 'seed' && segments.length === 4) {
+      if (allowed(role, 'model.write') !== true) return deny(role, 'model.write')
+      // 用仓库里的示例表（UTF-8、带全部候选策略）覆盖写成"当前表"。
+      // 为什么需要它：换了机器之后数据目录里常常**没有** asr-models.json，
+      // 管理页只能显示"没有表"，管理员连"en-parakeet-gpu"都选不到。
+      let seed = null
+      try {
+        const raw = readFileSync(join(ROOT_DIR, 'config', 'asr-models.json'), 'utf-8')
+        seed = JSON.parse(raw.replace(/^\uFEFF/, ''))
+      } catch (error) {
+        return bad(500, `读不到示例表 config/asr-models.json：${String(error?.message ?? error)}`)
+      }
+      const report = validateStrategyTable(seed, {})
+      if (report.ok !== true) {
+        return { status: 500, json: { ok: false, error: 'invalid-example', problems: report.problems } }
+      }
+      const saved = saveStrategyTable(root, seed)
+      if (saved.ok !== true) return bad(500, `写表失败：${saved.error}`)
+      appendAudit(root, {
+        by: user, action: 'models.write', result: 'seed',
+        before: null, after: seed.languages ?? null, backup: saved.backup,
+      })
+      logLine(log, `🎛 ${user} 用示例表初始化了识别策略表（只影响之后新建的会议；备份：${saved.backup || '无'}）`)
+      return {
+        status: 200,
+        json: { ok: true, table: seed, languages: report.languages, warnings: report.warnings, backup: saved.backup },
       }
     }
     if (method === 'POST' && segments[3] === 'validate' && segments.length === 4) {
