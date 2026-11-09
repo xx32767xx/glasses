@@ -989,7 +989,93 @@ def merge_strategy(base, *layers):
     return merged
 
 
-def resolve_strategy(language, cli, table=None):
+# ── 5.148：会议创建时**冻结**的识别策略（`<data-dir>/room-strategy/<房间>.json`）──
+#
+# 为什么要有这一层：`asr-models.json` 是**热读**的，管理员一改表，正在开的会
+# 当场换模型（前半段一个模型、后半段另一个），事后无法归因。现在建房那一刻
+# 服务端把当时的策略抄一份冻结下来，识别侧**优先读它**；读不到/坏了才回落全局表。
+#
+# ⚠️ 与 5.108 删掉的"手机上报的房间覆盖"是**两件不同的事**：
+#   那一层来源是**客户端**（可能过期，却拥有最高优先级）；
+#   这一层来源是**服务端自己的表**，且写一次不覆盖 —— 谁是真相一目了然。
+ROOM_STRATEGY_DIR = "room-strategy"
+
+
+def room_strategy_path(data_dir, room):
+    """这场会议的快照路径；房间号要清洗成安全文件名（与 relay 那边同一套规则）。"""
+    if not data_dir or not room:
+        return None
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", str(room))[:64] or "unknown"
+    return os.path.join(str(data_dir), ROOM_STRATEGY_DIR, safe + ".json")
+
+
+def load_room_strategy(data_dir, room, cache=None):
+    """读冻结快照（带 mtime 缓存）。
+
+    返回 `(snapshot|None, 说明)`；`说明` 为空表示"正常读到"，非空表示**为什么没有**。
+    读不到就是"这间房没有快照"（老会议、或建房时没写成）→ 调用方回落全局表，
+    **不是错误**；但"文件在、内容坏了"要能说出来，否则又变成"日志说假话"。
+    """
+    path = room_strategy_path(data_dir, room)
+    if path is None:
+        return None, "没有房间号"
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        if isinstance(cache, dict):
+            cache.pop(str(room), None)
+        return None, "没有冻结快照"
+    if isinstance(cache, dict):
+        hit = cache.get(str(room))
+        if hit is not None and hit[0] == mtime:
+            return hit[1], hit[2]
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            snapshot = json.load(handle)
+    except (OSError, ValueError) as error:
+        note = f"快照读不了：{type(error).__name__}"
+        if isinstance(cache, dict):
+            cache[str(room)] = (mtime, None, note)
+        return None, note
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("languages"), dict):
+        note = "快照形状不对（缺 languages）"
+        if isinstance(cache, dict):
+            cache[str(room)] = (mtime, None, note)
+        return None, note
+    if isinstance(cache, dict):
+        cache[str(room)] = (mtime, snapshot, "")
+    return snapshot, ""
+
+
+def room_profile_of(snapshot, language):
+    """从快照里取**这门语言**的识别字段（只取模型这半边；切句参数不冻结）。"""
+    if not isinstance(snapshot, dict):
+        return None
+    languages = snapshot.get("languages")
+    if not isinstance(languages, dict):
+        return None
+    tag = language_tag(language)
+    entry = languages.get(language)
+    if not isinstance(entry, dict) and tag is not None:
+        entry = languages.get(tag)
+    if not isinstance(entry, dict):
+        return None
+    out = {}
+    # ⚠️ `runtime`（onnx / nemo）不在 MODEL_FIELDS 里，但 parakeet 的 GPU/CPU 就靠它 ——
+    #    少了它，"这场到底跑 GPU 还是 CPU"这件事会从快照里丢掉。
+    for key in MODEL_FIELDS + ("runtime",):
+        value = entry.get(key)
+        if value is None or value == "":
+            continue
+        out[key] = value
+    if isinstance(entry.get("strategy"), str) and entry["strategy"].strip():
+        out["strategy"] = entry["strategy"].strip()
+    if isinstance(snapshot.get("lockedAt"), str) and snapshot["lockedAt"].strip():
+        out["locked_at"] = snapshot["lockedAt"].strip()
+    return out or None
+
+
+def resolve_strategy(language, cli, table=None, room_profile=None):
     """算出一段话该用的**整份识别策略**（模型 + 切句参数 + 名字 + 来源）。
 
     叠加顺序（后面的覆盖前面的）：
@@ -1102,6 +1188,22 @@ def resolve_strategy(language, cli, table=None):
         layered[key] = number
         sources[key] = tuned.get(key, "?")
 
+    # ── 5.148：**房间冻结快照**（会议创建时锁定）优先级最高 ────────────────
+    #
+    # 它只有"模型这半边"（engine / runtime / model / compute_type / beam_size），
+    # **不含切句参数** —— 切句属于"怎么收音"，仍按表热生效（用户 2026-11-09 定的）。
+    # 名字也以快照里那个为准：这样日志/收件箱里的策略名能直接对应到"建房时锁的那份"。
+    if isinstance(room_profile, dict) and room_profile:
+        overlay = {key: value for key, value in room_profile.items()
+                   if key not in ("strategy", "locked_at")}
+        if overlay:
+            layered = merge_strategy(layered, overlay)
+            sources["model"] = "房间冻结（建房时锁定）"
+        frozen_name = room_profile.get("strategy")
+        if isinstance(frozen_name, str) and frozen_name.strip():
+            name = frozen_name.strip()
+        if room_profile.get("locked_at"):
+            layered["strategyLockedAt"] = room_profile["locked_at"]
 
     layered["strategy"] = name
     layered["sources"] = sources
@@ -2466,6 +2568,9 @@ def run_queue_consumer(args, np, pool):
     last_report = time.monotonic()
     waited_ms_max = 0
     map_stamp = _stamp_of(args.model_map)
+    # 5.148：房间冻结快照的缓存（按 mtime）与"每间房只说明一次"的登记表
+    room_snapshots = {}
+    room_snapshot_notes = {}
     # 连丢几段「电平偏低」就喊一次（见 LevelWatch）
     level_watch = LevelWatch(getattr(args, "silence_skip_level", SILENCE_SKIP_RMS))
     # 5.110：表里的电平门槛与命令行不一致时，每个语种只说一次（不然一段刷一行）
@@ -2493,12 +2598,34 @@ def run_queue_consumer(args, np, pool):
             meta, audio = got
             waited_ms_max = max(waited_ms_max, int(time.time() * 1000) - int(meta.get("queuedAt") or 0))
             language = meta.get("lang") or args.language
+            # 5.148：**这一场（建房时）冻结的识别策略**优先于全局表。
+            # 读不到是正常情况（老会议/建房时没写成）→ 回落全局表；
+            # 文件在但坏了要说一次（否则又变成"日志说假话"）。
+            room = meta.get("room")
+            snapshot, snap_note = load_room_strategy(
+                getattr(args, "data_dir", None), room, room_snapshots)
+            room_profile = room_profile_of(snapshot, language)
+            note_key = str(room)
+            if snapshot is not None:
+                if note_key not in room_snapshot_notes:
+                    room_snapshot_notes[note_key] = True
+                    listed = "、".join(
+                        f"{key}={value}" for key, value in (room_profile or {}).items()
+                        if key not in ("locked_at",))
+                    print(f"[识别] 房间 {room} 用**冻结策略**（建房时锁定于 "
+                          f"{(room_profile or {}).get('locked_at') or '?'}）：{listed or '（这条语言没有记录）'}",
+                          file=sys.stderr, flush=True)
+            elif snap_note and snap_note != "没有冻结快照" and note_key not in room_snapshot_notes:
+                room_snapshot_notes[note_key] = True
+                print(f"[识别] 房间 {room} 的冻结策略不可用（{snap_note}）→ 本次回落全局表",
+                      file=sys.stderr, flush=True)
             # 5.40/5.41：这一段用哪份策略 —— languages → strategies[名字] → default →
             # 命令行（见 resolve_strategy）。策略里既有模型也有切句参数；
             # 切句那半边是切句进程用的，这里只取模型这半边，但**名字要一路带下去**。
             # ⚠️ 5.108：原来这里还会叠一层"房间侧车"，已整层删除（见 §5.108）。
             strategy = resolve_strategy(language, _cli_profile(args),
-                                        getattr(args, "asr_table", None))
+                                        getattr(args, "asr_table", None),
+                                        room_profile=room_profile)
             # 切句那边已经给这一段起过名字（meta["strategy"]）；没给就用这份策略算出来的名字。
             cutStrategy = meta.get("strategy")
             strategyName = str(cutStrategy) if isinstance(cutStrategy, str) and cutStrategy.strip() else strategy["strategy"]
@@ -2622,6 +2749,9 @@ def run_queue_consumer(args, np, pool):
                 # 5.41：策略名随数据往下走（收件箱行 → 大脑 → 日志）。
                 payload["strategy"] = strategyName
                 payload["model"] = profile.get("model")
+                # 5.148：冻结时间也带下去 —— 事后核对"这一句用的是哪一份快照"
+                if isinstance(profile.get("strategyLockedAt"), str) and profile["strategyLockedAt"]:
+                    payload["strategyLockedAt"] = profile["strategyLockedAt"]
                 print(json.dumps(payload, ensure_ascii=False), flush=True)
                 # 每一句都在日志里留一行策略（用户要求：便于对照与调节）
                 # 5.73：多打一个**字数**。没有它，「丢了多少话」只能按秒报，

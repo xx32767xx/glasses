@@ -2554,24 +2554,26 @@ def main():
     check("没有 languages 也没有 default → 命令行（老行为不变）",
           whisper_stream.resolve_asr_profile("pt-BR", cli, {})["model"] == "large-v3")
 
-    # ⚠️ 5.108：「房间覆盖」那一层**整层删除**了（手机端的模型控制在 5.69 就删了，
-    #    侧车只可能带着过期值却拥有最高优先级 —— 实测踩过"表改了没生效"）。
-    #    这几条断言是"真的没了"，不是"暂时不生效"：
-    check("房间侧车的读取函数已删除（读侧车的路只剩表一条）",
+    # ⚠️ 5.148：`room_profile` 这个参数名**回来了**，但含义已经换了：
+    #    5.108 删掉的那一层来源是**手机上报**（可能过期、却最高优先级）；
+    #    现在这一层的来源是**服务端在建房那一刻冻结的快照**（`room-strategy/<房间>.json`）。
+    #    所以这里守的不是"没有这个参数"，而是"没有那条客户端进料的路"：
+    check("房间侧车（手机上报那套）的读取函数仍然没有",
           not hasattr(whisper_stream, "read_room_asr_profile")
           and not hasattr(whisper_stream, "describe_room_profile")
           and not hasattr(whisper_stream, "_note_room_profile"))
-    check("resolve_strategy / resolve_asr_profile 都不再收 room_profile 参数",
-          "room_profile" not in inspect.signature(whisper_stream.resolve_strategy).parameters
-          and "room_profile" not in inspect.signature(whisper_stream.resolve_asr_profile).parameters,
+    check("resolve_strategy 收 room_profile（5.148：服务端冻结快照）",
+          "room_profile" in inspect.signature(whisper_stream.resolve_strategy).parameters,
           str(list(inspect.signature(whisper_stream.resolve_strategy).parameters)))
+    check("resolve_asr_profile（老兼容接口）仍不收 room_profile",
+          "room_profile" not in inspect.signature(whisper_stream.resolve_asr_profile).parameters, "")
     try:
         whisper_stream.resolve_strategy("en-US", cli, table,
-                                        {"byLang": {"en-US": {"model": "small"}}})
+                                        None, {"byLang": {"en-US": {"model": "small"}}})
         extra_arg_error = False
     except TypeError:
         extra_arg_error = True
-    check("多传第四个参数会报错（不静默忽略，免得有人以为还能用）", extra_arg_error)
+    check("多传第五个参数仍报错（参数表不许随意长）", extra_arg_error)
     # 注释里留一句"这里原来是什么"是有意为之（不然下次有人会把它加回来），
     # 所以要查的是**代码里不再有那个字符串** —— 路径是拼出来的，没有字面量就拼不出来。
     whisper_src = inspect.getsource(whisper_stream)
@@ -2751,6 +2753,98 @@ def main():
     check("真失败的原因原样带回（含异常类型与原文）",
           "CUDA out of memory" in str(bad.get("reason")) and bad["empty"] is True,
           str(bad.get("reason")))
+
+    # ── 5.148：会议**建的那一刻**冻结的识别策略（房间快照 > 全局表）────────────
+    #
+    # 这条链路一旦断了，表现是"管理员改了表、会议字幕跟着变"（前半场一个模型、
+    # 后半场另一个），而现场看日志只会觉得"好像哪里怪怪的"。所以把优先级与回落钉住。
+    heading("5.148：房间冻结策略（建房时锁定）优先于全局表")
+    import json as _json
+    import shutil as _shutil
+
+    # 用仓库内的 var/tmp（不碰系统临时目录：这个 harness 的沙箱常把 Temp 设成只读）
+    frozen_root = os.path.join(os.getcwd(), "var", "tmp", "room-strategy-py")
+    _shutil.rmtree(frozen_root, ignore_errors=True)
+    os.makedirs(os.path.join(frozen_root, "room-strategy"), exist_ok=True)
+    frozen_path = whisper_stream.room_strategy_path(frozen_root, "room-a")
+    with open(frozen_path, "w", encoding="utf-8") as handle:
+        _json.dump({
+            "roomId": "room-a",
+            "lockedAt": "2026-11-09T09:12:33.482Z",
+            "lockedBy": "boss",
+            "languages": {
+                "en-US": {"strategy": "en-parakeet-gpu", "engine": "parakeet",
+                          "runtime": "nemo", "model": "nvidia/parakeet-tdt-0.6b-v2",
+                          "compute_type": "fp16"},
+                "zh-CN": {"strategy": "zh-steady", "engine": "whisper",
+                          "model": "large-v3", "compute_type": "float16"},
+            },
+        }, handle, ensure_ascii=False)
+    check("路径落在 <data-dir>/room-strategy/ 下",
+          frozen_path.startswith(os.path.join(frozen_root, "room-strategy")), frozen_path)
+    check("房间号被清洗（斜杠不会带出目录）",
+          ".." not in whisper_stream.room_strategy_path(frozen_root, "../../etc/passwd"), "")
+
+    snap_cache = {}
+    snapshot, note = whisper_stream.load_room_strategy(frozen_root, "room-a", snap_cache)
+    check("读到快照（没有 problem）", snapshot is not None and note == "", note)
+    check("同一 mtime 第二次读走缓存（返回同一个对象）",
+          whisper_stream.load_room_strategy(frozen_root, "room-a", snap_cache)[0] is snapshot, "")
+    check("没有快照的房间返回 None，但**不是错误**（说明是'没有冻结快照'）",
+          whisper_stream.load_room_strategy(frozen_root, "room-none", {})[0] is None
+          and whisper_stream.load_room_strategy(frozen_root, "room-none", {})[1] == "没有冻结快照", "")
+
+    room_profile = whisper_stream.room_profile_of(snapshot, "en-US")
+    check("取到英语那份，且带上 runtime=nemo（GPU/CPU 全靠它区分）",
+          room_profile is not None and room_profile.get("runtime") == "nemo"
+          and room_profile.get("model") == "nvidia/parakeet-tdt-0.6b-v2", str(room_profile))
+    check("带上 locked_at（事后核对'哪一份快照'）",
+          room_profile.get("locked_at") == "2026-11-09T09:12:33.482Z", str(room_profile))
+    check("快照里没有这门语言 → None（回落全局表，不掉字）",
+          whisper_stream.room_profile_of(snapshot, "pt-BR") is None, "")
+
+    table_5_148 = {
+        "version": 2,
+        "default": {"strategy": "default", "model": "large-v3", "compute_type": "float16"},
+        "strategies": {"en-parakeet": {"engine": "parakeet", "runtime": "onnx",
+                                       "model": "/opt/leion/models/parakeet-tdt-0.6b-v2",
+                                       "compute_type": "fp16"}},
+        "languages": {"en-US": {"strategy": "en-parakeet"}},
+    }
+    frozen = whisper_stream.resolve_strategy("en-US", {"model": "large-v3"}, table_5_148,
+                                             room_profile=room_profile)
+    check("房间冻结压过表里的 languages（模型换成快照里那个）",
+          frozen["model"] == "nvidia/parakeet-tdt-0.6b-v2" and frozen["engine"] == "parakeet",
+          str([frozen.get("engine"), frozen.get("model")]))
+    check("runtime 也来自快照（nemo，而不是表里的 onnx）", frozen.get("runtime") == "nemo",
+          str(frozen.get("runtime")))
+    check("策略名用快照里的（日志/收件箱按它归因）", frozen["strategy"] == "en-parakeet-gpu",
+          frozen["strategy"])
+    check("sources 写明来自'房间冻结'（不是'表 languages'）",
+          "房间冻结" in str(frozen["sources"].get("model")), str(frozen["sources"].get("model")))
+    check("冻结时间随策略带下来", frozen.get("strategyLockedAt") == "2026-11-09T09:12:33.482Z",
+          str(frozen.get("strategyLockedAt")))
+
+    no_room = whisper_stream.resolve_strategy("en-US", {"model": "large-v3"}, table_5_148)
+    check("没有快照时照旧走表（en-parakeet / onnx）",
+          no_room["model"] == "/opt/leion/models/parakeet-tdt-0.6b-v2"
+          and no_room.get("runtime") == "onnx" and no_room["strategy"] == "en-parakeet",
+          str([no_room.get("model"), no_room.get("runtime"), no_room["strategy"]]))
+    check("没有快照时不带 strategyLockedAt（不编一个时间）",
+          no_room.get("strategyLockedAt") is None, str(no_room.get("strategyLockedAt")))
+
+    broken_dir = os.path.join(frozen_root, "room-strategy")
+    with open(os.path.join(broken_dir, "room-broken.json"), "w", encoding="utf-8") as handle:
+        handle.write("{ 这不是 JSON")
+    broken_snapshot, broken_note = whisper_stream.load_room_strategy(frozen_root, "room-broken", {})
+    check("坏快照 → None + 说明（回落全局表，不炸识别）",
+          broken_snapshot is None and "快照读不了" in broken_note, broken_note)
+
+    with open(os.path.join(broken_dir, "room-shape.json"), "w", encoding="utf-8") as handle:
+        handle.write('{"roomId": "x"}')
+    shape_snapshot, shape_note = whisper_stream.load_room_strategy(frozen_root, "room-shape", {})
+    check("形状不对（缺 languages）→ None + 说明",
+          shape_snapshot is None and "形状不对" in shape_note, shape_note)
 
     # 5.79：命令行要能指定引擎 —— 否则"用同一批音频离线量 parakeet"就做不到
     # （单文件/麦克风模式原来直接调 whisper 专用函数，引擎加载了也用不上）

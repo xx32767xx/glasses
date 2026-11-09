@@ -253,8 +253,9 @@ export function consumerCommand(options) {
     '--queue-depth-report-s', String(options.depthReportS),
     // 队列模式下语种是**每段自带**的（切句时从手机的旁文件读），命令行不写死。
     '--format', 'json',
-    // 数据目录：5.108 起**不再**用于读房间侧车（那一层已删除），
-    // 但还留给试测/体检（例如 --try-* 会去 <data-dir>/audio/<房间>/ 找原始分轨）。
+    // 数据目录：5.108 删掉的是"手机上报的房间覆盖"，5.148 起它**又被用上了**——
+    // 但读的是**服务端在建房那一刻冻结**的快照（<data-dir>/room-strategy/<房间>.json），
+    // 不是客户端给的；另外 --try-* 也会去 <data-dir>/audio/<房间>/ 找原始分轨。
     '--data-dir', options.dataDir,
   ]
   // 5.40/5.41：策略表。给了就传下去 —— 识别进程按"languages > strategies > default
