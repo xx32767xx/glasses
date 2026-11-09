@@ -108,10 +108,14 @@ def check_torch(device):
         if wheel_major and driver_cuda and driver_cuda[:2] != "（" and wheel_major > driver_cuda.split(".")[0]:
             message.append(f"   ⚠️ 你这台装的是 **CUDA {wheel_cuda} 轮子**，而驱动 {driver} 最多支持 CUDA {driver_cuda} —— "
                            "这不是卡的问题，是 wheel 版本对不上。")
-            message.append("   装回 CUDA 12 的轮子（Volta 也正好在这条线上），例如：")
-            message.append('     pip install --index-url https://download.pytorch.org/whl/cu121 \\')
-            message.append('       "torch==2.4.1" "torchaudio==2.4.1" "torchvision==0.19.1"')
-            message.append("   装完再跑本脚本；若 NeMo 对 torch 有更高要求，它会直接说清楚要哪一版。")
+            message.append("   装回 CUDA 12 的轮子（Volta 也正好在这条线上）。NeMo 3.x 要求 torch>=2.6，")
+            message.append("   所以用 cu124 + torch 2.6.0（三件套版本必须一致）：")
+            message.append('     python -m pip install --index-url https://download.pytorch.org/whl/cu124 \\')
+            message.append('       "torch==2.6.0" "torchaudio==2.6.0" "torchvision==0.21.0"')
+            message.append("   若 NeMo 又想把 torch 升上去，用约束文件钉住：")
+            message.append('     echo "torch==2.6.0" > /tmp/constraints.txt')
+            message.append('     python -m pip install -c /tmp/constraints.txt "nemo_toolkit[asr]"')
+            message.append("   装完再跑本脚本；第①段应出现「算力 7.0（Volta…）」与「fp16 矩阵乘 通过」。")
         else:
             message.append("   常见原因：装的是 CPU 版 wheel，或驱动/CUDA 版本不匹配。")
             message.append("   先 `nvidia-smi` 确认卡在，再按 https://pytorch.org 上 CUDA 12.x 的索引重装。")
