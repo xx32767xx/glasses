@@ -238,14 +238,26 @@ def main(argv=None):
     parser.add_argument("--seconds", type=float, default=0.0,
                         help="只取前 N 秒（缺省 0 = 整段；长录音建议 6~10 秒，贴近真实段长）")
     parser.add_argument("--model", default=DEFAULT_MODEL, help=f"NeMo 模型名或 .nemo 路径（缺省 {DEFAULT_MODEL}）")
+    parser.add_argument("--endpoint", default="",
+                        help="HF 端点：缺省走镜像 https://hf-mirror.com；给 direct 用官方；也可直接给 URL")
     parser.add_argument("--device", default="cuda", help="cuda / cuda:0 / cpu（缺省 cuda）")
     parser.add_argument("--runs", type=int, default=3, help="转写重复次数（缺省 3，取中位数）")
     args = parser.parse_args(argv)
 
-    os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
-
+    # 5.148：端点与缓存目录都**显式打印**出来 —— "慢" 的时候第一件事就是确认它在下到哪、走的哪条路。
+    endpoint = str(args.endpoint or "").strip()
+    if endpoint == "direct":
+        os.environ.pop("HF_ENDPOINT", None)
+    elif endpoint != "":
+        os.environ["HF_ENDPOINT"] = endpoint
+    else:
+        os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+    hf_home = os.environ.get("HF_HOME") or ""
     print("parakeet GPU 自检（英语本地模型 · NeMo 路线）")
     print(f"仓库         {ROOT}")
+    print(f"HF 端点      {os.environ.get('HF_ENDPOINT') or '（官方 huggingface.co）'}")
+    print(f"模型缓存     {hf_home or os.path.join(os.path.expanduser('~'), '.cache', 'huggingface')}"
+          + ("" if hf_home else "  ⚠️ 没设 HF_HOME：与产线（/opt/leion/models）一致才不会重复下载"))
     check_torch(args.device)
     check_nemo()
 
