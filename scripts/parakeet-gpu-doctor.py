@@ -224,6 +224,18 @@ def run_production_path(audio, source_label, model_name, runs, device):
     print(f"  RTF          {median / 1000.0 / audio_seconds:.3f}"
           f"（{'跟上实时' if median / 1000.0 / audio_seconds < 1 else '跟不上实时'}）")
     print(f"  文本         {texts[0][:160] if texts[0] else '（空）'}")
+    # 空文本时给"为什么空"的判据，别让人以为是模型坏了：
+    #   · 极轻/静音 → RMS 会很低；
+    #   · parakeet **只认英语**，中文/葡语音频常见结果是空或一串乱码（它与 whisper 的行为不同）。
+    if not texts[0]:
+        import numpy as _np
+        rms = float(_np.sqrt(_np.mean(_np.square(audio)))) if audio.size else 0.0
+        print(f"  响度 RMS     {rms:.4f}")
+        if rms < 0.01:
+            print("  ⚠️ 这段几乎没声音（RMS < 0.01）—— 换一段有人说话的音频再量；空文本不代表模型坏了")
+        else:
+            print("  ⚠️ 有声音但没出字：parakeet 只识别**英语**，这段若是中文/葡语，"
+                  "空文本或乱码都是预期的 —— 换一段英语音频再量")
     if len(set(texts)) > 1:
         print("  ⚠️ 多次结果不完全一致（解码带随机性或温度回退）—— 把语音固定下来再比")
     return median, audio_seconds
