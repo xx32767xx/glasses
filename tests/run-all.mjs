@@ -56,6 +56,7 @@ import { runAsrHttpSuite } from './asr-http-suite.mjs'
 import { runTencentSecretSuite } from './tencent-secret-suite.mjs'
 import { runTranslateHttpSuite } from './translate-http-suite.mjs'
 import { runLeionCleanSuite } from './leion-clean-suite.mjs'
+import { runMakeTestAccountsSuite } from './make-test-accounts-suite.mjs'
 import { runLive } from './live/run.mjs'
 
 let passed = 0
@@ -353,6 +354,7 @@ await runAsrHttpSuite(helpers)
 await runTencentSecretSuite(helpers)
 await runTranslateHttpSuite(helpers)
 await runLeionCleanSuite(helpers)
+await runMakeTestAccountsSuite(helpers)
 
 // ── 8. 真实 Cordis 组合（真实 ToolRuntime + 真实执行流水线） ─────────────────
 
