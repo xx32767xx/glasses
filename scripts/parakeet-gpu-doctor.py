@@ -65,6 +65,30 @@ def read_wav_16k(path):
     return audio
 
 
+def driver_cuda_hint():
+    """从 `nvidia-smi` 读驱动版本 → 这台机器最高能跑哪个 CUDA 大版本。
+
+    <p>为什么要它：NeMo 会把 torch 顺手升级到**最新的 cu 轮子**（实测装完是 `+cu130`），
+    而驱动 550 只能到 CUDA 12.4 —— 于是 `torch.cuda.is_available()` 直接 False，
+    报错却只说"驱动太旧"。把两个数字并排打出来，下一步该做什么就一目了然。
+    """
+    import subprocess
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+                             capture_output=True, text=True, timeout=10)
+    except Exception:                                 # noqa: BLE001
+        return "", ""
+    version = (out.stdout or "").strip().splitlines()
+    driver = version[0].strip() if version else ""
+    if not driver:
+        return "", ""
+    major = driver.split(".")[0]
+    # NVIDIA 的对应关系：525 → 12.0、535 → 12.2、545 → 12.3、550 → 12.4、570 → 12.8、580 → 13.0
+    table = {"525": "12.0", "530": "12.1", "535": "12.2", "545": "12.3",
+             "550": "12.4", "560": "12.6", "570": "12.8", "580": "13.0"}
+    return driver, table.get(major, "（未知）")
+
+
 def check_torch(device):
     line("① torch / CUDA / 这张卡能不能跑 fp16")
     try:
@@ -74,9 +98,24 @@ def check_torch(device):
              '   装法：pip install "torch"（要与这台机器的 CUDA 12.x 匹配）')
     print(f"  torch        {torch.__version__}")
     print(f"  编译 CUDA    {torch.version.cuda or '（这是 CPU 版 torch，装错了）'}")
+    driver, driver_cuda = driver_cuda_hint()
+    if driver:
+        print(f"  驱动          {driver}（最多支持 CUDA {driver_cuda}）")
     if not torch.cuda.is_available():
-        fail("torch 看不到 CUDA 设备。常见原因：装的是 CPU 版 wheel，或驱动/CUDA 版本不匹配。\n"
-             "   先 `nvidia-smi` 确认卡在，再按 https://pytorch.org 上 CUDA 12.x 的索引重装。")
+        wheel_cuda = str(torch.version.cuda or "")
+        wheel_major = wheel_cuda.split(".")[0] if wheel_cuda else ""
+        message = ["torch 看不到 CUDA 设备。"]
+        if wheel_major and driver_cuda and driver_cuda[:2] != "（" and wheel_major > driver_cuda.split(".")[0]:
+            message.append(f"   ⚠️ 你这台装的是 **CUDA {wheel_cuda} 轮子**，而驱动 {driver} 最多支持 CUDA {driver_cuda} —— "
+                           "这不是卡的问题，是 wheel 版本对不上。")
+            message.append("   装回 CUDA 12 的轮子（Volta 也正好在这条线上），例如：")
+            message.append('     pip install --index-url https://download.pytorch.org/whl/cu121 \\')
+            message.append('       "torch==2.4.1" "torchaudio==2.4.1" "torchvision==0.19.1"')
+            message.append("   装完再跑本脚本；若 NeMo 对 torch 有更高要求，它会直接说清楚要哪一版。")
+        else:
+            message.append("   常见原因：装的是 CPU 版 wheel，或驱动/CUDA 版本不匹配。")
+            message.append("   先 `nvidia-smi` 确认卡在，再按 https://pytorch.org 上 CUDA 12.x 的索引重装。")
+        fail("\n".join(message))
     index = torch.cuda.current_device() if device == "cuda" else int(device.split(":")[-1])
     name = torch.cuda.get_device_name(index)
     capability = torch.cuda.get_device_capability(index)
