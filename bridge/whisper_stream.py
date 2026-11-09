@@ -1047,6 +1047,25 @@ def load_room_strategy(data_dir, room, cache=None):
     return snapshot, ""
 
 
+def nemo_local_path(name):
+    """本地 .nemo 文件 → 展开后的绝对路径；否则返回空串（表示"这是个 HF 仓库名"）。
+
+    <p>为什么必须区分：NeMo 3.x 的 `ASRModel.from_pretrained(model_name=...)` 把字符串
+    **一律当仓库 id**，传本地路径会报
+    `HFValidationError: Repo id must be in the form 'repo_name' or 'namespace/repo_name'`；
+    本地文件要走 `ASRModel.restore_from(path)`。
+
+    <p>判据只用"这个文件在不在"，不做别的猜测：
+    `nvidia/parakeet-tdt-0.6b-v2` 这种仓库名里也带斜杠，但本地没有同名文件，
+    于是自然落到"按仓库名加载"那条路。
+    """
+    text = str(name or "").strip()
+    if text == "":
+        return ""
+    expanded = os.path.expanduser(text)
+    return expanded if os.path.isfile(expanded) else ""
+
+
 def room_profile_of(snapshot, language):
     """从快照里取**这门语言**的识别字段（只取模型这半边；切句参数不冻结）。"""
     if not isinstance(snapshot, dict):
@@ -1605,12 +1624,23 @@ class ParakeetEngine(AsrEngine):
                 "parakeet(runtime=nemo) 的 model 要写**模型名或 .nemo 路径**"
                 "（例如 nvidia/parakeet-tdt-0.6b-v2），不能留空 —— ONNX 目录那条路不适用")
         precision = str((profile or {}).get("compute_type") or "").strip().lower() or "fp32"
+        # ⚠️ 5.148：**本地 .nemo 走 restore_from，不能走 from_pretrained**。
+        # NeMo 3.x 的 `from_pretrained(model_name=...)` 把字符串一律当 **HF 仓库 id**，
+        # 传一个本地路径会直接报：
+        #   HFValidationError: Repo id must be in the form 'repo_name' or 'namespace/repo_name'
+        # （实测踩到：模型下好了、却报"加载失败"，看着像模型坏了，其实是走错了入口）。
+        local = nemo_local_path(name)
         try:
-            model = nemo_asr.models.ASRModel.from_pretrained(model_name=name)
-        except Exception as error:                                  # noqa: BLE001
+            if local != "":
+                model = nemo_asr.models.ASRModel.restore_from(local)
+            else:
+                model = nemo_asr.models.ASRModel.from_pretrained(model_name=name)
+        except Exception as error:                                   # noqa: BLE001
             raise RuntimeError(
-                f"NeMo 加载 {name} 失败：{type(error).__name__}: {error}。"
-                "常见原因：模型名写错、没有网络/没预下载、或 NeMo 版本与模型不匹配") from error
+                f"NeMo 加载 {name} 失败（{'本地文件 restore_from' if local else '仓库名 from_pretrained'}）："
+                f"{type(error).__name__}: {error}。"
+                "常见原因：路径写错/文件不完整（本地 .nemo 用 restore_from）、模型名写错、"
+                "没有网络或没预下载、或 NeMo 版本与模型不匹配") from error
         target = "cuda" if str(device or "").startswith("cuda") else "cpu"
         try:
             if hasattr(model, "eval"):

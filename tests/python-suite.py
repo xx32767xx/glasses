@@ -2754,6 +2754,23 @@ def main():
           "CUDA out of memory" in str(bad.get("reason")) and bad["empty"] is True,
           str(bad.get("reason")))
 
+    # 5.148：本地 .nemo 必须走 restore_from，**不能**走 from_pretrained ——
+    # NeMo 3.x 的 from_pretrained 把字符串一律当仓库 id，传路径会报
+    # HFValidationError: Repo id must be in the form 'repo_name' or 'namespace/repo_name'
+    # （实测踩过：模型下好了却报"加载失败"，看着像模型坏了，其实走错了入口）
+    heading("5.148：本地 .nemo 与 HF 仓库名的入口区分（restore_from vs from_pretrained）")
+    local_nemo = os.path.join(os.getcwd(), "var", "tmp", "fake-parakeet.nemo")
+    os.makedirs(os.path.dirname(local_nemo), exist_ok=True)
+    with open(local_nemo, "wb") as handle:
+        handle.write(b"\x00" * 16)
+    check("本地已存在的 .nemo → 返回路径（走 restore_from）",
+          whisper_stream.nemo_local_path(local_nemo) == local_nemo, "")
+    check("带斜杠但本地不存在的仓库名 → 空串（走 from_pretrained）",
+          whisper_stream.nemo_local_path("nvidia/parakeet-tdt-0.6b-v2") == "", "")
+    check("空串 → 空串", whisper_stream.nemo_local_path("") == "", "")
+    check("路径不存在 → 空串（不把错路径当本地文件）",
+          whisper_stream.nemo_local_path("/opt/leion/models/nope.nemo") == "", "")
+
     # ── 5.148：会议**建的那一刻**冻结的识别策略（房间快照 > 全局表）────────────
     #
     # 这条链路一旦断了，表现是"管理员改了表、会议字幕跟着变"（前半场一个模型、
