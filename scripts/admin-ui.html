@@ -167,6 +167,26 @@
     </section>
 
     <section class="panel" style="grid-column:1/-1">
+      <h2>识别模型（全局策略） <span class="tag" id="modelsMeta">—</span></h2>
+      <div class="body">
+        <div class="mono">
+          改的是服务器上的 <code>asr-models.json</code>：<b>只影响之后新建的会议</b>。
+          已经在开的会按它<b>建房那一刻冻结</b>的副本跑，不会被中途换模型（见 <code>docs/33</code>）。
+          ⚠️ 切句参数（停顿时长）<b>不冻结</b>：改完下一段就生效。
+        </div>
+        <div id="models"></div>
+        <div class="row" style="margin-top:8px">
+          <button class="btn ghost" onclick="validateModels()">验证（不保存）</button>
+          <button class="btn ok" onclick="saveModels()">保存（只影响新会议）</button>
+          <button class="btn ghost" onclick="loadModels()">重新读取</button>
+        </div>
+        <div class="mono" id="modelsWarn" style="white-space:pre-wrap"></div>
+        <h2>策略变更记录 <span class="tag">谁改的 / 改前后</span></h2>
+        <div id="modelHistory" class="mono" style="white-space:pre-wrap"></div>
+      </div>
+    </section>
+
+    <section class="panel" style="grid-column:1/-1">
       <h2>会议历史数据 <span class="pill" id="historyPill">—</span></h2>
       <div class="body">
         <div class="mono">
@@ -291,6 +311,159 @@ function enterConsole() {
   document.getElementById('who').textContent = me.user + (me.role === 'admin' ? '' : '（非管理员：只能看库，改不了）');
   loadDataset(); loadMeeting(); loadRooms(); loadLibraries(); loadPending(); loadAccounts();
   loadHistoryAdmin();
+  loadModels();
+}
+
+// ── 5.148 识别模型（全局策略）────────────────────────────────────────────
+// 为什么放在管理员页而不是手机：选择权收归管理员；手机端只在开发者模式下**看**
+// 本场用了什么（房间详情里的 strategy），不参与选择。
+// 保存的语义是"影响之后新建的会议"——在跑的会按建房时冻结的快照跑，页面上写明这一点。
+let modelTable = null;
+
+const MODEL_LANGS = [['zh-CN', '中文'], ['en-US', '英语'], ['pt-BR', '葡语']];
+
+function modelStrategyNames() {
+  const names = new Set(['default']);
+  for (const name of Object.keys((modelTable && modelTable.strategies) || {})) names.add(name);
+  return [...names];
+}
+
+function buildModelRow(lang, label, current) {
+  const row = document.createElement('div');
+  row.className = 'row';
+
+  const name = document.createElement('div');
+  name.className = 'mono';
+  name.style.width = '52px';
+  name.textContent = label;
+  row.appendChild(name);
+
+  const select = document.createElement('select');
+  select.id = 'mdStrategy_' + lang;
+  for (const one of modelStrategyNames()) {
+    const option = document.createElement('option');
+    option.value = one;
+    option.textContent = one;
+    if (one === current.strategy) option.selected = true;
+    select.appendChild(option);
+  }
+  row.appendChild(select);
+
+  const compute = document.createElement('input');
+  compute.id = 'mdCompute_' + lang;
+  compute.value = current.compute_type || '';
+  compute.placeholder = 'compute_type（float16 / int8_float32 / fp16 …）';
+  compute.style.width = '280px';
+  row.appendChild(compute);
+
+  const info = document.createElement('span');
+  info.className = 'tag';
+  info.textContent = [current.engine, current.model, current.runtime, current.availability || current.available]
+    .filter(Boolean).join(' · ') || '（这条策略没解析出模型）';
+  row.appendChild(info);
+  return row;
+}
+
+function renderModels(data) {
+  const host = document.getElementById('models');
+  host.innerHTML = '';
+  for (const [lang, label] of MODEL_LANGS) {
+    host.appendChild(buildModelRow(lang, label, (data.languages || {})[lang] || {}));
+  }
+  const meta = document.getElementById('modelsMeta');
+  if (data.source && data.source.found) {
+    meta.textContent = data.source.problem ? ('⚠️ 表读不了：' + data.source.problem) : ('表在：' + data.source.path);
+  } else {
+    meta.textContent = '现在没有策略表（保存后会基于默认结构新建）';
+  }
+  const notes = []
+    .concat((data.problems || []).map((one) => '✗ ' + one))
+    .concat((data.warnings || []).map((one) => '⚠️ ' + one));
+  document.getElementById('modelsWarn').textContent = notes.join('\n');
+}
+
+async function loadModels() {
+  try {
+    const data = await api('/org/asr/models');
+    const table = data.table || {};
+    modelTable = Object.keys(table).length > 0
+      ? table
+      : { version: 2, default: { strategy: 'default' }, strategies: {}, languages: {} };
+    renderModels(data);
+    loadModelHistory();
+  } catch (error) {
+    document.getElementById('modelsMeta').textContent = '读不到：' + String(error.message || error);
+  }
+}
+
+/** 把界面上三行拼成一份完整表（后端的 PUT 是**整张表**，见 docs/33 §5）。 */
+function modelEditedTable() {
+  const next = JSON.parse(JSON.stringify(modelTable || { version: 2 }));
+  next.languages = next.languages && typeof next.languages === 'object' ? next.languages : {};
+  for (const [lang] of MODEL_LANGS) {
+    const select = document.getElementById('mdStrategy_' + lang);
+    const compute = document.getElementById('mdCompute_' + lang);
+    if (!select) continue;
+    const layer = next.languages[lang] && typeof next.languages[lang] === 'object'
+      ? { ...next.languages[lang] } : {};
+    layer.strategy = select.value;
+    const text = compute ? compute.value.trim() : '';
+    if (text === '') delete layer.compute_type; else layer.compute_type = text;
+    next.languages[lang] = layer;
+  }
+  return next;
+}
+
+async function validateModels() {
+  try {
+    const data = await api('/org/asr/models/validate', {
+      method: 'POST', body: JSON.stringify({ table: modelEditedTable() }),
+    });
+    const lines = [];
+    if (data.problems && data.problems.length) lines.push(...data.problems.map((one) => '✗ ' + one));
+    if (data.warnings && data.warnings.length) lines.push(...data.warnings.map((one) => '⚠️ ' + one));
+    for (const [lang] of MODEL_LANGS) {
+      const one = (data.languages || {})[lang];
+      if (one) lines.push(`${lang} → ${one.engine} / ${one.model} / ${one.compute_type || '默认'}（${one.available}）`);
+    }
+    document.getElementById('modelsWarn').textContent = lines.join('\n') || '没有发现问题';
+    toast(data.problems && data.problems.length ? '有问题（未保存）' : '验证通过（未保存）');
+  } catch (error) {
+    document.getElementById('modelsWarn').textContent = '验证失败：' + String(error.message || error);
+  }
+}
+
+async function saveModels() {
+  if (!confirm('保存后会改掉“之后新建会议”的识别策略；已经在开的会议不受影响。继续？')) return;
+  try {
+    const data = await api('/org/asr/models', {
+      method: 'PUT', body: JSON.stringify({ table: modelEditedTable() }),
+    });
+    toast('已保存（只影响新会议）');
+    document.getElementById('modelsWarn').textContent = (data.warnings || [])
+      .map((one) => '⚠️ ' + one).join('\n');
+    loadModels();
+  } catch (error) {
+    document.getElementById('modelsWarn').textContent = '保存失败：' + String(error.message || error);
+    toast('保存失败');
+  }
+}
+
+async function loadModelHistory() {
+  const host = document.getElementById('modelHistory');
+  try {
+    const data = await api('/org/asr/models/history?limit=20');
+    const lines = (data.entries || []).map((one) => {
+      const when = String(one.at || '').replace('T', ' ').slice(0, 19);
+      if (one.action === 'strategy.lock') {
+        return `${when}  冻结  ${one.roomId || ''}  ${one.result || ''}`;
+      }
+      return `${when}  改表  ${one.by || ''}  ${one.backup ? '备份 ' + one.backup.split('/').pop() : ''}`;
+    });
+    host.textContent = lines.join('\n') || '（还没有记录）';
+  } catch (error) {
+    host.textContent = '读不到：' + String(error.message || error);
+  }
 }
 
 // ── 4.99 会议历史数据（清理）──────────────────────────────────────────────

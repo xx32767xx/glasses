@@ -1796,6 +1796,10 @@ export async function runAndroidOrderSuite({ it, check }) {
       // 5.40：会话创建时 asrModels 的形状校验 —— 手机永远发的是对象，
       // 只有手搓请求才会踩到；识别那边对"模型名不认识"另有明确处理（加载失败→跳过并留证）
       'asrModels 必须是一个对象',
+      // 5.148：识别策略表写接口只在**管理台网页**用（手机没有这个界面）。
+      // 报错正文是给管理员看的技术细节（哪一行结构不对），不做三语映射，
+      // 与 4.99 的'清理失败'同一条规矩。
+      '表结构有问题，已拒绝保存', '写表失败：', '只支持 GET /org/asr/models',
     ]
     const ignore = (raw) => IGNORE.some((i) => raw.startsWith(i))
     const matched = (raw) => exact.includes(raw) || pre.some((p) => raw.startsWith(p))

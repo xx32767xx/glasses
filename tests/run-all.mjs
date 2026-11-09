@@ -58,6 +58,7 @@ import { runTranslateHttpSuite } from './translate-http-suite.mjs'
 import { runLeionCleanSuite } from './leion-clean-suite.mjs'
 import { runMakeTestAccountsSuite } from './make-test-accounts-suite.mjs'
 import { runRoomStrategySuite } from './room-strategy-suite.mjs'
+import { runAsrModelsApiSuite } from './asr-models-api-suite.mjs'
 import { runLive } from './live/run.mjs'
 
 let passed = 0
@@ -357,6 +358,7 @@ await runTranslateHttpSuite(helpers)
 await runLeionCleanSuite(helpers)
 await runMakeTestAccountsSuite(helpers)
 await runRoomStrategySuite(helpers)
+await runAsrModelsApiSuite(helpers)
 
 // ── 8. 真实 Cordis 组合（真实 ToolRuntime + 真实执行流水线） ─────────────────
 

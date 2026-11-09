@@ -25,6 +25,9 @@
  */
 
 import { join } from 'node:path'
+import { readFileSync } from 'node:fs'
+import { loadStrategyTable, saveStrategyTable, validateStrategyTable } from '../lib/asr-engines.mjs'
+import { appendAudit, auditPath } from '../lib/room-strategy.mjs'
 import { DEV_TTL_DAYS, allowed, createAccountWithPassword, listAccounts, loadAccounts, renewAccount, saveAccounts, setStatusByUsername, updateAccounts } from '../lib/accounts.mjs'
 import { readJson, writeJsonAtomic } from '../lib/store.mjs'
 import { listLibraries, loadLibrary, loadCategories, saveLibrary, importLibraries } from '../lib/libraries.mjs'
@@ -491,6 +494,86 @@ export async function handleOrg(input) {
     }
 
     return bad(404, `没有这个接口：${method} ${path}`)
+  }
+
+  // ── 识别策略表（5.148）：管理员改全局表；**只影响之后新建的会议** ─────────
+  //
+  // 为什么不给手机加接口：选择权收归管理员（设计见 docs/33）。手机端只在开发者模式下
+  // **看**本场用了什么（房间详情里的 `strategy`），不参与选择。
+  //
+  // 写表为什么是 PUT 整张表而不是若干 PATCH：表里三层叠加的语义（default / strategies /
+  // languages）用零散字段改容易改出"半新半旧"；管理页本来就拿着完整一份来改。
+  if (segments[1] === 'asr' && segments[2] === 'models') {
+    if (method === 'GET' && segments.length === 3) {
+      if (allowed(role, 'model.read') !== true) return deny(role, 'model.read')
+      const loaded = loadStrategyTable(root)
+      const report = validateStrategyTable(loaded.table ?? {}, {})
+      return {
+        status: 200,
+        json: {
+          ok: true,
+          table: loaded.table ?? {},
+          languages: report.languages,
+          problems: report.problems,
+          warnings: report.warnings,
+          // 读不到/读坏了要说清楚：管理页据此提示"现在根本没表"
+          source: { found: loaded.found, path: loaded.path, problem: loaded.problem },
+        },
+      }
+    }
+    if (method === 'POST' && segments[3] === 'validate' && segments.length === 4) {
+      if (allowed(role, 'model.read') !== true) return deny(role, 'model.read')
+      const report = validateStrategyTable(body.table, {})
+      return { status: 200, json: { ok: true, ...report } }
+    }
+    if (method === 'PUT' && segments.length === 3) {
+      if (allowed(role, 'model.write') !== true) return deny(role, 'model.write')
+      const report = validateStrategyTable(body.table, {})
+      if (report.ok !== true) {
+        // 写进去就会坏的东西**不进库**：宁可让管理员改一行，也不要留一张跑不起来的表
+        return {
+          status: 409,
+          json: {
+            ok: false, error: 'invalid-table', problems: report.problems,
+            hint: '表结构有问题，已拒绝保存（下面 problems 逐条列出是哪一处）',
+          },
+        }
+      }
+      const before = loadStrategyTable(root)
+      const saved = saveStrategyTable(root, body.table)
+      if (saved.ok !== true) return bad(500, `写表失败：${saved.error}`)
+      appendAudit(root, {
+        by: user, action: 'models.write', result: 'ok',
+        before: before.table === null ? null : before.table.languages,
+        after: body.table.languages ?? null,
+        warnings: report.warnings,
+        backup: saved.backup,
+      })
+      logLine(log, `🎛 ${user} 改了识别策略表（只影响之后新建的会议；备份：${saved.backup || '无'}）`)
+      return {
+        status: 200,
+        json: {
+          ok: true, table: body.table, languages: report.languages,
+          warnings: report.warnings, backup: saved.backup,
+        },
+      }
+    }
+    if (method === 'GET' && segments[3] === 'history' && segments.length === 4) {
+      if (allowed(role, 'model.read') !== true) return deny(role, 'model.read')
+      const rawLimit = Number(new URLSearchParams(String(path).split('?')[1] ?? '').get('limit') ?? 20)
+      const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(500, Math.floor(rawLimit)) : 20
+      let lines = []
+      try {
+        lines = readFileSync(auditPath(root), 'utf-8').trim().split('\n').filter(Boolean)
+      } catch { lines = [] }
+      const entries = lines
+        .map((line) => { try { return JSON.parse(line) } catch { return null } })
+        .filter((one) => one !== null && ['models.write', 'strategy.lock'].includes(one.action))
+        .slice(-limit)
+        .reverse()
+      return { status: 200, json: { ok: true, entries } }
+    }
+    return bad(405, '只支持 GET /org/asr/models、POST /org/asr/models/validate、PUT /org/asr/models、GET /org/asr/models/history')
   }
 
   // ── 房间（P2a）：建房 / 6 位邀请码加入 / 房间术语库（冻结快照）─────────────

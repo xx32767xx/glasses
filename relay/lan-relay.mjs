@@ -95,6 +95,15 @@ export const DEFAULT_DATA_DIR = LIVE_DIR
 const MAX_BODY_BYTES = 8 * 1024
 
 /**
+ * `/org/*` 的请求体上限（5.148）。
+ *
+ * <p>为什么和上面那个不一样：`PUT /org/asr/models` 传的是**整张识别策略表**
+ * （带 `_comment` 说明的那种示例表本身就有 7 KB 左右，写满三门语言还会更大）。
+ * 用 8 KB 会被 413 挡掉，而管理员看到的是"保存失败"，很容易误判成权限问题。
+ */
+const ORG_BODY_BYTES = 256 * 1024
+
+/**
  * `/asr/transcribe` 的请求体上限（5.117）。
  *
  * <p>为什么要单独一个：音频是 base64 塞在 JSON 里的，8 KB 那条上限对一段话完全不够。
@@ -2887,7 +2896,8 @@ export async function startRelay(rawOptions = {}) {
         let body = {}
         if (request.method === 'POST' || request.method === 'PUT') {
           // readBody 已经解析好 JSON 并返回对象（解析失败会抛 400），别再 JSON.parse 一次
-          body = await readBody(request)
+          // 5.148：`PUT /org/asr/models` 要传整张策略表，8 KB 不够（见 ORG_BODY_BYTES）
+          body = await readBody(request, ORG_BODY_BYTES)
         }
 
         /**
