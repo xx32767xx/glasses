@@ -335,6 +335,8 @@ function enterConsole() {
 // 本场用了什么（房间详情里的 strategy），不参与选择。
 // 保存的语义是"影响之后新建的会议"——在跑的会按建房时冻结的快照跑，页面上写明这一点。
 let modelTable = null;
+/** 界面上标记为"要删掉"的策略名（保存时统一处理）。 */
+let modelDeletedStrategies = new Set();
 
 const MODEL_LANGS = [['zh-CN', '中文'], ['en-US', '英语'], ['pt-BR', '葡语']];
 
@@ -380,6 +382,26 @@ function buildLanguageRow(lang, label, current) {
   return row;
 }
 
+/** 一行表头：给下面的输入框配一句最短的解释（用户要求：不然不知道这列是什么）。 */
+function buildHeader(cells) {
+  const row = document.createElement('div');
+  row.className = 'row';
+  row.style.marginTop = '6px';
+  for (const cell of cells) {
+    const span = document.createElement('span');
+    span.className = 'mono';
+    span.style.width = cell.width || 'auto';
+    span.style.color = 'var(--ink-faint, #94a3b8)';
+    span.style.fontSize = '12px';
+    span.textContent = cell.text;
+    row.appendChild(span);
+  }
+  return row;
+}
+
+/** 显示顺序固定，表头与输入框两边的宽度用同一组数字，改的时候一起改。 */
+const COL_WIDTH = { name: '150px', engine: '150px', runtime: '130px', model: '330px', compute: '230px' };
+
 /** 一条「策略」= 引擎 + runtime + 模型 + 精度（语言行只引用它的名字）。 */
 function buildStrategyRow(name, layer, problemsFor) {
   const row = document.createElement('div');
@@ -387,7 +409,7 @@ function buildStrategyRow(name, layer, problemsFor) {
 
   const title = document.createElement('div');
   title.className = 'mono';
-  title.style.width = '150px';
+  title.style.width = COL_WIDTH.name;
   title.textContent = name;
   row.appendChild(title);
 
@@ -401,10 +423,24 @@ function buildStrategyRow(name, layer, problemsFor) {
     return input;
   };
 
-  field('stEngine_' + name, layer.engine, 'engine（whisper/parakeet/funasr/tencent）', '150px');
-  field('stRuntime_' + name, layer.runtime, 'runtime（parakeet: onnx/nemo）', '130px');
-  field('stModel_' + name, layer.model, '模型名 或 本地路径（如 /opt/leion/models/x.nemo）', '330px');
-  field('stCompute_' + name, layer.compute_type, 'compute_type（float16 / int8_float32 / fp16）', '230px');
+  field('stEngine_' + name, layer.engine, 'whisper / parakeet / funasr / tencent', COL_WIDTH.engine);
+  field('stRuntime_' + name, layer.runtime, 'parakeet 才用：onnx / nemo', COL_WIDTH.runtime);
+  field('stModel_' + name, layer.model, '模型名或本地路径，如 /opt/leion/models/x.nemo', COL_WIDTH.model);
+  field('stCompute_' + name, layer.compute_type, 'float16 / int8_float32 / fp16', COL_WIDTH.compute);
+
+  // 具名策略可以删（default 是兜底层，不能删）—— 删了会一起把引用它的语言改回 default
+  if (name !== 'default') {
+    const remove = document.createElement('button');
+    remove.className = 'mini';
+    remove.textContent = '删除';
+    remove.title = '保存时删除这条策略；引用它的语言会改回 default';
+    remove.onclick = () => {
+      modelDeletedStrategies.add(name);
+      row.remove();
+      toast('已标记删除：' + name + '（点「保存」才真正生效）');
+    };
+    row.appendChild(remove);
+  }
 
   if (problemsFor && problemsFor.length) {
     const tag = document.createElement('span');
@@ -421,12 +457,24 @@ function renderModels(data) {
 
   const langsHost = document.getElementById('models');
   langsHost.innerHTML = '';
+  langsHost.appendChild(buildHeader([
+    { text: '语种', width: '52px' },
+    { text: '用哪个策略' },
+    { text: '这一场实际会用到（引擎 · 模型 · 后端 · 精度 · 可用性）' },
+  ]));
   for (const [lang, label] of MODEL_LANGS) {
     langsHost.appendChild(buildLanguageRow(lang, label, (data.languages || {})[lang] || {}));
   }
 
   const strategiesHost = document.getElementById('modelStrategies');
   strategiesHost.innerHTML = '';
+  strategiesHost.appendChild(buildHeader([
+    { text: '策略名', width: COL_WIDTH.name },
+    { text: 'engine 引擎', width: COL_WIDTH.engine },
+    { text: 'runtime 后端', width: COL_WIDTH.runtime },
+    { text: '模型名 / 本地路径', width: COL_WIDTH.model },
+    { text: '精度 compute_type', width: COL_WIDTH.compute },
+  ]));
   // default 也是一层（语言可以选它）；其余是 strategies 里的具名策略
   strategiesHost.appendChild(buildStrategyRow('default', table.default || {}, []));
   for (const name of Object.keys(strategies).sort()) {
@@ -454,6 +502,7 @@ function renderModels(data) {
 }
 
 async function loadModels() {
+  modelDeletedStrategies = new Set();
   try {
     const data = await api('/org/asr/models');
     const table = data.table || {};
@@ -512,6 +561,13 @@ function modelEditedTable() {
   const strategies = next.strategies && typeof next.strategies === 'object' ? next.strategies : {};
   for (const name of Object.keys(strategies)) {
     strategies[name] = applyLayer(strategies[name], name);
+  }
+  // 界面上点了"删除"的策略：从表里删掉，并把引用它的语言改回 default（不留悬空引用）
+  for (const name of modelDeletedStrategies) {
+    delete strategies[name];
+    for (const [lang] of MODEL_LANGS) {
+      if (next.languages[lang] && next.languages[lang].strategy === name) next.languages[lang].strategy = 'default';
+    }
   }
   next.strategies = strategies;
   return next;

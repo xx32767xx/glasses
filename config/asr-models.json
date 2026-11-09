@@ -34,7 +34,9 @@
     "  改完**下一段生效**（两侧都按 mtime 热读），不用重启。",
     "",
     "下面这份**等价于当前产线**：照抄不会改变任何行为，只作为改写的起点。",
-    "策略名会随数据往下走（队列 → 收件箱 → 日志），所以做 A/B 时请**按名字分组**看结果。"
+    "策略名会随数据往下走（队列 → 收件箱 → 日志），所以做 A/B 时请**按名字分组**看结果。",
+    "5.149：删掉了 en-tiny / en-fast / en-accurate 三条 —— tiny 是\"故意很差\"的验收对照，",
+    "fast/accurate 只是切句窗口变体（不是模型）。三条的历史定义在 git 里；要用就 --only 加回来。"
   ],
   "version": 2,
   "default": {
@@ -53,21 +55,6 @@
     }
   },
   "strategies": {
-    "en-fast": {
-      "note": "英语：更短的窗口（字幕快 ~1 秒、段更短），代价是偶尔把一句拆成两条。还没用真英文音频量过 WER。",
-      "segmentation": {
-        "silence_ms": 650,
-        "min_speech_ms": 300,
-        "max_speech_ms": 12000
-      }
-    },
-    "en-accurate": {
-      "note": "英语：反过来——等更久、段更长，字幕更完整但更慢。用来和 en-fast 对照。",
-      "segmentation": {
-        "silence_ms": 1000,
-        "max_speech_ms": 25000
-      }
-    },
     "en-turbo": {
       "note": "英语候选（5.58）：large-v3-turbo，官方说快 3-4 倍、准确率略降。只改模型、不动切句 —— 这样和 default 的差才是「模型」的差。",
       "model": "large-v3-turbo"
@@ -75,18 +62,18 @@
     "en-distil": {
       "note": "英语候选（5.58）：distil-large-v3（纯英文蒸馏版，约 756M）。同样是只改模型。",
       "model": "distil-large-v3",
-      "langs": ["en-US"]
-    },
-    "en-tiny": {
-      "note": "**验收用的对照**（5.61）：tiny 故意很差，选它以后字幕会一眼看出变烂 —— 用它证明「切换真的生效」，不要用它做业务。约 75MB，几十秒下完。",
-      "model": "tiny"
+      "langs": [
+        "en-US"
+      ]
     },
     "en-parakeet": {
       "note": "英语本地首选（5.75）：NVIDIA Parakeet TDT 0.6B v2 的 ONNX 导出，走 sherpa-onnx（CPU int8，不需要 torch）。外部报告：总体 WER 2.13%、美音 0.93%、巴西口音英语 2.52%。model 写的是**模型目录**。",
       "engine": "parakeet",
       "runtime": "onnx",
       "model": "/opt/leion/models/parakeet-tdt-0.6b-v2",
-      "langs": ["en-US"]
+      "langs": [
+        "en-US"
+      ]
     },
     "en-parakeet-gpu": {
       "note": "同一份 Parakeet 的 **GPU 路线**（5.77 / 5.147）：NeMo 2.x + torch，走 CUDA。2026-11-09 换到 **Tesla V100S 32G（Volta，有 FP16 张量核）**，所以 compute_type 写 fp16 —— P40 那台是 Pascal，必须 fp32，别照抄老机器的值。需要 pip install -U \"nemo_toolkit[asr]\"（装之前把当前 torch 版本钉住，别让它顺手升级）。装完先跑 `python scripts/parakeet-gpu-doctor.py --wav <16k 单声道 wav>` 验一遍再切策略。",
@@ -94,20 +81,28 @@
       "runtime": "nemo",
       "model": "nvidia/parakeet-tdt-0.6b-v2",
       "compute_type": "fp16",
-      "langs": ["en-US"]
+      "langs": [
+        "en-US"
+      ]
     },
     "en-tencent": {
       "note": "英语云端候选（5.75）：腾讯云一句话识别。model 写的是它的**引擎编码**（16k_en）。需要环境变量 TENCENT_ASR_SECRET_ID / TENCENT_ASR_SECRET_KEY。",
       "engine": "tencent",
       "model": "16k_en",
-      "langs": ["en-US"]
+      "langs": [
+        "en-US"
+      ]
     },
     "pt-funasr": {
       "note": "巴葡首选（5.84）：阿里 DashScope 实时语音识别。500 条 CORAA 评测里 Fun-ASR 最快且唯一 100% 成功（P50/P95 = 938/3202 ms，WER 19.81%）。需要 pip install websockets + 环境变量 DASHSCOPE_API_KEY。⚠️ model 必须是**实时（WebSocket）端认的名字**，不是兼容模式列表里那个：实测 fun-asr-flash-* 会 ModelNotFound。用 `python asr-eval/probe_cloud_asr.py` 一次试完全部候选。",
       "engine": "funasr",
       "model": "fun-asr-realtime",
-      "language_hints": ["pt"],
-      "langs": ["pt-BR"]
+      "language_hints": [
+        "pt"
+      ],
+      "langs": [
+        "pt-BR"
+      ]
     },
     "zh-steady": {
       "note": "中文：与产线一致（留个名字，方便在日志里一眼看出这场走的是哪套）"

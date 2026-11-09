@@ -258,5 +258,25 @@ export async function runAsrModelsApiSuite({ it, check }) {
       && /stModel_/.test(html) && /stCompute_/.test(html))
     check('保存时会清掉 languages 行里的模型/精度覆盖（否则压住新策略）',
       /delete layer\.model/.test(html) && /delete layer\.compute_type/.test(html))
+    // 5.149：每列最上面要有最短解释（用户要求），并且具名策略可以删
+    check('策略表有表头（策略名 / engine / runtime / 模型名 / 精度）',
+      /buildHeader/.test(html) && /engine 引擎/.test(html)
+      && /runtime 后端/.test(html) && /模型名 \/ 本地路径/.test(html) && /精度 compute_type/.test(html))
+    check('语言行也有表头（语种 / 用哪个策略 / 实际会用到什么）',
+      /语种/.test(html) && /用哪个策略/.test(html))
+    check('具名策略能删（default 不能删）；删除会登记到 modelDeletedStrategies',
+      /modelDeletedStrategies/.test(html) && /name !== 'default'/.test(html))
+    check('删除后引用它的语言改回 default（不留悬空引用）',
+      /strategy === name\) next\.languages\[lang\]\.strategy = 'default'/.test(html))
+
+    // 5.149：示例模板里删掉了三条"不是模型"的候选
+    const example = JSON.parse(readFileSync(join(ROOT, 'config', 'asr-models.json'), 'utf-8'))
+    check('示例表里不再有 en-tiny / en-fast / en-accurate',
+      ['en-tiny', 'en-fast', 'en-accurate'].every((name) => example.strategies[name] === undefined),
+      JSON.stringify(Object.keys(example.strategies)))
+    check('示例表仍保留该有的候选（parakeet CPU/GPU、云端、葡语、中文）',
+      ['en-parakeet', 'en-parakeet-gpu', 'en-tencent', 'pt-funasr', 'zh-steady']
+        .every((name) => example.strategies[name] !== undefined),
+      JSON.stringify(Object.keys(example.strategies)))
   })
 }
