@@ -53,6 +53,10 @@
     <string name="update_retry">I updated, check again</string>
     <string name="update_retrying">Checking the version again…</string>
     <string name="srv_client_outdated">This client build is too old, please install the latest version</string>
+        <string name="mic_service_channel">Meeting microphone</string>
+    <string name="mic_service_channel_desc">Shown while a meeting is recording your microphone</string>
+    <string name="mic_service_title">Meeting in progress · microphone on</string>
+    <string name="mic_service_text">Recording continues with the screen off. Leave the meeting to stop.</string>
     <string name="st_audio_released">Left the foreground — microphone released (tap the mic again to resume)</string>
     <string name="st_tts_speaking">Reading the translation aloud…</string>
     <string name="set_tts_read">Read translations aloud</string>

@@ -1657,6 +1657,70 @@ export async function runAndroidOrderSuite({ it, check }) {
       /room_strategy_locked/.test(roomJava) && /room_strategy_live/.test(roomJava))
   })
 
+  await it('5.154：系统返回键要退会（不能只关掉页面，让会议继续跑）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+
+    // 用户报的现象：建完会不点「退出」而按手机返回键 → 页面没了，但服务端那边我还是成员，
+    // 发起者尤其致命（整场会议继续存在、别人还能进、字幕还在写）。
+    check('RoomActivity 拦了返回键', /public void onBackPressed\(\)/.test(room))
+    check('返回键走的是与「退出」按钮同一条路（leaveRoom）',
+      /public void onBackPressed\(\)\s*\{[\s\S]{0,200}?leaveRoom\(\)/.test(room))
+    check('返回键不是自己 finish 了事',
+      !/public void onBackPressed\(\)\s*\{[^}]*finish\(\)/.test(room))
+    // 连按两次返回键 / 按钮与返回键同时按 → 不许发两次退会请求
+    // （第二次会在房间已关之后到达，服务端回"这场会已经结束"，用户看到红字提示）
+    check('退会幂等（leaving 标志）',
+      /private boolean leaving = false/.test(room)
+      && /private void leaveRoom\(\)\s*\{[\s\S]{0,300}?if \(leaving \|\| isFinishing\(\)\) return;/.test(room)
+      && /private void leaveRoom\(\)\s*\{[\s\S]{0,400}?leaving = true/.test(room))
+  })
+
+  await it('5.154：息屏之后继续收音（前台服务 + 不释放麦克风）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+    const servicePath = join(javaDir, 'MeetingMicService.java')
+    const manifest = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'AndroidManifest.xml'), 'utf-8')
+
+    // 病根有两层：我们自己 onStop 无差别释放；系统不允许后台采集。
+    // 所以必须两样都有：服务存在 + 清单声明类型（系统那层），onStop 分流（我们这层）。
+    check('有前台服务类', existsSync(servicePath))
+    const service = existsSync(servicePath) ? readFileSync(servicePath, 'utf-8') : ''
+    check('清单里声明了麦克风类型的前台服务',
+      /android:name="\.MeetingMicService"[\s\S]{0,200}?foregroundServiceType="microphone"/.test(manifest))
+    check('服务真的 startForeground（不 start 就等于没用）',
+      /startForeground\(NOTIFICATION_ID, buildNotification\(\)\)/.test(service))
+    check('持 PARTIAL_WAKE_LOCK（屏幕灭了 CPU 也睡，睡下去录音线程就断）',
+      /PowerManager\.PARTIAL_WAKE_LOCK/.test(service) && /wakeLock\.acquire\(\)/.test(service))
+    check('销毁时释放唤醒锁', /onDestroy\(\)[\s\S]{0,200}?releaseWakeLock\(\)/.test(service))
+    check('常驻通知说清"还在收音"（不许偷偷录）',
+      /setOngoing\(true\)/.test(service) && /R\.string\.mic_service_title/.test(service))
+
+    // 我们自己这层：onStop 要分流，不能无差别释放
+    check('onStop 里先判"在上传 && 屏幕灭了"',
+      /protected void onStop\(\)\s*\{[\s\S]{0,300}?if \(uploading && !isScreenOn\(\)\)/.test(room))
+    check('息屏分支直接 return，不走到 releaseAudio',
+      /if \(uploading && !isScreenOn\(\)\) \{[\s\S]{0,400}?return;/.test(room)
+      && room.indexOf('if (uploading && !isScreenOn())') < room.indexOf('releaseAudio();\n        if (wasRecording'))
+    check('屏幕亮着按 Home 仍然释放（老行为不变）',
+      /boolean wasRecording = uploading;[\s\S]{0,120}?releaseAudio\(\);/.test(room))
+    check('用 isInteractive() 判屏幕（不自己收广播，少一处状态）',
+      /power\.isInteractive\(\)/.test(room))
+    check('开麦成功时启动服务（必须在还处于前台时起）',
+      /if \(error == null\) \{[\s\S]{0,900}?MeetingMicService\.start\(this\)/.test(room))
+    check('释放音频时一起停服务', /private void releaseAudio\(\)[\s\S]{0,900}?MeetingMicService\.stop\(this\)/.test(room))
+    check('通知权限是"尽力而为"（被拒不影响收音）',
+      /if \(requestCode == REQ_NOTIFICATIONS\) return;/.test(room))
+    check('清单有 POST_NOTIFICATIONS', /android\.permission\.POST_NOTIFICATIONS/.test(manifest))
+    for (const dir of ['values', 'values-en', 'values-pt-rBR']) {
+      const xml = readFileSync(join(resDir, dir, 'strings.xml'), 'utf-8')
+      check(`${dir} 有 mic_service_* 三语文案`,
+        /name="mic_service_title"/.test(xml) && /name="mic_service_text"/.test(xml)
+        && /name="mic_service_channel"/.test(xml))
+    }
+  })
+
   await it('4.56：界面三语（中文 / 巴葡 / 英文）', () => {
     const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
     const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')

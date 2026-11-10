@@ -62,6 +62,8 @@
     <!-- 第三方 USB 相机（StdUVCCameraService）与投屏前台服务要用 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- 5.154：前台服务的常驻通知（Android 13+ 要运行时授权；被拒也不影响收音） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
 
     <!--
@@ -204,6 +206,17 @@
             android:name=".PrivacyActivity"
             android:exported="false"
             android:label="隐私政策" />
+
+        <!-- 5.154：息屏之后继续收音的前台服务。
+             · foregroundServiceType="microphone"：targetSdk≥30 时，应用不在前台就
+               **不能**采集麦克风；把这一场标成麦克风类型的前台服务，息屏后才收得到音。
+             · 配套权限 FOREGROUND_SERVICE_MICROPHONE 上面已经声明（SDK 的
+               GlassAudioService 当年就要求过它），缺了会直接崩在 startForeground。
+             · 常驻通知是"现在还在收音"的凭据，也是 Android 对前台服务的硬要求。 -->
+        <service
+            android:name=".MeetingMicService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
     </application>
 
 </manifest>

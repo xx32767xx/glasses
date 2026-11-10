@@ -25,6 +25,8 @@ import org.json.JSONObject;
 public class RoomActivity extends android.app.Activity implements LanClient.Listener {
 
     private static final int REQ_RECORD_AUDIO = 2001;
+    /** 5.154：Android 13+ 的通知权限（前台服务的常驻通知）。被拒不影响开会与收音。 */
+    private static final int REQ_NOTIFICATIONS = 2002;
 
     public static final String EXTRA_ROOM = "roomIdOrCode";
     public static final String EXTRA_NAME = "roomName";
@@ -184,6 +186,14 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     private static final long TTS_DEDUPE_MS = 15_000L;
     /** 此刻是否正在朗读（实时传声据此让路，见 applyListenState）。 */
     private boolean speakingTranslation = false;
+    /**
+     * 5.154：正在退会（防止连按返回键 / 按钮与返回键同时按 → 发两次退会请求）。
+     *
+     * <p>退会请求发出后界面上要**立刻**无路可退：第二次调用直接返回，
+     * 否则第二次请求可能在上一次已经把房间关掉之后到达，服务端回一句
+     * "这场会已经结束"，用户看到红字提示——明明是他自己按了两次。
+     */
+    private boolean leaving = false;
     // 4.97：「正在听」胶囊按钮已删除（倾听全自动），所以不再需要这个引用
     /** 我是不是正在听（与服务端的 listen 开关保持一致）。 */
     private boolean listening = false;
@@ -500,22 +510,71 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     /**
      * 5.28：**退到后台就交还麦克风**（用户要求"退出房间时自动释放音频资源"的完整版）。
      *
-     * <p>为什么放在 `onStop` 而不是只有 `onDestroy`：按 Home 键、锁屏、跳到别的页面时
+     * <p>为什么放在 `onStop` 而不是只有 `onDestroy`：按 Home 键、跳到别的页面时
      * Activity **不会销毁**，原来那种写法会让 `AudioRecord` 一直挂着。Android 12+
      * 会把后台录音静音，于是"界面看着正常、其实一句都没录进去"，而且麦克风会话被占着——
      * 翻译官之类的第二个功能再也开不了麦。
      *
-     * <p>回来的语义是**停就是停**：不自动续传。用户回来看到的是"关麦"状态，
-     * 要说得重新点一下——这比"悄悄继续录"诚实。
+     * <p>5.154：**息屏不算"离开"**。用户报的是"会议开着、人一直在说，按一下电源键
+     * 屏幕黑了，麦克风就断了"。所以这里分两种情况：
+     * <ul>
+     *   <li>屏幕**还亮着**（按 Home / 切到别的 App）→ 照旧释放：这是"我离开这个页面了"，
+     *       停就是停，不偷偷在后台录；</li>
+     *   <li>屏幕**已经灭了**（按电源键 / 超时黑屏）且**我正在上传**→ 保持收音。
+     *       {@link MeetingMicService} 已经把这一场标成麦克风类型的前台服务，
+     *       后台采集在系统看来是合法的；它同时持一把 PARTIAL_WAKE_LOCK，
+     *       否则屏幕灭了 CPU 睡下去，录音线程一样会被打断。</li>
+     * </ul>
      */
     @Override
     protected void onStop() {
-        boolean wasRecording = mic != null || AudioCaptureArbiter.isRecording();
+        boolean uploading = mic != null || AudioCaptureArbiter.isRecording();
+        if (uploading && !isScreenOn()) {
+            // 息屏继续收：不释放音频，也不停前台服务（它本来就在跑）
+            android.util.Log.i("LeionRoom", "🌙 屏幕熄灭但仍在收音（前台服务保活），不释放麦克风");
+            super.onStop();
+            return;
+        }
+        boolean wasRecording = uploading;
         releaseAudio();
         if (wasRecording && hintLine != null) {
             hintLine.setText(getString(R.string.st_audio_released));
         }
         super.onStop();
+    }
+
+    /**
+     * 屏幕现在是不是亮着（5.154）。
+     *
+     * <p>用 `PowerManager.isInteractive()` 而不是自己收 SCREEN_ON/OFF 广播：
+     * 广播要在 onResume 注册、onPause 注销，还要处理"注册之前就息屏"的竞态；
+     * 而 onStop 那一刻问一句"屏幕亮着吗"正好够用，也没有状态要维护。
+     */
+    private boolean isScreenOn() {
+        try {
+            android.os.PowerManager power = (android.os.PowerManager) getSystemService(POWER_SERVICE);
+            return power == null || power.isInteractive();
+        } catch (Exception error) {
+            // 查不到就按"亮着"处理 —— 保守：宁可回到老行为（释放），也不偷偷录音
+            return true;
+        }
+    }
+
+    /**
+     * 5.154：**系统返回键 = 退出会议**。
+     *
+     * <p>用户报的问题：建完会直接按手机的返回键，人看着是"离开了这个页面"，
+     * 但服务端那边**我还是会里的成员**（发起者尤其致命：整场会议继续存在，
+     * 别人还能进来，字幕也还在写）。原因是原来没有任何地方拦返回键，
+     * 系统默认行为只是 `finish()` 这个 Activity —— 我们只断了本地连接，没退会。
+     *
+     * <p>所以这里直接走与「退出」按钮**同一个**出口（{@link #leaveRoom()}）：
+     * 一条退出路径，不会出现"点按钮会退会、按返回键不会"这种分叉。
+     */
+    @Override
+    public void onBackPressed() {
+        if (isFinishing() || leaving) return;
+        leaveRoom();
     }
 
     /**
@@ -537,6 +596,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             mic.stop();
         }
         mic = null;
+        // ⑤ 5.154：收音停了，前台服务也要停 —— 那条常驻通知就是"现在还在录"的凭据，
+        //    早停一秒会让用户以为还在录，晚停一秒会让系统继续为一次已经结束的采集供能。
+        MeetingMicService.stop(this);
         // ③ 说话时加的"保持屏幕常亮"要撤掉（听而不说时不额外耗电）
         if (getWindow() != null) {
             getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -976,6 +1038,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
 
     /** 退出房间：发起者退出会让整场结束（服务端规则）。 */
     private void leaveRoom() {
+        // 5.154：退出只走一次。连按两次返回键 / 按钮 + 返回键同时按，不该发两次退会请求
+        if (leaving || isFinishing()) return;
+        leaving = true;
         micButton.setEnabled(false);
         new Thread(new Runnable() {
             public void run() {
@@ -995,8 +1060,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                         }
                         finish();
                     }
-                });
-            }
+                });            }
         }, "room-leave").start();
     }
     /** 先抢麦，成功才上传（M1/M3 之后这是"开麦"的唯一实现）。 */
@@ -1070,6 +1134,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        // 5.154：通知权限被拒**不拦任何事** —— 只是"正在收音"那条常驻通知不显示，
+        // 收音本身与前台服务照旧（Android 13/14 允许通知被隐藏时服务继续跑）。
+        if (requestCode == REQ_NOTIFICATIONS) return;
         if (requestCode != REQ_RECORD_AUDIO) {
             return;
         }
@@ -1086,8 +1153,26 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         }
     }
 
-    private void startUpload(MicUploader.Listener listener) {
-        // 5.30：**要说话就别再念译文**。否则自己的 TTS 被自己的麦克风录进去，
+    /**
+     * 5.154：Android 13+ 通知权限（前台服务的常驻通知要用它）。
+     *
+     * <p>**尽力而为**：被拒也不影响开会与收音，只是那条"正在收音"的通知不显示。
+     * 所以不拦流程、不弹二次解释 —— 一条 `requestPermissions`，之后各走各的。
+     */
+    private void ensureNotificationPermission() {
+        if (android.os.Build.VERSION.SDK_INT < 33) return;
+        try {
+            if (checkSelfPermission("android.permission.POST_NOTIFICATIONS")
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                return;
+            }
+            requestPermissions(new String[] { "android.permission.POST_NOTIFICATIONS" }, REQ_NOTIFICATIONS);
+        } catch (Exception error) {
+            android.util.Log.w("LeionRoom", "申请通知权限失败（不影响收音）：" + error);
+        }
+    }
+
+    private void startUpload(MicUploader.Listener listener) {        // 5.30：**要说话就别再念译文**。否则自己的 TTS 被自己的麦克风录进去，
         // 识别出"译文的中文"，再翻译一遍 —— 一个自激循环（他们用 asrSuspendedForTts 处理同一件事）。
         if (ttsQueue != null) ttsQueue.stop();
         // 5.28：**先向仲裁器申请麦克风**。手机上录音会话是整机一份的资源，
@@ -1113,6 +1198,12 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             // 现在会释放麦克风 → 用户还在说话却突然没人听得见，而且界面上看不出原因。
             // 只在开麦期间加这个 flag，关麦立刻去掉（听而不说时不额外耗电）。
             getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            // 5.154：开麦的同时把这一场标成"麦克风类型的前台服务"。
+            // 两个作用：① 用户按电源键息屏后，系统仍允许采音（targetSdk≥30 的硬策略）；
+            //          ② 那条常驻通知就是"现在还在收音"的凭据（会议应用不该偷偷录）。
+            // 必须在**前台**时启动（Android 12+ 不允许从后台起前台服务），这里正好是。
+            MeetingMicService.start(this);
+            ensureNotificationPermission();
             updateUploadButton();
             hintLine.setText(getString(R.string.st_uploading_mic));
         } else {
