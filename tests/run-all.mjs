@@ -59,6 +59,7 @@ import { runLeionCleanSuite } from './leion-clean-suite.mjs'
 import { runMakeTestAccountsSuite } from './make-test-accounts-suite.mjs'
 import { runRoomStrategySuite } from './room-strategy-suite.mjs'
 import { runAsrModelsApiSuite } from './asr-models-api-suite.mjs'
+import { runDesktopApiSuite } from './desktop-api-suite.mjs'
 import { runLive } from './live/run.mjs'
 
 let passed = 0
@@ -287,6 +288,12 @@ await runOrgApiSuite(helpers)
 // ── 7f. 同一批接口走真实 HTTP：token / 角色 / 验证码登录 / 管理页 ───────────────
 heading('组织接口·HTTP（邮箱验证码登录 / 无 token 401 / 用户 403 / 申请→审批闭环）')
 await runOrgRelaySuite(helpers)
+
+// ── 7f2. 第三方客户端接入（会议接入 + 字幕推送）──────────────────────────────
+// 这一套守的不是功能，而是**文档与现实的一致性**：写的接口要真的存在、示例要能解析、
+// WS 上的字幕确实是「包了一层」的形状（写错的客户端只会收到 0 帧，还以为服务端没推）。
+heading('桌面端接入文档（接口都在 / 示例能解析 / WS 是包一层的帧 / 语言扇出 / 长轮询兜底）')
+await runDesktopApiSuite(helpers)
 
 // ── 7g. 管理员清理会议历史（4.99）─────────────────────────────────────────
 // 这一套守的是「删数据」的三条边界：**进行中的会议永远不删**、
