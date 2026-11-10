@@ -97,7 +97,7 @@ function render({ host, secret }) {
 <!--
   出厂默认配置（4.49 起）。改了这里，装完就不用再填地址与密钥。
 
-  ⚠️ **不要手改这个文件**：用 \`node scripts/build-preset.mjs\` 写（--host / --secret / --clear）。
+  ⚠️ **不要手改这个文件**：用 \`node scripts/build-preset.mjs\` 写（写入 / 查看 / 还原三种用法见脚本头部）。
      代码里读它的地方只有一个（ServerPreset），取值优先级是
      「用户存过的偏好 → 这里的出厂值 → 空」。
 
@@ -129,6 +129,32 @@ function escapeXml(value) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
+}
+
+/**
+ * 找出 XML 注释里出现的 `--`（**这个文件被它坑过一次**，所以要机器守，别靠人记）。
+ *
+ * <p>XML 规范不允许注释体里出现连续两个连字符（`<!-- 这样 -- 不行 -->`），
+ * aapt2 / AGP 会在 `mergeDebugResources` 直接失败，报的还是 SAX 的原始堆栈：
+ * `Resource and asset merger: 注释中不允许出现字符串 "--"`。
+ *
+ * <p>教训：写注释时顺手把命令行参数原样抄进去（`--host`）就会踩到 —— 而它只在**打包**时炸，
+ * `node tests/run-all.mjs` 与 `javac` 都发现不了（那两步不解析 XML 注释）。
+ *
+ * @returns 命中的行号与内容（空数组 = 干净）
+ */
+export function commentDoubleHyphens(xml) {
+  const hits = []
+  const text = String(xml ?? '')
+  const comment = /<!--([\s\S]*?)-->/g
+  let match
+  while ((match = comment.exec(text)) !== null) {
+    const body = match[1]
+    if (!body.includes('--')) continue
+    const line = text.slice(0, match.index).split('\n').length
+    hits.push({ line, body: body.trim().split('\n').find((one) => one.includes('--')) ?? '' })
+  }
+  return hits
 }
 
 /** 从文件里读出当前写着的值（--show 用）。 */
@@ -192,6 +218,14 @@ function main(argv) {
   }
 
   const xml = render({ host, secret })
+  // 5.155b：写盘之前先自检 —— 注释里出现 `--` 会让 AGP 的 mergeResources 直接失败，
+  // 而那个错（SAXParseException）看不出来是"注释里写了命令行参数"。
+  const badComments = commentDoubleHyphens(xml)
+  if (badComments.length > 0) {
+    fail(`生成的 XML 注释里有连续两个连字符（XML 不允许，打包会失败）：`
+      + `\n   第 ${badComments.map((one) => one.line).join(' / ')} 行：${badComments[0].body}`
+      + '\n   改脚本里那段注释文字（别把命令行参数原样抄进注释）。')
+  }
   console.log(`目标文件     ${args.file}`)
   console.log(`服务器地址   ${host === '' ? '（不写）' : host}`)
   console.log(`共享密钥     ${maskSecret(secret)}`)

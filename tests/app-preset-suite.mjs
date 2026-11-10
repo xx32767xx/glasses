@@ -14,7 +14,7 @@
  *      带密钥的版本提交上去等于把密钥写进历史。打包脚本写完之后必须 --clear。
  */
 
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 
@@ -26,17 +26,22 @@ const APP_CONFIG = join(ROOT, 'android', 'app', 'src', 'main', 'res', 'values', 
 const SCRIPT = join(ROOT, 'scripts', 'build-preset.mjs')
 
 /** 用文件描述符接子进程输出（沙箱里管道捕获会 EPERM，照本仓库其它套件的老办法）。 */
-function runToFile(args, outPath) {
+function runCommandToFile(command, args, outPath) {
   const fd = openSync(outPath, 'w')
   let failure = null
   try {
-    execFileSync(process.execPath, args, { stdio: ['ignore', fd, fd] })
+    execFileSync(command, args, { stdio: ['ignore', fd, fd] })
   } catch (error) {
     failure = error
   } finally {
     closeSync(fd)
   }
   return { failure, output: readFileSync(outPath, 'utf-8') }
+}
+
+/** 跑 `node <args>`（脚本都是 Node 写的）。 */
+function runToFile(args, outPath) {
+  return runCommandToFile(process.execPath, args, outPath)
 }
 
 /**
@@ -64,6 +69,32 @@ function committedConfig(outPath) {
     return readFileSync(APP_CONFIG, 'utf-8')
   }
   return readFileSync(outPath, 'utf-8')
+}
+
+/**
+ * 找 aapt2（AGP 解析资源的同一个工具）。找不到返回空串 —— 调用方明确跳过，不静默算过。
+ */
+function findAapt2() {
+  const roots = []
+  for (const env of ['ANDROID_HOME', 'ANDROID_SDK_ROOT']) {
+    const value = process.env[env]
+    if (typeof value === 'string' && value.trim() !== '') roots.push(join(value, 'build-tools'))
+  }
+  if (typeof process.env.LOCALAPPDATA === 'string' && process.env.LOCALAPPDATA !== '') {
+    roots.push(join(process.env.LOCALAPPDATA, 'Android', 'Sdk', 'build-tools'))
+  }
+  const names = process.platform === 'win32' ? ['aapt2.exe', 'aapt2'] : ['aapt2']
+  for (const root of roots) {
+    if (!existsSync(root)) continue
+    const versions = readdirSync(root).sort().reverse()
+    for (const version of versions) {
+      for (const name of names) {
+        const candidate = join(root, version, name)
+        if (existsSync(candidate)) return candidate
+      }
+    }
+  }
+  return ''
 }
 
 export async function runAppPresetSuite({ it, check }) {
@@ -161,8 +192,44 @@ export async function runAppPresetSuite({ it, check }) {
       && /至少要 16 位/.test(shortSecret.output), shortSecret.output.slice(0, 160))
     const nothing = runToFile([SCRIPT, '--file', target], logPath)
     check('什么都不给要说清怎么用', nothing.failure !== null && /--host/.test(nothing.output))
-    // 被拒之后文件不该被动过（上面两次失败调用不能留下半截内容）
+
+    // 被拒之后文件不该被动过（上面那两次失败调用不能留下半截内容）
     const afterFailures = readFileSync(target, 'utf-8')
     check('失败的调用不落盘', /default_shared_secret[^>]*>\s*</.test(afterFailures))
+  })
+
+  await it('5.155b：生成的 XML 注释里不许有 "--"（否则打包时 mergeResources 直接失败）', () => {
+    // 真踩过：注释里顺手写了 `--host`，`node tests/run-all.mjs` 与 javac 全绿，
+    // 一打包就炸在 AGP 的 mergeDebugResources：注释中不允许出现字符串 "--"。
+    // XML 规范不允许注释体里出现连续两个连字符，而**只有解析 XML 的那一步**会发现。
+    const dir = join(VAR_DIR, 'tmp', 'app-preset')
+    mkdirSync(dir, { recursive: true })
+    const target = join(dir, 'comment-check.xml')
+    const logPath = join(dir, 'out.txt')
+
+    const scanComments = (xml) => [...xml.matchAll(/<!--([\s\S]*?)-->/g)].filter((one) => one[1].includes('--'))
+    check('已提交的那份没有', scanComments(readFileSync(APP_CONFIG, 'utf-8')).length === 0)
+
+    // 让脚本自己生成一份（含注释），逐段扫
+    const generated = runToFile([SCRIPT, '--file', target, '--host', 'http://10.60.107.47:8788',
+      '--secret', '0123456789abcdef0123456789abcdef'], logPath)
+    check('脚本生成成功（自检没拦下来）', generated.failure === null,
+      `${generated.failure?.message ?? ''}`)
+    const xml = readFileSync(target, 'utf-8')
+    const bad = scanComments(xml)
+    check('脚本生成的注释里也没有 "--"', bad.length === 0,
+      bad.map((one) => one[1].trim().slice(0, 80)).join(' | '))
+
+    // 真让 aapt2 解一遍（这就是 AGP 那一步做的事）。找不到 aapt2 就明确跳过。
+    const aapt2 = findAapt2()
+    if (aapt2 === '') {
+      console.log('  ⏭ 这台机器找不到 aapt2（ANDROID_HOME/build-tools），跳过"真解析一遍"')
+      return
+    }
+    const zip = join(dir, 'res-check.zip')
+    const parse = runCommandToFile(aapt2, ['compile', '--dir',
+      join(ROOT, 'android', 'app', 'src', 'main', 'res'), '-o', zip], logPath)
+    check('aapt2 能把整个 res/ 编译一遍（等价于 mergeResources 那一步）',
+      parse.failure === null, parse.output.slice(0, 300))
   })
 }
