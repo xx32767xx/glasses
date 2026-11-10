@@ -171,6 +171,24 @@ export async function runTtsSuite({ it, check }) {
     check('行上那颗小字显示当前档位（听原声 / 译文）',
       /@\+id\/roomTtsMode/.test(layout) && /R\.id\.roomTtsMode/.test(source)
       && /R\.string\.room_tts_translation : R\.string\.room_tts_listen/.test(source))
+    // 5.161：**侧边栏只允许一个「朗读」标签**。
+    // 用户实测报「两个朗读不知道干什么」—— 5.156 与 5.159 各加了一个标签（内容一模一样），
+    // 于是侧边栏上出现两个重复入口。这属于「加功能时没看旁边」，所以用机器守着。
+    check('侧边栏只允许一个「朗读」标签（不许重复入口）',
+      (layout.match(/@string\/room_tts_read/g) ?? []).length === 1,
+      `出现 ${(layout.match(/@string\/room_tts_read/g) ?? []).length} 次`)
+
+    // 5.161：切到「听原声」时必须**强制重建**倾听状态。
+    // 用户实测「切了听原声反而没声音」：applyListenState 是幂等的（状态没变就直接 return），
+    // 而 listening / listenWanted 这两个标志可能与真实播放状态不同步 —— 于是它一直 return，
+    // 播放器从来没被 start 过。切档位是用户明确表达「我现在要听原声」，就该把标志摆正再走一遍。
+    check('切到听原声时把倾听意图与状态都摆正（否则幂等判断会把它挡掉）',
+      /if \(next == TTS_LISTEN_ORIGINAL\) \{\s*\n\s*listenWanted = true;\s*\n\s*listening = false;/.test(source))
+    check('播放状态每次真的变化都留一行日志（排查"没声音"要能分清是谁的问题）',
+      /实时传声 " \+ \(shouldPlay \? "开" : "停"\)/.test(source))
+    check('收到原声要计数（手机没收到 vs 收到没播，是两种完全不同的故障）',
+      /audioChunks \+= 1/.test(source) && /收到音频但没在播/.test(source))
+
     check('切换档位就闭嘴（否则切了之后上一句还念完）',
       /private void setTtsMode\(int next\)[\s\S]{0,600}?ttsQueue\.stop\(\)/.test(source))
   })

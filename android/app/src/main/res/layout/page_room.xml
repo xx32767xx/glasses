@@ -267,29 +267,15 @@
                     android:textSize="@dimen/text_caption" />
 
                 <!--
-                    5.156：朗读 —— 念**译文**还是念**原文**。
-
-                    用户要求把它从底部那一行挪到这条右侧悬浮条里（原来挤在「退出」按钮下面
-                    的第二行，不好找）。挪过来的好处：它和「投屏 / 扩声 / 收音」一样是
-                    "这一场现在什么状态"，而且不占字幕的空间。
-
-                    ⚠️ 轨道里不写 textOn/textOff（92dp 的条放两行字会裁掉），
-                    当前念哪一版由下面那颗小字说明，开关只表达"是哪一档"。
-                -->
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="@dimen/space_gap_small"
-                    android:text="@string/room_tts_read"
-                    android:textColor="@color/ink_soft"
-                    android:textSize="@dimen/text_caption" />
-
-                <!--
-                    5.159：朗读 = **两态**（听原声 / 念译文），点这一行切换。
+                    5.159/5.161：朗读 = **两态**（听原声 / 念译文），点下面那一行切换。
 
                     为什么只有两态：原来还有"念原文"，它和"听原声"其实指同一件事（让对方原话进耳朵），
                     却给出相反的行为 —— 用户直接指出这个矛盾，所以删掉。现在两档互斥且穷尽：
                     听原声 = 实时传声照放；念译文 = 合成音念译文、原声整体静音。
+
+                    ⚠️ 5.161：这里原来有**两个**「朗读」标签（5.156 与 5.159 各加了一个），
+                    侧边栏上看着是两个一模一样的入口，用户实测报"两个朗读不知道是干什么的"。
+                    现在只留一个标签 + 一行可点的档位。
                 -->
                 <TextView
                     android:layout_width="match_parent"

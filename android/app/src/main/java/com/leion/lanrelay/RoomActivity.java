@@ -219,6 +219,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     // 4.97：「正在听」胶囊按钮已删除（倾听全自动），所以不再需要这个引用
     /** 我是不是正在听（与服务端的 listen 开关保持一致）。 */
     private boolean listening = false;
+    /** 5.161：收到的原声块数（排查"听不到原声"时要分清是手机没开播、还是服务端没发）。 */
+    private int audioChunks = 0;
     /**
      * 我**想不想**听（4.91）。
      *
@@ -766,7 +768,17 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             @Override
             public void onAudio(byte[] chunk) {
                 // 网络线程上：只往队列里放，不碰界面
-                if (audioPlayer != null && listening) audioPlayer.offer(chunk);
+                if (audioPlayer != null && listening) {
+                    // 5.161：块计数。手机侧"有没有收到音频"以前完全看不见，
+                    // 而这恰恰是"听不到原声"最先要分清的一件事。
+                    audioChunks += 1;
+                    if (audioChunks % 100 == 1) {
+                        android.util.Log.i("LeionRoom", "🔉 已收到 " + audioChunks + " 块原声（" + chunk.length + " B/块，" + audioPlayer.sampleRate() + " Hz）");
+                    }
+                    audioPlayer.offer(chunk);
+                } else if (audioChunks == 0) {
+                    android.util.Log.w("LeionRoom", "🔉 收到音频但没在播（listening=false）——档位是听原声却没打开播放？");
+                }
             }
         });
         floorSocket.start();
@@ -1068,6 +1080,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         boolean mutedByTts = ttsMode == TTS_READ_TRANSLATION;
         boolean shouldPlay = listenWanted && !holding && !speakingTranslation && !mutedByTts;
         if (shouldPlay == listening) return;
+        // 5.161：每次**真的**改变播放状态都留一行 —— 排查"听不到原声"时，
+        // 这一行能立刻分清是"我们没去播"还是"服务端没发音频"。
+        android.util.Log.i("LeionRoom", "🔊 实时传声 " + (shouldPlay ? "开" : "停") + "（listenWanted=" + listenWanted + " holding=" + holding + " speakingTranslation=" + speakingTranslation + " mutedByTts=" + mutedByTts + "）");
         listening = shouldPlay;
         if (floorSocket != null) floorSocket.sendListen(shouldPlay);
         if (audioPlayer != null) {
@@ -1976,8 +1991,21 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             ttsQueue.setEnabled(next == TTS_READ_TRANSLATION);
         }
         renderTtsMode(findViewById(R.id.roomTtsMode));
-        // 档位决定"要不要放原声"：在念 → 静音原声；关 → 恢复
+        // 档位决定"要不要放原声"：在念 → 静音原声；听原声 → 恢复。
+        //
+        // 5.161：切到「听原声」时**强制重建**倾听状态。用户实测"切了听原声反而没声音"：
+        // applyListenState 是幂等的（`shouldPlay == listening` 就直接返回），而 `listening`
+        // 这个标志可能和播放器的真实状态不同步（例如 releaseAudio 里把播放器停了、
+        // 或者 stopListening 把 listenWanted 置了 false 却没人再打开）。
+        // 切档位是用户明确表达"我现在要听原声"，那就把两个标志都摆正再走一遍判断 ——
+        // 恢复意图（listenWanted=true）与真实状态（listening=false）都显式设一遍，
+        // 让 applyListenState 一定会真的去 start() 播放器、并给服务端重发一条 listen。
+        if (next == TTS_LISTEN_ORIGINAL) {
+            listenWanted = true;
+            listening = false;
+        }
         applyListenState();
+        android.util.Log.i("LeionRoom", "🔈 朗读档位 → " + (next == TTS_READ_TRANSLATION ? "念译文（原声静音）" : "听原声（直播）") + " | listenWanted=" + listenWanted + " listening=" + listening + " holding=" + holding + " wsOnline=" + wsOnline);
         if (hintLine != null) hintLine.setText("");
     }
     /**
