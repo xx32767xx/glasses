@@ -37,6 +37,7 @@ import { runBenchSuite } from './bench-suite.mjs'
 import { runLintSuite } from './lint-suite.mjs'
 import { runTermsSuite } from './terms-suite.mjs'
 import { runAccountsSuite } from './accounts-suite.mjs'
+import { runMailSuite } from './mail-suite.mjs'
 import { runTermsMatcherSuite } from './terms-matcher-suite.mjs'
 import { runTermsWatchSuite } from './terms-watch-suite.mjs'
 import { runRescueSuite } from './rescue-suite.mjs'
@@ -278,6 +279,10 @@ await runLintSuite(helpers)
 
 heading('账户与 token（密码只存哈希 / 热词表只认 token / 不能越权）')
 await runAccountsSuite(helpers)
+
+// ── 7j. 邮件通道的配置自检（535 的真因：主机用错了 / 该用授权码）────────────────
+heading('邮件通道（域名→主机判据 / 主机与账号对不上 / 535 文案带原因）')
+await runMailSuite(helpers)
 
 heading('用户热词对照表（校验拒绝码 / 原子落盘 / PUT 全有或全无）')
 await runTermsSuite(helpers)

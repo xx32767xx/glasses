@@ -14,7 +14,7 @@
  * 而真正的原因（端口不通 / 认证失败 / 发件人被拒 / STARTTLS 没协商上）只有这里看得到。
  */
 
-import { describeMailConfig, sendMail, smtpConfigFromEnv } from '../lib/mail.mjs'
+import { describeMailConfig, sendMail, smtpConfigFromEnv, smtpHostMismatch } from '../lib/mail.mjs'
 
 const HELP = `check-mail —— 邮件通道冒烟
 
@@ -59,6 +59,14 @@ async function main(argv = process.argv.slice(2)) {
   if (config !== null) {
     console.log(`  发件人：${config.fromName} <${config.from}>`)
     console.log(`  认证：  ${config.user === '' ? '无（匿名中继）' : config.user + '（密码已隐藏）'}`)
+    // 5.162：主机与账号域名对不上是 535 最常见的原因，**在连接之前**就说出来。
+    // 实测踩过：账号 xxx@qq.com，主机写成 smtp.exmail.qq.com（那是腾讯企业邮，两套账号体系），
+    // 服务器只回一句 535，看起来像授权码过期。
+    const mismatch = smtpHostMismatch(config)
+    if (mismatch !== '') {
+      console.log(`  ⚠️  ${mismatch}`)
+      console.log('      个人 QQ 邮箱用 smtp.qq.com；企业邮（有自己的域名）才用 smtp.exmail.qq.com。')
+    }
   }
   if (config === null) {
     console.log('')
