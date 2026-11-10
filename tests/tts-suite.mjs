@@ -121,46 +121,46 @@ export async function runTtsSuite({ it, check }) {
     check('入队只有一处（多一处就等于同一句念两遍）',
       (source.match(/ttsQueue\.offer\(/g) ?? []).length === 1)
     check('所有朗读都过 offerTts（不念自己 / 去重 / 空文本都在那里）',
-      (source.match(/offerTts\(/g) ?? []).length >= 3)
+      // 定义 1 处 + 调用 1 处（念译文）。5.159 把"念原文"那条调用删掉了：
+      // 它和「听原声」是同一件事的两种说法，却给出相反行为。
+      (source.match(/offerTts\(/g) ?? []).length === 2)
     check('念译文只念**主语言**那一份',
       /&& isPrimaryLang\(langKey\)\) \{\s*offerTts\(target/.test(source))
-    check('念原文的那一句写在「我读哪几种语言」过滤**之前**（原文帧的 lang 是源语言，会被过滤挡掉）',
-      source.indexOf('if (!partial && ttsMode == TTS_ORIGINAL)') > 0
-      && source.indexOf('if (!partial && ttsMode == TTS_ORIGINAL)') < source.indexOf('wantsFrameLanguage(frameLang)'))
+    check('不再有"念原文"那条路（与「听原声」重复且矛盾）',
+      !/ttsMode == TTS_ORIGINAL/.test(source)
+      && !/offerTts\(source, fromLang/.test(source))
     check('不念自己说的话（自己刚说完再被机器念一遍是噪音）', /who\.equals\(myName\)/.test(source))
     check('同一句去重（原文帧 + 各语言译文帧会先后到达）', /TTS_DEDUPE_MS/.test(source))
     check('没接耳机只提示一次（否则每句都把提示行刷一遍）', /ttsProblemShown/.test(source))
     check('要说话就先停朗读（否则自己的译文被自己录回去）',
       /private void startUpload\(MicrophoneListener|private void startUpload\(MicUploader\.Listener listener\) \{\s*\/\/[^\n]*\n(\s*\/\/[^\n]*\n)*\s*if \(ttsQueue != null\) ttsQueue\.stop\(\);/.test(source))
-    // 5.158：用户要求"听译文的时候，说话人的原声不许传过来" —— 不是"念的那两秒暂停"，
-    // 而是**在念的整个阶段都不放原声**（把朗读关掉才恢复）。
+    // 5.158/5.159：用户要求"听译文的时候，说话人的原声不许传过来" —— 不是"念的那两秒暂停"，
+    // 而是**在念的整个阶段都不放原声**（切到「听原声」才恢复）。
     check('在念的时候原声整体静音（而不是只在念的两秒）',
-      /boolean mutedByTts = ttsMode != TTS_OFF/.test(source)
+      /boolean mutedByTts = ttsMode == TTS_READ_TRANSLATION/.test(source)
       && /!speakingTranslation && !mutedByTts/.test(source))
-    check('朗读是三态（关 / 译文 / 原文），关掉才恢复原声',
-      /private static final int TTS_OFF = 0/.test(source)
-      && /private static final int TTS_ORIGINAL = 2/.test(source)
-      && /ttsMode == TTS_TRANSLATION && !target\.isEmpty\(\)/.test(source))
+    check('朗读只有两态（听原声 / 念译文），互斥且穷尽',
+      /private static final int TTS_LISTEN_ORIGINAL = 0/.test(source)
+      && /private static final int TTS_READ_TRANSLATION = 1/.test(source)
+      && !/TTS_ORIGINAL/.test(source)
+      && /ttsMode == TTS_READ_TRANSLATION && !target\.isEmpty\(\)/.test(source))
     check('切换档位要同时改队列开关与原声判定（否则切了声音不跟着变）',
-      /private void setTtsMode\(int next\)[\s\S]{0,900}?ttsQueue\.setEnabled\(next != TTS_OFF\)/.test(source)
+      /private void setTtsMode\(int next\)[\s\S]{0,900}?ttsQueue\.setEnabled\(next == TTS_READ_TRANSLATION\)/.test(source)
       && /private void setTtsMode\(int next\)[\s\S]{0,1400}?applyListenState\(\)/.test(source))
     check('合成失败要把原因带进提示行、logcat 与服务器日志（"失败了却查不到"是不可接受的）',
       /client\.sendDiag\("tts-failed /.test(source) && /Log\.w\("LeionRoom", "🔈 合成失败：/.test(source))
     check('releaseAudio 也把朗读停掉', /releaseAudio[\s\S]{0,700}?ttsQueue\.stop\(\)/.test(source))
     check('离开房间释放朗读引擎', /onDestroy[\s\S]{0,400}?ttsQueue\?\.?|ttsQueue\.shutdown\(\)/.test(source)
       || /ttsQueue\.shutdown\(\)/.test(source))
-    // 5.152：朗读**默认开**（老师要求）；5.158 起档位是三态，存在偏好 ttsReadMode 里
-    // （旧的两态布尔 ttsReadOriginal 只作兼容读取）。
     check('朗读默认在念译文（而不是默认静音）',
-      /ttsMode = TTS_TRANSLATION/.test(source) || /private int ttsMode = TTS_TRANSLATION;/.test(source))
-    check('档位来自偏好 ttsReadMode，且兼容旧的 ttsReadOriginal',
-      /PREF_TTS_MODE = "ttsReadMode"/.test(source)
+      /private int ttsMode = TTS_READ_TRANSLATION;/.test(source))
+    check('档位来自偏好 ttsMode，且兼容两代旧偏好（ttsReadMode / ttsReadOriginal）',
+      /PREF_TTS_MODE = "ttsMode"/.test(source)
+      && /PREF_TTS_MODE_TRIPLE = "ttsReadMode"/.test(source)
       && /PREF_TTS_LEGACY_ORIGINAL = "ttsReadOriginal"/.test(source)
       && /getInt\(PREF_TTS_MODE, -1\)/.test(source))
     // 5.156：挪到**右侧悬浮条**（用户要求：原来挤在「退出」下面第二行，不好找）
-    // 5.158：从 Switch 改成"点一行循环三态"（关 / 译文 / 原文）——两态放不下"关"，
-    //        而"关"是用户要"听原声"时唯一的入口。
-    check('有「朗读」这一行（三态）', /R\.id\.roomTtsRow/.test(source))
+    check('有「朗读」这一行（两态）', /R\.id\.roomTtsRow/.test(source))
     const layout = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout', 'page_room.xml'), 'utf-8')
     const infoBarStart = layout.indexOf('@+id/roomInfoBar')
     const bottomStart = layout.indexOf('@+id/roomUpload')
@@ -168,9 +168,9 @@ export async function runTtsSuite({ it, check }) {
     check('这一行在右侧悬浮条里（不在底部那一行）',
       infoBarStart > 0 && rowAt > infoBarStart && rowAt < bottomStart,
       `infoBar=${infoBarStart} row=${rowAt} upload=${bottomStart}`)
-    check('行上有一颗小字显示当前档位（关 / 译文 / 原文）',
+    check('行上那颗小字显示当前档位（听原声 / 译文）',
       /@\+id\/roomTtsMode/.test(layout) && /R\.id\.roomTtsMode/.test(source)
-      && /ttsMode == TTS_OFF \? R\.string\.room_tts_off/.test(source))
+      && /R\.string\.room_tts_translation : R\.string\.room_tts_listen/.test(source))
     check('切换档位就闭嘴（否则切了之后上一句还念完）',
       /private void setTtsMode\(int next\)[\s\S]{0,600}?ttsQueue\.stop\(\)/.test(source))
   })

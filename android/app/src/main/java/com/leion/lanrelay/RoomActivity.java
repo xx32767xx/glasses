@@ -167,20 +167,27 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
      */
     private TtsQueue ttsQueue;
     /**
-     * 5.158：朗读有三态 —— **关 / 念译文 / 念原文**。
+     * 5.159：朗读只有两态 —— **听原声 / 念译文**。
      *
-     * <p>为什么从两态变成三态：用户提了一个硬要求"听译文的时候，说话人的原声不许传到我这里"。
-     * 于是"在念"这件事必须能和"听原声"互斥，而两态里没有"不念"这一档 —— 想听原声就没路可走。
-     * 三态之后语义变得直白：**关 = 只听原声；念 = 只听合成音（原声整体静音）**。
+     * <p>为什么删掉"念原文"：它和"听原声"根本是同一件事的两种说法（都是让对方原话进耳朵），
+     * 却给出**相反**的行为（一个静音原声改放合成音、一个放原声）。用户一眼看出这个矛盾：
+     * 既然"听原声"已经存在，"念原文"就是多余的、还自相矛盾的那一档。
+     *
+     * <p>所以现在只有两条路，语义互斥且穷尽：
+     * <ul>
+     *   <li>{@link #TTS_LISTEN_ORIGINAL}：**听原声** —— 实时传声照放，一个字都不合成；</li>
+     *   <li>{@link #TTS_READ_TRANSLATION}：**念译文** —— 合成音念译文，对方原声整体静音。</li>
+     * </ul>
      */
-    private static final int TTS_OFF = 0;
-    private static final int TTS_TRANSLATION = 1;
-    private static final int TTS_ORIGINAL = 2;
-    private int ttsMode = TTS_TRANSLATION;
-    /** 5.152 的旧偏好（只有两态，兼容读取一次）。 */
+    private static final int TTS_LISTEN_ORIGINAL = 0;
+    private static final int TTS_READ_TRANSLATION = 1;
+    private int ttsMode = TTS_READ_TRANSLATION;
+    /** 5.152 的旧偏好（布尔：念原文吗）。只作兼容读取，写完就不再使用。 */
     private static final String PREF_TTS_LEGACY_ORIGINAL = "ttsReadOriginal";
-    /** 5.158：新的三态偏好（0/1/2）。 */
-    private static final String PREF_TTS_MODE = "ttsReadMode";
+    /** 5.158 的旧偏好（0/1/2 三态，其中 2 = 念原文 已废弃）。只作兼容读取。 */
+    private static final String PREF_TTS_MODE_TRIPLE = "ttsReadMode";
+    /** 5.159：现行偏好（0 = 听原声 / 1 = 念译文）。 */
+    private static final String PREF_TTS_MODE = "ttsMode";
     /**
      * 5.152：`no-earphone` 这类"设备条件不满足"的提示**每场只说一次**。
      *
@@ -1058,7 +1065,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // 5.158：**只要在念，原声就整体不放**（用户明确要求：听译文的时候说话人的原声不许传过来）。
         // 原来只在 `speakingTranslation` 期间暂停 —— 那只是"念的那两秒"，句间与合成延迟里
         // 原声照样在播，于是用户听到"葡语原声 + 中文朗读"叠在一起。
-        boolean mutedByTts = ttsMode != TTS_OFF;
+        boolean mutedByTts = ttsMode == TTS_READ_TRANSLATION;
         boolean shouldPlay = listenWanted && !holding && !speakingTranslation && !mutedByTts;
         if (shouldPlay == listening) return;
         listening = shouldPlay;
@@ -1860,14 +1867,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // 判据：带译文的帧（`lang` 与源语言不同、且有译文内容）+ 发言人就是我自己。
         // 原文帧（echo）的 `lang` 等于源语言、译文为空，因此不受影响 —— 那正是我该看到的。
         String fromLang = sourceLang == null ? "" : sourceLang.trim();
-        // ── 5.152：念**原文**时必须在语言过滤**之前**取 ──────────────────────────────
-        //
-        // 原文帧（echo）的 `lang` 就是**源语言**（对方说的葡语），下面「我读哪几种语言」
-        // 那层过滤会把它挡掉 —— 而念原文恰恰不吃那层过滤：我要听的就是对方原话。
-        // 所以这一句只能写在这里；只取定稿帧（增量帧是半句话，念出来很怪）。
-        if (!partial && ttsMode == TTS_ORIGINAL) {
-            offerTts(source, fromLang, speakerName);
-        }
+        // 5.159：这里原来还有一条"念原文"的入口 —— 已经删掉。
+        // 它和「听原声」是同一件事（都是让对方原话进耳朵），却给出相反的行为，
+        // 属于"两档互相矛盾"。现在只剩「听原声」（放实时传声）与「念译文」（静音原声）。
         if (!target.isEmpty() && !frameLang.isEmpty() && !fromLang.isEmpty()
                 && !frameLang.equals(fromLang)
                 && myName != null && !myName.isEmpty()
@@ -1933,29 +1935,34 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         }
     }
 
-    /** 把当前档位画出来（关 / 译文 / 原文）。 */
+    /** 把当前档位画出来（听原声 / 念译文）。 */
     private void renderTtsMode(TextView modeView) {
         if (modeView == null) return;
-        int label = ttsMode == TTS_OFF ? R.string.room_tts_off
-                : (ttsMode == TTS_ORIGINAL ? R.string.room_tts_original : R.string.room_tts_translation);
-        modeView.setText(getString(label));
-        // 关掉时用次要色：一眼能看出"现在不念"
-        modeView.setTextColor(getColor(ttsMode == TTS_OFF ? R.color.ink_faint : R.color.brand));
+        boolean reading = ttsMode == TTS_READ_TRANSLATION;
+        modeView.setText(getString(reading ? R.string.room_tts_translation : R.string.room_tts_listen));
+        // 听原声时用次要色：一眼能看出"现在没在念"
+        modeView.setTextColor(getColor(reading ? R.color.brand : R.color.ink_faint));
     }
 
-    /** 从偏好里读三态（兼容 5.152 的旧布尔值）。 */
+    /**
+     * 从偏好里读档位（兼容两代旧偏好）。
+     *
+     * <p>迁移规则只有一条：**老用户选的"念原文"落到"听原声"** —— 因为这两档本来就指同一件事，
+     * 而"听原声"是真实人声（比合成音更像"原文"）。
+     */
     private int readTtsMode(android.content.SharedPreferences prefs) {
         int stored = prefs.getInt(PREF_TTS_MODE, -1);
-        if (stored >= TTS_OFF && stored <= TTS_ORIGINAL) return stored;
-        // 老版本只存了"念原文吗"这个布尔：true → 念原文，false → 念译文（那时没有"关"）
-        return prefs.getBoolean(PREF_TTS_LEGACY_ORIGINAL, false) ? TTS_ORIGINAL : TTS_TRANSLATION;
+        if (stored == TTS_LISTEN_ORIGINAL || stored == TTS_READ_TRANSLATION) return stored;
+        int triple = prefs.getInt(PREF_TTS_MODE_TRIPLE, -1);
+        if (triple == 2) return TTS_LISTEN_ORIGINAL;          // 旧的"念原文" → 听原声
+        if (triple == 0 || triple == 1) return triple;
+        return prefs.getBoolean(PREF_TTS_LEGACY_ORIGINAL, false)
+                ? TTS_LISTEN_ORIGINAL : TTS_READ_TRANSLATION;
     }
 
-    /** 换下一档：关 → 译文 → 原文 → 关。 */
+    /** 两态互切：听原声 ⇄ 念译文。 */
     private void cycleTtsMode() {
-        int next = ttsMode == TTS_OFF ? TTS_TRANSLATION
-                : (ttsMode == TTS_TRANSLATION ? TTS_ORIGINAL : TTS_OFF);
-        setTtsMode(next);
+        setTtsMode(ttsMode == TTS_READ_TRANSLATION ? TTS_LISTEN_ORIGINAL : TTS_READ_TRANSLATION);
     }
 
     /** 设成某一档（幂等）。 */
@@ -1966,7 +1973,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         lastTtsKey = "";
         if (ttsQueue != null) {
             ttsQueue.stop();
-            ttsQueue.setEnabled(next != TTS_OFF);
+            ttsQueue.setEnabled(next == TTS_READ_TRANSLATION);
         }
         renderTtsMode(findViewById(R.id.roomTtsMode));
         // 档位决定"要不要放原声"：在念 → 静音原声；关 → 恢复
@@ -1985,7 +1992,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
      * </ol>
      */
     private void offerTts(String text, String lang, String speakerName) {
-        if (ttsQueue == null || ttsMode == TTS_OFF) return;
+        if (ttsQueue == null || ttsMode != TTS_READ_TRANSLATION) return;
         String value = text == null ? "" : text.trim();
         if (value.isEmpty()) return;
         String who = speakerName == null ? "" : speakerName.trim();
@@ -2092,7 +2099,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // 5.30：**定稿译文**才朗读（增量帧是半句话，念出来很怪）。
         // 5.121：只念**主语言**那一份 —— 勾了两种译文时，两种都念等于把同一句话念两遍。
         // 5.152：这是念译文**唯一**的触发点（applyFrame 里那处重复的已删）；念原文时不走这里。
-        if (!partial && ttsMode == TTS_TRANSLATION && !target.isEmpty() && isPrimaryLang(langKey)) {
+        if (!partial && ttsMode == TTS_READ_TRANSLATION && !target.isEmpty() && isPrimaryLang(langKey)) {
             offerTts(target, langKey.isEmpty() ? hearLang : langKey, speakerName);
         }
     }
