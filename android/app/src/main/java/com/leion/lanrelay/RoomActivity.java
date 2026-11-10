@@ -1705,8 +1705,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // 5.12：这一帧带了提示（例如"本场语言相同 · 无需翻译"）—— 写在提示行，
         // 让人知道"没译文"是设计如此，不是坏了。
         if (notice != null && !notice.isEmpty()) {
-            hintLine.setText("same-language".equals(notice)
-                    ? getString(R.string.st_same_language) : notice);
+            // 5.151：服务端给的是**机器码**，按界面语言翻成人话（别把 code 直接甩到界面上）。
+            hintLine.setText(noticeText(notice));
         }
         renderSegment(target == null ? "" : target, source == null ? "" : source, partial,
                 speakerName == null ? "" : speakerName.trim(), frameLang);
@@ -1725,6 +1725,18 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         } else if (notice == null || notice.isEmpty()) {
             hintLine.setText("");
         }
+    }
+
+    /**
+     * 服务端的 notice 机器码 → 界面语言下的人话（5.151）。
+     *
+     * <p>为什么必须映射：same-language / translation-interrupted 这类是**协议里的码**，
+     * 直接显示就等于把内部字段名甩给用户；未知码原样显示 —— 至少能贴进日志排障。
+     */
+    private String noticeText(String code) {
+        if ("same-language".equals(code)) return getString(R.string.st_same_language);
+        if ("translation-interrupted".equals(code)) return getString(R.string.st_trans_interrupted);
+        return code;
     }
 
     /**

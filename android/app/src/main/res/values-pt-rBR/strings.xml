@@ -266,6 +266,7 @@ Microfone: microfone do celular (em uso)</string>
     <string name="st_terms_missing">Os termos não apareceram na forma exigida: %1$s</string>
     <string name="list_separator">, </string>
         <!-- 5.150：增量帧等不到定稿时的兜底状态（别再一直显示"识别中"） -->
+        <string name="st_trans_interrupted">A tradução foi interrompida — esta frase não foi concluída, então paramos de esperar</string>
     <string name="st_no_final">não finalizado (tempo esgotado)</string>
     <string name="st_no_final_hint">Esta frase não recebeu a versão final — o reconhecimento ou a tradução foi interrompido (o log do computador diz o motivo)</string>
     <string name="st_recognizing">Reconhecendo…</string>

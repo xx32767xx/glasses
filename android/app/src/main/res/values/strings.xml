@@ -580,6 +580,7 @@
     <string name="st_terms_missing">术语未按规范写法出现：%1$s</string>
     <string name="list_separator">、</string>
         <!-- 5.150：增量帧等不到定稿时的兜底状态（别再一直显示"识别中"） -->
+        <string name="st_trans_interrupted">翻译中断了：这一句只收到一半，已停止等待</string>
     <string name="st_no_final">未定稿（超时）</string>
     <string name="st_no_final_hint">这一句没等到定稿：识别或翻译可能中断了（电脑端日志里能看到原因）</string>
     <string name="st_recognizing">识别中…</string>

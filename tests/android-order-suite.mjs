@@ -521,7 +521,8 @@ export async function runAndroidOrderSuite({ it, check }) {
       /noticeOf\(frame\)/.test(client) && (room.match(/noticeOf\(frame\)/g) ?? []).length >= 1)
     // 提示："本场语言相同 · 无需翻译"
     check('同语言提示走到了提示行（不是弹窗、不是字幕卡）',
-      /"same-language"\.equals\(notice\)[\s\S]{0,160}st_same_language/.test(room))
+      /hintLine\.setText\(noticeText\(notice\)\)/.test(room)
+      && /"same-language"\.equals\(code\)[\s\S]{0,120}st_same_language/.test(room))
     for (const dir of ['values', 'values-en', 'values-pt-rBR']) {
       check(`提示文案在 ${dir} 里有`, /name="st_same_language"/.test(
         readFileSync(join(resDir, dir, 'strings.xml'), 'utf-8')))
@@ -1590,6 +1591,40 @@ export async function runAndroidOrderSuite({ it, check }) {
       const xml = readFileSync(join(resDir, dir, 'strings.xml'), 'utf-8')
       check(`${dir} 有 st_no_final / st_no_final_hint`,
         /name="st_no_final"/.test(xml) && /name="st_no_final_hint"/.test(xml))
+    }
+  })
+
+  await it('5.151：翻译中断的那一句要真的收尾（服务端发终止帧 + 手机说人话）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+    const core = readFileSync(join(ROOT, 'plugin', 'core.mjs'), 'utf-8')
+
+    // ① 服务端：推过增量帧之后翻译失败，必须发「这一句的终止帧」，不许去重放上一句
+    check('有终止帧（text 空 + notice 机器码）',
+      /text: '', speaker: displaySpeaker[\s\S]{0,120}notice: 'translation-interrupted'/.test(core))
+    check('只在推过增量帧时才需要终止（没推过就没有卡在"识别中"的卡）',
+      /if \(partialsPushed > 0\) \{[\s\S]{0,600}translation-interrupted/.test(core))
+    check('终止帧不再拿上一句顶包（那是"上一句定稿"冒充"本句"）',
+      !/if \(partialsPushed > 0\) \{[\s\S]{0,600}lastGoodFrame/.test(core))
+
+    // ② 手机：notice 是机器码，必须按界面语言翻成人话
+    check('界面不直接甩机器码', /hintLine\.setText\(noticeText\(notice\)\)/.test(room)
+      && !/hintLine\.setText\("same-language"\.equals/.test(room))
+    check('有 noticeText 映射', /private String noticeText\(String code\)/.test(room))
+    check('认得 translation-interrupted',
+      /"translation-interrupted"\.equals\(code\)[\s\S]{0,80}st_trans_interrupted/.test(room))
+    check('same-language 仍走原来的文案',
+      /"same-language"\.equals\(code\)[\s\S]{0,80}st_same_language/.test(room))
+    check('未知码原样显示（至少能贴日志）', /return code;/.test(room))
+
+    // ③ 三语文案
+    for (const dir of ['values', 'values-en', 'values-pt-rBR']) {
+      const xml = readFileSync(join(resDir, dir, 'strings.xml'), 'utf-8')
+      const m = /<string name="st_trans_interrupted">([^<]*)<\/string>/.exec(xml)
+      check(`${dir} 有 st_trans_interrupted`, Boolean(m))
+      check(`${dir} 的文案不是占位/不是机器码`, Boolean(m) && m[1].length > 4
+        && !/translation-interrupted/.test(m[1]))
     }
   })
 

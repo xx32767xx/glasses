@@ -2165,15 +2165,24 @@ export function createInterpreter(ctx, rawConfig, deps) {
       })
       state.translating = false
 
-      if (result.ok !== true) {
-        // 半截译文不能留在眼镜上。翻译失败时，把屏幕恢复成上一帧可用的字幕
-        // （没有就清屏）—— 让佩戴者继续看到上一句，而不是一个碎片。
+            if (result.ok !== true) {
+        // 5.151：翻译失败且**已经推过增量帧**时，必须把**这一句**收尾，而不是去重放上一句。
+        //
+        // 之前的写法是发 `lastGoodFrame`（上一句）—— 手机上那张"正在成形"的卡于是
+        // 永远等不到自己的定稿，状态一直停在「识别中…」。实测日志：
+        //   `pt-BR→zh-CN [策略 pt-funasr / 模型 fun-asr-realtime]  …预期降息0.25个百分点，然而`
+        // 模型流断在半截，随后**没有**任何帧来终止这张卡。
+        //
+        // 现在发一个"本句的终止帧"：不带译文（text 空）、带原文与一个机器码提示
+        // （`translation-interrupted`，手机按界面语言翻成人话）。手机上那张卡会显示
+        // 原文 + 一句"翻译中断"，状态从"识别中"变成"已结束"。
         if (partialsPushed > 0) {
-          const fallback = state.lastGoodFrame !== null
-            ? state.lastGoodFrame
-            : buildFrame({ text: '', speaker: displaySpeaker, lang: to })
+          const terminator = buildFrame({
+            text: '', speaker: displaySpeaker, lang: to,
+            source, sourceLang: from, notice: 'translation-interrupted',
+          })
           try {
-            await sendRaw(fallback)
+            await sendRaw(terminator)
             state.restored += 1
           } catch (error) {
             state.lastError = String(error && error.message ? error.message : error)

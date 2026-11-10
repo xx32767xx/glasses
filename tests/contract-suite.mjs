@@ -355,11 +355,11 @@ export async function runContractSuite(adapter, { it, check, assert }) {
       `${before.historyCount} → ${after.historyCount}（碎片被写进历史了？）`)
   })
 
-  await it('翻译失败时：碎片不进历史，屏幕恢复成上一帧可用字幕', async () => {
+  await it('翻译失败时：碎片不进历史，这一句要被「终止帧」收尾（5.151）', async () => {
     const broken = await adapter.create({
       llm: makeFakeLlm({ finish: 'max-tokens' }), fs: makeFakeFs(new Map()),
     })
-    // 先推一帧成功的，当「上一帧可用字幕」
+    // 先推一帧成功的，当「上一句」—— 用来验证失败时**不会**拿它顶包
     const good = await broken.tools.get('leion_display').execute({
       text: '上一句：会议改到下午三点了。', speaker: 'them', lang: 'zh-CN',
     })
@@ -372,7 +372,17 @@ export async function runContractSuite(adapter, { it, check, assert }) {
 
     const status = await broken.tools.get('leion_status').execute({})
     check('碎片没进历史', status.historyCount === beforeCount, `${beforeCount} → ${status.historyCount}`)
-    check('屏幕恢复成上一帧', status.lastFrame.text === '上一句：会议改到下午三点了。',
+    // 5.151：旧实现重放 `lastGoodFrame`（上一句），于是手机上「正在成形」的那张卡
+    // 永远等不到自己的定稿，状态一直停在「识别中…」。现在发的是**本句的终止帧**：
+    // 不带译文、带原文和一句机器码提示，那张卡于是能收尾。
+    check('失败的那一句拿到的是终止帧（不是上一句）',
+      status.lastFrame.text === '' && status.lastFrame.source === 'A reunião é às três.',
+      JSON.stringify(status.lastFrame))
+    check('终止帧带机器码提示（手机按界面语言翻成人话）',
+      status.lastFrame.notice === 'translation-interrupted', JSON.stringify(status.lastFrame.notice))
+    check('终止帧不是增量帧（否则卡片仍会停在"识别中"）', status.lastFrame.partial === false)
+    check('终止帧是定稿通道（说话人/语言都在，卡片能对上号）',
+      status.lastFrame.speaker === 'them' && status.lastFrame.lang === 'zh-CN',
       JSON.stringify(status.lastFrame))
     check('恢复了 1 次', status.restored === 1, String(status.restored))
   })
