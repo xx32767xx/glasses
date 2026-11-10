@@ -39,6 +39,33 @@ function runToFile(args, outPath) {
   return { failure, output: readFileSync(outPath, 'utf-8') }
 }
 
+/**
+ * 取**已提交版本**的 app_config.xml。
+ *
+ * <p>为什么不是直接读工作区：打包流程就是"写进工作区 → 打包 → --clear"。
+ * 工作区带密钥是**正常中间态**（用户知情、内部使用）；真正要拦的是
+ * **把带密钥的版本提交上去** —— 那才叫写进历史。所以判据取 HEAD 里那份。
+ *
+ * <p>没有 git / 不是仓库时退回工作区，并在输出里说一句（不静默算过）。
+ */
+function committedConfig(outPath) {
+  const fd = openSync(outPath, 'w')
+  let failure = null
+  try {
+    execFileSync('git', ['-C', ROOT, 'show', 'HEAD:android/app/src/main/res/values/app_config.xml'],
+      { stdio: ['ignore', fd, fd] })
+  } catch (error) {
+    failure = error
+  } finally {
+    closeSync(fd)
+  }
+  if (failure !== null) {
+    console.log('  ⏭ 取不到 HEAD 里的 app_config.xml（没有 git？），退回看工作区')
+    return readFileSync(APP_CONFIG, 'utf-8')
+  }
+  return readFileSync(outPath, 'utf-8')
+}
+
 export async function runAppPresetSuite({ it, check }) {
   await it('5.155：出厂服务器只有一个入口（ServerPreset），页面不许各读各的', () => {
     const preset = readFileSync(join(JAVA_DIR, 'ServerPreset.java'), 'utf-8')
@@ -65,19 +92,32 @@ export async function runAppPresetSuite({ it, check }) {
     check('首页启动时落一次（seedInto）', /ServerPreset\.seedInto\(this\)/.test(home))
   })
 
-  await it('5.155：仓库里的 app_config.xml 必须是"出厂空密钥"（不许带真密钥）', () => {
-    const xml = readFileSync(APP_CONFIG, 'utf-8')
-    check('有 default_server_url / default_shared_secret',
-      /name="default_server_url"/.test(xml) && /name="default_shared_secret"/.test(xml))
-    const secret = /<string name="default_shared_secret"[^>]*>([\s\S]*?)<\/string>/.exec(xml)
-    check('密钥是空的（带密钥的版本不许提交 —— 那等于把密钥写进 git 历史）',
-      secret !== null && secret[1].trim() === '', secret === null ? '找不到该项' : `实际是 ${secret[1].length} 位`)
-    const host = /<string name="default_server_url"[^>]*>([\s\S]*?)<\/string>/.exec(xml)
-    check('地址是空串或 http(s) 开头',
+  await it('5.155：写进仓库的那份必须是"出厂空密钥"（本机打包时可以有意填上）', () => {
+    const dir = join(VAR_DIR, 'tmp', 'app-preset')
+    mkdirSync(dir, { recursive: true })
+    const committed = committedConfig(join(dir, 'head-config.xml'))
+    const working = readFileSync(APP_CONFIG, 'utf-8')
+    check('工作区与已提交版本结构一致（都有这两项）',
+      /name="default_server_url"/.test(working) && /name="default_shared_secret"/.test(working)
+      && /name="default_server_url"/.test(committed) && /name="default_shared_secret"/.test(committed))
+
+    // 核心判据：**已提交的**那份不许带密钥（带密钥的版本提交上去等于写进 git 历史）
+    const secret = /<string name="default_shared_secret"[^>]*>([\s\S]*?)<\/string>/.exec(committed)
+    check('已提交版本里的密钥是空的', secret !== null && secret[1].trim() === '',
+      secret === null ? '找不到该项' : `实际是 ${secret[1].length} 位`)
+    const host = /<string name="default_server_url"[^>]*>([\s\S]*?)<\/string>/.exec(committed)
+    check('已提交版本里的地址是空串或 http(s) 开头',
       host !== null && (host[1].trim() === '' || /^https?:\/\//.test(host[1].trim())),
       host === null ? '找不到该项' : host[1].trim())
+
+    // 工作区带密钥 = 打包中间态，允许；但要能说出来（否则下一个人以为是脏数据）
+    const workingSecret = /<string name="default_shared_secret"[^>]*>([\s\S]*?)<\/string>/.exec(working)
+    if (workingSecret !== null && workingSecret[1].trim() !== '') {
+      console.log(`  ⚠️ 本工作区已写入打包密钥（${workingSecret[1].trim().length} 位，未提交）`
+        + ' —— 打完包记得 node scripts/build-preset.mjs --clear')
+    }
     check('注释里写清了"密钥会随 APK 公开"这件事',
-      /反编译/.test(xml) && /token/.test(xml))
+      /反编译/.test(working) && /token/.test(working))
   })
 
   await it('5.155：打包脚本能写/能查/能还原（密钥打码，不整串外露）', () => {

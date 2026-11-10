@@ -26,7 +26,8 @@
  * 但它精确覆盖了**最廉价、最常见、也最丢脸**的那一类：顺序写错。
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { ROOT } from '../lib/paths.mjs'
 
@@ -1271,11 +1272,28 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('判定用开关而不是字段内容', /final boolean isRegister = registerMode;/.test(homeJava))
 
     // 出厂默认配置：地址可预填、密钥默认空（安全取舍写进了资源文件注释）
-    // 5.155：这两个值改由 `scripts/build-preset.mjs` 写入，所以断言放宽成"能带属性"，
-    // 并且仓库里**必须**是空密钥（带密钥的版本提交上去等于写进 git 历史）。
-    const cfg = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'values', 'app_config.xml'), 'utf-8')
+    // 5.155：这两个值改由 `scripts/build-preset.mjs` 写入，所以断言放宽成"能带属性"。
+    // ⚠️ 这里看的是**已提交版本**：工作区带密钥是打包的正常中间态（打完 --clear），
+    //    真正要拦的是把它提交上去 —— 那才叫写进 git 历史。
+    //    子进程输出走文件描述符（沙箱里管道捕获会 EPERM，导致这里静默退回工作区）。
+    const cfgPath = join(ROOT, 'android', 'app', 'src', 'main', 'res', 'values', 'app_config.xml')
+    const scratch = join(ROOT, 'var', 'tmp', 'android-order-head-config.xml')
+    let cfg = readFileSync(cfgPath, 'utf-8')
+    try {
+      mkdirSync(join(ROOT, 'var', 'tmp'), { recursive: true })
+      const fd = openSync(scratch, 'w')
+      try {
+        execFileSync('git', ['-C', ROOT, 'show', 'HEAD:android/app/src/main/res/values/app_config.xml'],
+          { stdio: ['ignore', fd, fd] })
+        cfg = readFileSync(scratch, 'utf-8')
+      } finally {
+        closeSync(fd)
+      }
+    } catch {
+      // 没有 git / 还没提交过：退回工作区（下面那条断言仍会盯"密钥为空"）
+    }
     check('默认服务器地址可预填', /name="default_server_url"/.test(cfg))
-    check('默认密钥留空（不把口令写进仓库）',
+    check('默认密钥留空（已提交版本里不写口令）',
       /<string name="default_shared_secret"[^>]*>\s*<\/string>/.test(cfg), cfg.slice(0, 120))
     check('注释里说清了为什么密钥不打包', /反编译|apktool/.test(cfg))
     // 5.155：页面不再各自摸资源 —— 出厂值的唯一入口是 ServerPreset（含回落逻辑）
