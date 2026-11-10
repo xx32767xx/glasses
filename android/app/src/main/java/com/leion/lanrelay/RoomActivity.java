@@ -1871,22 +1871,31 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     }
 
     /**
-     * 5.152：底部那颗「朗读 · 译文 / 原文」开关。
+     * 5.156：右侧悬浮条那颗「朗读 · 译文 / 原文」开关。
      *
-     * <p>关 = 念原文、开 = 念译文（布局里 {@code textOff/textOn} 就是这两个词）。
-     * 切换时**立刻闭嘴**：否则切到"念原文"之后，上一句译文还会被念完 ——
-     * 用户听到的是"我明明切了，它还在念中文"。
+     * <p>关 = 念原文、开 = 念译文。切换时**立刻闭嘴**：否则切到"念原文"之后，
+     * 上一句译文还会被念完 —— 用户听到的是"我明明切了，它还在念中文"。
+     *
+     * <p>条上还跟着一颗小字（`roomTtsMode`）说明当前念哪一版：92dp 宽的条塞不下
+     * 轨道内文案，而这行字是唯一能一眼看出"现在念的是哪一版"的地方。
      */
     private void bindTtsSwitch() {
         android.widget.Switch toggle = findViewById(R.id.roomTtsSwitch);
+        TextView mode = findViewById(R.id.roomTtsMode);
         if (toggle == null) return;
         toggle.setChecked(ttsOriginal);
+        if (mode != null) {
+            mode.setText(getString(ttsOriginal ? R.string.room_tts_original : R.string.room_tts_translation));
+        }
         toggle.setOnCheckedChangeListener((buttonView, isChecked) -> {
             ttsOriginal = isChecked;
             getSharedPreferences("leion", MODE_PRIVATE).edit()
                     .putBoolean("ttsReadOriginal", isChecked).apply();
             lastTtsKey = "";
             if (ttsQueue != null) ttsQueue.stop();
+            if (mode != null) {
+                mode.setText(getString(isChecked ? R.string.room_tts_original : R.string.room_tts_translation));
+            }
             if (hintLine != null) hintLine.setText("");
         });
     }

@@ -266,6 +266,48 @@
                     android:textColor="@color/ink_faint"
                     android:textSize="@dimen/text_caption" />
 
+                <!--
+                    5.156：朗读 —— 念**译文**还是念**原文**。
+
+                    用户要求把它从底部那一行挪到这条右侧悬浮条里（原来挤在「退出」按钮下面
+                    的第二行，不好找）。挪过来的好处：它和「投屏 / 扩声 / 收音」一样是
+                    "这一场现在什么状态"，而且不占字幕的空间。
+
+                    ⚠️ 轨道里不写 textOn/textOff（92dp 的条放两行字会裁掉），
+                    当前念哪一版由下面那颗小字说明，开关只表达"是哪一档"。
+                -->
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap_small"
+                    android:text="@string/room_tts_read"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_caption" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <Switch
+                        android:id="@+id/roomTtsSwitch"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:checked="false"
+                        android:contentDescription="@string/room_tts_desc" />
+
+                    <TextView
+                        android:id="@+id/roomTtsMode"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="@dimen/space_gap_tiny"
+                        android:text="@string/room_tts_translation"
+                        android:textColor="@color/brand"
+                        android:textSize="@dimen/text_caption" />
+                </LinearLayout>
+
                 <View
                     android:layout_width="match_parent"
                     android:layout_height="0dp"
@@ -392,40 +434,6 @@
                 android:textAllCaps="false"
                 android:textColor="@color/err"
                 android:textSize="@dimen/text_secondary" />
-        </LinearLayout>
-
-        <!--
-            5.152：朗读（TTS）—— 念**译文**还是念**原文**，一颗开关切换。
-
-              · 放第二行而不是塞进上面那一行：上面那行（开麦 / 锁定 / 原文 / 退出）在小屏
-                手机上本来就挤（4.97 就是因为挤才删掉了「正在听」胶囊），再塞一颗开关
-                会把「退出」顶出去；
-              · 只有两态（译文 / 原文），没有"关"：老师的要求是"要么念译文、要么念原文"。
-                没接耳机时不响并当场说明（见 TtsSpeaker：会议里禁止外放）。
-        -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="@dimen/height_button"
-            android:layout_marginTop="@dimen/space_gap_tiny"
-            android:gravity="end|center_vertical"
-            android:orientation="horizontal">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/room_tts_read"
-                android:textColor="@color/ink_soft"
-                android:textSize="@dimen/text_secondary" />
-
-            <Switch
-                android:id="@+id/roomTtsSwitch"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="@dimen/space_gap_small"
-                android:checked="false"
-                android:contentDescription="@string/room_tts_desc"
-                android:textOff="@string/room_tts_original"
-                android:textOn="@string/room_tts_translation" />
         </LinearLayout>
 
         <!-- 「开始同传」在原型里没有单独按钮：开麦即开始上传。

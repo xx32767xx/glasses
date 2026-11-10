@@ -141,9 +141,21 @@ export async function runTtsSuite({ it, check }) {
     check('朗读默认开着', /ttsQueue\.setEnabled\(true\)/.test(source))
     check('念译文/念原文来自偏好 ttsReadOriginal',
       /getBoolean\("ttsReadOriginal", false\)/.test(source))
-    check('底部有一颗「朗读 · 译文/原文」开关', /R\.id\.roomTtsSwitch/.test(source))
+    // 5.156：开关挪到**右侧悬浮条**（用户要求：原来挤在「退出」下面第二行，不好找）
+    check('有「朗读 · 译文/原文」开关', /R\.id\.roomTtsSwitch/.test(source))
+    const layout = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'layout', 'page_room.xml'), 'utf-8')
+    const infoBarStart = layout.indexOf('@+id/roomInfoBar')
+    const bottomStart = layout.indexOf('@+id/roomUpload')
+    const switchAt = layout.indexOf('@+id/roomTtsSwitch')
+    check('开关在右侧悬浮条里（不在底部那一行）',
+      infoBarStart > 0 && switchAt > infoBarStart && switchAt < bottomStart,
+      `infoBar=${infoBarStart} switch=${switchAt} upload=${bottomStart}`)
+    check('条上还有一颗小字说明当前念哪一版（92dp 塞不下轨道文案）',
+      /@\+id\/roomTtsMode/.test(layout)
+      && /R\.id\.roomTtsMode/.test(source)
+      && /mode\.setText\(getString\(isChecked \? R\.string\.room_tts_original : R\.string\.room_tts_translation\)\)/.test(source))
     check('切换就闭嘴（否则切了之后上一句还念完）',
-      /private void bindTtsSwitch\(\)[\s\S]{0,900}?ttsQueue\.stop\(\)/.test(source))
+      /private void bindTtsSwitch\(\)[\s\S]{0,1200}?ttsQueue\.stop\(\)/.test(source))
   })
 
   await it('按语言挑引擎（AsrRouter）：跑起来验，不靠看代码', async () => {
