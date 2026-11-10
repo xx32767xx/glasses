@@ -19,6 +19,7 @@ import {
   isSafeRoomId, memoryHint, parseArgs, pickRooms, pipelineSteps, planStop, prepareRoomFiles,
   readOpenRooms, relayStep, roomColor, roomFiles, shortRoomId, main, workerStep, describeMode, clearStaleRunState,
   chooseActiveRoom, describeSwitchReason, readRoomActivity,
+  ttsStep,
   pickRoomsWithDenied, pipelineStatePath, writePipelineState, clearPipelineState,
 } from '../scripts/start-multi.mjs'
 import { createInterpreterSession, createRoom, joinRoom } from '../lib/rooms.mjs'
@@ -166,6 +167,38 @@ export async function runStartMultiSuite({ it, check, assert }) {
     check('数据目录对得上', parsed.dataDir === options.dataDir, `${parsed.dataDir} vs ${options.dataDir}`)
     check('--bus 就是总线目录', parsed.bus === options.busesDir, `${parsed.bus} vs ${options.busesDir}`)
     check('--public 生效', parsed.public === true, String(parsed.public))
+  })
+
+  // 5.160：**用户实测踩到过这一条** —— 他把 --tts 加到自己真正在用的启动命令上，
+  // 得到的是「未知选项 --tts」：5.157 只把 --tts 加进了 start-all，而生产上跑的是 start-multi。
+  // 这一节把它钉住：两个脚本都必须认这个参数，而且真的把地址传给转发。
+  await it('5.160：start-multi 也认 --tts，并把 --tts-url 传给转发', async () => {
+    const options = parseArgs(['--tts', '--tts-voice-dir', '/opt/leion/models/piper'])
+    check('--tts 被接受（不再是未知选项）', options.tts === true)
+    check('默认端口 8790', options.ttsPort === 8790, String(options.ttsPort))
+    check('音色目录透传', options.ttsVoiceDir === '/opt/leion/models/piper', options.ttsVoiceDir)
+
+    const step = ttsStep(options)
+    check('合成那一步是 python 脚本', step.python === true && /tts-server\.py$/.test(step.script), step.script)
+    check('端口与音色目录都在参数里',
+      step.args.includes('--port') && step.args.includes('8790')
+      && step.args.includes('--voice-dir'))
+
+    const relayArgs = relayStep(options).args
+    check('转发拿到 --tts-url（否则它不知道合成服务在哪）',
+      relayArgs.includes('--tts-url') && relayArgs.includes('http://127.0.0.1:8790'),
+      relayArgs.join(' '))
+    // 拼出来的参数要能被 relay 自己的 parseArgs 收下（同本套件的其它几条）
+    const { parseArgs: relayParse } = await import('../relay/lan-relay.mjs')
+    const parsed = relayParse(relayArgs)
+    check('relay 认得 --tts-url', parsed.ttsUrl === 'http://127.0.0.1:8790', String(parsed.ttsUrl))
+
+    // 不给 --tts 时不能凭空带上（否则没装 piper 的机器一启动就报错）
+    const off = parseArgs([])
+    check('没加 --tts 就不传 --tts-url',
+      !relayStep(off).args.includes('--tts-url'), relayStep(off).args.join(' '))
+    check('--tts-port 可改',
+      parseArgs(['--tts', '--tts-port', '9911']).ttsPort === 9911)
   })
 
   await it('大脑命令能被 harness-side 自己的 parseArgs() 接受（--keep-inbox / --bus 都认得）', async () => {

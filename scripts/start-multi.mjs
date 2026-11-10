@@ -43,6 +43,12 @@
  *   --offline             大脑用离线例句表（不联网、零成本，只认得剧本那 14 句）
  *   --terms-rescue        打开热词临时修正（实验，缺省关）
  *   --no-transcriber      只起转发 + 每场的大脑（用手输文字那条路时够用）
+ *   --tts                 顺带起**服务器合成语音**（bridge/tts-server.py，piper；全局一个）。
+ *     手机自己没有巴葡/英语的语音包，那两门语言靠它念；中文仍走手机本地。
+ *     合成服务只绑 127.0.0.1，由转发进程的 `POST /tts` 代理出去（鉴权/限流/版本门禁都在那里）。
+ *     需要 piper 装在 PYTHON（缺省 python）那个解释器里、音色在 --tts-voice-dir。
+ *   --tts-port <n>        合成服务端口（缺省 8790；只绑本机）
+ *   --tts-voice-dir <dir> piper 音色目录（缺省 LEION_TTS_MODELS 或 /opt/leion/models/piper）
  *   --no-api-translate    不起「大脑·API」：外部调用方的 `POST /translate` 会回 503
  *                         （缺省是**起**的 —— 那是"另一组要调用我们翻译链路"的入口）
  *   --data-dir <path>     数据目录（缺省 var/live）
@@ -101,6 +107,13 @@ const HELP = `start-multi —— 一条命令起「多场会并行」
   --proofread            打开大模型校对（缺省关；多场并行时每句多一次模型调用，自己权衡）
   --terms-rescue         打开热词临时修正（实验，缺省关，见 docs/15 §18）
   --no-transcriber       只起转发 + 每场的大脑（手输文字那条路不需要识别）
+  --tts                  顺带起**服务器合成语音**（bridge/tts-server.py，piper；全局一个）。
+                         手机自己没有巴葡/英语的语音包，那两门语言靠它念；中文仍走手机本地。
+                         合成服务只绑 127.0.0.1，由转发进程的 POST /tts 代理出去
+                         （鉴权/限流/版本门禁都在转发那一层）。
+                         需要 piper 装在 PYTHON（缺省 python）里、音色在 --tts-voice-dir。
+  --tts-port <n>         合成服务端口（缺省 8790；只绑本机）
+  --tts-voice-dir <dir>  piper 音色目录（缺省 LEION_TTS_MODELS 或 /opt/leion/models/piper）
   --no-api-translate     不起「大脑·API」：外部调用方的 POST /translate 会回 503
                          （缺省**起**它 —— 那是"另一组要调用我们翻译链路"的入口）
   --include-empty        连"一个人都没在"的房间也起管线（缺省只跑有人的房间）
@@ -233,11 +246,21 @@ export function parseArgs(argv = []) {
     host: null,
     writeLogs: true,
     dryRun: false,
+    // ── 5.160：服务器合成语音（piper）────────────────────────────────────────
+    //
+    // 默认**不开**：没装 piper 的机器开了只会在启动时报错（而这条路是可选能力）。
+    // 部署时加 --t t s（不带空格）即可 —— 手机自己没有巴葡/英语语音包，那两门语言靠它念，
+    // 中文仍走手机本地。合成服务是**全局一个**（所有房间共用一份模型），
+    // 由 relay 的 POST /tts 代理出去（鉴权/限流/版本门禁都在 relay）。
+    tts: false,
+    ttsPort: 8790,
+    ttsVoiceDir: process.env.LEION_TTS_MODELS || '/opt/leion/models/piper',
   }
   const takesValue = new Set(['data-dir', 'buses', 'port', 'poll-ms', 'grace-ms', 'cols', 'lines',
     'max-rooms', 'only', 'whisper-model', 'compute', 'switch-idle-ms', 'min-hold-ms',
     'queue-dir', 'depth-report-s', 'translate-mode', 'model-map', 'max-models',
-    'interpreter-idle-min', 'silence-skip-level', 'idle-flush-ms', 'rms-threshold'])
+    'interpreter-idle-min', 'silence-skip-level', 'idle-flush-ms', 'rms-threshold',
+    'tts-port', 'tts-voice-dir'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -258,6 +281,8 @@ export function parseArgs(argv = []) {
     if (key === 'serial-translate') { options.translateMode = 'serial'; continue }
     if (key === 'queue-translate') { options.translateMode = 'queue'; continue }
     if (key === 'no-adaptive') { options.noAdaptive = true; continue }
+    // 5.160：顺带起服务器合成语音（bridge/tts-server.py，piper）
+    if (key === 'tts') { options.tts = true; continue }
     if (!takesValue.has(key)) throw new Error(`未知选项 --${key}（用 --help 看用法）`)
     const value = argv[index + 1]
     if (value === undefined || value.startsWith('--')) throw new Error(`--${key} 需要一个值`)
@@ -308,6 +333,8 @@ export function parseArgs(argv = []) {
       if (!allowed.includes(value)) throw new Error(`--translate-mode 只能是 ${allowed.join(' / ')}`)
       options.translateMode = value
     }
+    else if (key === 'tts-port') options.ttsPort = Number(value)
+    else if (key === 'tts-voice-dir') options.ttsVoiceDir = value
     else if (key === 'cols') options.cols = Number(value)
     else if (key === 'lines') options.lines = Number(value)
     else if (key === 'port') options.port = Number(value)
@@ -412,6 +439,25 @@ export function roomFiles(options, roomId) {
   }
 }
 
+/**
+ * 服务器合成语音（5.160）：**全局一个**，和多房间识别消费者同级。
+ *
+ * <p>为什么全局一个而不是每场一个：合成只是一次"文本 → wav"的函数调用，模型（piper 的
+ * onnx）加载一次就够；每场一份等于把 60 MB 模型按房间数复制进内存，而它连显存都不用。
+ * 合成是串行的（PiperVoice 非线程安全），排队比并发诚实。
+ *
+ * <p>挂在 relay 后面（`--tts-url`），所以鉴权、限流、版本门禁仍然只有一处。
+ */
+export function ttsStep(options) {
+  const args = ['--port', String(options.ttsPort), '--voice-dir', options.ttsVoiceDir]
+  return {
+    key: 'tts', role: 'tts', tag: '合成', label: '合成', color: '\x1b[32m',
+    script: join(ROOT, 'bridge', 'tts-server.py'),
+    python: true,
+    args,
+  }
+}
+
 /** 转发进程的命令行：**一个**，`--bus` 指向目录（多场会各一个文件）。 */
 export function relayStep(options) {
   const args = ['--data-dir', options.dataDir, '--port', String(options.port), '--bus', options.busesDir]
@@ -422,6 +468,10 @@ export function relayStep(options) {
   // 5.27：**版本门禁默认开**（`LEION_ENFORCE_APP_VERSION=0` 可以关）。
   // 门禁决定了"旧版本手机能不能连进来"：开着 = 连不上并被告知去更新。
   // 关掉的唯一合理场景是排查"是不是门禁把某个客户端挡在外面"。
+  // 5.160：合成服务由 ttsStep 起，relay 只做代理（鉴权/限流/版本门禁在 relay 那一层）。
+  if (options.tts === true) {
+    args.push('--tts-url', `http://127.0.0.1:${options.ttsPort}`)
+  }
   const enforce = String(process.env.LEION_ENFORCE_APP_VERSION ?? '1').trim().toLowerCase()
   if (enforce === '0' || enforce === 'false' || enforce === 'off' || enforce === 'no') {
     args.push('--no-enforce-app-version')
@@ -1080,6 +1130,10 @@ export async function main(argv = process.argv.slice(2)) {
     const worker = workerStep(options)
     console.log(`  ${worker.color}${worker.label}${RESET}  ${worker.script.replace(ROOT, '.').replace(/\\/g, '/')} ${worker.args.join(' ')}`)
   }
+  if (options.tts === true) {
+    const tts = ttsStep(options)
+    console.log(`  ${tts.color}${tts.label}${RESET}  ${tts.script.replace(ROOT, '.').replace(/\\/g, '/')} ${tts.args.join(' ')}`)
+  }
   if (options.apiTranslate !== false) {
     const api = apiStep(options)
     console.log(`  ${api.color}${api.label}${RESET}  ${api.script.replace(ROOT, '.').replace(/\\/g, '/')} ${api.args.join(' ')}`)
@@ -1383,6 +1437,11 @@ export async function main(argv = process.argv.slice(2)) {
 
   // 先起**全局**进程：转发（所有人的出口）+ 队列模式下的识别消费者（模型只加载一次）。
   // 再开始看房间表 —— 房间是手机建的，只能边看边补。
+  // 5.160：合成服务要先于 relay 起来 —— 手机发来的 /tts 会立刻被代理到它，
+  // 起晚了那几秒里的句子就是"合成失败"（用户看到的是弹窗）。
+  if (options.tts === true) {
+    spawnStep(ttsStep(options), null)
+  }
   spawnStep(relay, null)
   if (options.transcriber && options.translateMode === 'queue') {
     mkdirSync(options.queueDir, { recursive: true })
