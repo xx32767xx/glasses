@@ -160,10 +160,28 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
      * 5.30：译文朗读。`ttsQueue` 是队列+策略（积压丢弃/过期不播），
      * `TtsSpeaker` 负责合成与播放（耳机/眼镜优先、禁外放）。
      *
-     * <p>开关在设置页（`ttsRead`，默认关）：默认开会让人以为"这功能自己会说话"，
-     * 而开会时耳机没戴好就会**拒绝朗读**并提示——第一次遇到没法预期。
+     * <p>5.152：**默认就是开着的**（老师要求）。要念的是译文还是原文，由底部那颗
+     * {@code roomTtsSwitch} 决定（偏好 {@code ttsReadOriginal}）。
      */
     private TtsQueue ttsQueue;
+    /** 5.152：念原文（true）还是念译文（false，默认）。 */
+    private boolean ttsOriginal = false;
+    /**
+     * 5.152：`no-earphone` 这类"设备条件不满足"的提示**每场只说一次**。
+     *
+     * <p>为什么不能每句都说：朗读是每句一触发，「没戴耳机」就会跟着每句出现一次 ——
+     * 提示行被反复改写、字幕被自己的提示打断，比不提示更烦。
+     * 念成功过（或戴上耳机后念成功）就重新打开这道门。
+     */
+    private boolean ttsProblemShown = false;
+    /**
+     * 5.152：同一句话可能从**多条帧**到达（原文帧一次、每种语言的译文帧各一次），
+     * 按「说话人 + 文本」在短时间窗口内去重 —— 否则同一句会念两三遍。
+     */
+    private String lastTtsKey = "";
+    private long lastTtsAt = 0L;
+    /** 去重窗口：一句话的几种帧几乎同时到，15 秒足够宽，又不会吞掉真的重复发言。 */
+    private static final long TTS_DEDUPE_MS = 15_000L;
     /** 此刻是否正在朗读（实时传声据此让路，见 applyListenState）。 */
     private boolean speakingTranslation = false;
     // 4.97：「正在听」胶囊按钮已删除（倾听全自动），所以不再需要这个引用
@@ -385,9 +403,10 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // 4.76 的实时传声播放器；4.97 起**没有**手动开关（那颗胶囊已从底部删掉）——
         // 倾听全自动：进房间就听、自己说话时暂停防回声、说完恢复、重连重新订阅（见 applyListenState）。
         audioPlayer = new RoomAudioPlayer();
-        // 5.30：译文朗读（默认关，设置页开）。朗读时**暂停实时传声**（见 applyListenState）。
-        // 5.38：整层先停用（{@link TtsFeature}：用户定的「先不使用」）——
-        // 关着的时候**不建队列**，所以 walk 不到任何播报路径，也不会有"以为在念却没声音"的状态。
+        // 5.152：朗读（TTS）—— 老师要求加上，所以 5.38 的总开关已经打开
+        // （{@link TtsFeature#enabled()}）。队列策略（积压丢弃/过期不播/关掉立刻闭嘴）
+        // 与"只在耳机上播"这些规矩一条没动 —— 它们本来就是这层做对的。
+        // 念**译文**还是**原文**由底部那颗开关决定（ttsReadOriginal）。
         if (TtsFeature.enabled()) {
             ttsQueue = new TtsQueue(new TtsSpeaker(this));
             ttsQueue.setListener(new TtsQueue.Listener() {
@@ -395,6 +414,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 public void onSpeaking(String text, boolean speaking) {
                     ui.post(() -> {
                         speakingTranslation = speaking;
+                        // 念出来了就说明这次没问题：把"只提示一次"的门重新打开
+                        if (speaking) ttsProblemShown = false;
                         if (hintLine != null && speaking) hintLine.setText(getString(R.string.st_tts_speaking));
                         applyListenState();
                     });
@@ -403,6 +424,13 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 @Override
                 public void onProblem(String code, String hint) {
                     ui.post(() -> {
+                        // 5.152：没有耳机这类问题**每场只说一次**。否则每来一句都要把提示行
+                        // 改写成同一句话 —— 用户看到的是"提示一闪一闪"，字幕也被打断。
+                        if (InterpreterErrorCodes.NO_EARPHONE.equals(code)) {
+                            if (ttsProblemShown) return;
+                            ttsProblemShown = true;
+                            addSystemEvent(InterpreterErrorCodes.message(RoomActivity.this, code, hint));
+                        }
                         // 5.34：按机器码取当前界面语言的那句（"没有耳机"这种提示不能只给中文）
                         if (hintLine != null) {
                             hintLine.setText(InterpreterErrorCodes.message(RoomActivity.this, code, hint));
@@ -410,8 +438,11 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                     });
                 }
             });
-            ttsQueue.setEnabled(getSharedPreferences("leion", MODE_PRIVATE)
-                    .getBoolean("ttsRead", false));
+            // 5.152：朗读**默认开**（老师要求），不再由设置页那颗 ttsRead 管着 ——
+            // 那颗开关所在的设置页 5.145 已经并进"我的"，而"要不要念"现在由下面那颗切。
+            ttsQueue.setEnabled(true);
+            ttsOriginal = prefs.getBoolean("ttsReadOriginal", false);
+            bindTtsSwitch();
         }
         // 隐藏的「开始同传」：原型里没有它，开麦即开始上传；这里只留一个落点备用
         micUploadButton.setOnClickListener(v -> toggleMic());
@@ -1689,6 +1720,14 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // 判据：带译文的帧（`lang` 与源语言不同、且有译文内容）+ 发言人就是我自己。
         // 原文帧（echo）的 `lang` 等于源语言、译文为空，因此不受影响 —— 那正是我该看到的。
         String fromLang = sourceLang == null ? "" : sourceLang.trim();
+        // ── 5.152：念**原文**时必须在语言过滤**之前**取 ──────────────────────────────
+        //
+        // 原文帧（echo）的 `lang` 就是**源语言**（对方说的葡语），下面「我读哪几种语言」
+        // 那层过滤会把它挡掉 —— 而念原文恰恰不吃那层过滤：我要听的就是对方原话。
+        // 所以这一句只能写在这里；只取定稿帧（增量帧是半句话，念出来很怪）。
+        if (!partial && ttsOriginal) {
+            offerTts(source, fromLang, speakerName);
+        }
         if (!target.isEmpty() && !frameLang.isEmpty() && !fromLang.isEmpty()
                 && !frameLang.equals(fromLang)
                 && myName != null && !myName.isEmpty()
@@ -1710,13 +1749,10 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         }
         renderSegment(target == null ? "" : target, source == null ? "" : source, partial,
                 speakerName == null ? "" : speakerName.trim(), frameLang);
-        // 5.30：**定稿译文**才朗读（增量帧是半句话，念出来很怪）。
-        // 只念"我读的那一门语言"的译文 —— 上面已经过滤过帧语言，这里再要求有内容。
-        // echo 帧（原文）不会走到这里：它按源语言分发，而 hearLang 是我的语言；
-        // 万一同语言房间收到 echo，它的 text 也是空的，两句条件都挡住。
-        if (!partial && ttsQueue != null && !target.isEmpty()) {
-            ttsQueue.offer(target, frameLang.isEmpty() ? hearLang : frameLang);
-        }
+        // 5.152：念译文的地方**只剩** renderSegment 里那一处。
+        // 这里原来还有一处「把 target 入队」，与 renderSegment 里的主语言判断同时满足 ——
+        // 于是同一句会被念两遍（功能关着的时候没人发现）。
+        // 念译文/念原文的开关与去重都在 offerTts 里。
         if (partial) {
             hintLine.setText(getString(R.string.st_generating));
         } else if (termsMissing != null && termsMissing.length > 0) {
@@ -1737,6 +1773,52 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         if ("same-language".equals(code)) return getString(R.string.st_same_language);
         if ("translation-interrupted".equals(code)) return getString(R.string.st_trans_interrupted);
         return code;
+    }
+
+    /**
+     * 5.152：底部那颗「朗读 · 译文 / 原文」开关。
+     *
+     * <p>关 = 念原文、开 = 念译文（布局里 {@code textOff/textOn} 就是这两个词）。
+     * 切换时**立刻闭嘴**：否则切到"念原文"之后，上一句译文还会被念完 ——
+     * 用户听到的是"我明明切了，它还在念中文"。
+     */
+    private void bindTtsSwitch() {
+        android.widget.Switch toggle = findViewById(R.id.roomTtsSwitch);
+        if (toggle == null) return;
+        toggle.setChecked(ttsOriginal);
+        toggle.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            ttsOriginal = isChecked;
+            getSharedPreferences("leion", MODE_PRIVATE).edit()
+                    .putBoolean("ttsReadOriginal", isChecked).apply();
+            lastTtsKey = "";
+            if (ttsQueue != null) ttsQueue.stop();
+            if (hintLine != null) hintLine.setText("");
+        });
+    }
+
+    /**
+     * 5.152：**所有**朗读请求的唯一入口（念译文、念原文都走这里）。
+     *
+     * <p>三个判断都在这里，因为三条都是"漏一条就出问题"的：
+     * <ol>
+     *   <li>**不念自己说的话**：自己刚说完的话再被机器念一遍，纯噪音；</li>
+     *   <li>**同一句只念一次**：一句话会从多条帧到达（原文帧一次、每种语言的译文帧各一次），
+     *       不去重就会连念两三遍；</li>
+     *   <li>**空文本不念**（译文帧可能只带原文，例如"语言相同"那种帧）。</li>
+     * </ol>
+     */
+    private void offerTts(String text, String lang, String speakerName) {
+        if (ttsQueue == null) return;
+        String value = text == null ? "" : text.trim();
+        if (value.isEmpty()) return;
+        String who = speakerName == null ? "" : speakerName.trim();
+        if (myName != null && !myName.isEmpty() && !who.isEmpty() && who.equals(myName)) return;
+        String key = who + '\u0001' + value;
+        long now = System.currentTimeMillis();
+        if (key.equals(lastTtsKey) && now - lastTtsAt < TTS_DEDUPE_MS) return;
+        lastTtsKey = key;
+        lastTtsAt = now;
+        ttsQueue.offer(value, lang == null || lang.isEmpty() ? hearLang : lang);
     }
 
     /**
@@ -1832,8 +1914,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
 
         // 5.30：**定稿译文**才朗读（增量帧是半句话，念出来很怪）。
         // 5.121：只念**主语言**那一份 —— 勾了两种译文时，两种都念等于把同一句话念两遍。
-        if (!partial && ttsQueue != null && !target.isEmpty() && isPrimaryLang(langKey)) {
-            ttsQueue.offer(target, langKey.isEmpty() ? hearLang : langKey);
+        // 5.152：这是念译文**唯一**的触发点（applyFrame 里那处重复的已删）；念原文时不走这里。
+        if (!partial && !ttsOriginal && !target.isEmpty() && isPrimaryLang(langKey)) {
+            offerTts(target, langKey.isEmpty() ? hearLang : langKey, speakerName);
         }
     }
 

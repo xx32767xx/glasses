@@ -113,12 +113,23 @@ export async function runTtsSuite({ it, check }) {
       /generation \+= 1/.test(source) && /generation != recordedGeneration/.test(source))
   })
 
-  await it('接线：只念定稿译文，说话时闭嘴，朗读时让出实时传声', async () => {
+  await it('接线：只念定稿，说话时闭嘴，朗读时让出实时传声', async () => {
     const { readFileSync } = await import('node:fs')
     const source = readFileSync(room, 'utf-8')
-    check('只对**定稿**帧入队（增量帧是半句，念出来很怪）',
-      /if \(!partial && ttsQueue != null && !target\.isEmpty\(\)\)/.test(source))
-    check('入队带语言（按目标语言选发音）', /ttsQueue\.offer\(target, frameLang/.test(source))
+    // 5.152：念译文**只有一个**触发点。原来 applyFrame 与 renderSegment 各有一处，
+    // 两处条件同时满足时同一句会被念两遍（功能关着时没人发现）。
+    check('入队只有一处（多一处就等于同一句念两遍）',
+      (source.match(/ttsQueue\.offer\(/g) ?? []).length === 1)
+    check('所有朗读都过 offerTts（不念自己 / 去重 / 空文本都在那里）',
+      (source.match(/offerTts\(/g) ?? []).length >= 3)
+    check('念译文只念**主语言**那一份',
+      /&& isPrimaryLang\(langKey\)\) \{\s*offerTts\(target/.test(source))
+    check('念原文的那一句写在「我读哪几种语言」过滤**之前**（原文帧的 lang 是源语言，会被过滤挡掉）',
+      source.indexOf('if (!partial && ttsOriginal)') > 0
+      && source.indexOf('if (!partial && ttsOriginal)') < source.indexOf('wantsFrameLanguage(frameLang)'))
+    check('不念自己说的话（自己刚说完再被机器念一遍是噪音）', /who\.equals\(myName\)/.test(source))
+    check('同一句去重（原文帧 + 各语言译文帧会先后到达）', /TTS_DEDUPE_MS/.test(source))
+    check('没接耳机只提示一次（否则每句都把提示行刷一遍）', /ttsProblemShown/.test(source))
     check('要说话就先停朗读（否则自己的译文被自己录回去）',
       /private void startUpload\(MicrophoneListener|private void startUpload\(MicUploader\.Listener listener\) \{\s*\/\/[^\n]*\n(\s*\/\/[^\n]*\n)*\s*if \(ttsQueue != null\) ttsQueue\.stop\(\);/.test(source))
     check('朗读时**暂停对方原声**（方案 1 二选一）',
@@ -126,10 +137,13 @@ export async function runTtsSuite({ it, check }) {
     check('releaseAudio 也把朗读停掉', /releaseAudio[\s\S]{0,700}?ttsQueue\.stop\(\)/.test(source))
     check('离开房间释放朗读引擎', /onDestroy[\s\S]{0,400}?ttsQueue\?\.?|ttsQueue\.shutdown\(\)/.test(source)
       || /ttsQueue\.shutdown\(\)/.test(source))
-    check('开关来自偏好（默认关）',
-      /getBoolean\("ttsRead", false\)/.test(source))
-    // 5.145：设置页已删除（内容并入「我的」），朗读开关的界面入口随之消失；
-    // 行为侧仍要求房间页按 "ttsRead" 读取（默认关），上面那条仍在守。
+    // 5.152：朗读**默认开**（老师要求）；念译文还是念原文由底部那颗开关定。
+    check('朗读默认开着', /ttsQueue\.setEnabled\(true\)/.test(source))
+    check('念译文/念原文来自偏好 ttsReadOriginal',
+      /getBoolean\("ttsReadOriginal", false\)/.test(source))
+    check('底部有一颗「朗读 · 译文/原文」开关', /R\.id\.roomTtsSwitch/.test(source))
+    check('切换就闭嘴（否则切了之后上一句还念完）',
+      /private void bindTtsSwitch\(\)[\s\S]{0,900}?ttsQueue\.stop\(\)/.test(source))
   })
 
   await it('按语言挑引擎（AsrRouter）：跑起来验，不靠看代码', async () => {
@@ -224,28 +238,27 @@ export async function runTtsSuite({ it, check }) {
       /passed=37 failed=0/.test(report), report.trim().slice(-300))
   })
 
-  await it('5.38：播报整层先停用（用户定「先不使用」），三处入口必须一致', async () => {
+  await it('5.152：朗读打开（老师要求），总开关仍只有一处，三处入口要一致', async () => {
     const { readFileSync } = await import('node:fs')
     const gate = readFileSync(join(JAVA_SRC, 'TtsFeature.java'), 'utf-8')
     // 只有一个开关：翻回 true 时三处入口一起回来，不会出现"半开"（有开关但行为不一致）
     check('开关只有一处（TtsFeature.enabled()）', /public static boolean enabled\(\)/.test(gate))
-    check('现在是**关**的', /public static boolean enabled\(\)\s*\{\s*return false;\s*\}/.test(gate))
-    check('关掉的理由写在类注释里（不是靠人记）',
-      /先不使用/.test(gate) && /qwen3-tts-flash/.test(gate) && /合并冻结/.test(gate))
+    check('现在是**开**的（5.152 老师要求加播报）',
+      /public static boolean enabled\(\)\s*\{\s*return true;\s*\}/.test(gate))
+    check('5.38 关掉的那段历史写在类注释里（不是靠人记）',
+      /先不使用/.test(gate) && /qwen3-tts-flash/.test(gate))
 
-    // 5.145：设置页已删除（朗读开关那一块随之整块消失），不再有"半开"的可能
+    // 5.145：设置页已删除（朗读配置没有第二个界面入口），不会出现"两处开关打架"
     check('设置页已不存在（朗读配置没有第二个入口）',
       !readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'AndroidManifest.xml'), 'utf-8')
         .includes('.SettingsActivity'))
     const roomSrc = readFileSync(room, 'utf-8')
-    check('房间页关着就不建队列（不走进任何播报路径）',
+    check('房间页按开关决定是否建队列',
       /if \(TtsFeature\.enabled\(\)\) \{\s*ttsQueue = new TtsQueue/.test(roomSrc))
     const interpSrc = readFileSync(join(JAVA_SRC, 'InterpreterActivity.java'), 'utf-8')
-    check('翻译官页同样不建队列、隐藏配置里那一行',
+    check('翻译官页同样按开关建队列、配置行也跟着出现',
       /if \(TtsFeature\.enabled\(\)\) \{\s*ttsQueue = new TtsQueue/.test(interpSrc)
       && /interpConfigTtsBlock/.test(interpSrc))
-    check('关着时界面不提"朗读"（不暗示一个不存在的功能）',
-      /R\.string\.interp_meta_plain/.test(interpSrc))
   })
 
   await it('5.39：语言 → 识别函数的路由表（JSON 控制，可执行验）', async () => {

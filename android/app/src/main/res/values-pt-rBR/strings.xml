@@ -220,6 +220,10 @@ Microfone: microfone do celular (em uso)</string>
     <string name="cd_locked">Fala bloqueada (só o anfitrião pode desbloquear)</string>
     <string name="cd_lock_speak">Bloquear fala</string>
     <string name="room_source">Original</string>
+    <string name="room_tts_read">Narrar</string>
+    <string name="room_tts_translation">Tradução</string>
+    <string name="room_tts_original">Original</string>
+    <string name="room_tts_desc">Narrar: alternar entre a tradução e o original</string>
     <string name="room_source_desc">Mostrar o original</string>
     <string name="room_leave">Sair</string>
     <string name="room_me_my">Eu</string>

@@ -534,6 +534,10 @@
     <string name="cd_locked">发言已锁定（只有发起者能解除）</string>
     <string name="cd_lock_speak">锁定发言</string>
     <string name="room_source">原文</string>
+    <string name="room_tts_read">朗读</string>
+    <string name="room_tts_translation">译文</string>
+    <string name="room_tts_original">原文</string>
+    <string name="room_tts_desc">朗读：切换念译文还是念原文</string>
     <string name="room_source_desc">显示原文</string>
     <string name="room_leave">退出</string>
     <string name="room_me_my">我</string>
