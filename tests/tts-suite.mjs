@@ -798,4 +798,76 @@ export async function runTtsSuite({ it, check }) {
       }
     }
   })
+
+  await it('服务器自建 TTS 的验证脚本（scripts/tts-doctor.py）', async () => {
+    const Stdlib = new Set(['argparse', 'array', 'math', 'os', 'shutil', 'statistics',
+      'sys', 'tempfile', 'time', 'wave', 'pathlib', '__future__'])
+    const script = join(ROOT, 'scripts', 'tts-doctor.py')
+    const source = readFileSync(script, 'utf-8')
+    check('脚本在', source.length > 3000, String(source.length))
+    // 顶层只许 import 标准库：否则服务器上少装一个包，连 --help 都跑不起来 ——
+    // 而那正是"出问题时最需要它"的时刻。
+    const head = source.split(/^def /m)[0]
+    const thirdParty = [...head.matchAll(/^(?:from|import)\s+([\w.]+)/gm)]
+      .map((match) => match[1].split('.')[0])
+      .filter((name) => !Stdlib.has(name))
+    check('顶层只 import 标准库（缺包时 --help 仍要能跑）', thirdParty.length === 0, thirdParty.join(','))
+    check('不自己装包、不调外部命令（只报告，不动手）',
+      !/subprocess|os\.system|check_call|pip\s+install\s+-[rq]/.test(source))
+    check('说明里写明不接云端 API', /不接云端 API/.test(source))
+    check('说明里写明 piper 不碰 torch、kokoro/coqui 会', /不碰 torch/.test(source))
+    check('说明里写明 XTTS-v2 是 CPML 非商用', /CPML/.test(source) && /非商用/.test(source))
+    check('三门语言的验证句都是内置的真会议句子', /SAMPLES = \{/.test(source)
+      && /"pt-BR"/.test(source) && /"zh-CN"/.test(source) && /"en-US"/.test(source))
+    check('巴葡默认音色是 faber-medium', /pt_BR-faber-medium/.test(source))
+
+    let pythonOk = true
+    try {
+      execFileSync('python', ['--version'], { stdio: 'ignore' })
+    } catch {
+      pythonOk = false
+      console.log('  ⏭ 这台机器没有 python，跳过可执行用例（静态断言已在上面跑过）')
+    }
+    if (!pythonOk) return
+
+    // 沙箱里"管道捕获子进程输出"会被禁（EPERM），所以照本套件验 Java 的老办法：
+    // 把 stdout/stderr 直接写进文件，再从文件里读 —— 只用文件描述符，不开管道。
+    const scratch = join(VAR_DIR, 'tmp')
+    mkdirSync(scratch, { recursive: true })
+    const run = (args) => {
+      const out = join(scratch, 'tts-doctor-out.txt')
+      const fd = openSync(out, 'w')
+      let failure = null
+      try {
+        execFileSync('python', args, { stdio: ['ignore', fd, fd] })
+      } catch (error) {
+        failure = error
+      } finally {
+        closeSync(fd)
+      }
+      if (failure && failure.code === 'EPERM') throw failure
+      return readFileSync(out, 'utf-8')
+    }
+
+    let help
+    try {
+      help = run([script, '--help'])
+    } catch (error) {
+      if (error && error.code === 'EPERM') {
+        console.log('  ⏭ 这个沙箱不允许 Node 起子进程（python EPERM），跳过可执行用例。')
+        return
+      }
+      throw error
+    }
+    check('--help 跑得通，参数说清了（--engine / --lang / --voice / --selftest）',
+      /--engine/.test(help) && /--lang/.test(help) && /--voice/.test(help) && /--selftest/.test(help),
+      help.slice(0, 120))
+    // 纯函数自检：不依赖任何引擎，CI 与"装包之前"都能跑
+    const selftest = run([script, '--selftest'])
+    check('纯函数自检全过', /passed=\d+ failed=0/.test(selftest), selftest.trim().slice(-200))
+    const voices = run([script, '--list-voices', '--models-dir', join(scratch, 'no-such-dir')])
+    check('列出巴葡音色', /pt_BR-faber-medium/.test(voices))
+    check('缺文件时说清缺哪个（不是只说"加载失败"）', /缺：/.test(voices) && /\.onnx\.json/.test(voices))
+    check('顺手教怎么下载（一条命令）', /download_voices/.test(voices))
+  })
 }
