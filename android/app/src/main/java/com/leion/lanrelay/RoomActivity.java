@@ -1906,6 +1906,22 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         }
         renderSegment(target == null ? "" : target, source == null ? "" : source, partial,
                 speakerName == null ? "" : speakerName.trim(), frameLang);
+
+        // ── 5.163：**把这一句推到镜片上** ────────────────────────────────────────
+        //
+        // 会议页此前**根本没有投屏这条线**：侧边栏能显示"投屏设备：眼镜"（那是
+        // 「我的 → 眼镜投屏」建的共享会话，房间页只是读了它的状态），但一句都没推过去，
+        // 所以眼镜上什么都没有 —— 用户实测报的正是这个现象（设置页的测试字幕能上镜片，
+        // 因为那条路自己推；会议里不能，因为没人推）。
+        //
+        // 三条规矩与手机屏幕一致：
+        //   ① 只推**定稿**（增量会让镜片闪，而且镜片是按页显示的，半句翻页毫无意义）；
+        //   ② 只推**主语言**那一份（三语会议会来多份帧，轮着推等于让镜片反复横跳）；
+        //   ③ 空译文不推（原文帧 `text` 是空的，推过去就是一片空白）。
+        // 投屏只投**译文**：镜片是给"看译文"的那双眼睛用的，原声帧不管在哪个档位都不上镜。
+        if (!partial && !target.isEmpty() && isPrimaryLang(frameLang)) {
+            RokidGlasses.shared(this).pushIfCasting(target, frameLang.isEmpty() ? hearLang : frameLang);
+        }
         // 5.152：念译文的地方**只剩** renderSegment 里那一处。
         // 这里原来还有一处「把 target 入队」，与 renderSegment 里的主语言判断同时满足 ——
         // 于是同一句会被念两遍（功能关着的时候没人发现）。

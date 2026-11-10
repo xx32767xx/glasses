@@ -1679,6 +1679,31 @@ export async function runAndroidOrderSuite({ it, check }) {
       /room_strategy_locked/.test(roomJava) && /room_strategy_live/.test(roomJava))
   })
 
+  // 5.163：**会议页根本没接投屏这条线**（用户实测）。
+  // 现象：设置页的测试字幕能上镜片，但会议里侧边栏明明写着「投屏设备：眼镜」，镜片却一片空白。
+  // 根因：投屏会话是「我的 → 眼镜投屏」建的（共享单例），房间页只读了它的状态（isCasting），
+  // 从来没调过 pushIfCasting —— 而 RokidGlasses 的注释里明明写着「会议页/翻译官页只要在说话就调它」。
+  await it('5.163：会议里的译文要真的推到镜片上（别只显示设备是眼镜）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+    const interp = readFileSync(join(javaDir, 'InterpreterActivity.java'), 'utf-8')
+    const glasses = readFileSync(join(javaDir, 'RokidGlasses.java'), 'utf-8')
+
+    check('房间页有一条真的推流（不只是读状态）',
+      /RokidGlasses\.shared\(this\)\.pushIfCasting\(/.test(room))
+    check('只推定稿（增量会让镜片闪，而且镜片是按页显示的）',
+      /if \(!partial && !target\.isEmpty\(\) && isPrimaryLang\(frameLang\)\) \{\s*\n\s*RokidGlasses/.test(room))
+    check('只推主语言那一份（多语会议轮着推等于让镜片反复横跳）',
+      /isPrimaryLang\(frameLang\)\) \{\s*\n\s*RokidGlasses/.test(room))
+    check('空译文不推（原文帧 text 是空的，推过去就是一片空白）',
+      /!target\.isEmpty\(\)/.test(room))
+    check('翻译官页也照着同一条（5.140 起就有，别回退）',
+      /RokidGlasses\.shared\(InterpreterActivity\.this\)/.test(interp)
+      && /pushIfCasting\(/.test(interp))
+    check('推流入口自己会挡「没在投屏」（调用方不用先问）',
+      /if \(!started \|\| session == null\) return false;/.test(glasses))
+  })
+
   await it('5.154：系统返回键要退会（不能只关掉页面，让会议继续跑）', () => {
     const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
     const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
