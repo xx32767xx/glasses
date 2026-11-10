@@ -450,6 +450,12 @@ Se não quiser ser gravado, não toque em Iniciar. Para apagar os registros do c
     <string name="me_org_role_admin">Administrador · conta da organização</string>
     <string name="me_org_role_user">Membro · conta pessoal</string>
     <string name="me_org_role_dev">Conta de desenvolvimento</string>
+        <string name="err_tts_server_failed">Falha na síntese no servidor: esta frase não foi narrada (verifique o serviço de TTS no servidor ou use a voz do celular)</string>
+    <string name="me_tts_engine">Síntese de voz</string>
+    <string name="me_tts_engine_on">Servidor (o chinês continua no celular)</string>
+    <string name="me_tts_engine_off">Voz do celular</string>
+    <string name="me_tts_engine_hint">Este celular não tem pacote de voz para pt-BR/en-US, então essas usam o servidor; desligue para usar a voz do celular em tudo (backup e comparação)</string>
+    <string name="st_tts_server_failed">A síntese no servidor falhou — esta frase não foi narrada</string>
     <string name="me_version">Versão do serviço %1$s (%2$d)</string>
     <string name="me_device_title">Meu aparelho</string>
     <string name="me_device_summary">%1$s · Android %2$s · microfone do celular</string>

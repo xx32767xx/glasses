@@ -48,6 +48,9 @@ public class MeActivity extends android.app.Activity {
     private EditText serverInput;
     private EditText secretInput;
     private android.widget.Switch devSwitch;
+    /** 5.157：语音合成走哪条链路（服务器 / 手机本地）。 */
+    private android.widget.Switch ttsSwitch;
+    private TextView ttsEngineView;
 
     private String userName = "";
     private String host = "";
@@ -80,6 +83,8 @@ public class MeActivity extends android.app.Activity {
         serverInput = findViewById(R.id.meServer);
         secretInput = findViewById(R.id.meSecret);
         devSwitch = findViewById(R.id.meDevSwitch);
+        ttsEngineView = findViewById(R.id.meTtsEngine);
+        ttsSwitch = findViewById(R.id.meTtsSwitch);
 
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         userName = prefs.getString("termsUser", "");
@@ -110,6 +115,9 @@ public class MeActivity extends android.app.Activity {
             Toast.makeText(this, getString(next ? R.string.settings_developer_on
                     : R.string.settings_developer_off), Toast.LENGTH_SHORT).show();
         });
+        // 5.157：语音合成走哪条链路（服务器 / 手机本地）。改完立刻生效 ——
+        // TtsSpeaker 每次合成都会重读这个偏好，不用重启页面。
+        bindTtsEngine();
         findViewById(R.id.meSaveServer).setOnClickListener(v -> saveConnection());
         findViewById(R.id.meLogout).setOnClickListener(v -> confirmLogout());
 
@@ -121,6 +129,36 @@ public class MeActivity extends android.app.Activity {
 
         refreshAll();
         fetchAccount();
+    }
+
+    /**
+     * 5.157：把「语音合成」偏好同步到界面（开关 + 一行说明当前走哪条）。
+     *
+     * <p>为什么放在「我的」而不是会议页：它是**本机偏好**（不是这一场会的设置），
+     * 而且只在"服务器那条路出问题"或"要对比两条链路"时才会去动它。
+     */
+    private void bindTtsEngine() {
+        boolean useServer = getSharedPreferences(PREFS, MODE_PRIVATE)
+                .getBoolean(TtsRouter.PREF_USE_SERVER, true);
+        if (ttsSwitch != null) ttsSwitch.setChecked(useServer);
+        if (ttsEngineView != null) {
+            ttsEngineView.setText(getString(useServer
+                    ? R.string.me_tts_engine_on : R.string.me_tts_engine_off));
+        }
+        android.view.View row = findViewById(R.id.meRowTts);
+        if (row != null) {
+            row.setOnClickListener(v -> setTtsEngine(!getSharedPreferences(PREFS, MODE_PRIVATE)
+                    .getBoolean(TtsRouter.PREF_USE_SERVER, true)));
+        }
+    }
+
+    /** 切一次（幂等：重复设成同一个值什么都不会发生）。 */
+    private void setTtsEngine(boolean useServer) {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putBoolean(TtsRouter.PREF_USE_SERVER, useServer).apply();
+        bindTtsEngine();
+        Toast.makeText(this, getString(useServer
+                ? R.string.me_tts_engine_on : R.string.me_tts_engine_off), Toast.LENGTH_SHORT).show();
     }
 
     private void applyDevSwitch(boolean enabled) {

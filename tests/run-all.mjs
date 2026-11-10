@@ -50,6 +50,7 @@ import { runDiscoverSuite } from './discover-suite.mjs'
 import { runAndroidOrderSuite } from './android-order-suite.mjs'
 import { runAppPresetSuite } from './app-preset-suite.mjs'
 import { runTtsSuite } from './tts-suite.mjs'
+import { runTtsHttpSuite } from './tts-http-suite.mjs'
 import { runTranslateSuite } from './translate-suite.mjs'
 import { runAsrPackSuite } from './asr-pack-suite.mjs'
 import { runAsrLossSuite } from './asr-loss-suite.mjs'
@@ -192,6 +193,12 @@ await runAndroidOrderSuite(helpers)
 // 关掉了还在念、自己的译文被自己录回去。切块器是纯函数，直接编译执行。
 heading('译文朗读（切块 / 耳机优先 / 过期不播 / 关掉立刻闭嘴）')
 await runTtsSuite(helpers)
+
+// ── 7i. 服务器合成语音（POST /tts）──────────────────────────────────────────
+// 手机没有巴葡/英语语音包 → 那两门走服务器 piper；中文恒走本地。两条链路都留着，
+// 由「我的」里那颗开关控制（备份 + 对比）。这一套守的是"分得清、说得清、坏得明白"。
+heading('服务器合成语音（请求规整 / 原样转 wav / 五种坏情况 / 手机侧路由 / python 自检）')
+await runTtsHttpSuite(helpers)
 
 // ── 4d. 翻译模块的隔离（提示词 / 热词 / 校对都在这一层）────────────────────
 // 这一层被搬出 plugin/core.mjs 之后，靠"零 import、不重复实现、词表在模块内部"

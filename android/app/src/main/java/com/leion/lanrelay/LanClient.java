@@ -279,6 +279,11 @@ public class LanClient {
     private static String defaultAppVersionCode = "";
 
     /** 启动时调一次（`app=MODE_PRIVATE` 的包信息读一次就够）。 */
+    /** 5.157：给「服务器合成」那条请求带版本号用（与其它写路径同一口径）。 */
+    public static String defaultAppVersionCodeOf() {
+        return defaultAppVersionCode == null ? "" : defaultAppVersionCode.trim();
+    }
+
     public static void setDefaultAppVersionCode(String code) {
         defaultAppVersionCode = code == null ? "" : code.trim();
     }

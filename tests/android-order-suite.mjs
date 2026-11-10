@@ -1772,7 +1772,10 @@ export async function runAndroidOrderSuite({ it, check }) {
       for (const m of readFileSync(join(resDir, 'layout', f), 'utf-8').matchAll(/@string\/([A-Za-z0-9_]+)/g)) refs.add(m[1])
     }
     for (const f of acts) {
-      for (const m of readFileSync(join(javaDir, f), 'utf-8').matchAll(/R\.string\.([A-Za-z0-9_]+)/g)) refs.add(m[1])
+      // ⚠️ 先剔掉 `android.R.string.*`（系统自带串，比如 android.R.string.ok）——
+      // 它不从我们的资源里来，算进来会误报"这个键中文里没有"。
+      const source = readFileSync(join(javaDir, f), 'utf-8').replace(/android\.R\.string\./g, 'system.R.string.')
+      for (const m of source.matchAll(/(?<!system\.)R\.string\.([A-Za-z0-9_]+)/g)) refs.add(m[1])
     }
     // 出厂默认值不在界面文案里（它们是配置，不是句子）
     for (const k of ['default_server_url', 'default_shared_secret']) refs.delete(k)
@@ -1947,6 +1950,10 @@ export async function runAndroidOrderSuite({ it, check }) {
       // 与 4.99 的'清理失败'同一条规矩。
       '表结构有问题，已拒绝保存', '写表失败：', '只支持 GET /org/asr/models',
       '读不到示例表 config/asr-models.json：',
+      // 5.157：TTS 的报错正文是给**运维/外部调用方**看的技术细节（哪条链路没起来）。
+      // 手机端不显示这段原文 —— 它按机器码（tts-server-failed / tts-unavailable）取三语文案，
+      // 所以这些句子不需要映射，与上面 4.99 / 5.148 同一条规矩。
+      '这台服务器没有配 TTS 服务', '连不上 TTS 服务', '合成服务返回了空音频',
     ]
     const ignore = (raw) => IGNORE.some((i) => raw.startsWith(i))
     const matched = (raw) => exact.includes(raw) || pre.some((p) => raw.startsWith(p))

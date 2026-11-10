@@ -64,6 +64,8 @@ public final class TtsSpeaker {
     private TextToSpeech tts;
     private volatile boolean ttsReady = false;
     private volatile String ttsProblem = "";
+    /** 5.157：走服务器合成时，最近一次失败的原因（给界面说人话用）。 */
+    private volatile String serverProblem = "";
     private final CountDownLatch initLatch = new CountDownLatch(1);
     private boolean initStarted = false;
 
@@ -86,7 +88,12 @@ public final class TtsSpeaker {
         stopped = false;
         List<String> chunks = TtsChunker.split(text, lang);
         if (chunks.isEmpty()) return new Result(true, "", "", 0);
-        if (!ensureEngine(lang)) {
+        // 5.157：**按语言选合成后端**。中文走手机本地（零延迟、离线）；巴葡/英语走服务器
+        // （手机根本没装这两门语言的语音包，本地引擎会直接报"没语音包"）。
+        // 用户可以在「我的 → 语音合成」关掉服务器那条路（全部走本地）—— 那既是备份，
+        // 也是"两条链路对比"用的开关。
+        final boolean server = useServerFor(lang);
+        if (!server && !ensureEngine(lang)) {
             return new Result(false, InterpreterErrorCodes.TTS_ENGINE,
                     ttsProblem.isEmpty() ? "这台设备没有可用的语音合成引擎" : ttsProblem, 0);
         }
@@ -101,9 +108,19 @@ public final class TtsSpeaker {
         try {
             for (String chunk : chunks) {
                 if (stopped) return new Result(true, "", "", firstAudioMs);
-                File file = synthesize(chunk, lang);
-                if (file == null) {
-                    return new Result(false, InterpreterErrorCodes.TTS_FAILED, "语音合成失败（引擎没有返回音频）", firstAudioMs);
+                File file;
+                if (server) {
+                    // 服务器合成：失败要**如实**报回去（不能拿本地念一遍假装成功）
+                    file = synthesizeOnServer(chunk, lang);
+                    if (file == null) {
+                        return new Result(false, InterpreterErrorCodes.TTS_SERVER_FAILED,
+                                serverProblem.isEmpty() ? "服务器合成失败" : serverProblem, firstAudioMs);
+                    }
+                } else {
+                    file = synthesize(chunk, lang);
+                    if (file == null) {
+                        return new Result(false, InterpreterErrorCodes.TTS_FAILED, "语音合成失败（引擎没有返回音频）", firstAudioMs);
+                    }
                 }
                 try {
                     boolean played = play(file, output);
@@ -119,6 +136,113 @@ public final class TtsSpeaker {
             return new Result(true, "", "", firstAudioMs);
         } finally {
             abandonFocus(focus);
+        }
+    }
+
+    /** 这一门语言该走服务器吗（5.157）：用户在「我的」关掉就全走本地。 */
+    private boolean useServerFor(String lang) {
+        boolean wanted = context.getSharedPreferences("leion", Context.MODE_PRIVATE)
+                .getBoolean(TtsRouter.PREF_USE_SERVER, true);
+        // 规则本身在 TtsRouter（纯 Java、可测）：中文恒本地；葡语/英语按开关。
+        return TtsRouter.serverFor(lang, wanted);
+    }
+
+    /**
+     * 服务器合成：POST /tts → wav 字节 → 落到缓存文件。
+     *
+     * <p>为什么落到文件而不是直接播字节：播放那一层（{@link #play}）用的是
+     * MediaPlayer + `setPreferredDevice`（耳机/眼镜优先），只有文件路径这条路能设设备。
+     * 也正因如此，**合成与播放是同一段代码**，两条链路只在"wav 从哪来"上不同。
+     *
+     * @return 成功返回文件（调用方负责删），失败返回 null 并把原因写进 {@link #serverProblem}
+     */
+    private File synthesizeOnServer(String chunk, String lang) {
+        serverProblem = "";
+        java.net.HttpURLConnection connection = null;
+        File file = null;
+        try {
+            String host = ServerPreset.host(context);
+            String secret = ServerPreset.secret(context);
+            if (host.isEmpty() || secret.isEmpty()) {
+                serverProblem = "没有配置服务器地址或密钥";
+                return null;
+            }
+            String code = LanClient.defaultAppVersionCodeOf();
+            String url = host.replaceAll("/+$", "") + "/tts" + (code.isEmpty() ? "" : "?app=" + code);
+            connection = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+            connection.setRequestMethod("POST");
+            connection.setConnectTimeout(5000);
+            connection.setReadTimeout(20000);
+            connection.setDoOutput(true);
+            connection.setRequestProperty("X-Leion-Secret", secret);
+            connection.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            String token = context.getSharedPreferences("leion", Context.MODE_PRIVATE)
+                    .getString("accountToken", "");
+            if (token != null && !token.isEmpty()) {
+                connection.setRequestProperty("X-Leion-Token", token);
+            }
+            org.json.JSONObject body = new org.json.JSONObject();
+            body.put("text", chunk);
+            body.put("lang", lang);
+            byte[] payload = body.toString().getBytes("UTF-8");
+            connection.setFixedLengthStreamingMode(payload.length);
+            try (java.io.OutputStream out = connection.getOutputStream()) {
+                out.write(payload);
+            }
+            int status = connection.getResponseCode();
+            if (status != 200) {
+                // 服务端把"为什么"写在 JSON 的 error/hint 里，原样拿出来给用户看
+                serverProblem = readProblem(connection);
+                Log.w(TAG, "服务器合成失败（HTTP " + status + "）：" + serverProblem);
+                return null;
+            }
+            file = new File(context.getCacheDir(), "tts-srv-" + System.nanoTime() + ".wav");
+            try (java.io.InputStream in = connection.getInputStream();
+                 java.io.FileOutputStream out = new java.io.FileOutputStream(file)) {
+                byte[] buffer = new byte[8192];
+                int read;
+                long total = 0;
+                while ((read = in.read(buffer)) > 0) {
+                    if (stopped) break;
+                    out.write(buffer, 0, read);
+                    total += read;
+                }
+                if (total <= 0) {
+                    serverProblem = "服务器返回了空音频";
+                    file.delete();
+                    return null;
+                }
+            }
+            return file;
+        } catch (Exception error) {
+            serverProblem = String.format("连不上服务器：%s", error.getMessage() == null ? error.toString() : error.getMessage());
+            Log.w(TAG, "服务器合成异常：" + serverProblem);
+            if (file != null) file.delete();
+            return null;
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
+
+    /** 从错误响应里抠出一句人话（服务端写的是 {ok:false,error,hint}）。 */
+    private String readProblem(java.net.HttpURLConnection connection) {
+        try (java.io.InputStream in = connection.getErrorStream()) {
+            if (in == null) return "HTTP " + connection.getResponseCode();
+            java.io.ByteArrayOutputStream sink = new java.io.ByteArrayOutputStream();
+            byte[] buffer = new byte[2048];
+            int read;
+            while ((read = in.read(buffer)) > 0) sink.write(buffer, 0, read);
+            org.json.JSONObject body = new org.json.JSONObject(sink.toString("UTF-8"));
+            String hint = body.optString("hint", "");
+            String error = body.optString("error", "");
+            return hint.isEmpty() ? error : hint;
+        } catch (Exception ignored) {
+            // getResponseCode 自己也会抛 IOException —— 在 catch 里再抛就等于没兜住
+            try {
+                return "HTTP " + connection.getResponseCode();
+            } catch (Exception alsoIgnored) {
+                return "服务器合成失败（读不到原因）";
+            }
         }
     }
 

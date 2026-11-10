@@ -337,6 +337,59 @@
                         android:contentDescription="@string/settings_developer_mode"
                         android:focusable="false" />
                 </LinearLayout>
+                <!-- 5.157：语音合成走哪条链路。
+                     巴葡/英语在本机没有语音包 → 走服务器；中文恒走本地。
+                     关掉这颗开关 = 全部用手机本地（服务器挂了时的备份，也是两条链路对比的入口）。 -->
+                <LinearLayout
+                    android:id="@+id/meRowTts"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center_vertical"
+                    android:minHeight="@dimen/touch_min"
+                    android:orientation="horizontal"
+                    android:padding="@dimen/space_card">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="@string/me_tts_engine"
+                            android:textColor="@color/ink"
+                            android:textSize="@dimen/text_body"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/meTtsEngine"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="@string/me_tts_engine_on"
+                            android:textColor="@color/ink_faint"
+                            android:textSize="@dimen/text_caption" />
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="@dimen/space_gap_tiny"
+                            android:text="@string/me_tts_engine_hint"
+                            android:textColor="@color/ink_faint"
+                            android:textSize="@dimen/text_caption" />
+                    </LinearLayout>
+
+                    <Switch
+                        android:id="@+id/meTtsSwitch"
+                        android:layout_width="wrap_content"
+                        android:layout_height="@dimen/touch_min"
+                        android:clickable="false"
+                        android:contentDescription="@string/me_tts_engine"
+                        android:focusable="false" />
+                </LinearLayout>
             </LinearLayout>
 
             <!-- ── 白卡二：服务器 ────────────────────────────────────────── -->

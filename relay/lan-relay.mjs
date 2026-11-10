@@ -70,6 +70,7 @@ import { apiTranslateBus, apiTranslateInbox } from '../lib/paths.mjs'
 import {
   TRANSLATE_HTTP_LIMITS, normalizeTranslateRequest, translateOnce,
 } from '../lib/translate-http.mjs'
+import { TTS_HTTP_LIMITS, normalizeTtsRequest, requestTts } from '../lib/tts-http.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[\\/]$/, '')
 
@@ -83,7 +84,7 @@ const UTTERANCE_SWEEP_MS = 60 * 60 * 1000
  * **电脑上跑的还是旧版进程**（没有 `/auth/*` 端点）。与其让人对着 404 猜，
  * 不如让这一端把自己的能力报出来，手机据此说人话。
  */
-export const RELAY_FEATURES = ['hello', 'say', 'audio', 'frame', 'status', 'diag', 'lint', 'terms', 'settings', 'auth', 'org', 'floor-ws', 'frame-ws', 'room-closed-push', 'session-push', 'asr-http', 'translate-http']
+export const RELAY_FEATURES = ['hello', 'say', 'audio', 'frame', 'status', 'diag', 'lint', 'terms', 'settings', 'auth', 'org', 'floor-ws', 'frame-ws', 'room-closed-push', 'session-push', 'asr-http', 'translate-http', 'tts-http']
 
 /**
  * 默认数据目录：和 scripts/harness-side.mjs 指向同一对文件，两边靠它对接。
@@ -208,6 +209,9 @@ const HELP = `lan-relay —— 手机 ↔ 电脑 的局域网转发进程
                         见 docs/21 §10 的 P4）。启动时先清一次，之后每小时清一次。
   --public              公网部署模式：强制强密钥 + 每 IP 限流 + 音频总量上限
                         **绑到公网地址时必须加这个**（见 docs/10）
+  --tts-url <url>       内网合成服务地址（如 http://127.0.0.1:8790，5.157）。
+                        不给 = 这台机器没有 TTS，POST /tts 回 503 tts-unavailable。
+                        合成服务由 bridge/tts-server.py 提供（piper，只绑本机）
   --lint                译文质检：每个定稿帧拿原文对一遍，报"确定错/警告"（**缺省就开**）
                         判据见 lib/translation-lint.mjs（专名新造、数字/房间号丢失、
                         性数不一致、量级错）。**只报不改**，不改字幕、不影响延迟。
@@ -302,7 +306,7 @@ export function createRateLimiter({ windowMs, maxRequests }) {
 }
 
 export function parseArgs(argv) {  const options = { port: 8788, host: '0.0.0.0', pollHoldMs: 25000, busPollMs: 60, quiet: false, lint: true, utteranceRetentionDays: 7, audioMaxBytes: 1024 * 1024 * 1024 }
-  const takesValue = new Set(['port', 'host', 'secret', 'data-dir', 'inbox', 'bus', 'audio', 'audio-rate', 'audio-lang', 'poll-hold-ms', 'bus-poll-ms', 'utterance-retention-days', 'audio-max-bytes'])
+  const takesValue = new Set(['port', 'host', 'secret', 'data-dir', 'inbox', 'bus', 'audio', 'audio-rate', 'audio-lang', 'poll-hold-ms', 'bus-poll-ms', 'utterance-retention-days', 'audio-max-bytes', 'tts-url'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -334,6 +338,9 @@ export function parseArgs(argv) {  const options = { port: 8788, host: '0.0.0.0'
     else if (key === 'audio') options.audio = value
     else if (key === 'audio-rate') options.audioRate = value
     else if (key === 'audio-lang') options.audioLang = value
+    // 5.157：内网合成服务的地址（bridge/tts-server.py）。不给就是"这台机器没有 TTS"，
+    // /tts 会回 503 tts-unavailable —— 明确说"没配"，而不是超时让人干等。
+    else if (key === 'tts-url') options.ttsUrl = value
     else options[key] = value
   }
   if (options.help === true) return options
@@ -771,6 +778,8 @@ export async function startRelay(rawOptions = {}) {
      * 一个**明确的 429**，而不是让它们排到天荒地老还以为是网络慢。
      */
     translateInFlight: 0,
+  /** 5.157：正在合成的请求数（合成在服务器上串行，排多了只会一起变慢）。 */
+  ttsInFlight: 0,
     /** 总线是目录（每房间一份）还是单文件（4.86） */
     busIsDir: String(options.bus).endsWith('/') || String(options.bus).endsWith('\\')
       || (existsSync(options.bus) && statSync(options.bus).isDirectory()),
@@ -2389,6 +2398,89 @@ export async function startRelay(rawOptions = {}) {
           send(response, 500, { ok: false, error: String(error?.message ?? error) })
         } finally {
           state.translateInFlight -= 1
+        }
+        return
+      }
+
+      // ── POST /tts ─────────────────────────────────────────────────────────
+      //
+      // 5.157：手机要"把这句话念出来"，但**手机自己没有这门语言的语音包**
+      // （巴葡在国内机型基本不带）。于是由服务器上的 piper 合成，音频回给手机播。
+      //
+      // 分工（想清楚这一层才不会被绕过）：
+      //   · 合成在内网的 `bridge/tts-server.py`（只绑 127.0.0.1，不做鉴权）；
+      //   · 鉴权 / 版本门禁 / 长度限制 / 并发限制 全在这一层（relay 是唯一入口）。
+      //
+      // 请求：{ "text": "…", "lang": "pt-BR" }；响应：audio/wav 原始字节。
+      // 参数不对给 JSON（手机按机器码说人话），合成服务挂了给 503 —— 手机据此弹窗。
+      if (request.method === 'GET' && url.pathname === '/tts/info') {
+        send(response, 200, {
+          ok: true,
+          endpoint: 'POST /tts',
+          langs: TTS_HTTP_LIMITS.langs,
+          limits: TTS_HTTP_LIMITS,
+          upstream: options.ttsUrl ?? '',
+          note: 'one request = one sentence; returns audio/wav',
+        })
+        return
+      }
+
+      if (request.method === 'POST' && url.pathname === '/tts') {
+        let body
+        try {
+          body = await readBody(request, TTS_HTTP_LIMITS.maxBodyBytes)
+        } catch (error) {
+          sendAndClose(request, response, error.statusCode ?? 400,
+            { ok: false, error: String(error.message) })
+          return
+        }
+        const parsed = normalizeTtsRequest(body)
+        if (parsed.ok !== true) {
+          send(response, 400, { ok: false, error: parsed.error })
+          return
+        }
+        if (state.ttsInFlight >= TTS_HTTP_LIMITS.maxInFlight) {
+          send(response, 429, {
+            ok: false,
+            error: 'too-many-requests',
+            hint: `at most ${TTS_HTTP_LIMITS.maxInFlight} in-flight TTS requests `
+              + '(synthesis is serial on the server; extra requests only make everything slower)',
+          })
+          return
+        }
+        if (typeof options.ttsUrl !== 'string' || options.ttsUrl.trim() === '') {
+          send(response, 503, {
+            ok: false,
+            error: 'tts-unavailable',
+            hint: '这台服务器没有配 TTS 服务（--tts-url 或 start-all 起 bridge/tts-server.py）',
+          })
+          return
+        }
+        state.ttsInFlight += 1
+        try {
+          const upstream = await requestTts(options.ttsUrl.trim(), parsed)
+          if (upstream.ok !== true) {
+            send(response, upstream.status, { ok: false, error: upstream.error, hint: upstream.hint })
+            return
+          }
+          // 音频原样回：手机端 MediaPlayer 直接吃得下 wav，不需要再转码。
+          response.writeHead(200, {
+            'Content-Type': 'audio/wav',
+            'Content-Length': String(upstream.audio.length),
+            'Cache-Control': 'no-store',
+            ...(upstream.voice === '' ? {} : { 'X-Leion-Tts-Voice': upstream.voice }),
+            'X-Leion-Tts-Synth-Ms': String(upstream.synthMs),
+          })
+          response.end(upstream.audio)
+        } catch (error) {
+          // 连不上就是"服务没起"或"挂了"，对手机而言都该是"这次没念成"
+          send(response, 503, {
+            ok: false,
+            error: 'tts-unavailable',
+            hint: `连不上 TTS 服务（${options.ttsUrl}）：${String(error?.message ?? error).slice(0, 120)}`,
+          })
+        } finally {
+          state.ttsInFlight -= 1
         }
         return
       }

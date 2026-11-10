@@ -54,6 +54,9 @@ public final class InterpreterErrorCodes {
     // ── 朗读（TTS）────────────────────────────────────────────────────────
     /** 没有耳机/眼镜（会议里禁止外放）。**不可重试**（插上再来）。 */
     public static final String NO_EARPHONE = "no-earphone";
+    /** 5.157：服务器合成失败（服务没起 / 连不上 / 合成报错）—— 与本地引擎失败分开，
+     *  因为两者的处置完全不同：本地失败多半是没装语音包，服务器失败是链路问题。 */
+    public static final String TTS_SERVER_FAILED = "tts-server-failed";
     /** 这台设备没有可用的语音引擎/语音包。**不可重试**。 */
     public static final String TTS_ENGINE = "tts-engine";
     /** 语音合成或播放失败。**可重试**（下一句再试）。 */
@@ -77,6 +80,7 @@ public final class InterpreterErrorCodes {
         put(NO_EARPHONE, R.string.err_no_earphone, false);
         put(TTS_ENGINE, R.string.err_tts_engine, false);
         put(TTS_FAILED, R.string.err_tts_failed, true);
+        put(TTS_SERVER_FAILED, R.string.err_tts_server_failed, true);
     }
 
     private static void put(String code, int resource, boolean retryable) {

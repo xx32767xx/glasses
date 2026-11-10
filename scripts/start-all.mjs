@@ -116,7 +116,13 @@ const HELP = `start-all —— 一条命令起齐整条链路
                         见 docs/15 §18（实验分支 exp/rescue-quarantine）
   --public              公网部署（服务器上）：转发进程开强密钥 + 限流 + 音频上限，
                         并绑到 0.0.0.0。**绑公网地址时必须加**，见 docs/10
-  --no-transcriber      只起转发 + 大脑（手输文字那条路不需要识别）
+  --tts                 顺带起**服务器合成语音**（bridge/tts-server.py，piper）。
+                       手机自己没有巴葡/英语的语音包，那两门语言靠它念；中文仍走手机本地。
+                       需要 piper 装在 LEION_PYTHON（缺省 python3）里、音色在 --tts-voice-dir。
+                       默认**不起** —— 没装 piper 的机器开了只会在启动时报错
+ --tts-port <n>        合成服务端口（缺省 8790，只绑 127.0.0.1，由 relay 代理出去）
+ --tts-voice-dir <dir> piper 音色目录（缺省环境变量 LEION_TTS_MODELS 或 /opt/leion/models/piper）
+ --no-transcriber      只起转发 + 大脑（手输文字那条路不需要识别）
   --data-dir <path>     数据目录（缺省 var/live）
   --inbox <path>        收件箱（缺省 <data-dir>/asr-inbox.jsonl）
   --bus <path>          字幕总线（缺省 <data-dir>/subtitle-bus.json）
@@ -140,6 +146,7 @@ const STEPS = {
   relay: { tag: '转发', color: '\x1b[36m' },      // 青
   asr: { tag: '识别', color: '\x1b[35m' },        // 紫
   brain: { tag: '大脑', color: '\x1b[33m' },      // 黄
+  tts: { tag: '合成', color: '\x1b[32m' },      // 绿（5.157）
 }
 const RESET = '\x1b[0m'
 const DIM = '\x1b[2m'
@@ -160,8 +167,13 @@ export function parseArgs(argv) {
     openWindow: false,
     writeLogs: true,
     public: false,
+    // 5.157：服务器合成语音（piper）。默认**不开** —— 没装 piper 的机器开了只会在启动时报错，
+    // 部署时加 `--tts` 即可（docs/21 §5.157 有完整命令）。
+    tts: false,
+    ttsPort: 8790,
+    ttsVoiceDir: process.env.LEION_TTS_MODELS || "/opt/leion/models/piper",
   }
-  const takesValue = new Set(['data-dir', 'inbox', 'bus', 'audio', 'port', 'cols', 'lines', 'whisper-model', 'compute'])
+  const takesValue = new Set(['data-dir', 'inbox', 'bus', 'audio', 'port', 'cols', 'lines', 'whisper-model', 'compute', 'tts-port', 'tts-voice-dir'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -169,6 +181,8 @@ export function parseArgs(argv) {
     if (key === 'help') { options.help = true; continue }
     if (key === 'cpu') { options.device = 'cpu'; options.computeType = 'int8'; continue }
     if (key === 'offline') { options.offline = true; continue }
+    // 5.157：服务器合成语音（piper，巴葡/英语靠它；中文仍走手机本地）
+    if (key === 'tts') { options.tts = true; continue }
     if (key === 'proofread') { options.proofread = true; continue }
     if (key === 'terms-rescue') { options.termsRescue = true; continue }
     if (key === 'no-transcriber') { options.transcriber = false; continue }
@@ -188,6 +202,9 @@ export function parseArgs(argv) {
       options.computeType = value
     }
     else if (key === 'whisper-model') options.whisperModel = value
+    // 5.157：合成服务的端口与音色目录（只在 --tts 时才起那个进程）
+    else if (key === 'tts-port') options.ttsPort = Number(value)
+    else if (key === 'tts-voice-dir') options.ttsVoiceDir = value
     else options[key] = value
   }
   for (const key of ['port', 'cols', 'lines']) {
@@ -241,6 +258,10 @@ export function buildSteps(options) {
   // 4.86：`--bus` 一定要真的传下去（以前只解析不传，参数白给）。
   // 注意：start-all 是"单套管线"，它的 --bus 应当是**文件**；
   // 多房间并行要按 docs/21 §4.85 分开起。
+  // 5.157：合成服务由下面那个 step 起，relay 只负责代理（鉴权/限流/版本门禁在 relay）。
+  if (options.tts === true) {
+    relayArgs.push('--tts-url', `http://127.0.0.1:${options.ttsPort}`)
+  }
   relayArgs.push('--bus', options.bus)
   steps.push({
     key: 'relay',
@@ -248,6 +269,20 @@ export function buildSteps(options) {
     script: join(ROOT, 'relay', 'lan-relay.mjs'),
     args: relayArgs,
   })
+
+  if (options.tts === true) {
+    steps.push({
+      key: 'tts',
+      ...STEPS.tts,
+      script: join(ROOT, 'bridge', 'tts-server.py'),
+      args: [
+        '--port', String(options.ttsPort),
+        '--voice-dir', options.ttsVoiceDir,
+      ],
+      // python 脚本：用 venv 里的解释器（服务器上装 piper 的那个）
+      interpreter: process.env.LEION_PYTHON || 'python3',
+    })
+  }
 
   if (options.transcriber) {
     // 5.40：这个脚本是**单套管线**（识别进程跟着一条音频流跑），而"按语言选模型"要的是
@@ -661,7 +696,15 @@ export async function main(argv = process.argv.slice(2)) {
   let shuttingDown = false
 
   for (const step of steps) {
-    const child = spawn(process.execPath, [step.script, ...step.args], {
+    // 5.157：合成服务是 python 脚本（piper 装在 venv 里），其余都是 node 脚本。
+    // step.interpreter 就是"用哪个解释器"这一件事，别在 spawn 里玩分支。
+    const command = typeof step.interpreter === 'string' && step.interpreter !== ''
+      ? step.interpreter
+      : process.execPath
+    const commandArgs = typeof step.interpreter === 'string' && step.interpreter !== ''
+      ? ['-u', step.script, ...step.args]
+      : [step.script, ...step.args]
+    const child = spawn(command, commandArgs, {
       cwd: ROOT,
       stdio: ['ignore', 'pipe', 'pipe'],
       // 让子进程的 stdout 不被父进程的缓冲拖住（低延迟链条上这点很重要）

@@ -767,6 +767,12 @@
     <string name="me_org_role_admin">管理员 · 组织账号</string>
     <string name="me_org_role_user">普通成员 · 个人账号</string>
     <string name="me_org_role_dev">开发账号</string>
+        <string name="err_tts_server_failed">服务器合成失败：这次没念出来（检查服务器上的语音合成服务，或改用手机本地）</string>
+    <string name="me_tts_engine">语音合成</string>
+    <string name="me_tts_engine_on">服务器（中文仍用手机）</string>
+    <string name="me_tts_engine_off">手机本地</string>
+    <string name="me_tts_engine_hint">巴葡/英语在本机没有语音包，所以走服务器合成；关掉则全部用手机本地（备份与对比）</string>
+    <string name="st_tts_server_failed">服务器合成失败，这一句没念出来</string>
     <string name="me_version">服务版本 %1$s（%2$d）</string>
     <string name="me_device_title">我的设备</string>
     <string name="me_device_summary">%1$s · Android %2$s · 手机麦克风</string>

@@ -176,6 +176,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
      * 念成功过（或戴上耳机后念成功）就重新打开这道门。
      */
     private boolean ttsProblemShown = false;
+    /** 5.157：服务器合成失败的弹窗每场只弹一次（用户要看的是"念不出来"，不是连环弹窗）。 */
+    private boolean ttsServerWarned = false;
     /**
      * 5.152：同一句话可能从**多条帧**到达（原文帧一次、每种语言的译文帧各一次），
      * 按「说话人 + 文本」在短时间窗口内去重 —— 否则同一句会念两三遍。
@@ -438,6 +440,25 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 @Override
                 public void onProblem(String code, String hint) {
                     ui.post(() -> {
+                        // 5.157：服务器合成失败要**弹窗**（用户明确要求：其他语言静默不播 + 弹窗警告）。
+                        // 为什么这里必须弹：选的是"念巴葡"，而手机上根本没有这门语言的语音包 ——
+                        // 不弹窗的话用户只会觉得"朗读功能坏了"，而且没有任何线索指向服务端。
+                        // 每场只弹一次（ttsServerWarned），但提示行照旧更新。
+                        if (InterpreterErrorCodes.TTS_SERVER_FAILED.equals(code)) {
+                            if (hintLine != null) {
+                                hintLine.setText(InterpreterErrorCodes.message(RoomActivity.this, code, hint));
+                            }
+                            if (!ttsServerWarned && !isFinishing()) {
+                                ttsServerWarned = true;
+                                new android.app.AlertDialog.Builder(RoomActivity.this)
+                                        .setTitle(getString(R.string.me_tts_engine))
+                                        .setMessage(InterpreterErrorCodes.message(RoomActivity.this, code, hint)
+                                                + "\n\n" + getString(R.string.me_tts_engine_hint))
+                                        .setPositiveButton(android.R.string.ok, null)
+                                        .show();
+                            }
+                            return;
+                        }
                         // 5.152：没有耳机这类问题**每场只说一次**。否则每来一句都要把提示行
                         // 改写成同一句话 —— 用户看到的是"提示一闪一闪"，字幕也被打断。
                         if (InterpreterErrorCodes.NO_EARPHONE.equals(code)) {

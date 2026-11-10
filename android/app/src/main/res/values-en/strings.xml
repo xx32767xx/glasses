@@ -450,6 +450,12 @@ If you do not want to be recorded, do not tap Start. To delete records on the ph
     <string name="me_org_role_admin">Administrator · organization account</string>
     <string name="me_org_role_user">Member · personal account</string>
     <string name="me_org_role_dev">Developer account</string>
+        <string name="err_tts_server_failed">Server speech synthesis failed: this line was not spoken (check the TTS service on the server, or switch to the phone voice)</string>
+    <string name="me_tts_engine">Speech synthesis</string>
+    <string name="me_tts_engine_on">Server (Chinese stays on the phone)</string>
+    <string name="me_tts_engine_off">Phone voice</string>
+    <string name="me_tts_engine_hint">This phone has no voice pack for pt-BR/en-US, so those use the server; turn it off to use the phone voice for everything (backup and comparison)</string>
+    <string name="st_tts_server_failed">Server synthesis failed — this line was not spoken</string>
     <string name="me_version">Service version %1$s (%2$d)</string>
     <string name="me_device_title">My device</string>
     <string name="me_device_summary">%1$s · Android %2$s · phone microphone</string>
