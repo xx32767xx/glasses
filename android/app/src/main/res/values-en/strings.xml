@@ -225,6 +225,7 @@ Microphone: phone microphone (in use)</string>
     <string name="cd_lock_speak">Lock speaking</string>
     <string name="room_source">Original</string>
     <string name="room_tts_read">Read aloud</string>
+        <string name="room_tts_off">Off (hear original)</string>
     <string name="room_tts_translation">Translation</string>
     <string name="room_tts_original">Original</string>
     <string name="room_tts_desc">Read aloud: switch between the translation and the original</string>

@@ -284,25 +284,38 @@
                     android:textColor="@color/ink_soft"
                     android:textSize="@dimen/text_caption" />
 
-                <LinearLayout
+                <!--
+                    5.158：朗读 = **三态**（关 / 念译文 / 念原文），点这一行循环切换。
+
+                    为什么要"关"这一档：用户提了硬要求"听译文的时候，说话人的原声不许传到我这里"。
+                    于是"在念"必须能和"听原声"互斥 —— 两态里没有"不念"，想听原声就没路可走。
+                    现在语义直白：关 = 只听原声；念译文/念原文 = 只听合成音（原声整体静音）。
+
+                    为什么是"点一行循环"而不是三颗按钮：92dp 宽的条放不下三颗；循环只有一处可点。
+                -->
+                <TextView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
+                    android:layout_marginTop="@dimen/space_gap_small"
+                    android:text="@string/room_tts_read"
+                    android:textColor="@color/ink_soft"
+                    android:textSize="@dimen/text_caption" />
 
-                    <Switch
-                        android:id="@+id/roomTtsSwitch"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:checked="false"
-                        android:contentDescription="@string/room_tts_desc" />
+                <LinearLayout
+                    android:id="@+id/roomTtsRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="?android:attr/selectableItemBackground"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center_vertical"
+                    android:minHeight="@dimen/touch_min"
+                    android:orientation="horizontal">
 
                     <TextView
                         android:id="@+id/roomTtsMode"
-                        android:layout_width="wrap_content"
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginStart="@dimen/space_gap_tiny"
                         android:text="@string/room_tts_translation"
                         android:textColor="@color/brand"
                         android:textSize="@dimen/text_caption" />

@@ -2449,6 +2449,11 @@ export async function startRelay(rawOptions = {}) {
           return
         }
         if (typeof options.ttsUrl !== 'string' || options.ttsUrl.trim() === '') {
+          // 只在第一次说一遍：这行会随每句话触发，刷屏没有信息量
+          if (state.ttsNoUrlNoted !== true) {
+            state.ttsNoUrlNoted = true
+            debug('🔈 TTS 未配置（--tts-url）：手机发来的合成请求一律 503 —— 启动时加 --tts')
+          }
           send(response, 503, {
             ok: false,
             error: 'tts-unavailable',
@@ -2460,9 +2465,16 @@ export async function startRelay(rawOptions = {}) {
         try {
           const upstream = await requestTts(options.ttsUrl.trim(), parsed)
           if (upstream.ok !== true) {
+            // 5.158：**失败必须留痕**。用户实测"手机上弹了合成失败、服务器日志里什么都没有"——
+            // 那时这里一个字都不打。现在把状态码、机器码、原因、语言、字数都记下来，
+            // 排障时不用再猜"到底是没配 / 没起 / 上游报错"。
+            debug(`🔈 TTS 失败（${parsed.lang}，${parsed.text.length} 字）：`
+              + `HTTP ${upstream.status} ${upstream.error} — ${upstream.hint}`)
             send(response, upstream.status, { ok: false, error: upstream.error, hint: upstream.hint })
             return
           }
+          debug(`🔈 TTS 合成 ${parsed.lang}（${parsed.text.length} 字 → ${upstream.audio.length} B，`
+            + `上游 ${upstream.synthMs} ms，音色 ${upstream.voice || '?'}）`)
           // 音频原样回：手机端 MediaPlayer 直接吃得下 wav，不需要再转码。
           response.writeHead(200, {
             'Content-Type': 'audio/wav',
@@ -2474,6 +2486,7 @@ export async function startRelay(rawOptions = {}) {
           response.end(upstream.audio)
         } catch (error) {
           // 连不上就是"服务没起"或"挂了"，对手机而言都该是"这次没念成"
+          debug(`🔈 TTS 连不上上游 ${options.ttsUrl}：${String(error?.message ?? error)}`)
           send(response, 503, {
             ok: false,
             error: 'tts-unavailable',

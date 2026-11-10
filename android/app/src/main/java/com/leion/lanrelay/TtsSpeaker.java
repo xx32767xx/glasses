@@ -169,6 +169,9 @@ public final class TtsSpeaker {
             }
             String code = LanClient.defaultAppVersionCodeOf();
             String url = host.replaceAll("/+$", "") + "/tts" + (code.isEmpty() ? "" : "?app=" + code);
+            // 5.158：每次请求都留一行 —— 用户反馈"失败但日志里什么都没有"时，
+            // 至少能看出"到底发出去了没有、发去哪、几个字"。
+            Log.i(TAG, "🔈 请求合成：" + lang + " / " + chunk.length() + " 字 → " + url);
             connection = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
             connection.setRequestMethod("POST");
             connection.setConnectTimeout(5000);
