@@ -1271,12 +1271,16 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('判定用开关而不是字段内容', /final boolean isRegister = registerMode;/.test(homeJava))
 
     // 出厂默认配置：地址可预填、密钥默认空（安全取舍写进了资源文件注释）
+    // 5.155：这两个值改由 `scripts/build-preset.mjs` 写入，所以断言放宽成"能带属性"，
+    // 并且仓库里**必须**是空密钥（带密钥的版本提交上去等于写进 git 历史）。
     const cfg = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', 'values', 'app_config.xml'), 'utf-8')
-    check('默认服务器地址可预填', /default_server_url/.test(cfg))
+    check('默认服务器地址可预填', /name="default_server_url"/.test(cfg))
     check('默认密钥留空（不把口令写进仓库）',
-      /<string name="default_shared_secret"><\/string>/.test(cfg), cfg.slice(0, 120))
+      /<string name="default_shared_secret"[^>]*>\s*<\/string>/.test(cfg), cfg.slice(0, 120))
     check('注释里说清了为什么密钥不打包', /反编译|apktool/.test(cfg))
-    check('登录页会回落到出厂默认值', /R\.string\.default_server_url/.test(homeJava))
+    // 5.155：页面不再各自摸资源 —— 出厂值的唯一入口是 ServerPreset（含回落逻辑）
+    check('登录页按 ServerPreset 取出厂值（回落逻辑只在那一个地方）',
+      /ServerPreset\.(host|seedInto)\(this\)/.test(homeJava))
   })
 
   await it('同一台设备不许把自己踢下线（4.50）', () => {

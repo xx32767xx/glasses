@@ -735,8 +735,8 @@ public class InterpreterActivity extends android.app.Activity {
     private LanClient newClient(LanClient.Listener listener) {
         android.content.SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         String host = serverUrl();
-        String secret = prefs.getString("secret", "");
-        if (secret == null || secret.isEmpty()) secret = getString(R.string.default_shared_secret);
+        // 5.155：与首页/房间页同一套取值（用户存过的 → 打包进 APK 的出厂值）
+        String secret = ServerPreset.secret(this);
         if (host.isEmpty()) return null;
         LanClient built = new LanClient(host, secret, listener);
         String token = prefs.getString("accountToken", "");
@@ -749,11 +749,9 @@ public class InterpreterActivity extends android.app.Activity {
         return built;
     }
 
-    /** 当前生效的服务器地址（设置页优先，其次是出厂默认值）。 */
+    /** 当前生效的服务器地址（用户存过的优先，其次是打包进 APK 的出厂值）。 */
     private String serverUrl() {
-        String host = getSharedPreferences(PREFS, MODE_PRIVATE).getString("host", "");
-        if (host == null || host.isEmpty()) host = getString(R.string.default_server_url);
-        return host;
+        return ServerPreset.host(this);
     }
 
     private String myName() {

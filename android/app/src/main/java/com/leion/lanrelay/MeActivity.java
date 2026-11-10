@@ -83,9 +83,9 @@ public class MeActivity extends android.app.Activity {
 
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         userName = prefs.getString("termsUser", "");
-        host = prefs.getString("host", "");
-        if (host == null || host.isEmpty()) host = getString(R.string.default_server_url);
-        secret = prefs.getString("secret", "");
+        // 5.155：用户存过的优先，其次打包进 APK 的出厂值（唯一入口是 ServerPreset）
+        host = ServerPreset.host(this);
+        secret = ServerPreset.secret(this);
         serverInput.setText(host);
         secretInput.setText(secret);
 

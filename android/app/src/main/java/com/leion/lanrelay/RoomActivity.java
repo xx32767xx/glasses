@@ -364,8 +364,12 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         statusLine.setText("");
 
         SharedPreferences prefs = getSharedPreferences("leion", MODE_PRIVATE);
-        String host = prefs.getString("host", "");
-        String secret = prefs.getString("secret", "");
+        // 5.155：同一套取值（用户存过的 → 打包进 APK 的出厂值）。原来这里只读偏好，
+        // 于是"没在首页/我的页保存过"的设备进房间会拿着空地址 —— 界面上什么都不说
+        // （连接直接失败）。首页启动时已经落过一次，这里再兜一次底，成本是两次 getString。
+        ServerPreset.seedInto(this);
+        String host = ServerPreset.host(this);
+        String secret = ServerPreset.secret(this);
         myName = prefs.getString("termsUser", "");
         // 5.00：这台设备读哪种语言的字幕 = 入会时登记的说话语言。
         // 纯听众（从不开麦）也要有值，否则三语会议里会收到两种语言的帧、都显示出来。

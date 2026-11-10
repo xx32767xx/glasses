@@ -48,6 +48,7 @@ import { runPurgeHistorySuite } from './purge-history-suite.mjs'
 import { runEnglishSuite } from './english-suite.mjs'
 import { runDiscoverSuite } from './discover-suite.mjs'
 import { runAndroidOrderSuite } from './android-order-suite.mjs'
+import { runAppPresetSuite } from './app-preset-suite.mjs'
 import { runTtsSuite } from './tts-suite.mjs'
 import { runTranslateSuite } from './translate-suite.mjs'
 import { runAsrPackSuite } from './asr-pack-suite.mjs'
@@ -294,6 +295,12 @@ await runOrgRelaySuite(helpers)
 // WS 上的字幕确实是「包了一层」的形状（写错的客户端只会收到 0 帧，还以为服务端没推）。
 heading('桌面端接入文档（接口都在 / 示例能解析 / WS 是包一层的帧 / 语言扇出 / 长轮询兜底）')
 await runDesktopApiSuite(helpers)
+
+// ── 7f3. 打包内置服务器（地址 + 共享密钥）─────────────────────────────────
+// 老师要求"打包时把服务器与密钥一起打进去"。这一套守的是三件事：出厂值只有一个入口、
+// 优先级是"用户存过的优先"、以及**仓库里不许带密钥**（带密钥的版本提交上去等于写进历史）。
+heading('打包内置服务器（单一入口 / 优先级 / 仓库不带密钥 / 脚本可写可还原）')
+await runAppPresetSuite(helpers)
 
 // ── 7g. 管理员清理会议历史（4.99）─────────────────────────────────────────
 // 这一套守的是「删数据」的三条边界：**进行中的会议永远不删**、

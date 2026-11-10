@@ -172,11 +172,12 @@ public class HomeActivity extends android.app.Activity {
         agreeBox = findViewById(R.id.homeAgree);
 
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        // 出厂默认值（res/values/app_config.xml）：装了就能用，用户仍可在「服务器设置（高级）」里改
-        String host = prefs.getString("host", "");
-        if (host == null || host.isEmpty()) host = getString(R.string.default_server_url);
-        String secret = prefs.getString("secret", "");
-        if (secret == null || secret.isEmpty()) secret = getString(R.string.default_shared_secret);
+        // 5.155：出厂默认值（res/values/app_config.xml，由 scripts/build-preset.mjs 打包时写）
+        // **先落进偏好**，让房间页/历史页/翻译官页那些"直接读偏好"的地方也一致；
+        // 只在对应项为空时写，用户自己改过的值不会被启动覆盖。
+        ServerPreset.seedInto(this);
+        String host = ServerPreset.host(this);
+        String secret = ServerPreset.secret(this);
         serverInput.setText(host);
         secretInput.setText(secret);
         client = new LanClient(host, secret, null);
