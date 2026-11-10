@@ -265,6 +265,9 @@ Microphone: phone microphone (in use)</string>
     <string name="st_generating">Generating…</string>
     <string name="st_terms_missing">Terms did not appear in the required form: %1$s</string>
     <string name="list_separator">, </string>
+        <!-- 5.150：增量帧等不到定稿时的兜底状态（别再一直显示"识别中"） -->
+    <string name="st_no_final">not finalized (timed out)</string>
+    <string name="st_no_final_hint">No final version arrived for this line — recognition or translation was interrupted (the desktop log says why)</string>
     <string name="st_recognizing">Recognizing…</string>
     <string name="st_done">Done</string>
     <string name="st_conn_error">Connection problem: %1$s</string>

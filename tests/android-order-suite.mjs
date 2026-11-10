@@ -1568,6 +1568,31 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('Switch 默认打开', /android:checked="true"/.test(room))
   })
 
+  await it('5.150：增量帧等不到定稿时要有超时兜底（不许一直显示"识别中"）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+
+    check('有超时常量（20 秒）', /PARTIAL_TIMEOUT_MS = \d+L/.test(room)
+      && Number(/PARTIAL_TIMEOUT_MS = (\d+)L/.exec(room)[1]) >= 10000,
+      String(/PARTIAL_TIMEOUT_MS = (\d+)L/.exec(room)?.[1]))
+    check('每张卡登记/撤销计时（定稿要撤，否则会把已定稿的句子改回"未定稿"）',
+      /private void watchPartial\(SentenceCard card, boolean partial\)/.test(room)
+      && /ui\.postDelayed\(timer, PARTIAL_TIMEOUT_MS\)/.test(room)
+      && /partialWatch\.remove\(card\)/.test(room))
+    check('超时后只改状态、不删内容（并且写明为什么）',
+      /st_no_final/.test(room) && /st_no_final_hint/.test(room)
+      && !/removeView\(card/.test(room))
+    check('Activity 销毁时清表（不留下碰 View 的回调）',
+      /partialWatch\.values\(\)[\s\S]{0,120}partialWatch\.clear\(\)/.test(room)
+      && /onDestroy\(\)[\s\S]{0,2500}partialWatch\.clear\(\)/.test(room))
+    for (const dir of ['values', 'values-en', 'values-pt-rBR']) {
+      const xml = readFileSync(join(resDir, dir, 'strings.xml'), 'utf-8')
+      check(`${dir} 有 st_no_final / st_no_final_hint`,
+        /name="st_no_final"/.test(xml) && /name="st_no_final_hint"/.test(xml))
+    }
+  })
+
   await it('5.148：开发者模式下才显示"本场用哪套识别策略"', () => {
     const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
     const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')

@@ -140,6 +140,18 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
      * 每 2 秒弹一次"发言已锁定"，比不提示还糟。
      */
     private boolean lockedSelfNotified = false;
+    /**
+     * 5.150：**"识别中…" 的超时兜底**。
+     *
+     * <p>为什么需要：那一行状态来自"这一帧是增量帧（partial）"。如果定稿帧永远没来
+     * （大脑那边的流断在半路、进程被重启、或者这一句被过滤掉了），卡片就会**一直挂着
+     * "识别中…"** —— 看起来像一直在干活，其实什么都不会再来了。
+     *
+     * <p>这里给每张卡定时：N 秒没等到定稿，就把状态改成"未定稿（超时）"并给一句人话。
+     * **不删内容**：已经收到的译文照旧留着，只是不再假装还在进行中。
+     */
+    private static final long PARTIAL_TIMEOUT_MS = 20000L;
+    private final java.util.Map<SentenceCard, Runnable> partialWatch = new java.util.HashMap<>();
     private MicUploader mic;
     /** 4.76：实时传声——播放别人的声音。 */
     private RoomAudioPlayer audioPlayer;
@@ -447,6 +459,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             floorSocket = null;
         }
         if (client != null) client.stop();
+        // 5.150：把"识别中"的超时表也清掉（否则 Activity 销毁后回调里还在碰 View）
+        for (Runnable pending : partialWatch.values()) ui.removeCallbacks(pending);
+        partialWatch.clear();
         ui.removeCallbacksAndMessages(null);
         super.onDestroy();
     }
@@ -1800,6 +1815,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         boolean anyPartial = partial;
         card.state.setText(anyPartial ? getString(R.string.st_recognizing) : getString(R.string.st_done));
         card.state.setTextColor(getColor(anyPartial ? R.color.accent : R.color.ok));
+        watchPartial(card, anyPartial);
         scrollToBottom();
 
         // 5.30：**定稿译文**才朗读（增量帧是半句话，念出来很怪）。
@@ -1807,6 +1823,29 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         if (!partial && ttsQueue != null && !target.isEmpty() && isPrimaryLang(langKey)) {
             ttsQueue.offer(target, langKey.isEmpty() ? hearLang : langKey);
         }
+    }
+
+    /**
+     * 5.150：增量帧来了就起表，定稿来了就撤表。
+     *
+     * <p>撤表必须跟着一起做，否则"先增量、后定稿"的句子上，超时那一下仍会在 20 秒后
+     * 把状态改回"未定稿"—— 明明已经定稿了。
+     */
+    private void watchPartial(SentenceCard card, boolean partial) {
+        Runnable pending = partialWatch.remove(card);
+        if (pending != null) ui.removeCallbacks(pending);
+        if (!partial) return;
+        Runnable timer = () -> {
+            partialWatch.remove(card);
+            if (card.state == null) return;
+            if (!getString(R.string.st_recognizing).contentEquals(card.state.getText())) return;
+            card.state.setText(getString(R.string.st_no_final));
+            card.state.setTextColor(getColor(R.color.ink_faint));
+            if (hintLine != null) hintLine.setText(getString(R.string.st_no_final_hint));
+            android.util.Log.w("LeionRoom", "⏱ 这一句 " + (PARTIAL_TIMEOUT_MS / 1000) + "s 没等到定稿（卡片 " + card.key + "）");
+        };
+        partialWatch.put(card, timer);
+        ui.postDelayed(timer, PARTIAL_TIMEOUT_MS);
     }
 
     /** 一句话的卡片（5.121）：同一句的几种译文都长在这张卡里。 */
