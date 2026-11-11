@@ -92,6 +92,41 @@ export async function runLeionCleanSuite({ it, check }) {
     rmSync(base, { recursive: true, force: true })
   })
 
+  // 5.174：用户实测 —— 管理台一直报「音频文件已达上限」，`leion-clean` 却报告
+  // 「分轨音频 0.0 MB / 0 个文件」，于是清完一轮毫无变化。原因是 1.0 GB 全在
+  // 数据目录根下的 `audio-in.pcm`（所有房间共用的旧单文件），而这个文件**哪一类都不是**。
+  await it('5.174：旧模式单文件 audio-in.pcm 要看得见、也要清得掉（正在写的不动）', () => {
+    const base = join(ROOT, 'var', 'test', 'clean-legacy')
+    rmSync(base, { recursive: true, force: true })
+    mkdirSync(join(base, 'audio'), { recursive: true })
+    touch(join(base, 'audio-in.pcm'), 4096, 10)
+    touch(join(base, 'audio-in.pcm.1'), 4096, 30)
+    mkdirSync(join(base, 'audio', 'room-a'), { recursive: true })
+    touch(join(base, 'audio', 'room-a', 'ana.pcm'), 2048, 0)
+
+    const plan = collectPlan({ dataDir: base, olderThanDays: 3 })
+    const row = plan.rows.find((one) => one.name.includes('总录音'))
+    check('报告里单列一类，且真的算进了这 8 KB（不再"0 个文件"）',
+      row !== undefined && row.bytes === 8192 && row.files === 2, JSON.stringify(row))
+    // 只断言这一类的 plan：`var/logs` 是仓库公共目录，别的东西躺在里面时
+    // "总数恰好等于 X"会变成假失败（老测试踩过这个）。
+    const planned = (one) => (one.files ?? []).filter((file) => /audio-in\.pcm(\.1)?$/.test(file))
+    const legacyItem = plan.plan.find((one) => one.name.includes('总录音'))
+    check('两个（当前文件与轮转件）都进清理计划，同一个计划里不含正在写的分轨',
+      legacyItem !== undefined && planned(legacyItem).length === 2
+      && !(legacyItem.files ?? []).some((one) => one.endsWith('ana.pcm')),
+      JSON.stringify(legacyItem))
+
+    // 边界：文件恰恰"刚写出来"（mtime = 现在）→ 按天数不该清它
+    touch(join(base, 'audio-in.pcm'), 4096, 0)
+    const careful = collectPlan({ dataDir: base, olderThanDays: 3 })
+    const carefulItem = careful.plan.find((one) => one.name.includes('总录音'))
+    check('正在写的当前文件不会被按天数误删',
+      carefulItem === undefined || !(carefulItem.files ?? []).some((one) => one.endsWith('audio-in.pcm')),
+      JSON.stringify(carefulItem))
+    rmSync(base, { recursive: true, force: true })
+  })
+
   await it('永不清理的两类：模型缓存与评测数据标成 cleanable:false 且不进 plan', () => {
     const plan = collectPlan({ dataDir: join(ROOT, 'var', 'test', 'clean-none'), olderThanDays: 0 })
     const guarded = plan.rows.filter((row) => row.name.includes('!'))

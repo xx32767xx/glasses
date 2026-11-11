@@ -318,6 +318,9 @@ export async function runSegmentationSuite({ it, check }) {
       /function escHtml/.test(html) && /escHtml\(name\)/.test(html))
     check('删除确认里用的是邀请码（不是裸 id）', /purgeAudio\(room\.roomId, room\.bytes, roomLabel\(room\)\)/.test(html))
     check('界面说清"同场两份"为什么（不然会以为我算错了）', /同场两份说明/.test(html))
+    check('有「清空全部录音」（旧单文件不在任何房间里，按房间删永远删不到它）',
+      /purgeAudioAll\(\)/.test(html) && /body: \{ all: true \}/.test(html)
+      && /清空全部录音/.test(html))
   })
 
   // 5.169：用户要「不用录音对表也能看出延迟落在哪一段」。四段各自留痕：

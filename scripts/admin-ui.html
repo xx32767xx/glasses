@@ -227,6 +227,7 @@
         </div>
         <div class="row" style="margin-top:8px">
           <button class="btn ghost" onclick="loadAudio()">刷新</button>
+          <button class="btn ghost" onclick="purgeAudioAll()">清空全部录音</button>
         </div>
         <div id="audioTable"></div>
         <div class="mono" id="audioWarn" style="white-space:pre-wrap"></div>
@@ -691,7 +692,8 @@ async function loadAudio() {
     }
     if (data.legacyBytes > 0) {
       notes.push('另外还有旧模式的单文件 audio-in.pcm 占 ' + humanMb(data.legacyBytes)
-        + '（所有房间共用一份，不按会议分；用 scripts/leion-clean.mjs 清理）。');
+        + '（所有房间共用一份、不按会议分，上面「清空全部录音」会把这份一起删；'
+        + '不想全清就用 scripts/leion-clean.mjs --older-than N 按天数清）。');
     }
     if (notes.length === 0 && data.note) notes.push(data.note);
     warn.textContent = notes.join(' ');
@@ -745,6 +747,24 @@ async function purgeAudio(roomId, bytes, label) {
     await loadAudio();
   } catch (error) {
     document.getElementById('audioWarn').textContent = '删除失败：' + error.message;
+  }
+}
+
+// 5.174：`audio-in.pcm`（所有房间共用的旧单文件）不在任何"房间"里，按房间删永远删不到它 ——
+// 而 1 GB 上限恰恰常被它一个人顶满。所以给一个"全部清掉"的口子，并写明它包含什么。
+async function purgeAudioAll() {
+  const meta = document.getElementById('audioMeta');
+  const hint = '删掉这台机器上的**全部**录音（当前 ' + (meta ? meta.textContent : '') + '）？\n\n'
+    + '包括旧模式的单文件 audio-in.pcm —— 所有房间共用的那一份。\n'
+    + '只删音频：字幕、转写全文、会议记录都不动，但之后无法再回头核对原声。';
+  if (!confirm(hint)) return;
+  try {
+    const data = await api('/org/audio/purge', { method: 'POST', body: { all: true } });
+    document.getElementById('audioWarn').textContent =
+      '✅ 已清空全部录音，释放 ' + humanMb(data.freedBytes);
+    await loadAudio();
+  } catch (error) {
+    document.getElementById('audioWarn').textContent = '清空失败：' + error.message;
   }
 }
 
