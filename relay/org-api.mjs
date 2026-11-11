@@ -28,6 +28,9 @@ import { join } from 'node:path'
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { loadStrategyTable, saveStrategyTable, validateStrategyTable } from '../lib/asr-engines.mjs'
+import {
+  SEGMENTATION_DEFAULTS, SEGMENTATION_RULES, loadSegmentation, saveSegmentation, validateSegmentation,
+} from '../lib/segmentation.mjs'
 import { appendAudit, auditPath } from '../lib/room-strategy.mjs'
 
 /** 仓库根（`config/asr-models.json` 这类示例文件在这儿）。 */
@@ -507,6 +510,50 @@ export async function handleOrg(input) {
   //
   // 写表为什么是 PUT 整张表而不是若干 PATCH：表里三层叠加的语义（default / strategies /
   // languages）用零散字段改容易改出"半新半旧"；管理页本来就拿着完整一份来改。
+  // ── 5.167：切句（分段）参数的全局旋钮 ────────────────────────────────
+  // 为什么放管理台：同传延迟 ≈「一句攒多久」+ 识别 + 翻译，而「攒多久」全由这几个数决定。
+  // 现场要调它却得改命令行重启整条管线，代价太大 —— 所以给管理员一个不用重启的旋钮。
+  if (segments[1] === 'segmentation') {
+    if (method === 'GET' && segments.length === 2) {
+      const loaded = loadSegmentation(root)
+      return {
+        status: 200,
+        json: {
+          ok: true,
+          values: loaded.values,
+          source: loaded.source,
+          defaults: { ...SEGMENTATION_DEFAULTS },
+          rules: SEGMENTATION_RULES,
+          path: loaded.path,
+          note: '改完在**下一段录音 / 下一场会**生效（切句器是按音频流创建的，不在句子中间重建）',
+        },
+      }
+    }
+    if (method === 'POST' && segments[2] === 'validate') {
+      const checked = validateSegmentation(body)
+      return { status: 200, json: { ok: checked.ok, problems: checked.problems, warnings: checked.warnings, values: checked.values } }
+    }
+    if (method === 'PUT' && segments.length === 2) {
+      if (allowed(role, 'model.write') !== true) return deny(role, 'model.write')
+      // 支持 {reset:true} 一键回到缺省（现场调坏了要有退路）
+      const payload = body !== null && body.reset === true ? { ...SEGMENTATION_DEFAULTS } : body
+      const saved = saveSegmentation(root, payload, { now })
+      if (saved.ok !== true) return bad(400, saved.error)
+      return {
+        status: 200,
+        json: {
+          ok: true,
+          values: saved.values,
+          path: saved.path,
+          backup: saved.backup,
+          warnings: saved.warnings,
+          note: '已保存；下一段录音 / 下一场会生效',
+        },
+      }
+    }
+    return bad(405, '只支持 GET /org/segmentation、POST /org/segmentation/validate、PUT /org/segmentation')
+  }
+
   if (segments[1] === 'asr' && segments[2] === 'models') {
     if (method === 'GET' && segments.length === 3) {
       if (allowed(role, 'model.read') !== true) return deny(role, 'model.read')

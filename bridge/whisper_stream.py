@@ -447,6 +447,44 @@ def _write_segment(queue_dir, tag, samplerate, audio, np, language=None, speaker
     return base
 
 
+# 5.167：**全局切句旋钮**（管理台可写 `<data-dir>/segmentation.json`）。
+# 为什么要它：同传延迟 ≈「一句攒多久」+ 识别 + 翻译，而「攒多久」全由这几个数决定。
+# 现场调它原来要改命令行重启整条管线 —— 现在管理员在管理台改完，下一段录音就生效。
+#
+# 优先级：内置缺省 < 识别策略表里的 segmentation < **这份全局文件** < 命令行。
+# 即"现场应急"压过"按语种的长期设定"，而命令行仍然最强（排障时用）。
+_GLOBAL_SEG_CACHE = {"path": None, "mtime": None, "values": {}}
+
+
+def load_global_segmentation(data_dir):
+    """读 `<data-dir>/segmentation.json`，按 mtime 缓存。
+
+    <p>读不到 / 读坏了都退化成"没有全局覆盖"（并打一行），绝不因此拖停切句。
+    """
+    if not data_dir:
+        return {}
+    path = os.path.join(str(data_dir), "segmentation.json")
+    try:
+        mtime = os.stat(path).st_mtime
+    except OSError:
+        return {}
+    if _GLOBAL_SEG_CACHE["path"] == path and _GLOBAL_SEG_CACHE["mtime"] == mtime:
+        return _GLOBAL_SEG_CACHE["values"]
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except Exception as error:                       # noqa: BLE001
+        print(f"[切句] ⚠️ 读不了全局切句设置（{path}）：{type(error).__name__}: {error}"
+              " —— 这一轮沿用原参数", flush=True)
+        return {}
+    values = {key: int(value) for key, value in _numbers_or_skip(raw, SEGMENTATION_FIELDS).items()}
+    if values:
+        print("[切句] 全局设置生效：" + "、".join(f"{k}={v}" for k, v in values.items())
+              + "（来自 " + path + "）", flush=True)
+    _GLOBAL_SEG_CACHE.update({"path": path, "mtime": mtime, "values": values})
+    return values
+
+
 def _new_segmenter(args, np, segmentation=None, rms_threshold=None, rms_floor=None,
                    noise_multiplier=None):
     """按当前参数造一个切句器（一路音频一个：各自的能量统计必须独立）。
@@ -464,6 +502,9 @@ def _new_segmenter(args, np, segmentation=None, rms_threshold=None, rms_floor=No
     """
     seg = dict(SEGMENTATION_DEFAULTS)
     seg.update(_numbers_or_skip(segmentation, SEGMENTATION_FIELDS))
+    # 5.167：**全局旋钮最后覆盖**（管理台现场调的值优先于按语种的策略表）——
+    # 数据目录存在时才读；没有这个文件就是"没覆盖"，行为与以前逐字一致。
+    seg.update(load_global_segmentation(getattr(args, 'data_dir', None)))
     threshold = args.rms_threshold
     if isinstance(rms_threshold, (int, float)) and rms_threshold > 0:
         threshold = float(rms_threshold)

@@ -2073,6 +2073,8 @@ export async function runAndroidOrderSuite({ it, check }) {
       // 手机端不显示这段原文 —— 它按机器码（tts-server-failed / tts-unavailable）取三语文案，
       // 所以这些句子不需要映射，与上面 4.99 / 5.148 同一条规矩。
       '这台服务器没有配 TTS 服务', '连不上 TTS 服务', '合成服务返回了空音频',
+      // 5.167：切句参数只在管理台网页用（手机没有这个界面），与 5.148 同一条规矩。
+      '只支持 GET /org/segmentation',
     ]
     const ignore = (raw) => IGNORE.some((i) => raw.startsWith(i))
     const matched = (raw) => exact.includes(raw) || pre.some((p) => raw.startsWith(p))

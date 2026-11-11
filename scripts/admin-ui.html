@@ -197,6 +197,26 @@
       </div>
     </section>
 
+    <section class="panel" style="grid-column:1/-1" id="segPanel">
+      <h2>切句参数（分段） <span class="tag" id="segMeta">—</span></h2>
+      <div class="body">
+        <div class="mono">
+          同传延迟 ≈ <b>一句话攒多久</b> + 静音判定 + 识别 + 翻译，而「攒多久」全由这几个数决定。
+          写的是服务器上的 <code>&lt;data-dir&gt;/segmentation.json</code>，
+          <b>在下一段录音 / 下一场会生效</b>（切句器是按音频流创建的，不在句子中间重建）。
+          ⚠️ 这里的值<b>压过</b>识别策略表里的同名项（现场应急优先），只有命令行仍然最强。
+        </div>
+        <div id="segForm"></div>
+        <div class="row" style="margin-top:8px">
+          <button class="btn ghost" onclick="validateSeg()">校验（不保存）</button>
+          <button class="btn ok" onclick="saveSeg()">保存</button>
+          <button class="btn ghost" onclick="resetSeg()">恢复缺省</button>
+          <button class="btn ghost" onclick="loadSeg()">重新读取</button>
+        </div>
+        <div class="mono" id="segWarn" style="white-space:pre-wrap"></div>
+      </div>
+    </section>
+
     <section class="panel" style="grid-column:1/-1">
       <h2>会议历史数据 <span class="pill" id="historyPill">—</span></h2>
       <div class="body">
@@ -328,6 +348,7 @@ function enterConsole() {
   loadDataset(); loadMeeting(); loadRooms(); loadLibraries(); loadPending(); loadAccounts();
   loadHistoryAdmin();
   loadModels();
+loadSeg();
 }
 
 // ── 5.148 识别模型（全局策略）────────────────────────────────────────────
@@ -499,6 +520,104 @@ function renderModels(data) {
   for (const one of data.problems || []) notes.push('✗ ' + one);
   for (const one of data.warnings || []) notes.push('⚠️ ' + one);
   document.getElementById('modelsWarn').textContent = notes.join('\n');
+}
+
+/** 5.167：切句参数（全局旋钮）。只放这 6 个字段 —— 它们直接决定字幕多晚出现。 */
+let segState = { values: {}, defaults: {}, rules: {}, source: 'defaults' };
+
+function segFieldName(key) {
+  return 'seg_' + key;
+}
+
+function renderSegForm() {
+  const host = document.getElementById('segForm');
+  if (!host) return;
+  host.innerHTML = '';
+  const rules = segState.rules || {};
+  for (const key of Object.keys(rules)) {
+    const rule = rules[key];
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.style.marginTop = '6px';
+    const label = document.createElement('label');
+    label.style.minWidth = '260px';
+    label.innerHTML = '<code>' + key + '</code> · ' + rule.label;
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.id = segFieldName(key);
+    input.step = String(rule.step || 50);
+    input.min = String(rule.min);
+    input.max = String(rule.max);
+    input.style.width = '120px';
+    input.value = String(segState.values[key]);
+    const note = document.createElement('span');
+    note.className = 'mono';
+    note.style.opacity = '0.75';
+    note.textContent = rule.note + '（' + rule.min + '~' + rule.max + '，缺省 ' + segState.defaults[key] + '）';
+    row.appendChild(label);
+    row.appendChild(input);
+    row.appendChild(note);
+    host.appendChild(row);
+  }
+  const meta = document.getElementById('segMeta');
+  if (meta) meta.textContent = segState.source === 'file' ? '来自服务器设置' : '内置缺省（还没改过）';
+}
+
+function segPayload() {
+  const payload = {};
+  for (const key of Object.keys(segState.rules || {})) {
+    const input = document.getElementById(segFieldName(key));
+    if (input !== null) payload[key] = Number(input.value);
+  }
+  return payload;
+}
+
+async function loadSeg() {
+  try {
+    const data = await api('/org/segmentation');
+    segState = { values: data.values || {}, defaults: data.defaults || {},
+      rules: data.rules || {}, source: data.source || 'defaults' };
+    renderSegForm();
+    document.getElementById('segWarn').textContent = data.note || '';
+  } catch (error) {
+    document.getElementById('segWarn').textContent = '读不到切句设置：' + error.message;
+  }
+}
+
+async function validateSeg() {
+  try {
+    const data = await api('/org/segmentation/validate', { method: 'POST', body: segPayload() });
+    const warn = document.getElementById('segWarn');
+    warn.textContent = data.ok === true
+      ? ('✅ 参数合法' + ((data.warnings || []).length ? '\n⚠️ ' + data.warnings.join('\n⚠️ ') : ''))
+      : ('❌ ' + (data.problems || []).join('\n❌ '));
+  } catch (error) {
+    document.getElementById('segWarn').textContent = '校验失败：' + error.message;
+  }
+}
+
+async function saveSeg() {
+  try {
+    const data = await api('/org/segmentation', { method: 'PUT', body: segPayload() });
+    const warn = document.getElementById('segWarn');
+    warn.textContent = '✅ 已保存到 ' + data.path + '（' + (data.note || '') + '）'
+      + ((data.warnings || []).length ? '\n⚠️ ' + data.warnings.join('\n⚠️ ') : '')
+      + (data.backup ? '\n上一版备份：' + data.backup : '');
+    await loadSeg();
+  } catch (error) {
+    document.getElementById('segWarn').textContent = '保存失败：' + error.message;
+  }
+}
+
+async function resetSeg() {
+  if (!confirm('恢复成内置缺省？会覆盖当前的切句参数。')) return;
+  try {
+    const data = await api('/org/segmentation', { method: 'PUT', body: { reset: true } });
+    document.getElementById('segWarn').textContent = '✅ 已恢复缺省（' + (data.note || '') + '）';
+    await loadSeg();
+  } catch (error) {
+    document.getElementById('segWarn').textContent = '恢复失败：' + error.message;
+  }
 }
 
 async function loadModels() {

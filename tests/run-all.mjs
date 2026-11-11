@@ -50,6 +50,7 @@ import { runEnglishSuite } from './english-suite.mjs'
 import { runDiscoverSuite } from './discover-suite.mjs'
 import { runAndroidOrderSuite } from './android-order-suite.mjs'
 import { runAppPresetSuite } from './app-preset-suite.mjs'
+import { runSegmentationSuite } from './segmentation-suite.mjs'
 import { runTtsSuite } from './tts-suite.mjs'
 import { runTtsHttpSuite } from './tts-http-suite.mjs'
 import { runTranslateSuite } from './translate-suite.mjs'
@@ -313,6 +314,12 @@ await runDesktopApiSuite(helpers)
 // 优先级是"用户存过的优先"、以及**仓库里不许带密钥**（带密钥的版本提交上去等于写进历史）。
 heading('打包内置服务器（单一入口 / 优先级 / 仓库不带密钥 / 脚本可写可还原）')
 await runAppPresetSuite(helpers)
+
+// ── 7f4. 切句参数的全局旋钮（管理台可调，下一段录音生效）────────────────────
+// 同传延迟 ≈「一句攒多久」+ 识别 + 翻译；而"攒多久"由这几个数决定。实测老师那边
+// 段长 18~24 秒、识别 4~8 秒 —— 体感半分钟。现在管理员能在管理台直接调。
+heading('切句参数（纯函数校验 / 备份与原子写 / dev 只读 admin 可写 / python 真读 / 管理台面板）')
+await runSegmentationSuite(helpers)
 
 // ── 7g. 管理员清理会议历史（4.99）─────────────────────────────────────────
 // 这一套守的是「删数据」的三条边界：**进行中的会议永远不删**、
