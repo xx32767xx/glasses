@@ -24,7 +24,6 @@ import { runContractSuite, makeFakeLlm, makeFakeFs, SAMPLE_ARGS } from './contra
 import { runBridgeSuite } from './bridge-suite.mjs'
 import { runRelaySuite } from './relay-suite.mjs'
 import { runDebugSuite } from './debug-suite.mjs'
-import { runStartAllSuite } from './start-all-suite.mjs'
 import { runStartMultiSuite } from './start-multi-suite.mjs'
 import { runDbSuite } from './db-suite.mjs'
 import { runRoomsSuite } from './rooms-suite.mjs'
@@ -220,8 +219,6 @@ await runDebugSuite(helpers)
 
 // ── 7. 一键启动脚本（拼出来的命令对不对）───────────────────────────────────
 
-heading('一键启动（start-all：命令行拼接与前置检查）')
-await runStartAllSuite(helpers)
 
 // 多场会并行：转发读**目录**、每场会一套识别/大脑各写**一个文件**。
 // 这一对反向语义搞混了不会报错，只会让两场会互相覆盖字幕 —— 所以单独钉一遍。
@@ -423,7 +420,7 @@ await it('tests/python-suite.py 全部通过', async () => {
 
 // ── 8. 启动前体检（老 Node 的自救） ─────────────────────────────────────────
 // 真实事故：服务器上是 Ubuntu 22.04 的 apt nodejs（12.22），一跑
-// `node scripts/start-all.mjs` 就报 `SyntaxError: Unexpected token '?'`
+// `node scripts/start-multi.mjs` 就报 `SyntaxError: Unexpected token '?'`
 // （`??` 语法要 Node 14+）。报错发生在**解析阶段**，任何写在 .mjs 里的友好提示
 // 都没机会执行 —— 所以要有一个人用老语法写的体检脚本，才能把话说清楚。
 // 这里钉两件事：① 它确实不依赖新语法；② 它自己能跑起来且退出码为 0。

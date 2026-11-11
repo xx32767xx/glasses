@@ -92,15 +92,19 @@ export async function runStartMultiSuite({ it, check, assert }) {
       argsOf(brain).includes('--keep-inbox'), argsOf(brain))
   })
 
-  await it('--translate-mode parallel：回到"每场一对识别+大脑"（显存够时才用）', async () => {
-    const options = parseArgs(['--data-dir', 'var/x', '--translate-mode', 'parallel'])
-    const steps = pipelineSteps(options, { id: ROOM_A })
-    assert.deepEqual(steps.map(step => step.role), ['asr', 'brain'])
-    const asr = steps.find(step => step.role === 'asr')
-    check('识别用 --whisper-follow 跟分流音频', argsOf(asr).includes('--whisper-follow'), argsOf(asr))
-    check('并且是**按房间命名**的 pcm',
-      argsOf(asr).includes(`audio\\${ROOM_A}.pcm`) || argsOf(asr).includes(`audio/${ROOM_A}.pcm`), argsOf(asr))
-    check('识别一律 --format json（语种跟着每句话走）', argsOf(asr).includes('--format json'), argsOf(asr))
+  // 5.175：serial/parallel 已删除 —— 它们靠"每场一个 asr-bridge 尾随 audio/<房间>.pcm"，
+  // 而那份混流副本不再写入（同一路音频落三份、1 GB 上限被它顶满）。
+  // 现在给的是明确报错，而不是"启动成功但没有字幕"。
+  await it('5.175：serial / parallel 已删除，只留队列模式（命令要明确报错）', async () => {
+    assert.throws(() => parseArgs(['--data-dir', 'var/x', '--translate-mode', 'parallel']), /5\.175|queue/)
+    assert.throws(() => parseArgs(['--data-dir', 'var/x', '--translate-mode', 'serial']), /5\.175|queue/)
+    assert.throws(() => parseArgs(['--data-dir', 'var/x', '--parallel-translate']), /5\.175|queue/)
+    assert.throws(() => parseArgs(['--data-dir', 'var/x', '--serial-translate']), /5\.175|queue/)
+    check('--translate-mode queue 仍然可用',
+      parseArgs(['--data-dir', 'var/x', '--translate-mode', 'queue']).translateMode === 'queue')
+    const steps = pipelineSteps(parseArgs(['--data-dir', 'var/x']), { id: ROOM_A })
+    check('缺省就是"切句 + 大脑"（识别是全局唯一的消费者）',
+      steps.map(step => step.role).join(',') === 'cut,brain', steps.map(step => step.role).join(','))
   })
 
   await it('两场会的三个文件互不相同（并行的全部依据）', async () => {
@@ -108,7 +112,7 @@ export async function runStartMultiSuite({ it, check, assert }) {
     const a = roomFiles(options, ROOM_A)
     const b = roomFiles(options, ROOM_B)
     const pairs = [['inbox', a.inbox, b.inbox], ['bus', a.busFile, b.busFile],
-      ['audioDir', a.audioDir, b.audioDir], ['audio(旧单文件)', a.audio, b.audio]]
+      ['audioDir', a.audioDir, b.audioDir]]
     for (const [what, left, right] of pairs) {
       check(`${what} 不是同一个`, left !== right, `${left} vs ${right}`)
     }
@@ -118,11 +122,10 @@ export async function runStartMultiSuite({ it, check, assert }) {
       a.busFile.replace(/\\/g, '/').endsWith(`/buses/${ROOM_A}.json`), a.busFile)
   })
 
-  await it('分流音频路径与 relay 的 roomAudioPath()/roomTrackDir() 完全一致（唯一来源）', async () => {
+  await it('分流音频路径与 relay 的 roomTrackDir() 完全一致（唯一来源）', async () => {
     const options = parseArgs(['--data-dir', 'var/x'])
-    check('旧单文件路径是同一个函数算出来的',
-      roomFiles(options, ROOM_A).audio === roomAudioPath(options.dataDir, ROOM_A),
-      roomFiles(options, ROOM_A).audio)
+    // 5.175：旧单文件路径（roomAudioPath）已不再写入，roomFiles 也不再带它
+    check('roomFiles 不再给"旧单文件"路径', roomFiles(options, ROOM_A).audio === undefined)
     // 5.08：切句端用的是分轨目录，同样只能从 relay 那边的函数取，不许自己拼
     check('分轨目录是同一个函数算出来的',
       roomFiles(options, ROOM_A).audioDir === roomTrackDir(options.dataDir, ROOM_A),
@@ -215,17 +218,17 @@ export async function runStartMultiSuite({ it, check, assert }) {
     check('--proofread 传到了', parsed.proofread === true, String(parsed.proofread))
   })
 
-  await it('识别命令能被 asr-bridge 自己的 parseArgs() 接受（--whisper-follow 真的展开成尾随）', async () => {
+  // 5.175：老的单文件尾随（--whisper-follow）已删除。切句端现在跟**分轨目录**，
+  // 识别由全局唯一的 asr-worker 从队列里取段 —— 这条钉住"桥不再提供尾随文件"这件事。
+  await it('5.175：asr-bridge 不再有 --whisper-follow（要用它必须报错说清楚）', async () => {
     const { parseArgs: bridgeParse } = await import('../bridge/asr-bridge.mjs')
-    const options = parseArgs(['--data-dir', 'var/x', '--translate-mode', 'parallel'])
-    const asr = pipelineSteps(options, { id: ROOM_A }).find(step => step.role === 'asr')
-    const parsed = bridgeParse(asr.args)
-    check('接受这些参数', parsed !== null && typeof parsed === 'object', JSON.stringify(asr.args))
-    check('收件箱对得上', parsed.inbox === roomFiles(options, ROOM_A).inbox, `${parsed.inbox}`)
-    check('whisper-follow 变成了 whisper 引擎的命令', parsed.engine === 'whisper', String(parsed.engine))
-    check('命令里尾随的是这一场的 pcm',
-      String(parsed.command).includes(roomFiles(options, ROOM_A).audio), String(parsed.command))
-    check('语种不写死（跟着每句话走）', parsed.command.includes('--language') === false, String(parsed.command))
+    assert.throws(() => bridgeParse(['--inbox', 'x.jsonl', '--whisper-follow', 'audio-in.pcm']),
+      /whisper-follow/)
+    const options = parseArgs(['--data-dir', 'var/x'])
+    const cut = pipelineSteps(options, { id: ROOM_A }).find(step => step.role === 'cut')
+    check('切句跟的是分轨目录', argsOf(cut).includes('--follow-dir'), argsOf(cut))
+    check('切句把段写进队列', argsOf(cut).includes('--segment-dir'), argsOf(cut))
+    check('切句命令里没有任何单文件尾随', argsOf(cut).includes('--whisper-follow') === false, argsOf(cut))
   })
 
   // ── 3b. 串行模式：同一刻只翻一场，谁在说话就翻谁（缺省行为）──────────────────
@@ -324,30 +327,37 @@ export async function runStartMultiSuite({ it, check, assert }) {
     check('标了"要切"', choice.switch === true)
   })
 
-  await it('串行：活跃度只看文件大小（不读音频内容），拿不到就当没声', async () => {
+  await it('5.175：活跃度看**分轨目录**（旧混流文件已不再写入）', async () => {
     const options = parseArgs(['--data-dir', 'var/x'])
-    const activity = readRoomActivity(options, [S1, S2], (file) => {
-      if (String(file).includes(S1)) return { size: 2048, mtimeMs: 1234 }
-      throw new Error('还没有这个房间的 pcm')
-    })
-    check('有文件的记下大小与时间',
+    const activity = readRoomActivity(options, [S1, S2],
+      (file) => {
+        if (String(file).includes(S1)) return { size: 2048, mtimeMs: 1234 }
+        throw new Error('还没有这个房间的 pcm')
+      },
+      (dir) => {
+        if (String(dir).includes(S2)) return []
+        return [
+          { name: 'ana.pcm', isDirectory: () => false },
+          { name: 'ana.pcm.lang', isDirectory: () => false },
+          { name: 'sub', isDirectory: () => true },
+        ]
+      })
+    check('分轨目录里的 pcm 记下大小与时间',
       activity.get(S1).bytes === 2048 && activity.get(S1).at === 1234, JSON.stringify(activity.get(S1)))
-    check('没文件的当成没声（at = -Infinity，比较时永远最旧）',
-      activity.get(S2).at === -Infinity, String(activity.get(S2).at))
+    check('空目录当成没声（at = -Infinity，比较时永远最旧）',
+      activity.get(S2).at === -Infinity && activity.get(S2).bytes === 0, JSON.stringify(activity.get(S2)))
   })
 
-  await it('串行是可选模式；缺省是队列；--max-rooms > 1 只在 serial 下报错', async () => {
+  await it('只有一个模式（队列）；serial/parallel 已删除且会明确报错', async () => {
     check('缺省是队列（生产者-消费者）', parseArgs([]).translateMode === 'queue', parseArgs([]).translateMode)
     check('队列目录缺省在数据目录下',
       parseArgs([]).queueDir.endsWith(join('queue', 'asr')), parseArgs([]).queueDir)
-    check('--translate-mode serial 生效', parseArgs(['--translate-mode', 'serial']).translateMode === 'serial')
-    check('--translate-mode parallel 生效', parseArgs(['--translate-mode', 'parallel']).translateMode === 'parallel')
-    check('--serial-translate / --parallel-translate 是别名',
-      parseArgs(['--serial-translate']).translateMode === 'serial'
-        && parseArgs(['--parallel-translate']).translateMode === 'parallel')
+    assert.throws(() => parseArgs(['--translate-mode', 'serial']), /5\.175|queue/)
+    assert.throws(() => parseArgs(['--translate-mode', 'parallel']), /5\.175|queue/)
+    assert.throws(() => parseArgs(['--serial-translate']), /5\.175|queue/)
+    assert.throws(() => parseArgs(['--parallel-translate']), /5\.175|queue/)
     check('队列模式下 --max-rooms 2 允许（两场都跑，只是共用一份模型）',
       parseArgs(['--max-rooms', '2']).maxRooms === 2)
-    assert.throws(() => parseArgs(['--translate-mode', 'serial', '--max-rooms', '2']), /serial/)
     assert.throws(() => parseArgs(['--translate-mode', 'nope']), /translate-mode/)
     assert.throws(() => parseArgs(['--switch-idle-ms', '-1']), /switch-idle-ms/)
     assert.throws(() => parseArgs(['--min-hold-ms', 'x']), /min-hold-ms/)
@@ -861,18 +871,11 @@ export async function runStartMultiSuite({ it, check, assert }) {
       String(queueTwo).includes('一份') && String(queueTwo).includes('切句'), String(queueTwo))
     check('队列模式：不再报"N 份 large-v3 / 合计 X GB"',
       /份 large-v3|合计约/.test(String(queueTwo)) === false, String(queueTwo))
-    // 串行：同一刻只有一份在显存里
-    const serialTwo = memoryHint(parseArgs(['--serial-translate']), 2)
-    check('串行模式：说明显存里始终只有一份，代价是重载',
-      String(serialTwo).includes('只翻译一场') && String(serialTwo).includes('重载'), String(serialTwo))
-    // 并行才是原来那句话适用的地方
-    const parTwo = memoryHint(parseArgs(['--parallel-translate']), 2)
-    check('并行模式：两场就是两份模型，并给出三个办法',
-      String(parTwo).includes('2 份') && /--whisper-model|--compute|--max-rooms/.test(String(parTwo)),
-      String(parTwo))
-    check('CPU 上是另一种说法（没有显存这回事）',
-      memoryHint(parseArgs(['--cpu', '--parallel-translate']), 2).includes('CPU'),
-      memoryHint(parseArgs(['--cpu', '--parallel-translate']), 2))
+    // 5.175：serial/parallel 已删除，所以只有队列模式这一种说法了
+    check('CPU 上也一样是"一份模型"（队列模式与设备无关）',
+      String(memoryHint(parseArgs(['--cpu']), 2)).includes('一份'),
+      memoryHint(parseArgs(['--cpu']), 2))
+    assert.throws(() => parseArgs(['--parallel-translate']), /5\.175|queue/)
   })
 
   await it('参数校验：拼错了立刻报错，而不是起一半', async () => {
@@ -929,39 +932,24 @@ export async function runStartMultiSuite({ it, check, assert }) {
     rmSync(base, { recursive: true, force: true })
   })
 
-  await it('--dry-run --translate-mode serial：只起 1 套，另一场标"排队中"', async () => {
-    const base = join(VAR_DIR, 'test', 'multi-suite-dryrun-serial')
+  // 5.175：serial/parallel 模式的 dry-run 用例已随模式一起删除；
+  // 这里改成钉住"旧命令会被明确拒绝"，而不是静默起一套没有字幕的管线。
+  await it('5.175：旧模式命令直接报错（不会静默起一条没有字幕的管线）', async () => {
+    const base = join(VAR_DIR, 'test', 'multi-suite-legacy-mode')
     rmSync(base, { recursive: true, force: true })
     mkdirSync(base, { recursive: true })
-    const first = createRoom(base, { name: '甲会议', host: 'anqi' })
-    const second = createRoom(base, { name: '乙会议', host: 'bruno' })
-    joinRoom(base, { roomId: second.room.id, username: 'carla' })
-
-    const { code, output } = await captureStdout(() => main(['--dry-run', '--quiet-logs',
-      '--translate-mode', 'serial', '--port', '18795', '--data-dir', base]))
-    check('退出码 0', code === 0, String(code))
-    check('只起 1 套管线', output.includes('现在会起 1 套管线'), output.slice(-1200))
-    check('另一场标了排队中', output.includes('排队中') && output.includes(second.room.id), output.slice(-1200))
-    check('真起的那一套是最早建的那场', output.includes(first.room.id), output.slice(-1200))
-    check('串行模式不出"几份模型"的账', output.includes('2 场会并行') === false, output.slice(-600))
-    rmSync(base, { recursive: true, force: true })
-  })
-
-  await it('--dry-run --translate-mode parallel：两套都起，并给出显存账', async () => {
-    const base = join(VAR_DIR, 'test', 'multi-suite-dryrun-par')
-    rmSync(base, { recursive: true, force: true })
-    mkdirSync(base, { recursive: true })
-    const first = createRoom(base, { name: '甲会议', host: 'anqi' })
-    const second = createRoom(base, { name: '乙会议', host: 'bruno' })
-    joinRoom(base, { roomId: second.room.id, username: 'carla' })
-
-    const { code, output } = await captureStdout(() => main(['--dry-run', '--quiet-logs',
-      '--translate-mode', 'parallel', '--port', '18796', '--data-dir', base]))
-    check('退出码 0', code === 0, String(code))
-    check('两套管线都起', output.includes('现在会起 2 套管线'), output.slice(-1200))
-    check('每场会都用识别桥（--whisper-follow）',
-      (output.match(/--whisper-follow/g) ?? []).length >= 2, output.slice(-1500))
-    check('提醒了显存怎么算', output.includes('显存'), output.slice(-800))
+    createRoom(base, { name: '甲会议', host: 'anqi' })
+    for (const flag of [['--translate-mode', 'serial'], ['--translate-mode', 'parallel'],
+      ['--serial-translate'], ['--parallel-translate']]) {
+      let failed = null
+      try {
+        await captureStdout(() => main(['--dry-run', '--quiet-logs', '--port', '18795', '--data-dir', base, ...flag]))
+      } catch (error) {
+        failed = error
+      }
+      check(`${flag.join(' ')} 被拒绝且说清原因`,
+        failed !== null && /5\.175|queue/.test(String(failed.message ?? failed)), String(failed && failed.message))
+    }
     rmSync(base, { recursive: true, force: true })
   })
 
@@ -983,7 +971,6 @@ export async function runStartMultiSuite({ it, check, assert }) {
     // 这条门禁钉的是"能 import"这件事本身 —— 它对测试、对别的脚本复用都必需。
     for (const [label, file] of [
       ['harness-side.mjs', '../scripts/harness-side.mjs'],
-      ['start-all.mjs', '../scripts/start-all.mjs'],
       ['start-multi.mjs', '../scripts/start-multi.mjs'],
       ['asr-bridge.mjs', '../bridge/asr-bridge.mjs'],
     ]) {
@@ -1004,11 +991,14 @@ export async function runStartMultiSuite({ it, check, assert }) {
 
   // ── 9. 源码层面的两件事实 ──────────────────────────────────────────────────
 
-  await it('复用 start-all 的端口探测（那个 SO_REUSEADDR 的坑不能再踩一遍）', async () => {
+  await it('5.175：端口探测等共用动作抽到 start-helpers（不再有两份实现）', async () => {
     const source = readFileSync(new URL('../scripts/start-multi.mjs', import.meta.url), 'utf-8')
-    check('从 start-all.mjs 借 portInUse', /from '\.\/start-all\.mjs'/.test(source), '没复用')
+    check('从 start-helpers.mjs 借 portInUse', /from '\.\/start-helpers\.mjs'/.test(source), '没复用')
     check('没有自己再造一个探测', source.includes('SO_REUSEADDR') === false || source.includes('portInUse'), '重复实现')
-    check('说明了它不是 start-all 的替代', source.includes('start-all'), '缺与 start-all 的分工说明')
+    check('start-all.mjs 已删除（单管线老模式的入口不该还在）',
+      existsSync(new URL('../scripts/start-all.mjs', import.meta.url)) === false)
+    check('start-helpers 里也没有 start-all 的启动逻辑（只有可复用的几个动作）',
+      readFileSync(new URL('../scripts/start-helpers.mjs', import.meta.url), 'utf-8').includes('async function main') === false)
   })
 
   await it('帮助文本交代了边界（老同传 App 不走这条路 / 术语快照是全局一份）', async () => {
@@ -1021,7 +1011,8 @@ export async function runStartMultiSuite({ it, check, assert }) {
 
   await it('日志按"转发 + 每场会两条"分文件（一场会出问题时不会淹掉别的）', async () => {
     const source = readFileSync(new URL('../scripts/start-multi.mjs', import.meta.url), 'utf-8')
-    check('日志名带上房间 id', source.includes('${roomId}-asr') && source.includes('${roomId}-brain'), '缺按房间分日志')
+    check('日志名带上房间 id（切句 + 大脑各一份；识别是全局唯一的那个）',
+      source.includes('${roomId}-cut') && source.includes('${roomId}-brain'), '缺按房间分日志')
     check('退出时归档', source.includes('archiveSessionLogs'), '缺归档')
   })
 

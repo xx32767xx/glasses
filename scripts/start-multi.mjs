@@ -3,11 +3,11 @@
  * ============================================================================
  *   node scripts/start-multi.mjs
  *
- * 它和 start-all 的分工（这是**唯一**需要记住的一点）：
+ * 它是**唯一**的启动脚本（5.175 起 start-all 已删除：那是"单套管线 + 尾随全局
+ * audio-in.pcm"的老模式，同一路音频会落三份、1 GB 上限被那份全局文件顶满）：
  *
- *   start-all  = 单套管线：转发 + 识别 + 大脑，收件箱/字幕总线都是**一个文件**。
- *   start-multi= 多场会并行：转发**一个**（读目录）+ 每场会**一个切句 + 一个大脑**，
- *                识别是**全局唯一一个**（模型只加载一次）—— 见下面的"三种识别模式"。
+ *   start-multi = 多场会并行：转发**一个**（读目录）+ 每场会**一个切句 + 一个大脑**，
+ *                 识别是**全局唯一一个**（模型只加载一次）—— 见下面的"识别模式"。
  *
  * 原因是并发下"谁说的话"必须能分开：
  *   · 手机上传音频时带 `room=<房间id>`，relay 把声音**按房间、按说话人**分流到
@@ -24,11 +24,10 @@
  *
  * 它不会做的事（刻意不做）：
  *   · 不会自动改模型档位 —— **显存不够会直说**（见启动横幅与 memoryHint），但要你自己决定。
- *     注意：缺省是**队列模式，显存里只有一份模型**；只有 `--parallel-translate`
- *     才是"每场一份"，那时 `--whisper-model/--compute/--max-rooms` 才有意义；
+ *     队列模式下显存里始终只有**一份**模型，与房间数无关；
  *   · 不会把一场会的术语快照隔离出去 —— `meeting-terms/` 目前是**全局一份**，
  *     两场会都点"开始同传"时后者覆盖前者（docs/21 §4.86 写了这件事和代价）；
- *   · 不会假装老同传 App 也走这条路 —— 它上传音频不带 `room=`，走的是单房间 start-all。
+ *   · 不会收"不带房间号"的音频：那种上传没有归属，relay 只记一行日志（5.175）。
  *
  * 常用参数
  *   --cpu                 识别用 CPU（缺省 cuda/float16；没有 N 卡时用这个）
@@ -64,14 +63,14 @@ import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, st
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { LOGS_DIR, ROOT, apiTranslateBus, apiTranslateInbox, defaultTerms, defaultTermsActive } from '../lib/paths.mjs'
-import { DEFAULT_DATA_DIR, roomAudioPath, roomTrackDir } from '../relay/lan-relay.mjs'
+import { DEFAULT_DATA_DIR, roomTrackDir } from '../relay/lan-relay.mjs'
 import { listRooms, closeRoomByAdmin } from '../lib/rooms.mjs'
 import { dbPath } from '../lib/db.mjs'
 import { currentTermsPaths, readCurrentMeeting } from '../lib/meeting-terms.mjs'
-// 这五个都从 start-all 借：两份脚本各写一遍就会各错一遍（端口探测那个 SO_REUSEADDR 的坑尤其）。
+// 这五个都从 start-helpers 借：两份脚本各写一遍就会各错一遍（端口探测那个 SO_REUSEADDR 的坑尤其）。
 import {
   archiveSessionLogs, assertDataDirWritable, childEnv, flushLogStreams, portInUse, sessionStamp,
-} from './start-all.mjs'
+} from './start-helpers.mjs'
 
 const HELP = `start-multi —— 一条命令起「多场会并行」
 
@@ -127,7 +126,8 @@ const HELP = `start-multi —— 一条命令起「多场会并行」
 
 它起的进程
   [转发]    relay/lan-relay.mjs --bus <buses 目录>            一个，读目录，把每场字幕分开
-  [识别·房间X] bridge/asr-bridge.mjs --whisper-follow audio/X.pcm --inbox asr-inbox-X.jsonl
+  [切句·房间X] bridge/whisper_stream.py --follow-dir audio/X/ --segment-dir queue/asr
+  [识别]     bridge/asr-worker.mjs                            一个，全局唯一消费者（模型只加载一次）
   [大脑·房间X] scripts/harness-side.mjs --inbox asr-inbox-X.jsonl --bus buses/X.json
   [大脑·API]  scripts/harness-side.mjs --inbox api-translate/inbox.jsonl --bus api-translate/bus.json
              一个常驻的、不属于任何一场会的大脑：服务外部调用方的 POST /translate
@@ -153,7 +153,7 @@ const RETRY_COOLDOWN_MS = 60000
  * 房间 id 必须**原样**能当文件名用。
  *
  * <p>为什么这条要单独写个函数并在没人满足时**拒绝起管线**，而不是像 relay 那样消毒：
- * relay 的 `roomAudioPath()` 会把非法字符换成 `_`，那是为了挡目录穿越；
+ * relay 的 `roomTrackDir()` 会把非法字符换成 `_`，那是为了挡目录穿越；
  * 而总线文件名就是 relay 认房间的依据（`buses/<roomId>.json` → 房间 roomId）。
  * 消毒过的名字 `room_a.json` 会让字幕被归到一个**不存在的房间**，
  * 表现是"有翻译、但没有一条落到这场会里"—— 比直接不起更糟、更难查。
@@ -194,13 +194,15 @@ export function parseArgs(argv = []) {
     //
     // 三种模式，缺省 queue（2026-10-30 按显存现状定的）：
     //
-    //   queue    （缺省）生产者-消费者：每场一个**切句**进程（纯 CPU、不加载模型）
-    //            把话写进 queue/asr/；识别是**全局唯一**一个进程（模型只加载一次），
-    //            按到达顺序取段，把文字送进那一场自己的收件箱；大脑每场一个（不占显存）。
+    //   queue    （**唯一模式**，5.175 起 serial/parallel 已删除）生产者-消费者：
+    //            每场一个**切句**进程（纯 CPU、不加载模型）把话写进 queue/asr/；
+    //            识别是**全局唯一**一个进程（模型只加载一次），按到达顺序取段，
+    //            把文字送进那一场自己的收件箱；大脑每场一个（不占显存）。
     //            → 两场会都能持续出字幕；积压只报不丢。
-    //   serial   每场一对「识别 + 大脑」，但同一刻只有一场在跑（谁说话翻谁）。
-    //            代价：切换要重载模型（几秒），排队那场暂时没字幕。
-    //   parallel 每场一对「识别 + 大脑」同时跑 —— 显存够两份模型才用。
+    //
+    // 为什么删掉 serial/parallel：它们是"每场一个 asr-bridge 尾随 audio/<房间>.pcm"，
+    // 而那个混流文件 5.175 已经不再写入（同一路音频落三份、1 GB 上限被它顶满）。
+    // 留着它们只会得到一个"启动成功但没有字幕"的模式，不如直接报错说清楚。
     translateMode: 'queue',
     queueDir: null,              // null = <data-dir>/queue/asr
     depthReportSec: 30,          // 队列深度多久报一次（0 = 不报）
@@ -277,8 +279,11 @@ export function parseArgs(argv = []) {
     if (key === 'public') { options.public = true; continue }
     if (key === 'quiet-logs') { options.writeLogs = false; continue }
     if (key === 'dry-run') { options.dryRun = true; continue }
-    if (key === 'parallel-translate') { options.translateMode = 'parallel'; continue }
-    if (key === 'serial-translate') { options.translateMode = 'serial'; continue }
+    // 5.175：serial/parallel 已删除（它们依赖不再写入的 audio/<房间>.pcm）。
+    // 给明确报错，而不是静默变成"启动成功但没字幕"。
+    if (key === 'parallel-translate' || key === 'serial-translate') {
+      throw new Error(`--${key} 已在 5.175 删除：现在只有队列模式（--queue-translate，缺省）`)
+    }
     if (key === 'queue-translate') { options.translateMode = 'queue'; continue }
     if (key === 'no-adaptive') { options.noAdaptive = true; continue }
     // 5.160：顺带起服务器合成语音（bridge/tts-server.py，piper）
@@ -329,8 +334,11 @@ export function parseArgs(argv = []) {
     else if (key === 'queue-dir') options.queueDir = value
     else if (key === 'depth-report-s') options.depthReportSec = Number(value)
     else if (key === 'translate-mode') {
-      const allowed = ['queue', 'serial', 'parallel']
-      if (!allowed.includes(value)) throw new Error(`--translate-mode 只能是 ${allowed.join(' / ')}`)
+      // 5.175：只剩队列模式（serial/parallel 依赖已删除的混流音频文件）
+      if (value !== 'queue') {
+        throw new Error(`--translate-mode 现在只支持 queue（收到 ${JSON.stringify(value)}）：`
+          + 'serial/parallel 已在 5.175 删除')
+      }
       options.translateMode = value
     }
     else if (key === 'tts-port') options.ttsPort = Number(value)
@@ -368,16 +376,16 @@ export function parseArgs(argv = []) {
   if (!Number.isInteger(options.depthReportSec) || options.depthReportSec < 0) {
     throw new Error(`--depth-report-s 必须是非负整数，收到 ${JSON.stringify(options.depthReportSec)}`)
   }
-  // 只有 serial 模式才是"同一刻只跑一场"；queue/parallel 都能多场同时跑。
-  // 串行模式下"--max-rooms 大于 1"自相矛盾 —— 与其静默按 1 处理（人会以为开了并行），
-  // 不如让他明确选一次。
-  if (options.translateMode === 'serial' && options.maxRooms > 1) {
-    throw new Error('serial 模式同一刻只跑一场，--max-rooms > 1 要换队列模式（缺省）或 --parallel-translate')
+  // 只有 serial 模式才是"同一刻只跑一场"；队列模式能多场同时跑。
+  // 5.175 起 serial 已删除，这条校验只为"旧命令/旧笔记还写着 serial"时给出可读的错。
+  if (options.translateMode !== 'queue') {
+    throw new Error(`只有队列模式了（收到 ${JSON.stringify(options.translateMode)}）：`
+      + 'serial/parallel 已在 5.175 删除')
   }
   if (options.only.some(id => isSafeRoomId(id) === false)) {
     throw new Error(`--only 里的房间 id 只能是字母数字下划线连字符：${options.only.filter(id => !isSafeRoomId(id)).join(', ')}`)
   }
-  // ⚠️ 数据目录必须解析成**绝对路径**（同 start-all：相对路径一路传下去会让插件静默读不到）。
+  // ⚠️ 数据目录必须解析成**绝对路径**（相对路径一路传下去会让插件静默读不到）。
   options.dataDir = resolve(options.dataDir)
   options.busesDir = options.busesDir === null ? join(options.dataDir, 'buses') : resolve(options.busesDir)
   options.queueDir = options.queueDir === null
@@ -398,20 +406,14 @@ export function parseArgs(argv = []) {
   return options
 }
 
-/** 三种翻译模式的标题与人话说明（横幅、dry-run 共用，避免两处各写一份）。 */
-const MODE_TITLES = { queue: '队列串行识别', serial: '整场串行', parallel: '各场并行' }
+/** 模式的标题（横幅、dry-run 共用）。5.175 起只有队列模式。 */
+const MODE_TITLES = { queue: '队列串行识别' }
 
 export function describeMode(options) {
-  switch (options.translateMode) {
-    case 'queue':
-      return '队列（每场一个切句进程 + 唯一的识别消费者；两场都能出字幕，积压只报不丢）'
-    case 'serial':
-      return `整场串行（同一刻只翻一场，${options.switchIdleMs}ms 没声才换；切换要重载模型）`
-    case 'parallel':
-      return '各场并行（每场一份模型；显存要够）'
-    default:
-      return String(options.translateMode ?? '')
+  if (options.translateMode === 'queue') {
+    return '队列（每场一个切句进程 + 唯一的识别消费者；两场都能出字幕，积压只报不丢）'
   }
+  return String(options.translateMode ?? '')
 }
 
 /** 串行模式切换时给人的一句人话（`chooseActiveRoom` 的 reason → 中文）。 */
@@ -433,8 +435,7 @@ export function roomFiles(options, roomId) {
     inbox: join(options.dataDir, `asr-inbox-${roomId}.jsonl`),
     busFile: join(options.busesDir, `${roomId}.json`),
     // 5.08：音频按**说话人**分文件，所以给切句端的是一个**目录**（`audio/<房间>/`），
-    // 不是单个 pcm。房号这条老路径还留着，只给"单文件尾随"的老模式与非队列模式兜底。
-    audio: roomAudioPath(options.dataDir, roomId),
+    // 不是单个 pcm。5.175 起 `audio/<房间>.pcm` 混流副本不再写入（老模式已删除）。
     audioDir: roomTrackDir(options.dataDir, roomId),
   }
 }
@@ -528,20 +529,6 @@ export function pipelineSteps(options, room) {
           // 5.41：切句侧也要读**同一张策略表**（它只用 `segmentation` 那一半）。
           // 不传的话会出现"改表只影响识别、切句照旧"的半生效状态 —— 那比不生效更难察觉。
           ...(options.modelMap ? ['--model-map', options.modelMap, '--data-dir', options.dataDir] : []),
-        ],
-      })
-    } else {
-      steps.push({
-        key: `${roomId}-asr`, role: 'asr', tag: '识别', label: `识别·${label}`, color,
-        script: join(ROOT, 'bridge', 'asr-bridge.mjs'),
-        args: [
-          '--inbox', files.inbox,
-          '--whisper-follow', files.audio,
-          '--whisper-model', options.whisperModel,
-          '--whisper-device', options.device,
-          '--whisper-compute', options.computeType,
-          // 语种跟着每句话走：手机随音频上报 lang，识别进程写进收件箱每一行（4.37 起）
-          '--format', 'json',
         ],
       })
     }
@@ -752,21 +739,32 @@ export function chooseActiveRoom({
 }
 
 /**
- * 读每场会的音频活跃度（只看大小与修改时间，不读内容）。
+ * 读每场会的音频活跃度（只看文件大小与修改时间，不读内容）。
  *
  * <p>用文件大小判断"这一场是不是在说"，而不是读音频：读内容要占 IO 与 CPU，
  * 而这里只需要一个**粗粒度**的信号 —— 谁最近在长。拿不到（还没有这个房间的 pcm）就当没声。
+ *
+ * <p>5.175：音频只在 `audio/<房间>/<说话人>.pcm` 分轨里，所以这里看**整个目录**
+ * （每个说话人一个文件，取最大的 mtime）。以前看的是 `audio/<房间>.pcm` 混流副本，
+ * 那个文件已经不再写入了 —— 继续看它会让"翻译官闲置回收"永远认为没声音。
  */
-export function readRoomActivity(options, roomIds, statFile = (path) => statSync(path)) {
+export function readRoomActivity(options, roomIds, statFile = (path) => statSync(path),
+  readDir = (path) => readdirSync(path, { withFileTypes: true })) {
   const activity = new Map()
   for (const roomId of roomIds) {
-    const file = roomAudioPath(options.dataDir, roomId)
+    const dir = roomTrackDir(options.dataDir, roomId)
+    let bytes = 0
+    let at = -Infinity
     try {
-      const info = statFile(file)
-      activity.set(roomId, { bytes: Number(info.size ?? 0), at: Number(info.mtimeMs ?? 0) })
-    } catch {
-      activity.set(roomId, { bytes: 0, at: -Infinity })
-    }
+      for (const entry of readDir(dir)) {
+        if (entry.isDirectory()) continue
+        if (entry.name.endsWith('.pcm') !== true) continue
+        const info = statFile(join(dir, entry.name))
+        bytes += Number(info.size ?? 0)
+        at = Math.max(at, Number(info.mtimeMs ?? 0))
+      }
+    } catch { /* 还没有这个房间的目录 = 没声 */ }
+    activity.set(roomId, { bytes, at })
   }
   return activity
 }
@@ -948,7 +946,7 @@ export function memoryHint(options, roomCount) {
 /**
  * 起一场会之前把它的两个文件**清干净**。
  *
- * <p>收件箱要清，否则上次同名房间留下的行会被重新翻译一遍（这是 start-all 里也踩过的老坑）；
+ * <p>收件箱要清，否则上次同名房间留下的行会被重新翻译一遍（单管线时代也踩过的老坑）；
  * 字幕总线文件要删，否则 relay 一启动就把那份旧字幕推给这场会。
  * 由本脚本统一清、并让大脑带 `--keep-inbox`，是为了让"清"只发生一次 —— 见 pipelineSteps。
  */
@@ -1067,7 +1065,7 @@ export async function main(argv = process.argv.slice(2)) {
   /** 启动时清掉的旧中间文件（供横幅说明，见 clearStaleRunState）。 */
   let staleState = { buses: 0, segments: 0 }
 
-  // ── 启动前的三件检查（顺序照 start-all：先能不能写、再端口、最后拼命令）──────
+  // ── 启动前的三件检查（顺序：先能不能写、再端口、最后拼命令）──────────────
   if (!options.dryRun) {
     const problem = assertDataDirWritable(options.dataDir)
     if (problem !== null) {
@@ -1110,7 +1108,7 @@ export async function main(argv = process.argv.slice(2)) {
     const published = await readCurrentMeeting(options.dataDir)
     if (published !== null) {
       termSummary = `会议术语：按房间各一份（meeting-terms/rooms/<房间>/）；`
-        + `老位置那份是 ${published.entries} 条（单房间 start-all 用）`
+        + `老位置那份是 ${published.entries} 条（旧版单房间模式用）`
     } else {
       termSummary = '会议术语：按房间各一份（meeting-terms/rooms/<房间>/；手机点"开始同传"时写入）'
     }
@@ -1143,15 +1141,16 @@ export async function main(argv = process.argv.slice(2)) {
     console.log(`  切句/识别  每场一个**切句**进程（纯 CPU，不加载模型）→ 队列 → **一个**识别进程（模型只加载一次）`)
     console.log(`  ${DIM}           房间是手机决定的：每 ${options.pollMs}ms 看一眼，有人进会就补一套、散了就收${RESET}`)
     console.log(`  ${DIM}           两场会都能持续出字幕（各自慢一点）；积压只报队列深度，**不丢数据**${RESET}`)
-  } else if (options.translateMode === 'parallel') {
-    console.log(`  识别/大脑  每场会各一套同时跑（每场一份模型；显存要够）`)
+  } else if (options.translateMode === 'serial' || options.translateMode === 'parallel') {
+    // 5.175：这两个模式已经不可选（parseArgs 会直接报错），这里只是防"旧代码路径"残留
+    console.log(`  识别/大脑  该模式已在 5.175 删除，请用队列模式（缺省）`)
   } else {
     console.log(`  识别/大脑  同一刻**只跑一场**（谁在说话就翻译谁；其余排队，${options.switchIdleMs}ms 没声才换）`)
     console.log(`  ${DIM}           为什么串行：每场会一套识别 = 一份模型（large-v3 约 5GB）${RESET}`)
   }
   console.log(`  字幕总线   ${options.busesDir.replace(/\\/g, '/')}/  ← **目录**：每场会一个 <房间id>.json，互不覆盖`)
   console.log(`  收件箱     ${options.dataDir.replace(/\\/g, '/')}/asr-inbox-<房间id>.jsonl`)
-  console.log(`  分流音频   ${options.dataDir.replace(/\\/g, '/')}/audio/<房间id>.pcm  ← 每场都分流，与串行无关`)
+  console.log(`  分流音频   ${options.dataDir.replace(/\\/g, '/')}/audio/<房间id>/<说话人>.pcm  ← 分轨（5.175 起只有这一份）`)
   console.log(`  翻译后端   ${options.offline ? '离线例句表（只认得剧本 14 句）' : '真实模型（deepseek-official）'}`)
   console.log(`  校对       ${options.proofread ? '开启（每句多一次模型调用）' : '关闭（加 --proofread 打开）'}`)
   console.log(`  外部接口   ${options.apiTranslate === false
@@ -1184,8 +1183,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
   for (const note of envNotes) console.log(`  ${note}`)
   console.log('')
-  console.log(`  ${DIM}⚠️ 老同传 App 上传音频不带 room=，它的声音只会进全局 audio-in.pcm —— `
-    + `那条路请用 node scripts/start-all.mjs（单场会）${RESET}`)
+  console.log(`  ${DIM}⚠️ 不带 room= 的音频没有归属，relay 会忽略并报一行（5.175 起不再有"全局单文件"那条路）${RESET}`)
   console.log(`  ${DIM}Ctrl-C 一次停掉全部（含识别进程起的 python 孙进程）${RESET}`)
   console.log('─'.repeat(72))
   console.log('')
@@ -1196,11 +1194,9 @@ export async function main(argv = process.argv.slice(2)) {
     } else if (plannedRooms.length === 0) {
       console.log('  现在没有"开着且有人"的房间 —— 真的跑起来后会一直等，有人进会就补一套管线。')
     } else {
-      // serial 模式只会有**一场**真的跑起来；queue/parallel 都是每场一套
-      const planned = options.translateMode === 'serial' ? plannedRooms.slice(0, 1) : plannedRooms
-      const queued = options.translateMode === 'serial' ? plannedRooms.slice(1) : []
-      console.log(`  现在会起 ${planned.length} 套管线`
-        + `${queued.length > 0 ? `（另有 ${queued.length} 场排队，谁说话就换谁）` : ''}：`)
+      // 队列模式：每场一套（切句 + 大脑），没有"排队等切场"这回事
+      const planned = plannedRooms
+      console.log(`  现在会起 ${planned.length} 套管线：`)
       for (const room of planned) {
         const files = roomFiles(options, room.id)
         console.log(`    房间 ${room.id}「${room.name || '未命名'}」邀请码 ${room.code} 人 ${room.members}`)
@@ -1209,11 +1205,8 @@ export async function main(argv = process.argv.slice(2)) {
         }
         console.log(`      ${DIM}总线 ${files.busFile}${RESET}`)
       }
-      for (const room of queued) {
-        console.log(`    ${DIM}… 排队中：${room.id}「${room.name || '未命名'}」邀请码 ${room.code}，${room.members} 人${RESET}`)
-      }
     }
-    const hint = memoryHint(options, options.translateMode === 'parallel' ? Math.max(1, plannedRooms.length) : 1)
+    const hint = memoryHint(options, plannedRooms.length)
     if (hint) console.log(`\n  ${hint}`)
     console.log('')
     console.log('（--dry-run：只检查并显示将要做什么，没有真的启动任何进程）')
@@ -1634,7 +1627,7 @@ export async function main(argv = process.argv.slice(2)) {
     timer = setTimeout(() => { void tick() }, options.pollMs)
   }
 
-  // 转发起来后把手机要填的地址/密钥汇总一下（和 start-all 一样，从 <data-dir>/relay-secret.txt 读）
+  // 转发起来后把手机要填的地址/密钥汇总一下（从 <data-dir>/relay-secret.txt 读）
   await sleep(1500)
   const secretPath = join(options.dataDir, 'relay-secret.txt')
   let secret = ''

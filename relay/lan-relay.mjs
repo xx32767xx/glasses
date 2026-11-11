@@ -35,7 +35,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { mkdir, appendFile, readFile, rename, stat, writeFile, readdir, unlink } from 'node:fs/promises'
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, unlinkSync } from 'node:fs'
 import { networkInterfaces } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createInboxWriter } from '../bridge/asr-bridge.mjs'
 import { appendUtterance, purgeUtterancesIn } from '../lib/db.mjs'
@@ -194,15 +194,16 @@ const HELP = `lan-relay —— 手机 ↔ 电脑 的局域网转发进程
   --data-dir <path>     收件箱与字幕总线所在目录（缺省 var/live）
   --inbox <path>        收件箱文件（缺省 <data-dir>/asr-inbox.jsonl）
   --bus <path>          字幕总线文件（缺省 <data-dir>/subtitle-bus.json）
-  --audio <path>        手机上传的原始音频落盘位置（缺省 <data-dir>/audio-in.pcm）
-  --audio-rate <path>   采样率旁文件（缺省 <data-dir>/audio-in.rate）
-  --audio-lang <path>   语种旁文件（缺省 <data-dir>/audio-in.lang）
+  --audio <path>        **历史遗留**的单文件路径（缺省 <data-dir>/audio-in.pcm）。
+                        5.175 起**不再写入**它（老的单文件模式已删除，音频只按
+                        <data-dir>/audio/<房间>/<说话人>.pcm 分轨落盘）；这个参数
+                        只用于「统计占用 / 清理旧文件」时认出那份残留。
+  --audio-rate <path>   （同上，历史遗留旁文件）
+  --audio-lang <path>   （同上，历史遗留旁文件）
   --poll-hold-ms <n>    长轮询最长挂起时间（缺省 25000）
   --bus-poll-ms <n>     字幕总线轮询间隔（缺省 60）
-  --audio-max-bytes <n> 音频文件上限（缺省 1 GB，0 = 不轮转）。**只增不减的文件**：
-                        超过就把旧的改名成 <audio>.1 再开一个新的，磁盘占用约 2×上限。
-                        为什么是"轮转"而不是原地清空：原地清空会把**还没被识别读走的**
-                        音频永久删掉（那样一段话就没了），轮转至少留着上一份可供排查。
+  --audio-max-bytes <n> 每个房间音频目录的建议上限（缺省 1 GB，现在只用于展示；
+                        真正挡住上传的是 --public 下的音频总量上限）
   --utterance-retention-days <n>
                         字幕保留天数（缺省 7）：超过的按天自动删除（隐私要求，
                         见 docs/21 §10 的 P4）。启动时先清一次，之后每小时清一次。
@@ -222,8 +223,9 @@ const HELP = `lan-relay —— 手机 ↔ 电脑 的局域网转发进程
 端点（手机侧要用）
   GET  /hello              带密钥 → { device, cols, lineBudget, seq }
   POST /say                {"text":"...","from":"pt-BR"} → 追加进收件箱
-  POST /audio              原始音频（PCM S16LE 单声道）→ 追加到 --audio 文件
-                             ?rate=16000 采样率；?lang=pt-BR 语种；?fresh=1 表示新录音开头（先清空）
+  POST /audio              原始音频（PCM S16LE 单声道）→ 追加到
+                             <data-dir>/audio/<房间>/<说话人>.pcm（?room= & ?speaker=）
+                             ?rate=16000 采样率；?lang=pt-BR 语种；?fresh=1 表示新录音开头
   GET  /frame?since=<seq>  长轮询取字幕帧
   GET  /status             诊断
 
@@ -478,16 +480,13 @@ export function formatBanner(options, relay, addresses = []) {
   lines.push('─'.repeat(68))
   lines.push(`  收件箱（手机的文字进这里）  ${options.inbox}`)
   lines.push(`  字幕总线（字幕从这里出去）  ${options.bus}`)
-  lines.push(`  录音上传（手机音频落这里）  ${options.audio}`)
+  lines.push(`  录音分轨（手机音频落这里）  ${join(String(options.dataDir), 'audio')}${sep}<房间>${sep}<说话人>.pcm`)
   lines.push(`  共享密钥（手机上要填这个）  ${relay.secret}`)
   lines.push('')
-  lines.push('  手机端「录音上传」还需要另一个进程把音频变成文字（识别在电脑上跑）：')
-  lines.push(`      node bridge/asr-bridge.mjs --inbox "${options.inbox}" --whisper-follow "${options.audio}" \\`)
-  lines.push('        --whisper-device cuda --whisper-compute float16')
-  lines.push('  （Pascal 卡如 Tesla P40 没有 FP16 加速，把 float16 换成 int8_float32；')
-  lines.push('    不确定就跑 python scripts/check-asr-env.py，它会直接告诉你该用哪档）')
-  lines.push('  （不要写成 python … | node … 管道：PowerShell 会缓冲 stdout，而识别进程一直不退出，')
-  lines.push('    于是桥一行都收不到。见 bridge/whisper_stream.py 头部说明。）')
+  lines.push('  会议/翻译官的音频由 scripts/start-multi.mjs 一手拉起（切句 → 识别 → 大脑）：')
+  lines.push('      node scripts/start-multi.mjs --data-dir … --public --port …')
+  lines.push('  （老的单文件模式 `asr-bridge --whisper-follow` 与 scripts/start-all.mjs 已在 5.175 删除：')
+  lines.push('    音频现在只按房间 + 说话人分轨落盘，识别端按目录跟读（whisper_stream.py 的 --follow-dir）。')
   lines.push('')
   lines.push('  想看链路走到哪一步（另开一个终端，只读不改）：')
   lines.push(`      node scripts/debug-window.mjs --url http://127.0.0.1:${relay.port} --secret ${relay.secret}`)
@@ -895,8 +894,8 @@ export async function startRelay(rawOptions = {}) {
     /** 音频：已落盘字节数 / 已收块数 / 当前采样率（null = 还没收到过） */
     audioBytes: 0,
     audioChunks: 0,
-    /** 音频轮转次数（超过 --audio-max-bytes 就把旧文件改名成 .1 再来一个）。 */
-    audioRotations: 0,
+    /** 5.175：收到"不带房间号"的音频时只报一次（老模式删除后那种音频不落盘）。 */
+    audioNoRoomWarned: false,
     /** 音频日志聚合用：**按房间**记上次打印到第几块、什么时候（5.10：全局键是 `(全局)`）。 */
     audioLoggedChunk: new Map(),
     audioLoggedAt: new Map(),
@@ -1516,10 +1515,11 @@ export async function startRelay(rawOptions = {}) {
   }
 
   // 音频文件在重启后**不会**被清（以前清，会把还没识别完的音频吃掉；见 /audio 的注释）。
-  // 所以计数要从文件真实大小起步，否则"上限"每次重启都从头算，等于没设。
+  // 所以计数要从磁盘真实大小起步，否则"上限"每次重启都从头算，等于没设。
+  // 5.175：分轨目录里同样可能有上一轮的录音，所以按磁盘算（`audioDiskBytes`），
+  // 不再只看那个已经不再写入的全局文件。
   try {
-    const existing = await stat(options.audio)
-    state.audioBytes = existing.size
+    state.audioBytes = audioDiskBytes()
   } catch {
     state.audioBytes = 0
   }
@@ -1534,22 +1534,17 @@ export async function startRelay(rawOptions = {}) {
   busTimer.unref?.()
 
   /**
-   * 音频文件超限就轮转：`audio-in.pcm` → `audio-in.pcm.1`（覆盖上一份），再开一个新的空文件。
-   *
-   * 为什么不是"原地清空"：那会把**还没被识别进程读走的**音频永久删掉 —— 曾经在 fresh=1
-   * 上这么干过，用户录了三段、每段都被下一次清掉，一条都没识别出来（见 /audio 的注释）。
-   * 轮转只是换了个文件继续写，旧的一份留着排查；识别进程发现路径上的文件变小了，
-   * 会按既有逻辑把读指针退回 0（PcmFollower.read 里那条分支，python-suite 钉着）。
-   *
-   * 代价：磁盘占用约 2× 上限（`.1` 只留一份）。这在"写满磁盘"面前是划算的。
-   */
-  /**
-   * 5.170：音频在磁盘上**实际占多少**（分轨目录 + 旧的单文件 + 它的轮转件）。
+   * 5.170：音频在磁盘上**实际占多少**（分轨目录 + 历史遗留的单文件）。
    *
    * <p>为什么必须按磁盘算，而不是一路累加：原来是"每收一块就 += size"，只增不减 ——
    * 跑一场二十分钟的翻译官、再开一场会，这个数就永远停在高位，于是**谁都收不了音频**了
    * （用户实测："刚打开会议就显示音频文件已达上限"）。清理脚本删掉文件、管理员清理历史、
    * 轮转换文件，都不会让它减回去。改成"直接问磁盘"之后，删了就是删了。
+   *
+   * <p>5.175：我们**不再往 `audio-in.pcm` 写**了（老模式已删除，见 docs/21 §5.175），
+   * 但服务器上可能还躺着升级前留下的那份（用户实测 1.0 GB）—— 它仍然算进占用，
+   * 否则限额就变成"看不见的 1 GB 白占"。删掉它（管理台「清空全部录音」/
+   * `leion-clean` 的「旧模式总录音」一类）之后，这个数立刻回落。
    */
   function audioDiskBytes() {
     const sum = (target) => {
@@ -1568,20 +1563,6 @@ export async function startRelay(rawOptions = {}) {
       try { total += statSync(one).size } catch { /* 没有就没有 */ }
     }
     return total
-  }
-
-  async function rotateAudio() {
-    const backup = options.audio + '.1'
-    try {
-      await rename(options.audio, backup)
-    } catch (error) {
-      if (error && error.code !== 'ENOENT') throw error
-    }
-    await writeFile(options.audio, Buffer.alloc(0))
-    state.audioBytes = 0
-    state.audioRotations += 1
-    debug(`🔁 音频已轮转（上限 ${(options.audioMaxBytes / 1024 / 1024).toFixed(0)} MB）：`
-      + `旧的一段存为 ${backup}，接下来写新文件`)
   }
 
   // ── 字幕保留期清理（P4，docs/21 §10）─────────────────────────────────────
@@ -2183,7 +2164,6 @@ export async function startRelay(rawOptions = {}) {
         }
 
         state.audioChain = state.audioChain.then(async () => {
-          await mkdir(dirname(options.audio), { recursive: true })
           // ── 新一次录音 = 新一场同传：把"这一场用哪些库"发布成会议术语（docs/19）────
           //
           // 时机选在这里而不是"手机点了保存选择"：保存选择只是**改了意愿**，
@@ -2222,47 +2202,36 @@ export async function startRelay(rawOptions = {}) {
           if (body.length > 0) {
             // 5.10：**新一次录音**（fresh=1）时把这个房间的计数器归零 ——
             // 手机界面上的"已上传 N 秒 / 第 N 块"应该是**这一场**的数字。
-            // 全局文件不截断（上面那段说了为什么），但计数可以归零，那是纯展示数据。
             if (fresh === true && audioRoom !== '') {
               state.roomAudioBytes.set(audioRoom, 0)
               state.roomChunks.set(audioRoom, 0)
               state.audioLoggedChunk.set(audioRoom, 0)
               state.audioLoggedAt.delete(audioRoom)
             }
-            // 先判上限再写：这样一块音频要么整块进老文件、要么整块进新文件，不会被劈成两半
-            if (options.audioMaxBytes > 0
-                && state.audioBytes + body.length > options.audioMaxBytes) {
-              await rotateAudio()
-            }
-            await appendFile(options.audio, body)
-            state.audioBytes += body.length
-            // 4.84 → 5.08：音频**按房间 + 按说话人**分流。
-            // 全局文件仍然写（老链路/单房间场景照旧能用）；分轨文件是识别端真正跟的那一份。
+            // 4.84 → 5.08：音频**按房间 + 按说话人**分流，只写这一份。
+            //
+            // 5.175：用户拍板"老模式完全不用了"，于是把两份只为老模式服务的拷贝删掉 ——
+            //   · `<data-dir>/audio-in.pcm`（全局单文件，所有房间混在一起）；
+            //   · `<data-dir>/audio/<房间>.pcm`（每房间混流副本）。
+            // 实测一场会 68.6 MB 的音频落了三份；而 1 GB 上限常被那份全局文件一个人顶满，
+            // 分轨音频一个字节都没占，手机却收到「音频文件已达上限」。
             //
             // 为什么必须按人分（不是按房间）：语种旁文件 `.lang` 是"最后写入者获胜"，
             // 两个人交替用不同语言说话时，切出来的段会带着上一个人的语种 ——
             // 于是"英语被当成中文识别"。这是**语言正确性**问题，不是整洁度问题。
             if (audioRoom !== '') {
-              // 5.08：房间级的"混流"仍然写一份 —— 老模式（`--translate-mode serial|parallel`
-              // 里 asr-bridge 的 `--whisper-follow`）跟的就是它，停写会让那两种模式**静默失效**。
-              // 代价是每个房间多一份磁盘（32KB/s），换来的是"老模式还能用"。
-              const mixed = roomAudioPath(options.dataDir, audioRoom)
-              await mkdir(dirname(mixed), { recursive: true })
-              await appendFile(mixed, body)
               const target = roomSpeakerAudioPath(options.dataDir, audioRoom,
                 audioSpeaker === '' ? 'unknown' : audioSpeaker)
               await mkdir(dirname(target), { recursive: true })
               await appendFile(target, body)
+              state.audioBytes += body.length
               state.roomAudioBytes.set(audioRoom, (state.roomAudioBytes.get(audioRoom) ?? 0) + body.length)
               if (state.audioRoomFiles.has(audioRoom) !== true) {
                 state.audioRoomFiles.add(audioRoom)
                 debug(`🎙 音频分流：房间 ${audioRoom} → ${roomTrackDir(options.dataDir, audioRoom)}/（每个说话人一个文件）`)
               }
               // 采样率/语种也**按人**各写一份（识别端每路跟读时要看自己那份）。
-              // ⚠️ 混流那一份的 `.lang` **不写**：它没有唯一的语种，写了就是"最后写入者获胜"
-              //    那个坑（老模式确实有这个限制，但不再扩大它）。
               try {
-                await writeFile(`${mixed}.rate`, String(rate) + '\n', 'utf-8')
                 await writeFile(`${target}.rate`, String(rate) + '\n', 'utf-8')
                 await writeFile(`${target}.lang`, String(lang) + '\n', 'utf-8')
                 // 5.05：语种只在**变化时**报一行 —— 旁文件写的是识别端唯一看得到的东西，
@@ -2276,6 +2245,12 @@ export async function startRelay(rawOptions = {}) {
               } catch (error) {
                 debug(`🎙 写分轨旁文件失败（不影响音频）：${error && error.message ? error.message : error}`)
               }
+            } else if (state.audioNoRoomWarned !== true) {
+              // 5.175：没有房间号 = 没有归属的音频。老模式（全局 audio-in.pcm）已删除，
+              // 所以现在**不落盘**，只报一行 —— 让"手机没带房间参数"这件事看得见，
+              // 而不是静默丢音频、让人以为识别坏了。
+              state.audioNoRoomWarned = true
+              debug('⚠️ 收到不带房间号的音频：已忽略（客户端不在会议里录音时会这样）')
             }
           }
           state.audioChunks += 1
@@ -2307,16 +2282,11 @@ export async function startRelay(rawOptions = {}) {
               debug('[audio] fanout failed: ' + String(error && error.message ? error.message : error))
             }
           }
-          // 采样率变了才写旁文件（不是每块都写）
-          if (state.audioRateValue !== rate) {
-            await writeFile(options.audioRate, String(rate) + '\n', 'utf-8')
-            state.audioRateValue = rate
-          }
-          // 语种同理：只有变了才写，避免每秒一次无谓的写盘
-          if (state.audioLangValue !== lang) {
-            await writeFile(options.audioLang, lang + '\n', 'utf-8')
-            state.audioLangValue = lang
-          }
+          // 5.175：采样率/语种**只**写进分轨旁文件（`audio/<房间>/<人>.pcm.rate|.lang`，
+          // 上面房间分支里已经写过）。这里记下"最后一次看到的"只为回执/诊断用，
+          // 不再往数据目录根下写 `audio-in.rate|.lang` —— 那是老单文件模式的旁文件。
+          state.audioRateValue = rate
+          state.audioLangValue = lang
         })
         try {
           await state.audioChain
@@ -2820,9 +2790,8 @@ export async function startRelay(rawOptions = {}) {
           bus: options.bus,
           audio: options.audio,
           audioBytes: state.audioBytes,
-          // 音频文件上限与已轮转次数（长期跑时"磁盘会不会被写满"的两个答案）
+          // 音频总量上限（5.175：不再有"老文件轮转"，只有 public 模式下的总量上限）
           audioMaxBytes: options.audioMaxBytes,
-          audioRotations: state.audioRotations,
           audioChunks: state.audioChunks,
           audioRate: state.audioRateValue,
           audioLang: state.audioLangValue,

@@ -93,9 +93,11 @@ export async function runRelaySuite({ it, check, assert }) {
       check('旧的 64KB 已经从统计里去掉（只增不减的计数器正是这次的 bug）',
         afterSecond.audioBytes < oldBytes + chunk.length * 2,
         `old=${oldBytes} chunk=${chunk.length} now=${afterSecond.audioBytes}`)
-      check('剩下的就是这两块新音频（不会凭空变大）',
-        afterSecond.audioBytes >= chunk.length * 2
-        && afterSecond.audioBytes <= oldBytes + chunk.length * 2,
+      // 注意：删的是**整个分轨目录**，所以第一块也一起没了 —— 剩下的是第二块。
+      // 这一条要的是"不凭空变大、也不把已经删掉的旧录音继续算进去"。
+      check('剩下的不多于两块新音频（不会凭空变大）',
+        afterSecond.audioBytes >= chunk.length
+        && afterSecond.audioBytes <= chunk.length * 2,
         String(afterSecond.audioBytes))
     } finally {
       await relay.close()
@@ -586,7 +588,11 @@ export async function runRelaySuite({ it, check, assert }) {
       check('bob 的语种是 en-US（没有被 alice 覆盖）',
         readFileSync(aBob + '.lang', 'utf-8').trim() === 'en-US',
         readFileSync(aBob + '.lang', 'utf-8').trim())
-      check('全局文件仍在（单房间/老链路兼容）', existsSync(join(dir, 'audio-in.pcm')))
+      // 5.175：全局 audio-in.pcm 与每房间的混流副本都不再写入（老模式已删除）
+      check('不再写全局 audio-in.pcm（省一半磁盘、也不再顶满 1 GB 上限）',
+        existsSync(join(dir, 'audio-in.pcm')) === false)
+      check('不再写每房间的混流副本 audio/<房间>.pcm',
+        existsSync(join(dir, 'audio', 'room-A.pcm')) === false)
 
       const listed = await (await fetch(`${base}/audio/rooms`, { headers: { 'X-Leion-Secret': secret } })).json()
       check('/audio/rooms 列出两个房间', listed.ok === true && listed.rooms.length === 2,
@@ -938,56 +944,46 @@ export async function runRelaySuite({ it, check, assert }) {
 
   // ── 4. 错误与边界 ──────────────────────────────────────────────────────────
 
-  await it('音频轮转：超过上限就把旧的改名成 .1 再开新文件（不原地清空）', async () => {
-    // 为什么要这条：/audio 只追加、从不清空（清空会吃掉还没被识别的音频）。
-    // 但那样文件会一直长 —— 长期跑必然把磁盘写满。轮转是"留着旧的一份 + 继续写新的"，
-    // 而识别进程发现文件变小会把读指针退回 0（PcmFollower 那条分支 python-suite 钉着）。
-    const dir = join(TMP, 'audio-rotate')
-    const audioPath = join(dir, 'audio-in.pcm')
-    const tiny = await startRelay({
-      port: 0, host: '127.0.0.1', secret: 'rotate-secret',
-      dataDir: dir, audio: audioPath, audioRate: join(dir, 'audio-in.rate'),
-      audioLang: join(dir, 'audio-in.lang'), inbox: join(dir, 'asr-inbox.jsonl'),
-      bus: join(dir, 'subtitle-bus.json'),
+  // 5.175：老的单文件模式删除后，`audio-in.pcm` 与"轮转 .1"这个机制也一起没了 ——
+  // 音频只按 <data-dir>/audio/<房间>/<说话人>.pcm 分轨落盘。这条钉住"不会再凭空造出全局文件"。
+  await it('5.175：不再造出全局 audio-in.pcm（也就没有轮转这回事）', async () => {
+    const dir = join(TMP, 'audio-no-global')
+    rmSync(dir, { recursive: true, force: true })
+    mkdirSync(dir, { recursive: true })
+    const relay = await startRelay({
+      port: 0, host: '127.0.0.1', secret: 'no-global-secret', dataDir: dir,
       pollHoldMs: 200, busPollMs: 30, quiet: true,
-      audioMaxBytes: 2048,        // 只装得下 2 块（每块 1024 字节）
     })
-    const push = async index => {
-      const body = Buffer.alloc(1024, index + 1)      // 每块内容不同，便于后面核对
-      const response = await fetch(`http://127.0.0.1:${tiny.port}/audio?rate=16000`, {
+    const push = async (room, bytes, speaker) => {
+      const response = await fetch(`http://127.0.0.1:${relay.port}/audio?rate=16000&lang=zh-CN`
+        + `&room=${encodeURIComponent(room)}&speaker=${encodeURIComponent(speaker)}`, {
         method: 'POST',
-        headers: { 'x-leion-secret': 'rotate-secret', 'content-type': 'application/octet-stream' },
-        body,
+        headers: { 'x-leion-secret': 'no-global-secret', 'content-type': 'application/octet-stream' },
+        body: Buffer.alloc(bytes, 9),
       })
-      return { status: response.status, json: await response.json() }
+      return { status: response.status, json: await response.json().catch(() => null) }
     }
     try {
-      const first = await push(0)
-      const second = await push(1)
-      check('前两块正常收下（共 2048 字节，正好到上限）',
-        first.status === 200 && second.status === 200 && second.json.totalBytes === 2048,
+      const first = await push('room-x', 4096, 'ana')
+      const second = await push('room-x', 4096, 'bo')
+      check('两块都被收下', first.status === 200 && second.status === 200,
         JSON.stringify(second.json))
-
-      const third = await push(2)
-      check('第三块触发轮转后仍然成功', third.status === 200, JSON.stringify(third.json))
-      check('计数重置成只有新这一块', third.json.totalBytes === 1024, JSON.stringify(third.json))
-
-      const backup = await readFile(audioPath + '.1')
-      check('旧的一段被完整保留在 .1 里', backup.length === 2048, String(backup.length))
-      check('.1 里是前两块的内容', backup[0] === 1 && backup[2048 - 1] === 2, `${backup[0]},${backup[2048 - 1]}`)
-
-      const current = await readFile(audioPath)
-      check('新文件只装第三块', current.length === 1024, String(current.length))
-      check('新文件里是第三块的内容', current[0] === 3, String(current[0]))
-
-      const status = await fetch(`http://127.0.0.1:${tiny.port}/status`, {
-        headers: { 'x-leion-secret': 'rotate-secret' },
+      check('没有全局 audio-in.pcm', existsSync(join(dir, 'audio-in.pcm')) === false)
+      check('没有轮转件 audio-in.pcm.1', existsSync(join(dir, 'audio-in.pcm.1')) === false)
+      check('分轨文件在（这一份才是识别在跟的）',
+        existsSync(roomSpeakerAudioPath(dir, 'room-x', 'ana'))
+        && existsSync(roomSpeakerAudioPath(dir, 'room-x', 'bo')))
+      // 没有房间号的音频：不再落盘（老模式删除后它没有归属），但要能看出来
+      const noRoom = await fetch(`http://127.0.0.1:${relay.port}/audio?rate=16000&lang=zh-CN`, {
+        method: 'POST',
+        headers: { 'x-leion-secret': 'no-global-secret', 'content-type': 'application/octet-stream' },
+        body: Buffer.alloc(1024, 3),
       })
-      const json = await status.json()
-      check('/status 报得出轮转次数', json.audioRotations === 1, String(json.audioRotations))
-      check('/status 报得出上限', json.audioMaxBytes === 2048, String(json.audioMaxBytes))
+      check('不带房间号的上传不会造出全局文件',
+        noRoom.status === 200 && existsSync(join(dir, 'audio-in.pcm')) === false)
     } finally {
-      await tiny.close()
+      await relay.close()
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 
@@ -1166,8 +1162,9 @@ export async function runRelaySuite({ it, check, assert }) {
     check('有 rejected', json.rejected >= 1, String(json.rejected))
     check('有 waiting', typeof json.waiting === 'number', String(json.waiting))
     check('报出了两个文件路径', String(json.inbox).includes('asr-inbox') && String(json.bus).includes('subtitle-bus'))
-    check('报出了音频路径与采样率字段', String(json.audio).includes('audio-in')
-            && 'audioBytes' in json && 'audioRate' in json, JSON.stringify(json.audio))
+    // 5.175：不再有全局 audio-in.pcm；/status 仍报 audio 字段（历史遗留路径，用于统计与清理）
+    check('报出了音频字段与采样率', 'audio' in json && 'audioBytes' in json && 'audioRate' in json,
+      JSON.stringify({ audio: json.audio, audioBytes: json.audioBytes }))
   })
 
   // ── 5. POST /audio（手机录音上传）──────────────────────────────────────────
@@ -1183,9 +1180,13 @@ export async function runRelaySuite({ it, check, assert }) {
     return buffer
   }
 
-  const audioPath = join(TMP, 'audio-in.pcm')
-  const audioRatePath = join(TMP, 'audio-in.rate')
-  const audioLangPath = join(TMP, 'audio-in.lang')
+  // 5.175：这一节上传时都带 room/speaker（老的全局面板已删除），
+  // 所以"文件"指的是这一路分轨：<data-dir>/audio/<房间>/<说话人>.pcm 及它的旁文件。
+  const TEST_ROOM = 'room-audio-suite'
+  const TEST_SPEAKER = 'ana'
+  const audioPath = roomSpeakerAudioPath(TMP, TEST_ROOM, TEST_SPEAKER)
+  const audioRatePath = audioPath + '.rate'
+  const audioLangPath = audioPath + '.lang'
   const readAudio = async () => {
     try {
       return await readFile(audioPath)
@@ -1216,10 +1217,13 @@ export async function runRelaySuite({ it, check, assert }) {
     return { status: response.status, json, text }
   }
 
-  const postAudio = async (buffer, { rate = 16000, fresh = false, lang = undefined, secret = relay.secret } = {}) => {
+  const postAudio = async (buffer, { rate = 16000, fresh = false, lang = undefined, secret = relay.secret,
+    room = TEST_ROOM, speaker = TEST_SPEAKER } = {}) => {
     const query = new URLSearchParams({ rate: String(rate) })
     if (fresh) query.set('fresh', '1')
     if (lang !== undefined) query.set('lang', lang)
+    if (room !== '') query.set('room', room)
+    if (speaker !== '') query.set('speaker', speaker)
     return callRaw(`/audio?${query}`, buffer, { secret })
   }
 
@@ -1393,20 +1397,26 @@ export async function runRelaySuite({ it, check, assert }) {
 
   await it('启动横幅能正常渲染（崩溃过的那段，现在逐行盯着）', async () => {
     const text = formatBanner(
-      { inbox: 'X/asr-inbox.jsonl', bus: 'X/subtitle-bus.json', audio: 'X/audio-in.pcm' },
+      { dataDir: 'X', inbox: 'X/asr-inbox.jsonl', bus: 'X/subtitle-bus.json', audio: 'X/audio-in.pcm' },
       { secret: 'abc123', port: 8788 },
       [{ name: 'WLAN', address: '192.168.1.5' }, { name: 'VMware Network Adapter VMnet1', address: '192.168.73.1' }],
     )
     check('真的出了内容', text.length > 200, String(text.length))
     check('报了收件箱路径', text.includes('X/asr-inbox.jsonl'))
     check('报了字幕总线路径', text.includes('X/subtitle-bus.json'))
-    check('报了录音上传路径', text.includes('X/audio-in.pcm'))
+    // 5.175：横幅不再给"老的全局录音文件"和 --whisper-follow 命令，而是指向 start-multi
+    check('报了录音分轨目录（audio/<房间>/<说话人>.pcm）',
+      text.includes('录音分轨') && text.includes('audio'))
     check('**报了真实密钥**（写成 undefined 会被这条抓住）',
       text.includes('abc123') && !text.includes('undefined'), '密钥没渲染对')
     check('给了调试窗口的命令，且带真密钥',
       text.includes('debug-window.mjs') && text.includes('--secret abc123'), '调试窗口提示不对')
-    check('给了识别进程的命令，用的是 --whisper-follow 而不是管道',
-      text.includes('--whisper-follow') && text.includes('asr-bridge.mjs --inbox'), '缺 --whisper-follow 形式')
+    // 横幅里可以提到"老模式已删除"（那是说明），但不能**教**那条命令：
+    // 判据是"有没有一处 asr-bridge --whisper-follow 的可执行命令"。
+    check('指向 start-multi（唯一启动方式）',
+      text.includes('start-multi.mjs --data-dir'), text.slice(0, 400))
+    check('不再给 --whisper-follow 的可执行命令',
+      /node bridge[\\/]asr-bridge\.mjs[^\n]*--whisper-follow/.test(text) === false, text.slice(0, 600))
     // 注意别用 `!text.includes('| node')` 去判 —— 横幅里那句**提醒不要写管道**的说明
     // 本身就含 `| node`，会误判。所以盯旧写法的特征串（python + whisper_stream.py --follow）。
     check('没有再推荐 python | node 那种旧写法',

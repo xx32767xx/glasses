@@ -260,12 +260,10 @@ const HELP = `asr-bridge —— 把语音识别结果送进 leion-pro 的 ASR �
                                  **Pascal 架构（Tesla P40/P100）没有 FP16 加速**，要用 int8_float32；
                                  给错档位会自动换档并打一行日志（whisper_stream.resolve_compute_type）。
                                  数字与测法见 docs/04-语音识别验证.md。
-  --whisper-follow <path>     手机端「录音上传」：尾随 relay 追加写的裸 PCM 文件。
-                                 给了这个就等于 --engine whisper 且让识别进程跟着文件跑。
-                                 **强烈建议用这个，而不是自己在终端里写 python | node 管道**：
-                                 Windows PowerShell 的原生命令管道会缓冲 stdout，而尾随模式的
-                                 识别进程永不退出 → 缓冲永不刷新 → 桥一行都收不到（踩过）。
-                                 走这条路由桥自己 spawn 子进程并流式读 stdout，没有这个问题。
+  --whisper-follow <path>     **5.175 已删除**（老的单文件尾随模式）。音频现在按
+                              房间/说话人分轨，由 scripts/start-multi.mjs 起的
+                              whisper_stream.py --follow-dir 跟读；要手动试一段
+                              音频就直接 python bridge/whisper_stream.py --follow 文件。
 
 格式
   --format text|json          text=一行原文（插件自动判语向）；json=带标记，缺省 text
@@ -297,7 +295,7 @@ export function parseArgs(argv) {
   const takesValue = new Set([
     'inbox', 'engine', 'command', 'replay', 'replay-delay-ms', 'format',
     'speaker', 'flush-on-pause-ms',
-    'whisper-model', 'whisper-device', 'whisper-compute', 'whisper-follow',
+    'whisper-model', 'whisper-device', 'whisper-compute',
   ])
   const flags = new Set(['truncate', 'dry-run', 'quiet', 'help'])
 
@@ -320,12 +318,12 @@ export function parseArgs(argv) {
 
   if (options.help === true) return options
   if (options.inbox === undefined) throw new Error('必须给 --inbox <收件箱路径>（用 --help 看用法）')
-  // --whisper-follow 是"engine=whisper + 尾随文件"的简写：手机录音上传那条路走它最省事
+  // 5.175：--whisper-follow 已删除（老的单文件尾随模式）。给个明确说法，
+  // 而不是让它变成"未知选项"把人引去猜。
   if (options['whisper-follow'] !== undefined) {
-    if (options.engine === 'stdin') options.engine = 'whisper'
-    if (options.engine !== 'whisper') {
-      throw new Error(`--whisper-follow 只能配 --engine whisper，收到 ${JSON.stringify(options.engine)}`)
-    }
+    throw new Error('--whisper-follow 已在 5.175 删除：音频现在按房间/说话人分轨，'
+      + '请用 scripts/start-multi.mjs（whisper_stream.py --follow-dir）；'
+      + '手动试一段音频用 python bridge/whisper_stream.py --follow <文件>')
   }
   if (!['stdin', 'command', 'replay', 'whisper'].includes(options.engine)) {
     throw new Error(`--engine 只能是 stdin / command / replay / whisper，收到 ${JSON.stringify(options.engine)}`)
@@ -341,9 +339,8 @@ export function parseArgs(argv) {
       // 每句话自带语种：手机把"说哪种语言"随音频上报 → whisper_stream 读旁文件解码 →
       // 把**实际用到的语种**写进 json 行（`{"text":…,"from":"zh-CN"}`）。
       // 所以这里只按格式要 json，不再固定 --language（固定错语种会安静地输出译文，
-      // 见 scripts/start-all.mjs 里那段实测注释）。
+      // 见 docs/04-语音识别验证.md 里那段实测）。
       if (options.format === 'json') command += ' --format json'
-      if (options['whisper-follow'] !== undefined) command += ` --follow "${options['whisper-follow']}"`
       if (options['whisper-model'] !== undefined) command += ` --model ${options['whisper-model']}`
       if (options['whisper-device'] !== undefined) command += ` --device ${options['whisper-device']}`
       if (options['whisper-compute'] !== undefined) command += ` --compute-type ${options['whisper-compute']}`

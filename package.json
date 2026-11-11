@@ -20,7 +20,7 @@
     "harness-side": "node scripts/harness-side.mjs",
     "prestart": "node scripts/preflight.cjs",
     "doctor": "node scripts/preflight.cjs",
-    "start": "node scripts/start-all.mjs",
+    "start": "node scripts/start-multi.mjs",
     "debug": "node scripts/debug-window.mjs",
     "fake-phone": "node scripts/fake-phone.mjs",
     "relay": "node relay/lan-relay.mjs",
