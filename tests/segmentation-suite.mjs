@@ -323,6 +323,53 @@ export async function runSegmentationSuite({ it, check }) {
       && /清空全部录音/.test(html))
   })
 
+  // 5.177：用户要「日志简单点」，并指定了做法：
+  //   · 路线 A（把账塞进数据流）+ 每句一个句号（<邀请码>#<房间内序号>）；
+  //   · 打印识别到的原文（前 40 字）+ 编号，便于追踪；
+  //   · 成功路径降级、心跳按变化打、丢弃碎片汇总；
+  //   · 默认 summary 档（每句一行摘要）。
+  await it('5.177：每句一行摘要 —— 句号贯通 / 两行日志 / 档位缺省 summary', async () => {
+    const python = readFileSync(join(ROOT, 'bridge', 'whisper_stream.py'), 'utf-8')
+    const worker = readFileSync(join(ROOT, 'bridge', 'asr-worker.mjs'), 'utf-8')
+    const core = readFileSync(join(ROOT, 'plugin', 'core.mjs'), 'utf-8')
+    const relay = readFileSync(join(ROOT, 'relay', 'lan-relay.mjs'), 'utf-8')
+    const multi = readFileSync(join(ROOT, 'scripts', 'start-multi.mjs'), 'utf-8')
+
+    // ① 句号：切句时分配，写进 meta → payload → 收件箱 → 帧
+    check('切句时分配句号（<邀请码>#<序号>）', /def next_seq_id/.test(python)
+      && /"seg": seg_no, "segId": seg_id/.test(python))
+    check('邀请码由启动脚本传下去（切句进程拿不到数据库）',
+      /--room-code/.test(python) && /'--room-code'/.test(multi))
+
+    // ② 账跟着数据走：段长/排队/识别/等静音
+    check('payload 带上四段耗时', /"segMs": seg_ms, "queueMs": queue_ms, "asrMs": asr_ms/.test(python)
+      && /"silenceMs": silence_ms_now/.test(python))
+    check('收件箱行透传（worker）',
+      /cost: \{ seg: payload\.seg, segId: payload\.segId/.test(worker) && /silenceMs/.test(worker))
+    check('大脑白名单放行并写进帧（cost）', /cost: \(\s*\(\) =>/.test(core)
+      && /cost: Object\.assign\(\{\}, item\.cost \?\? \{\}, \{ trMs \}\)/.test(core))
+
+    // ③ 两行日志：原文行（识别侧）+ 摘要行（转发侧）
+    check('打印识别到的原文 + 编号（前 40 字）', /\[原文\] \{label\}/.test(python)
+      && /preview\(text\)/.test(python))
+    check('转发侧有"每句一行摘要"', /function logSummary/.test(relay) && /function renderSummary/.test(relay))
+    check('摘要里 ⇒ 是"说完到手机"（含等静音）', /silenceMs \+ queueMs \+ asrMs \+ trMs \+ pushMs/.test(relay))
+
+    // ④ 档位：缺省 summary；detail 才逐句打延迟账
+    check('python 有 --log-level 且缺省 summary',
+      /--log-level", default="summary"/.test(python) && /log_level_at_least/.test(python))
+    check('relay 也有 --log-level 且缺省 summary',
+      /logLevel: 'summary'/.test(relay) && /--log-level/.test(relay))
+
+    // ⑤ 降级与汇总
+    check('成功路径降级（字幕已更新/定稿帧/取字幕 不再是每句一行）',
+      /logSummary\(frame, attribution\.roomId\)/.test(relay)
+      && /logLevelAtLeast\('trace'\)/.test(relay))
+    check('丢弃碎片汇总（首段立刻说，之后计数）', /drop_burst/.test(python) && /丢弃 \{burst\[/.test(python))
+    check('译文行截到 40 字', /previewText\(result\.translation\)/.test(core))
+    check('心跳按变化才打', /lastBeat/.test(multi))
+  })
+
   // 5.169：用户要「不用录音对表也能看出延迟落在哪一段」。四段各自留痕：
   // 切句（配置值）｜排队｜识别（python 那行账）｜翻译（大脑）｜推送（relay）。
   await it('5.169：四段延迟各自留痕（切句/排队/识别/翻译/推送）', () => {
@@ -330,7 +377,8 @@ export async function runSegmentationSuite({ it, check }) {
     const plugin = readFileSync(join(ROOT, 'plugin', 'core.mjs'), 'utf-8')
     const relay = readFileSync(join(ROOT, 'relay', 'lan-relay.mjs'), 'utf-8')
 
-    check('识别侧打一行延迟账（音频/排队/识别/切句参数）',
+    // 5.177：这几项现在是 detail 档（摘要行已经带上同样的数），但实现必须还在
+    check('识别侧仍保留一行延迟账（detail 档：音频/排队/识别/切句参数）',
       /\[延迟\] 房间/.test(python) && /排队 /.test(python) && /切句 silence=/.test(python))
     check('排队耗时的起点是这一段被取走的时刻', /picked_at_ms/.test(python))
     check('切句参数取命令行 + 全局旋钮的合成值（不猜）',
@@ -341,10 +389,11 @@ export async function runSegmentationSuite({ it, check }) {
     check('翻译耗时的起点在发起模型调用之前',
       /const translateStartedAt = Date\.now\(\)[\s\S]{0,200}?translator\.translate\(/.test(plugin))
 
-    check('转发打「大脑写出 → 推送」的间隔（用帧自带的 at）',
-      /大脑写出→推送/.test(relay) && /Date\.parse\(frame\.at\)/.test(relay))
-    check('只在定稿上打（增量帧太密，打出来是刷屏）',
-      /frame\.partial !== true[\s\S]{0,400}?大脑写出→推送/.test(relay))
+    // 5.177：四段账并进「每句一行摘要」，所以这里改盯摘要那一行的实现
+    check('转发打「每句一行摘要」（段/识/译/推 + ⇒）',
+      /function logSummary/.test(relay) && /⇒/.test(relay) && /Date\.parse\(frame\.at\)/.test(relay))
+    check('只在定稿上打（增量帧太密，打出来是刷屏；5.177 起由 logSummary 自己判）',
+      /function logSummary[\s\S]{0,400}?frame\.partial === true\) return/.test(relay))
   })
 
   await it('5.167：管理台有这块面板（输入框 + 校验 + 保存 + 恢复缺省）', () => {

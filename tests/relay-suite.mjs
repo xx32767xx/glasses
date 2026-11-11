@@ -135,12 +135,17 @@ export async function runRelaySuite({ it, check, assert }) {
       }
       writeFileSync(join(dir, 'buses', 'room-lat.json.frames', '000001-x.json'), JSON.stringify(frame))
       await new Promise((resolve) => setTimeout(resolve, 400))
-      const latency = logs.filter((line) => line.includes('大脑写出→推送'))
-      const numbers = latency.map((line) => (line.match(/帧 #(\d+)/) ?? [])[1])
-      check('两种译文各记一次账（共两行）', latency.length === 2, JSON.stringify(latency))
-      check('两行是**不同**的帧号（父帧不再多记一笔）',
-        numbers.length === 2 && numbers[0] !== numbers[1], JSON.stringify(numbers))
-      check('记的是拆出来的语言', latency.every((line) => /（en-US）|（pt-BR）/.test(line)),
+      // 5.177：延迟账并进「每句一行摘要」，而且**同一句的几种译文合成一行**。
+      // 格式：`<句号> <人>/<方向> │ 段… 识… 译… 推… │ ⇒N.Ns │ en283 pt286`
+      const latency = logs.filter((line) => line.includes('⇒'))
+      check('同一句只打一行（父帧不再多记一笔，两种译文也不各占一行）',
+        latency.length === 1, JSON.stringify(latency))
+      check('方向写全（→en+pt）', latency.length === 1 && latency[0].includes('→en+pt'),
+        JSON.stringify(latency))
+      check('两种语言的字数在同一行里',
+        latency.length === 1 && /en\d+/.test(latency[0]) && /pt\d+/.test(latency[0]),
+        JSON.stringify(latency))
+      check('摘要里带端到端耗时', latency.length === 1 && /⇒\d+\.\d+s/.test(latency[0]),
         JSON.stringify(latency))
     } finally {
       console.log = original

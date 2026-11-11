@@ -72,6 +72,8 @@ export function parseArgs(argv = []) {
     queueDir: null,
     dataDir: join(ROOT, 'var', 'live'),
     inboxDir: null,
+  /** 5.177：日志档位（透传给 python 消费者） */
+  logLevel: 'summary',
     model: null,
     device: 'cuda',
     computeType: null,          // null = 按设备定（GPU float16 / CPU int8）
@@ -89,7 +91,9 @@ export function parseArgs(argv = []) {
   const takesValue = new Set(['queue-dir', 'data-dir', 'inbox-dir', 'model', 'device',
     'compute-type', 'queue-poll-ms', 'depth-report-s', 'model-map', 'max-models',
     // 5.70：电平门槛（实机麦克风只有 0.007~0.020，缺省 0.02 会把整句丢掉）
-    'silence-skip-level'])
+    'silence-skip-level',
+    // 5.177：日志档位（透传给 python 消费者）
+    'log-level'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -104,6 +108,12 @@ export function parseArgs(argv = []) {
     if (key === 'queue-dir') options.queueDir = value
     else if (key === 'data-dir') options.dataDir = value
     else if (key === 'inbox-dir') options.inboxDir = value
+    else if (key === 'log-level') {
+      if (['summary', 'detail', 'trace'].includes(value) !== true) {
+        throw new Error(`--log-level 只能是 summary / detail / trace，收到 ${JSON.stringify(value)}`)
+      }
+      options.logLevel = value
+    }
     else if (key === 'model') options.model = value
     else if (key === 'device') options.device = value
     else if (key === 'compute-type') options.computeType = value
@@ -180,7 +190,7 @@ export function normalizeLangTag(from) {
  * 常开句柄会让"某一场会关掉后文件还被占着"（Windows 上改不了名、删不掉）。
  */
 export function appendInboxLine(inboxDir, roomId, text, from,
-  { fs = null, speaker = '', strategy = '', model = '' } = {}) {
+  { fs = null, speaker = '', strategy = '', model = '', cost = null } = {}) {
   const tag = normalizeLangTag(from)
   // 5.10：说话人跟着这一行走。**字段名必须是 `speakerName`，不能叫 `speaker`** ——
   // 插件那边的 `speaker` 是另一套语义（相对佩戴者的 `'me' / 'them'`），
@@ -196,6 +206,20 @@ export function appendInboxLine(inboxDir, roomId, text, from,
   const modelName = typeof model === 'string' ? model.trim() : ''
   if (strategyName !== '') body.strategy = strategyName
   if (modelName !== '') body.model = modelName
+  // 5.177：**这一段的账**（句号 / 段长 / 排队 / 识别耗时）也要透传 ——
+  // 它是"每句一行摘要"的原料。以前这些只打在 python 的 stderr 里，
+  // 于是 relay 想打摘要只能靠时间戳猜。全是可选字段：老链路不给也照常翻译。
+  if (cost !== null && typeof cost === 'object') {
+    const num = (value) => (Number.isFinite(Number(value)) ? Number(value) : null)
+    const seg = num(cost.seg)
+    const segId = typeof cost.segId === 'string' ? cost.segId.trim() : ''
+    if (seg !== null && seg > 0) body.seg = seg
+    if (segId !== '') body.segId = segId
+    for (const key of ['segMs', 'queueMs', 'asrMs', 'silenceMs']) {
+      const value = num(cost[key])
+      if (value !== null && value >= 0) body[key] = value
+    }
+  }
   const line = JSON.stringify(body)
   const file = inboxPathFor(inboxDir, roomId)
   if (fs !== null) {                     // 测试注入：不必真写盘
@@ -270,6 +294,8 @@ export function consumerCommand(options) {
   if (options.silenceSkipLevel !== null && options.silenceSkipLevel !== undefined) {
     args.push('--silence-skip-level', String(options.silenceSkipLevel))
   }
+  // 5.177：日志档位透给识别进程（summary = 每句一行；detail 才逐句打延迟账）
+  args.push('--log-level', String(options.logLevel ?? 'summary'))
   return { script: join(ROOT, 'bridge', 'whisper_stream.py'), args }
 }
 
@@ -376,7 +402,10 @@ export async function main(argv = process.argv.slice(2)) {
     // 5.41：策略名 / 模型名跟着这一行往下走（大脑只拿它写日志，不参与语向判定）
     const strategy = typeof payload.strategy === 'string' ? payload.strategy.trim() : ''
     const model = typeof payload.model === 'string' ? payload.model.trim() : ''
-    appendInboxLine(options.inboxDir, room, spoken, raw, { speaker: who, strategy, model })
+    appendInboxLine(options.inboxDir, room, spoken, raw, { speaker: who, strategy, model,
+    // 5.177：把这一段的时间账一起带给大脑（摘要行要用）
+    cost: { seg: payload.seg, segId: payload.segId, segMs: payload.segMs,
+      queueMs: payload.queueMs, asrMs: payload.asrMs, silenceMs: payload.silenceMs } })
     if (process.env.LEION_DEBUG === '1') {
       process.stdout.write(`${TAG} ${room} → ${spoken}\n`)
     }

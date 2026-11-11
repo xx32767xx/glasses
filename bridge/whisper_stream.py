@@ -356,6 +356,12 @@ def parse_args(argv=None):
                         help="消费者模式：从这个队列目录按到达顺序取段转写（模型只加载一次）")
     parser.add_argument("--tag", default=None,
                         help="生产者模式：给切出的段打上房间 id（消费者靠它把文字送回正确的房间）")
+    parser.add_argument("--room-code", default=None,
+                        help="房间的 6 位邀请码（5.177）：日志里的句子编号写成 <邀请码>#<序号>，"
+                             "这样'原文行 / 摘要行 / 字幕帧'能用同一个号对上。不给就只写 #<序号>")
+    parser.add_argument("--log-level", default="summary", choices=["summary", "detail", "trace"],
+                        help="日志档位（5.177）：summary=每句一行摘要 + 原文（**缺省**）；"
+                             "detail=再把切句/识别/延迟账逐句打出来；trace=全都打")
     parser.add_argument("--queue-poll-ms", type=int, default=60,
                         help="消费者模式：多久看一次队列（缺省 60ms）")
     parser.add_argument("--queue-depth-report-s", type=float, default=30.0,
@@ -395,6 +401,8 @@ def parse_args(argv=None):
         args.lang_candidates = parse_lang_candidates(args.lang_candidates)
     except ValueError as error:
         parser.error(str(error))
+    # 5.177：日志档位交给模块级的那个开关（各打印点用 log_level_at_least 判断）
+    _LOG_LEVEL["value"] = str(getattr(args, "log_level", "summary") or "summary")
     return args
 
 
@@ -402,9 +410,56 @@ def parse_args(argv=None):
 
 QUEUE_META_SUFFIX = ".json"
 
+# ── 5.177：句子编号（`<邀请码>#<房间内序号>`）────────────────────────────────
+#
+# 为什么要有它：一句字幕的"一生"经过四个进程（切句 → 识别 → 大脑 → 转发），
+# 而日志里各打各的 —— 想追"这句话为什么慢 / 为什么没出字"，只能靠时间戳猜。
+# 现在切句时就把编号写进 meta，随数据一路带到帧里：原文行、摘要行、字幕帧用的是
+# **同一个号**（用户要求：打印识别到的原文 + 对应编号，好去追踪）。
+#
+# 邀请码由 start-multi 通过 `--room-code` 传进来（进程内拿不到数据库）；
+# 没传时退化成 `#<序号>`，房间仍能从日志前缀 `[切句·<房间>]` 看出来。
+_SEG_SEQ = {}
+
+
+def next_seq_id(tag, room_code=None):
+    """给这一段分配编号。返回 `(序号, "邀请码#序号")`。
+
+    <p>序号是**按房间进程内自增**的：切句进程一房间一个，重启会从 1 重来。
+    真要防重号得落盘，但那会把"日志好读"换成"多一个能被写坏的文件" —— 不值。
+    时间戳（每行开头）足以区分重启前后的 `#29`。
+    """
+    key = str(tag or "unknown")
+    seq = int(_SEG_SEQ.get(key, 0)) + 1
+    _SEG_SEQ[key] = seq
+    prefix = str(room_code or "").strip()
+    return seq, (f"{prefix}#{seq}" if prefix else f"#{seq}")
+
+
+def preview(text, limit=40):
+    """一句话的一行预览（截到 limit 字，超了补省略号）。
+
+    为什么按"字"而不是"字节"：中文一行放不下几个字节，按字节截会把句子截成乱码。
+    """
+    flat = " ".join(str(text or "").split())
+    if len(flat) <= limit:
+        return flat
+    return flat[:limit] + "…"
+
+
+# 5.177：日志档位。缺省 summary —— 现场只看到"每句一行"，详情请加 --log-level detail。
+_LOG_LEVEL = {"value": "summary"}
+_LOG_RANK = {"summary": 0, "detail": 1, "trace": 2}
+
+
+def log_level_at_least(level):
+    """当前档位够不够打这一行（summary < detail < trace）。"""
+    return _LOG_RANK.get(_LOG_LEVEL["value"], 0) >= _LOG_RANK.get(level, 1)
+
+
 
 def _write_segment(queue_dir, tag, samplerate, audio, np, language=None, speaker=None,
-                   strategy=None):
+                   strategy=None, room_code=None):
     """把一段话落进队列：裸 PCM + 一份 meta。返回写出的文件名（供日志/测试）。"""
     os.makedirs(queue_dir, exist_ok=True)
     # 文件名按**时间戳**排：消费者直接按名字排序就是"到达顺序"（FIFO），
@@ -420,10 +475,14 @@ def _write_segment(queue_dir, tag, samplerate, audio, np, language=None, speaker
         seq += 1
     data = np.asarray(audio, dtype=np.float32)
     pcm = (np.clip(data, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
+    # 5.177：句子编号（`<邀请码>#<房间内序号>`）—— 随数据一路走到字幕帧
+    seg_no, seg_id = next_seq_id(room, room_code)
     meta = {
         "room": room,
         "rate": int(samplerate),
         "ms": int(round(len(data) * 1000.0 / float(samplerate))),
+        "seg": seg_no,
+        "segId": seg_id,
         "lang": None if language is None else str(language),
         # 5.08：这段话是谁说的。分轨之后这是**数据自带的**，不用下游再猜"最近的说话人"。
         "speaker": None if speaker is None else str(speaker),
@@ -685,8 +744,15 @@ def run_segment_producer_dir(args, np):
             return
         base = _write_segment(args.segment_dir, args.tag, args.samplerate, utterance, np,
                               state["language"], speaker=name,
-                              strategy=state["strategy"]["strategy"])
+                              strategy=state["strategy"]["strategy"],
+                              room_code=getattr(args, "room_code", None))
         produced += 1
+        # 5.177：切出一段就清零"丢弃突发"计数 —— 恢复正常了，不该继续累计旧账
+        burst = getattr(state["segmenter"], "drop_burst", None)
+        if isinstance(burst, dict):
+            burst["count"] = 0
+            burst["ms"] = 0
+            burst["last_print"] = 0.0
         # 每一句都把策略名打出来（用户要求：便于对照与调节）
         # 5.52：尾巴裁掉多少也带上 —— 它紧贴最后一个音节，是"句尾缺一截"的头号嫌疑
         trim = getattr(state["segmenter"], "last_tail_trim_ms", 0)
@@ -694,10 +760,11 @@ def run_segment_producer_dir(args, np):
         if trim == 0 and why == "idle":
             note = (f"（⚠️ 不是静音收的句：连续 {args.idle_flush_ms}ms 没有新音频就交了"
                     f" —— 手机上传是断续的，这个值要比上传间隔大，见 docs/06 §4）")
-        print(f"[切句] {args.tag or '?'} {name} → {base}"
-              f"（{len(utterance) / args.samplerate:.1f}s，策略 {state['strategy']['strategy']}，"
-              f"尾部静音裁掉 {trim}ms，累计 {produced} 段）{note}",
-              file=sys.stderr, flush=True)
+        if log_level_at_least("detail"):
+            print(f"[切句] {args.tag or '?'} {name} → {base}"
+                  f"（{len(utterance) / args.samplerate:.1f}s，策略 {state['strategy']['strategy']}，"
+                  f"尾部静音裁掉 {trim}ms，累计 {produced} 段）{note}",
+                  file=sys.stderr, flush=True)
 
     def report(name, state):
         """这一路现在带什么语种（只在变化时报一次）。"""
@@ -849,11 +916,13 @@ def run_segment_producer(args, np):
         nonlocal produced
         if utterance is None or len(utterance) == 0:
             return
-        name = _write_segment(args.segment_dir, args.tag, args.samplerate, utterance, np, language)
+        name = _write_segment(args.segment_dir, args.tag, args.samplerate, utterance, np, language,
+                              room_code=getattr(args, "room_code", None))
         produced += 1
-        print(f"[切句] {args.tag or '?'} → {name}"
-              f"（{len(utterance) / args.samplerate:.1f}s，累计 {produced} 段）",
-              file=sys.stderr, flush=True)
+        if log_level_at_least("detail"):
+            print(f"[切句] {args.tag or '?'} → {name}"
+                  f"（{len(utterance) / args.samplerate:.1f}s，累计 {produced} 段）",
+                  file=sys.stderr, flush=True)
 
     def report_language():
         """把"之后切出的段带什么语种"说清楚（只在变化时打印一次）。"""
@@ -2810,7 +2879,25 @@ def run_queue_consumer(args, np, pool):
                 #    这里原样写 `resolved_language` 时，插件判不出翻译方向，报的是
                 #    「目标语种无法推导，请显式传 to」—— 而识别其实完全正常，
                 #    所以这条错误会把人的注意力引到错误的地方（用户实测踩到）。
-                payload = {"room": meta.get("room"), "text": text}
+                # 5.177：**这一段的账跟着数据走** —— 段长 / 排队 / 识别耗时都在这儿算好了，
+                # 以前只打在日志里，于是"一句一行摘要"只能在 relay 那边靠时间戳猜。
+                # 现在随 payload 进收件箱、进帧，最后由 relay 在推送那一刻一次打出来。
+                seg_ms = int(meta.get("ms") or 0)
+                queue_ms = max(0, picked_at_ms - int(meta.get("queuedAt") or picked_at_ms))
+                asr_ms = int(round(elapsed * 1000))
+                seg_no = int(meta.get("seg") or 0)
+                seg_id = str(meta.get("segId") or "")
+                # 5.177："等静音"那一段也要带上 —— 摘要把 ⇒ 定义成
+                # **说完到手机**（静音判定 + 排队 + 识别 + 翻译 + 推送），少了它就少算一截。
+                try:
+                    global_seg_now = load_global_segmentation(getattr(args, "data_dir", None))
+                    silence_ms_now = int(global_seg_now.get("silence_ms", args.silence_ms))
+                except Exception:                              # noqa: BLE001
+                    silence_ms_now = int(getattr(args, "silence_ms", 0) or 0)
+                payload = {"room": meta.get("room"), "text": text,
+                           "seg": seg_no, "segId": seg_id,
+                           "segMs": seg_ms, "queueMs": queue_ms, "asrMs": asr_ms,
+                           "silenceMs": silence_ms_now}
                 tag = language_tag(resolved_language)
                 if tag is not None:
                     payload["from"] = tag
@@ -2826,33 +2913,35 @@ def run_queue_consumer(args, np, pool):
                 if isinstance(profile.get("strategyLockedAt"), str) and profile["strategyLockedAt"]:
                     payload["strategyLockedAt"] = profile["strategyLockedAt"]
                 print(json.dumps(payload, ensure_ascii=False), flush=True)
-                # 每一句都在日志里留一行策略（用户要求：便于对照与调节）
-                # 5.73：多打一个**字数**。没有它，「丢了多少话」只能按秒报，
-                # 而秒数说不清"6 秒里到底有没有说话" —— 有字数才能把丢掉的段
-                # 折成"大约几句话"，也才能和字幕缺字对上（见 asr-loss-report）。
+                # 5.177：**原文行**（用户要求：打印识别到的原文 + 对应编号，才能追踪）。
+                # 这是 summary 档唯一"每句必有"的一行，所以它同时承担编号的锚点。
                 units = spoken_units(text)
-                print(f"[识别] 房间 {meta.get('room')} 策略 {strategyName}"
-                      f"（模型 {profile.get('model')}，切句由 {cutStrategy or '旧版段（无策略名）'}）"
-                      f" → {seconds:.1f}s 出{'字' if has_cjk(text) else '词'} {units}"
-                      f"，耗时 {elapsed:.2f}s",
-                      file=sys.stderr, flush=True)
-                # 5.169：**延迟账**（用户要求：不用录音对表也能看出时间花在哪一段）。
-                # 切句那一段这里量不到（它是"等静音 / 等到上限"，发生在切句进程里），
-                # 所以把**配置值**写出来 —— 一眼就知道该不该去管理台调小。
-                try:
-                    queue_ms = max(0, picked_at_ms - int(meta.get("queuedAt") or picked_at_ms))
-                    seg_ms = int(meta.get("ms") or 0)
-                    # 切句参数取"命令行 + 全局旋钮"的合成值（策略表里的按语种覆盖是少数情况，不在这里猜）
-                    global_seg = load_global_segmentation(getattr(args, "data_dir", None))
-                    silence_ms = global_seg.get("silence_ms", args.silence_ms)
-                    max_ms = global_seg.get("max_speech_ms", args.max_speech_ms)
-                    print(f"[延迟] 房间 {meta.get('room')}：音频 {seg_ms / 1000.0:.1f}s"
-                          f"｜排队 {queue_ms / 1000.0:.2f}s｜识别 {elapsed:.2f}s"
-                          f"｜切句 silence={silence_ms}ms/max={max_ms}ms",
+                label = seg_id or f"#{seg_no}" if seg_no > 0 else str(meta.get("room") or "?")
+                print(f"[原文] {label} {tag or '?'} {units}{'字' if has_cjk(text) else '词'}"
+                      f"「{preview(text)}」", file=sys.stderr, flush=True)
+                # 以下两行（策略明细 / 延迟账）现在是 detail 档：内容已经进了摘要行，
+                # 现场不需要每句看两遍；排障时 --log-level detail 原样拿得到。
+                if log_level_at_least("detail"):
+                    print(f"[识别] 房间 {meta.get('room')} 策略 {strategyName}"
+                          f"（模型 {profile.get('model')}，切句由 {cutStrategy or '旧版段（无策略名）'}）"
+                          f" → {seconds:.1f}s 出{'字' if has_cjk(text) else '词'} {units}"
+                          f"，耗时 {elapsed:.2f}s",
                           file=sys.stderr, flush=True)
-                except Exception as error:                # noqa: BLE001
-                    print(f"[延迟] 记不了这一段（{type(error).__name__}: {error}）",
-                          file=sys.stderr, flush=True)
+                    # 5.169：**延迟账**（用户要求：不用录音对表也能看出时间花在哪一段）。
+                    # 切句那一段这里量不到（它是"等静音 / 等到上限"，发生在切句进程里），
+                    # 所以把**配置值**写出来 —— 一眼就知道该不该去管理台调小。
+                    try:
+                        # 切句参数取"命令行 + 全局旋钮"的合成值（策略表里的按语种覆盖是少数情况，不在这里猜）
+                        global_seg = load_global_segmentation(getattr(args, "data_dir", None))
+                        silence_ms = global_seg.get("silence_ms", args.silence_ms)
+                        max_ms = global_seg.get("max_speech_ms", args.max_speech_ms)
+                        print(f"[延迟] 房间 {meta.get('room')}：音频 {seg_ms / 1000.0:.1f}s"
+                              f"｜排队 {queue_ms / 1000.0:.2f}s｜识别 {elapsed:.2f}s"
+                              f"｜切句 silence={silence_ms}ms/max={max_ms}ms",
+                              file=sys.stderr, flush=True)
+                    except Exception as error:                # noqa: BLE001
+                        print(f"[延迟] 记不了这一段（{type(error).__name__}: {error}）",
+                              file=sys.stderr, flush=True)
             processed += 1
             # ⚠️ 处理完就删：队列目录同时是"待处理清单"，删掉才算消费完。
             for suffix in (".pcm", QUEUE_META_SUFFIX):
@@ -2864,12 +2953,18 @@ def run_queue_consumer(args, np, pool):
         if args.queue_depth_report_s > 0 and now - last_report >= args.queue_depth_report_s:
             last_report = now
             pending = len(_pending_segments(args.queue_dir))
-            if pending > 0 or processed > 0:
-                print(f"[识别] 队列深度 {pending} 段，最长已等 {waited_ms_max / 1000.0:.1f}s，"
-                      f"累计转写 {processed} 段", file=sys.stderr, flush=True)
+            if pending > 0:
+                # 5.177：队列**空着**时不报 —— 安静时那两行是纯噪音；有积压才说
+                # （那是"识别跟不上"的唯一证据），而且并成一行。
+                print(f"[识别] 队列积压 {pending} 段，最长已等 {waited_ms_max / 1000.0:.1f}s"
+                      f"（累计转写 {processed} 段）", file=sys.stderr, flush=True)
                 # 5.40：把"哪一级决定了哪个模型、各处理了多少段"摊开 ——
                 # 没有这一行，A/B 时根本说不清"这些字幕到底是哪个模型出的"
-                print(f"[识别] 按档案分流：{pool.report()}", file=sys.stderr, flush=True)
+                if log_level_at_least("detail"):
+                    print(f"[识别] 按档案分流：{pool.report()}", file=sys.stderr, flush=True)
+            elif log_level_at_least("detail"):
+                print(f"[识别] 队列深度 0 段（累计转写 {processed} 段），"
+                      f"按档案分流：{pool.report()}", file=sys.stderr, flush=True)
             waited_ms_max = 0
 
 
@@ -3464,11 +3559,43 @@ class UtteranceSegmenter:
             self.dropped_runs.append(run)
             # 5.52：**丢东西必须说出来**。以前这里只进内存列表，日志里一个字都没有 ——
             # 于是"某些音节被删掉了"这种问题只能靠猜（用户实测报过：academic → Islamic）。
-            # 一行一条，带位置（秒）和语音时长，能直接和录音对上。
-            print(f"[切句] ⚠️ 丢掉一段碎片：{run['start']:.1f}s–{run['end']:.1f}s "
-                  f"（语音只有 {run['voicedMs']:.0f}ms < min-speech {self.min_blocks * self.block_ms}ms）"
-                  f"—— 如果那里其实是说话，这就是**被吃掉的音节**",
-                  file=sys.stderr, flush=True)
+            #
+            # 5.177：但**不能每段一行** —— 实机 40 秒里就有 6 行"丢掉一段碎片"，
+            # 把真正要看的东西淹了。现在：突发里**第一段立刻说**（真丢话不能等），
+            # 之后只计数，攒够 30 秒再汇总一行；切出正常句子就把计数清零。
+            burst = getattr(self, "drop_burst", None)
+            if not isinstance(burst, dict):
+                burst = {"count": 0, "ms": 0.0, "min_ms": None, "short": 0}
+                for attribute in ("last_print",):
+                    burst[attribute] = 0.0
+                self.drop_burst = burst
+            burst["count"] = int(burst.get("count", 0)) + 1
+            burst["ms"] = float(burst.get("ms", 0.0)) + float(run["voicedMs"])
+            shortest = burst.get("min_ms")
+            burst["min_ms"] = run["voicedMs"] if shortest is None else min(float(shortest), run["voicedMs"])
+            now_s = time.monotonic()
+            first_in_burst = burst["count"] == 1
+            long_enough_to_matter = run["voicedMs"] >= 1000
+            due = now_s - float(burst.get("last_print", 0.0)) >= 30.0
+            if first_in_burst or long_enough_to_matter or due:
+                burst["last_print"] = now_s
+                if burst["count"] > 1:
+                    print(f"[切句] ⚠️ 丢弃 {burst['count']} 段（共 {burst['ms']:.0f}ms，"
+                          f"最短 {burst['min_ms']:.0f}ms < min-speech "
+                          f"{self.min_blocks * self.block_ms}ms）—— 那里如果其实在说话，"
+                          f"这些就是**被吃掉的音节**",
+                          file=sys.stderr, flush=True)
+                else:
+                    print(f"[切句] ⚠️ 丢掉一段碎片：{run['start']:.1f}s–{run['end']:.1f}s "
+                          f"（语音只有 {run['voicedMs']:.0f}ms < min-speech "
+                          f"{self.min_blocks * self.block_ms}ms）"
+                          f"—— 如果那里其实是说话，这就是**被吃掉的音节**",
+                          file=sys.stderr, flush=True)
+                if long_enough_to_matter:
+                    # 超过 1 秒的整段被丢，是"真的少了半句话"，计数清零重新算
+                    burst["count"] = 0
+                    burst["ms"] = 0.0
+                    burst["min_ms"] = None
             return None
         return self.np.concatenate(blocks)
 

@@ -209,6 +209,8 @@ export function parseArgs(argv = []) {
     switchIdleMs: 15000,         // 正在跑的那场安静这么久 → 让位给别的场
     minHoldMs: 8000,             // 至少待这么久才允许切走（防止两场会来回抢，一直重载模型）
     only: [],
+    // 5.177：日志档位。summary = 每句一行摘要（缺省），detail/trace 逐句逐帧
+    logLevel: 'summary',
     includeEmpty: false,
     offline: false,
     proofread: false,
@@ -278,6 +280,15 @@ export function parseArgs(argv = []) {
     if (key === 'include-empty') { options.includeEmpty = true; continue }
     if (key === 'public') { options.public = true; continue }
     if (key === 'quiet-logs') { options.writeLogs = false; continue }
+    if (key === 'log-level') {
+      const level = argv[index + 1] ?? ''
+      if (['summary', 'detail', 'trace'].includes(level) !== true) {
+        throw new Error(`--log-level 只能是 summary / detail / trace，收到 ${JSON.stringify(level)}`)
+      }
+      options.logLevel = level
+      index += 1
+      continue
+    }
     if (key === 'dry-run') { options.dryRun = true; continue }
     // 5.175：serial/parallel 已删除（它们依赖不再写入的 audio/<房间>.pcm）。
     // 给明确报错，而不是静默变成"启动成功但没字幕"。
@@ -466,6 +477,8 @@ export function relayStep(options) {
     args.push('--public')
     args.push('--host', options.host ?? '0.0.0.0')
   }
+  // 5.177：日志档位（summary 每句一行摘要 / detail / trace）
+  args.push('--log-level', String(options.logLevel ?? 'summary'))
   // 5.27：**版本门禁默认开**（`LEION_ENFORCE_APP_VERSION=0` 可以关）。
   // 门禁决定了"旧版本手机能不能连进来"：开着 = 连不上并被告知去更新。
   // 关掉的唯一合理场景是排查"是不是门禁把某个客户端挡在外面"。
@@ -514,12 +527,17 @@ export function pipelineSteps(options, room) {
         args: [
           '--segment-dir', options.queueDir,
           '--tag', roomId,
+          // 5.177：邀请码也传下去 —— 日志里的句子编号写成 <邀请码>#<房间内序号>，
+          // 用户要靠它把"原文行 / 摘要行 / 字幕帧"对上（切句进程拿不到数据库）
+          ...(typeof room === 'object' && room !== null && typeof room.code === 'string'
+            && room.code !== '' ? ['--room-code', room.code] : []),
           // 5.08：尾随**分轨目录**（每个说话人一个 pcm，各带自己的 .rate / .lang）。
           // 为什么不再尾随单个 `audio/<房间>.pcm`：那个文件的语种旁文件是"最后写入者获胜"，
           // 两个人交替用不同语言说话时，切出来的段会带着上一个人的语种 ——
           // 语言从源头就错了，下游再怎么修都是补丁。
           '--follow-dir', files.audioDir,
           '--follow-poll-ms', '80',
+          '--log-level', options.logLevel ?? 'summary',
           // 5.115：多久没新音频就把半句交出去。太小 = 在说话中间切句（手机上传是一批一批来的，
           // 间隔实测能到 9 秒）；太大 = 最后一句多等。日志里 `尾部静音裁掉 0ms` 就是它触发的指纹。
           '--idle-flush-ms', String(options.idleFlushMs),
@@ -583,6 +601,8 @@ export function workerStep(options) {
     '--compute-type', options.computeType,
     '--queue-poll-ms', '60',
     '--depth-report-s', String(options.depthReportSec),
+    // 5.177：日志档位（继续透传到 python 消费者：summary 只打"每句一行 + 原文"）
+    '--log-level', String(options.logLevel ?? 'summary'),
     // 收件箱由本脚本按房间清，worker 只管追加（见 prepareRoomFiles）
     '--keep-inbox',
   ]
@@ -1230,6 +1250,8 @@ export async function main(argv = process.argv.slice(2)) {
   /** 大脑·API 连续重启次数：它挂掉只影响 `/translate`，所以重启而不是全体停 */
   let apiBrainRestarts = 0
   let tickCount = 0
+  /** 5.177：上一次心跳的全文 —— 一样就不再打（安静时不该每分钟重复同一行）。 */
+  let lastBeat = ''
   let maxRoomsWarned = false
   /**
    * 每个房间**上一次写进状态侧车**的是什么（5.15）。
@@ -1580,11 +1602,7 @@ export async function main(argv = process.argv.slice(2)) {
         }
       }
       // 排队中的房间说清楚"为什么没有它的字幕"
-      const waiting = desired.filter(room => room.id !== choice.roomId)
-      if (waiting.length > 0 && tickCount % 10 === 0) {
-        console.log(`  ${DIM}… 排队中（串行，显存只够一份模型）：${waiting.map(room => shortRoomId(room.id)).join(' / ')}`
-          + `（它们的音频照常落盘，轮到时会从"现在"开始翻译）${RESET}`)
-      }
+      // 5.175 起只剩队列模式（每场都有自己的切句 + 大脑），这里不再有"排队等切场"
     }
 
     // 跑满两分钟就**把失败计数清零**：故障额度是给"起不来"的，不是给"跑了一小时才挂一次"的
@@ -1613,11 +1631,16 @@ export async function main(argv = process.argv.slice(2)) {
       // 所以把"正在收尾"的场数明写在括号里，别让人以为自己看错了。
       const openIds = new Set(snapshot.rooms.map(room => room.id))
       const closing = [...running.keys()].filter(roomId => !openIds.has(roomId))
-      console.log(`  ${DIM}· 还在看（开着的房间 ${snapshot.rooms.length} 个，`
-        + `在翻译 ${running.size} 场${names.length > 0 ? `：${names.join(' / ')}` : ''}`
-        + `${closing.length > 0
-          ? `；其中 ${closing.length} 场已关闭、宽限期后收尾` : ''}）${RESET}`)
-      if (perRoom.length > 0) console.log(`  ${DIM}  ${perRoom.join(' | ')}${RESET}`)
+      // 5.177：**合成一行，且只在数字变了才打** —— 安静时"每分钟两行一模一样的"
+      // 是纯噪音，而变化本身才是信息（"收件箱不再涨了"是一眼能看出来的异常）。
+      const beat = `还在看：开着的房间 ${snapshot.rooms.length} 个，在翻译 ${running.size} 场`
+        + `${names.length > 0 ? `（${names.join(' / ')}）` : ''}`
+        + `${closing.length > 0 ? `；${closing.length} 场已关闭、宽限期后收尾` : ''}`
+        + `${perRoom.length > 0 ? ` ｜ ${perRoom.join(' ｜ ')}` : ''}`
+      if (beat !== lastBeat) {
+        lastBeat = beat
+        console.log(`  ${DIM}· ${beat}${RESET}`)
+      }
     }
     schedule()
   }

@@ -50,7 +50,7 @@ import { lockRoomStrategy, readRoomStrategy, resolveAllLanguages } from '../lib/
 import { createWsHub } from '../lib/ws-hub.mjs'
 import { publishMeetingTerms, readCurrentMeeting } from '../lib/meeting-terms.mjs'
 import { loadSelection } from './org-api.mjs'
-import { listMembers, resolveFrameRoom, roomByCode, roomById, setMemberLang,
+import { listMembers, resolveFrameRoom, roomByCode, roomById, roomLabels, setMemberLang,
   interpreterPartnerLang } from '../lib/rooms.mjs'
 import { floorState } from '../lib/floor.mjs'
 import {
@@ -216,6 +216,8 @@ const HELP = `lan-relay —— 手机 ↔ 电脑 的局域网转发进程
                         判据见 lib/translation-lint.mjs（专名新造、数字/房间号丢失、
                         性数不一致、量级错）。**只报不改**，不改字幕、不影响延迟。
   --no-lint             关掉译文质检
+  --log-level <档>      日志档位（5.177）：summary = **每句一行摘要**（缺省）；
+                        detail = 再把切句/识别/延迟账逐句打出来；trace = 逐帧逐块全打
   --quiet               关掉调试输出（收到的音频/文字/字幕都不打印）
   --verbose             每一块音频都打印（缺省是每秒汇总一行）
   --help
@@ -306,8 +308,10 @@ export function createRateLimiter({ windowMs, maxRequests }) {
   }
 }
 
-export function parseArgs(argv) {  const options = { port: 8788, host: '0.0.0.0', pollHoldMs: 25000, busPollMs: 60, quiet: false, lint: true, utteranceRetentionDays: 7, audioMaxBytes: 1024 * 1024 * 1024 }
-  const takesValue = new Set(['port', 'host', 'secret', 'data-dir', 'inbox', 'bus', 'audio', 'audio-rate', 'audio-lang', 'poll-hold-ms', 'bus-poll-ms', 'utterance-retention-days', 'audio-max-bytes', 'tts-url'])
+export function parseArgs(argv) {
+  const options = { port: 8788, host: '0.0.0.0', pollHoldMs: 25000, busPollMs: 60, quiet: false,
+    lint: true, utteranceRetentionDays: 7, audioMaxBytes: 1024 * 1024 * 1024, logLevel: 'summary' }
+  const takesValue = new Set(['port', 'host', 'secret', 'data-dir', 'inbox', 'bus', 'audio', 'audio-rate', 'audio-lang', 'poll-hold-ms', 'bus-poll-ms', 'utterance-retention-days', 'audio-max-bytes', 'tts-url', 'log-level'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -332,7 +336,14 @@ export function parseArgs(argv) {  const options = { port: 8788, host: '0.0.0.0'
     else if (key === 'poll-hold-ms') options.pollHoldMs = Number(value)
     else if (key === 'bus-poll-ms') options.busPollMs = Number(value)
       else if (key === 'utterance-retention-days') options.utteranceRetentionDays = Number(value)
-      else if (key === 'audio-max-bytes') options.audioMaxBytes = Number(value)
+    else if (key === 'audio-max-bytes') options.audioMaxBytes = Number(value)
+    // 5.177：日志档位
+    else if (key === 'log-level') {
+      if (['summary', 'detail', 'trace'].includes(value) !== true) {
+        throw new Error(`--log-level 只能是 summary / detail / trace，收到 ${JSON.stringify(value)}`)
+      }
+      options.logLevel = value
+    }
     else if (key === 'data-dir') options.dataDir = value
     else if (key === 'inbox') options.inbox = value
     else if (key === 'bus') options.bus = value
@@ -365,6 +376,8 @@ export function parseArgs(argv) {  const options = { port: 8788, host: '0.0.0.0'
   options.audio = options.audio ?? defaultAudioIn(options.dataDir)
   options.audioRate = options.audioRate ?? defaultAudioRate(options.dataDir)
   options.audioLang = options.audioLang ?? defaultAudioLang(options.dataDir)
+  // 5.177：日志档位缺省 summary（每句一行摘要）
+  options.logLevel = options.logLevel ?? 'summary'
   return options
 }
 
@@ -689,6 +702,8 @@ export async function startRelay(rawOptions = {}) {
     port: 0, host: '127.0.0.1', pollHoldMs: 25000, busPollMs: 60,
     dataDir: DEFAULT_DATA_DIR, quiet: true, utteranceRetentionDays: 7,
     audioMaxBytes: 1024 * 1024 * 1024,
+    // 5.177：日志档位（summary 每句一行摘要 / detail / trace 逐帧逐块）
+    logLevel: 'summary',
   }, rawOptions)
   options.inbox = options.inbox ?? defaultInbox(options.dataDir)
   options.bus = options.bus ?? defaultBus(options.dataDir)
@@ -738,6 +753,182 @@ export async function startRelay(rawOptions = {}) {
     : (...args) => console.log(`[${new Date().toTimeString().slice(0, 8)}]`, ...args)
   /** 音频按秒汇总，避免每秒好几行把终端刷爆 */
   let audioLogAt = 0
+
+  // ── 5.177：日志档位与"每句一行摘要" ────────────────────────────────────────
+  //
+  // 为什么要有：实机上"一句话"会被四个进程各打一遍（切句/识别/大脑/转发），
+  // 一种语言一份、再加原文帧 —— 一句 12~14 行、每行上百字。现场要的是
+  // 「这句出没出、多慢、有没有异常」，那刚好能用**一行**说清。
+  //
+  // 档位：summary（缺省，每句一行摘要）< detail < trace（逐帧逐块）。
+  const LOG_RANK = { summary: 0, detail: 1, trace: 2 }
+  const OPTIONS_LOG_LEVEL = LOG_RANK[String(options.logLevel ?? 'summary')] === undefined
+    ? 'summary'
+    : String(options.logLevel ?? 'summary')
+  function logLevelAtLeast(level) {
+    const want = LOG_RANK[level] ?? 1
+    return LOG_RANK[OPTIONS_LOG_LEVEL] >= want
+  }
+
+  /** 日志里的一句话预览（前 N 字）。全文在总线/收件箱里，日志只负责"扫一眼"。 */
+  function previewText(value, limit = 40) {
+    const flat = String(value ?? '').replace(/\s+/g, ' ').trim()
+    return flat.length <= limit ? flat : flat.slice(0, limit) + '…'
+  }
+
+  /** 语言标签的短写法：`zh-CN` → `zh`（一行里省地方）。 */
+  function shortLang(tag) {
+    const text = String(tag ?? '').trim()
+    if (text === '') return '?'
+    return text.split(/[-_]/)[0]
+  }
+
+  /**
+   * 房间的邀请码（摘要里用它当句子编号的前缀，用户决定：`<邀请码>#<房间内序号>`）。
+   *
+   * <p>为什么带 60 秒缓存：摘要每句都打，而 `roomLabels()` 要开一次库 ——
+   * 逐帧开库正是 5.176 那个 `database is locked` 的温床。邀请码一场会里不会变。
+   */
+  let labelsCache = { at: 0, map: {} }
+  function roomLabelOf(roomId) {
+    const key = String(roomId ?? '')
+    if (key === '') return null
+    const now = Date.now()
+    if (now - labelsCache.at > 60 * 1000) {
+      try {
+        labelsCache = { at: now, map: roomLabels(options.dataDir) }
+      } catch {
+        labelsCache = { at: now, map: {} }
+      }
+    }
+    return labelsCache.map[key] ?? null
+  }
+
+  /**
+   * 5.177：同一句的**几种译文要合成一行**。
+   *
+   * <p>为什么需要缓冲：一句译成两种语言时，relay 会收到两帧（`splitMultiLangFrame` 拆的），
+   * 而它们是"同一句"。各打一行的话，两语言场景又变成两句两行 —— 用户要的是**一句一行**。
+   * 所以按句号攒一下：等这一句该有的语言都到齐（`langs` 字段就是大脑给的预期集合），
+   * 或者 200ms 到点（某种语言译失败时就等不到），就合成一行打出去。
+   */
+  const summaryPending = new Map()          // key → { entries, seen:Set, expect:Set, segTag }
+  const SUMMARY_WAIT_MS = 200
+
+  function flushSummary(key) {
+    const pending = summaryPending.get(key)
+    if (pending === undefined) return
+    summaryPending.delete(key)
+    debug(renderSummary(pending.entries, pending.segTag))
+  }
+
+  function queueSummary(key, entry) {
+    const pending = summaryPending.get(key)
+    if (pending === undefined) {
+      summaryPending.set(key, {
+        entries: [entry],
+        seen: new Set([entry.lang]),
+        expect: new Set(entry.langs),
+        segTag: entry.segTag,
+      })
+      const timer = setTimeout(() => flushSummary(key), SUMMARY_WAIT_MS)
+      timer.unref?.()
+      return
+    }
+    pending.entries.push(entry)
+    pending.seen.add(entry.lang)
+    // 该有的语言都到齐了 → 立刻打（通常是同一毫秒内到，等的是"另一种语言"）
+    if ([...pending.expect].every((lang) => pending.seen.has(lang))) flushSummary(key)
+  }
+
+  /**
+   * 5.177：**每句一行摘要**。
+   *
+   * <pre>
+   * 136015#29 me/zh→en+pt │ 段3.9s 识0.62s 译1.08|1.16s 推0.03s │ ⇒2.6s │ en283 pt286
+   * </pre>
+   *
+   * <p>⇒ 是"这句话说完到手机看到字幕"：等静音 + 排队 + 识别 + 最慢那份翻译 + 推送。
+   * 段长（这句攒了多久）单独一列 —— 它是延迟的大头，但不是"说完之后的等待"。
+   *
+   * <p>异常只在这一行上加标记（⚠️ 慢 / 无译文），不再另起一行。
+   */
+  function logSummary(frame, roomId) {
+    // 增量帧不记账：一秒钟能来好几条，打出来就是刷屏（要看它们用 --log-level trace）
+    if (frame.partial === true) return
+    if (logLevelAtLeast('summary') !== true) return
+    const cost = frame.cost !== undefined && frame.cost !== null && typeof frame.cost === 'object'
+      ? frame.cost
+      : {}
+    const label = roomLabelOf(roomId)
+    const code = label === null ? '' : String(label.code ?? '')
+    const segNo = Number(cost.seg ?? 0)
+    const segTag = cost.segId !== undefined && String(cost.segId) !== ''
+      ? String(cost.segId)
+      : (segNo > 0 ? (code === '' ? `#${segNo}` : `${code}#${segNo}`) : '')
+    const who = String(frame.speakerName ?? frame.speaker ?? '?')
+    const lang = String(frame.lang ?? '?')
+    const langs = Array.isArray(frame.langs) && frame.langs.length > 0 ? frame.langs.map(String) : [lang]
+    const segMs = Number(cost.segMs ?? 0)
+    const queueMs = Number(cost.queueMs ?? 0)
+    const asrMs = Number(cost.asrMs ?? 0)
+    const silenceMs = Number(cost.silenceMs ?? 0)
+    const trMap = cost.trMs !== undefined && cost.trMs !== null && typeof cost.trMs === 'object' ? cost.trMs : {}
+    const trMs = Number(trMap[lang] ?? 0)
+    const pushMs = typeof frame.at === 'string' ? Math.max(0, Date.now() - Date.parse(frame.at)) : 0
+    const endToEnd = silenceMs + queueMs + asrMs + trMs + pushMs
+    const textLen = String(frame.text ?? '').replace(/\s+/g, ' ').trim().length
+    const echo = frame.echo === true
+    // 归并键：优先用句子编号；没有编号（老链路/手写帧）时退到"时刻 + 原文前 40 字" ——
+    // 同一次拆分出来的几帧必然共享 at 与 source，所以仍然能合成一行。
+    const fallbackKey = 'at:' + String(frame.at ?? '') + '|src:'
+      + String(frame.source ?? frame.text ?? '').slice(0, 40)
+    const key = `${roomId ?? ''}|${segTag === '' ? fallbackKey : segTag}${echo ? '|echo' : ''}`
+    queueSummary(key, {
+      segTag,
+      who,
+      segMs,
+      queueMs,
+      asrMs,
+      pushMs,
+      endToEnd,
+      echo,
+      notice: frame.notice !== undefined && frame.notice !== null && frame.notice !== '',
+      lang,
+      sourceLang: String(frame.sourceLang ?? ''),
+      trMs,
+      textLen,
+      langs,
+    })
+  }
+
+  /** 把攒好的那一句拼成一行（`flushSummary` 里调用）。 */
+  function renderSummary(entries, segTag) {
+    const first = entries[0]
+    const langs = first.langs
+    const parts = []
+    if (first.segMs > 0) parts.push(`段${(first.segMs / 1000).toFixed(1)}s`)
+    if (first.queueMs >= 500) parts.push(`排队${(first.queueMs / 1000).toFixed(1)}s`)
+    if (first.asrMs > 0) parts.push(`识${(first.asrMs / 1000).toFixed(2)}s`)
+    const trList = entries.map((one) => Number(one.trMs ?? 0)).filter((one) => one > 0)
+    parts.push(trList.length > 0 ? `译${trList.map((one) => (one / 1000).toFixed(2)).join('|')}s` : '译—')
+    parts.push(`推${(Math.max(...entries.map((one) => one.pushMs)) / 1000).toFixed(2)}s`)
+    const endToEnd = Math.max(...entries.map((one) => one.endToEnd))
+    const body = entries
+      .map((one) => (one.textLen > 0 ? `${shortLang(one.lang)}${one.textLen}` : '无译文'))
+      .join(' ')
+    // 方向：原文帧（echo）是"源语言 → 源语言"，译文帧写"源语言 → 这门语言"
+    const target = first.echo === true ? shortLang(first.lang) : langs.map(shortLang).join('+')
+    const dir = `${shortLang(first.sourceLang ?? '')}→${target}`
+    const marks = []
+    if (endToEnd >= 4000) marks.push('⚠️慢')
+    if (entries.some((one) => one.notice === true)) marks.push('提示')
+    if (entries.every((one) => one.textLen === 0)) marks.push('无译文')
+    return `${String(segTag ?? '') === '' ? '' : segTag + ' '}${first.who}/${dir} │ ${parts.join(' ')}`
+      + ` │ ⇒${(endToEnd / 1000).toFixed(1)}s │ ${body}`
+      + `${marks.length > 0 ? ' ' + marks.join(' ') : ''}`
+  }
+
 
   /**
    * 合并"待入表"队列（B 方案，docs/15 §18.2）。
@@ -1115,20 +1306,13 @@ export async function startRelay(rawOptions = {}) {
     }
     state.seq += 1
     state.frameCount += 1
-    // 5.169：**延迟账的最后一段** —— 帧从"大脑写出"到"我们推给手机"隔了多久。
-    // 帧里自带 `at`（大脑写这一帧的时刻），与本机此刻相减 = 网络/轮询那一段的耗时。
-    // 只在**定稿**上打：增量帧太密，打出来纯粹刷屏。
+    // 5.169 / 5.176 / 5.177：**每句一行摘要**（延迟账 + 这一段的账）。
     //
-    // ⚠️ 5.176：这一行必须在"拆帧"**之后**。以前它在最前面，于是"一帧带两种译文"
-    // （`texts`）时会先给**父帧**记一笔账 —— 而父帧在 splitMultiLangFrame 之后就 return
-    // 了，根本不会被推出去。实机日志的指纹就是同一帧连打两行一模一样的
-    // `[延迟] 帧 #30（en-US）… 23 ms`（父帧 + en-US 副本），看着像"重复推送"，其实只推了一次。
-    if (frame.partial !== true && typeof frame.at === 'string' && frame.at !== '') {
-      const wroteAt = Date.parse(frame.at)
-      if (Number.isFinite(wroteAt)) {
-        debug(`[延迟] 帧 #${state.seq}（${frame.lang ?? '?'}）大脑写出→推送 ${Date.now() - wroteAt} ms`)
-      }
-    }
+    // ⚠️ 这一行必须在"拆帧"**之后**：带 `texts` 的父帧拆完就 return，从没被推出去，
+    // 给父帧记账会让日志里出现两行一模一样的 `[延迟] 帧 #30（en-US）`（5.176 的坑）。
+    //
+    // ⚠️ 这一行也必须在**归属算完**之后（下面才有 roomId）—— 摘要要写邀请码。
+    // 所以它不在这里打，而是在归属算完之后调 {@link logSummary}。
     // 归属：文件来源（最准）→ 帧里的 roomId → 刚上传音频的房间 → 持麦者推断
     const attribution = roomHint !== ''
       ? { roomId: roomHint, reason: 'bus-file' }
@@ -1176,11 +1360,9 @@ export async function startRelay(rawOptions = {}) {
         perLang.set(frameLang, { seq: roomSeq, frame })
       }
     }
-    // 调试：字幕总线一变就报一行 —— 手机应该马上能看到这一帧。
-    // **一定要标出"增量还是定稿"**，否则"眼镜上显示 Ol…"这类问题无从追查。
-    debug(`📺 字幕已更新（第 ${state.seq} 帧·${frame.partial === true ? '增量' : '定稿'}`
-      + `${attribution.roomId === null ? '' : `·${attribution.roomId}`}）`
-      + `[${frame.speaker ?? '?'} / ${frame.lang ?? '?'}] ${frame.text ?? ''}`)
+    // 5.177：**每句一行摘要**（用户要求：把五段耗时收进一行，别再一句十几行）。
+    // 放在归属算完之后 —— 摘要里要写邀请码，而邀请码得先知道是哪一场会。
+    logSummary(frame, attribution.roomId)
     lintFrame(frame)
     recordUtteranceIfFinal(frame, attribution)
     notifyWaiters()
@@ -1414,8 +1596,10 @@ export async function startRelay(rawOptions = {}) {
       debug(`🗂 定稿帧没记：${saved.error}`)
       return
     }
-    debug(`🗂 定稿帧已记录（${attribution.reason} → ${attribution.roomId}，#${saved.id}`
-      + `${saved.merged === true ? ' 合并' : ''}${isEcho ? ' 原文（无译文）' : ''}）`)
+    if (logLevelAtLeast('trace')) {
+      debug(`🗂 定稿帧已记录（${attribution.reason} → ${attribution.roomId}，#${saved.id}`
+        + `${saved.merged === true ? ' 合并' : ''}${isEcho ? ' 原文（无译文）' : ''}）`)
+    }
   }
 
   /**
@@ -1507,11 +1691,17 @@ export async function startRelay(rawOptions = {}) {
     // 措辞说明白：音源现在可能是眼镜的麦克风（见 docs/09 §12），不再是"手机音频"。
     // 转发进程本身看不到音源（链路上没有这个字段），所以这里只说"音频"，
     // 不替调用方声称它来自哪个设备。
-    debug(`📥 收到音频：${room === '' ? '' : `房间 ${room} `}${range}`
-      + ` → 这一场累计 ${info.totalSeconds.toFixed(1)}s`
-      + ` @ ${info.rate}Hz，语种 ${info.lang}${info.fresh === true ? '（开始了新一次录音）' : ''}`)
-    // 电平单独一行：这是"到底有没有录到人声"的唯一直接证据（见 pcmLevel 的注释）
-    debug(`   ${describeLevel(pcmLevel(body))}`)
+    //
+    // 5.177：改成**一行**（块数 + 累计 + 电平），并且只在"有变化/异常"时加尾注 ——
+    // 以前是两行、每秒一批，一分钟就四十行，把真正要看的字幕淹了。
+    const level = pcmLevel(body)
+    const quiet = level.peak < 0.1        // 人声一般峰值 > 0.1（describeLevel 的判据）
+    debug(`📥 音频 ${room === '' ? '' : `${room} `}${range}`
+      + ` → 累计 ${info.totalSeconds.toFixed(1)}s`
+      + ` @ ${info.rate}Hz ${info.lang}`
+      + `｜${describeLevel(level).replace(/^音平 /, '')}`
+      + `${quiet ? ' ⚠️ 几乎没声音' : ''}`
+      + `${info.fresh === true ? '（新一次录音）' : ''}`)
     state.audioLoggedChunk.set(key, chunk)
     state.audioLoggedAt.set(key, Date.now())
     state.audioLoggedRate = info.rate
@@ -2680,7 +2870,7 @@ export async function startRelay(rawOptions = {}) {
           return
         }
         if (curSeq > since) {
-          debug(`➡ 手机取字幕（since=${since}），立即给第 ${curSeq} 帧`)
+          if (logLevelAtLeast('trace')) debug(`➡ 手机取字幕（since=${since}），立即给第 ${curSeq} 帧`)
           send(response, 200, framePayload(info(), {
             ok: true, changed: true, seq: curSeq, frame: curFrame,
             frames: pickLangs(roomParam),

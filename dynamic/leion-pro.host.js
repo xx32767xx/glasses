@@ -2029,6 +2029,14 @@ function createInterpreter(ctx, rawConfig, deps) {
       ...(input.texts !== undefined && input.texts !== null && typeof input.texts === 'object'
         ? { texts: input.texts }
         : {}),
+      // 5.177：**这一段的时间账**（句号 / 段长 / 排队 / 识别 / 翻译）。
+      // 为什么塞进帧里：只有 relay 在"推送那一刻"能把五段凑齐，而它看不到前面三个进程。
+      // 让账跟着数据走，relay 就能一句话打出来（每句一行摘要）。
+      // 老客户端不认识这个字段会直接忽略（Android 用 opt* 取值）。
+      ...(input.cost !== undefined && input.cost !== null && typeof input.cost === 'object'
+        && Object.keys(input.cost).length > 0
+        ? { cost: input.cost }
+        : {}),
       at: new Date().toISOString(),
     }
   }
@@ -2906,6 +2914,20 @@ function createInterpreter(ctx, rawConfig, deps) {
       // 它们不参与语向判定，缺了也照样翻译 —— 所以不做校验，缺省 undefined。
       strategy: typeof parsed.strategy === 'string' ? parsed.strategy : undefined,
       model: typeof parsed.model === 'string' ? parsed.model : undefined,
+      // 5.177：**这一段的账**（句号 + 段长 + 排队 + 识别耗时）。同样纯透传：
+      // 它只用于"每句一行摘要"，缺了照样翻译（老链路就缺）。
+      cost: (() => {
+        const cost = {}
+        const number = (value) => (Number.isFinite(Number(value)) ? Number(value) : null)
+        const seg = number(parsed.seg)
+        if (seg !== null && seg > 0) cost.seg = seg
+        if (typeof parsed.segId === 'string' && parsed.segId.trim() !== '') cost.segId = parsed.segId.trim()
+        for (const key of ['segMs', 'queueMs', 'asrMs', 'silenceMs']) {
+          const value = number(parsed[key])
+          if (value !== null && value >= 0) cost[key] = value
+        }
+        return Object.keys(cost).length > 0 ? cost : undefined
+      })(),
     }
   }
 
@@ -2919,6 +2941,18 @@ function createInterpreter(ctx, rawConfig, deps) {
     if (name !== '') parts.push(name)
     if (model !== '') parts.push('模型 ' + model)
     return '[策略 ' + parts.join(' / ') + ']'
+  }
+
+  /**
+   * 5.177：日志里的一句话预览（前 40 字，超了补省略号）。
+   *
+   * <p>为什么不打全文：实机上译文一行能占三四行屏，而"每句一行摘要"的意义就在于
+   * 一屏能看清十几句。全文本来就落在总线文件与收件箱里，日志只负责"扫一眼对不对"。
+   */
+  function previewText(text, limit = 40) {
+    const flat = String(text ?? '').replace(/\s+/g, ' ').trim()
+    if (flat.length <= limit) return flat
+    return flat.slice(0, limit) + '…'
   }
 
   /** 读一次收件箱，把已完整的行排进队列。 */
@@ -3123,12 +3157,16 @@ function createInterpreter(ctx, rawConfig, deps) {
         //    所以这里把译文收进 `merged`，最后由 pump 统一写**一帧**（`texts` 带全部译文），
         //    由 relay 再按语言拆开扇出。
         const merged = { texts: {}, pending: [] }
+        // 5.177：每个目标语言各记一份耗时 —— 摘要行要写"译 1.08|1.16s"，
+        // 不记的话只能拿一句总耗时糊过去，看不出"哪种语言慢"。
+        const trMs = {}
         const results = await Promise.all(targets.map((target, index) => {
           const one = { text: item.text, to: target, mergeInto: merged }
           if (item.from !== undefined) one.from = item.from
           // 校对只对**主目标**（第一份）做：翻倍花钱只改个别字，而第二份语言通常只有一个人在看。
           if (index > 0) one.noProofread = true
-          return runTranslate(one)
+          const startedAt = Date.now()
+          return runTranslate(one).finally(() => { trMs[target] = Date.now() - startedAt })
         }))
         let firstOk = null
         for (let index = 0; index < results.length; index += 1) {
@@ -3140,9 +3178,12 @@ function createInterpreter(ctx, rawConfig, deps) {
             // 否则 transport 配成 'file' 时，整个 daemon 是完全静默的，出问题只能靠猜。
             // 5.41：识别侧把「这句用的是哪份识别策略」带进来了，日志里一并写出 ——
             // 否则 A/B 时"这句字幕是哪个策略出来的"只能靠时间顺序猜。
+            //
+            // 5.177：正文截到 40 字（用户决定）—— 全文本来就在总线/收件箱里，
+            // 日志里留一截是为了"扫一眼译文对不对"，不是当存档用。
             console.log('[leion-pro] ' + result.from + '→' + result.to
               + (strategyTag(item) === '' ? '' : ' ' + strategyTag(item))
-              + '  ' + result.translation)
+              + '  ' + previewText(result.translation))
           } else {
             inbox.errors += 1
             inbox.lastError = result.failure
@@ -3176,6 +3217,9 @@ function createInterpreter(ctx, rawConfig, deps) {
             sourceLang: firstOk.from,
             texts: ordered,
             termsMiss: [...missById.values()],
+            // 5.177：这一句的账（句号/段长/排队/识别来自识别侧，翻译耗时在这里补齐）——
+            // relay 拿它打"每句一行摘要"，不用再靠时间戳猜。
+            cost: Object.assign({}, item.cost ?? {}, { trMs }),
           })
           await pushFrame(frame)
           // 两个"第二遍"（校对 / 热词修正）现在才排队：它们的过期判据是 displaySeq，
