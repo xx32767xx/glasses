@@ -32,9 +32,8 @@
 
 import { createServer } from 'node:http'
 import { createHash, randomBytes } from 'node:crypto'
-import { mkdir, appendFile, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { mkdir, appendFile, readFile, rename, stat, writeFile, readdir, unlink } from 'node:fs/promises'
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, unlinkSync } from 'node:fs'
-import { readdir } from 'node:fs/promises'
 import { networkInterfaces } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -780,6 +779,14 @@ export async function startRelay(rawOptions = {}) {
     translateInFlight: 0,
   /** 5.157：正在合成的请求数（合成在服务器上串行，排多了只会一起变慢）。 */
   ttsInFlight: 0,
+  /**
+   * 5.166：已经处理过的帧日志文件名（绝对路径）。
+   *
+   * <p>为什么要记：Windows 上 `unlink` 偶尔会因为文件被占用而失败 —— 若只靠"删掉才算处理过"，
+   * 下一轮会把同一帧再发一遍（seq 多跳一格，手机上同一句重复出现）。
+   * 所以"处理过"由这个集合判断，删除只是清理磁盘。
+   */
+  journalSeen: new Set(),
     /** 总线是目录（每房间一份）还是单文件（4.86） */
     busIsDir: String(options.bus).endsWith('/') || String(options.bus).endsWith('\\')
       || (existsSync(options.bus) && statSync(options.bus).isDirectory()),
@@ -1211,12 +1218,70 @@ export async function startRelay(rawOptions = {}) {
    *       两场会可以各写各的，**互不覆盖** —— 这才是"并发"真正需要的那半。</li>
    * </ol>
    */
+  /**
+   * 5.166：排空"帧日志"目录（一帧一个文件），逐帧交给 {@link publishFrame}。
+   *
+   * <p>为什么需要它：字幕总线是**整文件覆盖 + 轮询读取**，两次紧挨着的写只有后一次能被读到。
+   * 这个限制先在多语言合并上踩到（两种译文相差几毫秒），实机又踩到一次更隐蔽的：
+   * 上一句的定稿与下一句的原文帧只隔几十毫秒 → **定稿被顶掉**，手机上那一句永远停在
+   * "识别中"，20 秒后变成"未定稿（超时）"。（日志证据：大脑打了 `en-US→zh-CN …这个问题问得好。`，
+   * 而 relay 只收到下一句的 en-US 原文帧。）
+   *
+   * <p>帧日志由大脑那一侧写（`<总线>.frames/<序号>-<随机>.json`），这里按文件名排序读走并删除：
+   * 文件名前缀是自增序号，所以同一进程内顺序正确；删掉的才是处理过的，读失败就留着下一轮再试。
+   *
+   * @param {string} dir 帧日志目录
+   * @param {string|null} roomIdHint 目录模式下由文件名带出的房间 id
+   */
+  async function drainFrameJournal(dir, roomIdHint) {
+    let names = []
+    try {
+      names = (await readdir(dir)).filter((name) => name.endsWith('.json')).sort()
+    } catch {
+      return                       // 没有帧日志（老版本大脑）：走下面的老路
+    }
+    for (const name of names) {
+      const path = join(dir, name)
+      let frame
+      try {
+        const raw = await readFile(path, 'utf-8')
+        frame = JSON.parse(raw)
+      } catch {
+        continue                     // 正在写 / 写坏了：下一轮再试（不删）
+      }
+      if (frame === null || typeof frame !== 'object' || !Array.isArray(frame.lines)) {
+        // 不是帧（不该发生）：删掉它，避免每 60ms 都试一次同一个坏文件
+        try { await unlink(path) } catch { /* 下轮再试 */ }
+        continue
+      }
+      // 处理过的就不再处理（删除失败也照样跳过 —— 否则同一帧会被重复发布）
+      if (state.journalSeen.has(path)) {
+        try { await unlink(path) } catch { /* 下一轮再删 */ }
+        continue
+      }
+      try {
+        publishFrame(frame, roomIdHint ?? undefined)
+      } catch (error) {
+        debug(`⚠️ 处理帧日志失败（${name}）：${error?.message ?? error}`)
+      }
+      state.journalSeen.add(path)
+      if (state.journalSeen.size > 5000) state.journalSeen.clear()   // 别无限涨（清了顶多重复一帧）
+      try {
+        await unlink(path)
+      } catch { /* 磁盘上留一会儿：下一轮靠 journalSeen 跳过，再试一次删除 */ }
+    }
+  }
+
   async function pollBus() {
     if (state.closed) return
     if (state.busIsDir === true) {
       await pollBusDir()
       return
     }
+    // 5.166：**先把帧日志排空**。总线文件是"整文件覆盖"，两次紧挨着的写只有后一次能活下来，
+    // 而"上一句定稿 + 下一句原文帧"完全可能只隔几十毫秒 —— 那会让定稿静默丢失，
+    // 手机侧表现是"这一句永远在识别中，20 秒后变为未定稿（超时）"。
+    await drainFrameJournal(`${options.bus}.frames`, null)
     let raw
     try {
       raw = await readFile(options.bus, 'utf-8')
@@ -1237,6 +1302,17 @@ export async function startRelay(rawOptions = {}) {
 
   /** 目录模式：每个 `<roomId>.json` 各算一路，按文件记录"上次读到哪"。 */
   async function pollBusDir() {
+    // 5.166：目录模式下每个 `<房间>.json` 旁边还有一个 `<房间>.json.frames/`（帧日志）。
+    // 先把它们排空 —— 这样"两帧挤在同一个轮询窗口里"也不会丢任何一帧。
+    try {
+      for (const name of await readdir(options.bus)) {
+        if (!name.endsWith('.json')) continue
+        const roomId = name.replace(/\.json$/, '')
+        await drainFrameJournal(join(options.bus, `${name}.frames`), roomId)
+      }
+    } catch {
+      // 目录还没建（第一场会之前）—— 不是错误
+    }
     let names = []
     try {
       names = (await readdir(options.bus)).filter((name) => name.endsWith('.json'))

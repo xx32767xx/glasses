@@ -9,7 +9,7 @@
  */
 
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { sep } from 'node:path'
 import { join } from 'node:path'
@@ -46,6 +46,53 @@ function frame(text, extra = {}) {
 export async function runRelaySuite({ it, check, assert }) {
   await rm(TMP, { recursive: true, force: true })
   await mkdir(TMP, { recursive: true })
+
+  // 5.166：两帧挤在同一个轮询窗口里也不能丢（实机踩到：定稿被下一句的原文帧顶掉）。
+  // 总线文件是「整文件覆盖 + 轮询读取」，两次紧挨着的写只有后一次能活下来。
+  // 现在大脑额外写一份「帧日志」（一帧一个文件），relay 每轮先排空它 —— 于是任何一帧都不会丢。
+  await it('5.166：紧挨着写的两帧都要到达（帧日志兜住整文件覆盖的丢帧）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bus-journal-'))
+    const secret = 'journal-secret-0123456789'
+    const bus = join(dir, 'subtitle-bus.json')
+    const relay = await startRelay({
+      dataDir: dir, port: 0, host: '127.0.0.1', secret, quiet: true, pollHoldMs: 300, bus,
+    })
+    try {
+      const base = `http://127.0.0.1:${relay.port}`
+      const headers = { 'X-Leion-Secret': secret }
+      // 帧要带房间 id：`/frame?langs=` 的"按语言各一份"是按房间存的
+      const created = createRoom(dir, { name: '帧日志', host: 'tester' })
+      const roomId = created.room.id
+      const helloBefore = await (await fetch(`${base}/hello`, { headers })).json()
+      // 造两帧：① 这一句的中文定稿  ② 紧接着的原文帧（en-US）—— 就是实机那个顺序
+      const journal = `${bus}.frames`
+      mkdirSync(journal, { recursive: true })
+      writeFileSync(join(journal, '000001-aaaaaa.json'), JSON.stringify({
+        roomId, speaker: 'them', lang: 'zh-CN', text: '这个问题问得好。', source: 'Good question.',
+        sourceLang: 'en-US', partial: false, lines: ['这个问题问得好。'], cols: 40, lineBudget: 3,
+      }))
+      writeFileSync(join(journal, '000002-bbbbbb.json'), JSON.stringify({
+        roomId, speaker: 'them', lang: 'en-US', text: '', source: 'This is important.',
+        sourceLang: 'en-US', partial: false, lines: [''], cols: 40, lineBudget: 3, echo: true,
+      }))
+      await new Promise((resolve) => setTimeout(resolve, 400))
+      const helloAfter = await (await fetch(`${base}/hello`, { headers })).json()
+      check('两帧都被处理了（服务端帧号 +2）',
+        helloAfter.seq - helloBefore.seq === 2, `${helloBefore.seq} → ${helloAfter.seq}`)
+      const reply = await (await fetch(
+        `${base}/frame?room=${encodeURIComponent(roomId)}&since=0&langs=zh-CN,en-US`, { headers })).json()
+      const langs = (reply.frames ?? []).map((one) => one.lang).sort().join(',')
+      check('两门语言的帧都在（定稿没有被原文帧顶掉）', langs === 'en-US,zh-CN', langs)
+      const zh = (reply.frames ?? []).find((one) => one.lang === 'zh-CN')
+      check('中文那一帧就是那句定稿',
+        zh !== undefined && zh.frame.text === '这个问题问得好。', JSON.stringify(zh && zh.frame.text))
+      check('处理过的帧日志文件被删掉（不会每轮重复发一遍）',
+        readdirSync(journal).length === 0, readdirSync(journal).join(','))
+    } finally {
+      await relay.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 
   await it('5.121：一帧带多种译文 → 按语言拆开（写盘只有一次，不会互相覆盖丢帧）', async () => {
     const frame = {

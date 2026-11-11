@@ -1870,6 +1870,18 @@ function resolveTarget(from, argsTo, configTarget) {
 // （5.33：这一段搬去了 lib/translate.mjs —— 翻译/热词/校对的纯函数）
 function createTransport(ctx, config) {
   if (config.transport === 'file') {
+    // 5.166：**除了写"最后一帧"那个文件，再写一份"帧日志"**（一帧一个文件）。
+    //
+    // 为什么必须有它：总线是"整文件覆盖 + 轮询读取"，两次紧挨着的写只有**后一次**能被读到。
+    // 这个坑先在多语言合并上踩到（两种译文相差几毫秒）；实机又踩到一次更隐蔽的：
+    // 上一句的**定稿**与下一句的**原文帧**相隔几十毫秒（缓存命中时翻译只要 90ms），
+    // 于是定稿被原文帧顶掉 —— 手机上那一句永远停在"识别中"，20 秒后显示"未定稿（超时）"。
+    // 日志对得上的证据：大脑明明打了 `en-US→zh-CN …这个问题问得好。`，
+    // 而 relay 只收到下一句的 en-US 原文帧。
+    //
+    // 帧日志由 relay 按文件名顺序逐帧读走并删除（见 relay/lan-relay.mjs 的 drainFrameJournal），
+    // 所以**任何一帧都不会丢**；那个"最后一帧"文件仍然照写（老 relay 与排障都用得上）。
+    let frameSeq = 0
     return {
       kind: 'file',
       detail: config.sinkPath,
@@ -1878,6 +1890,18 @@ function createTransport(ctx, config) {
         if (fs === undefined) throw new Error('transport "file" 需要 fs 服务，但当前 ctx 里没有')
         const target = await fs.resolve(config.sinkPath)
         await fs.writeText(target, JSON.stringify(frame, null, 2) + '\n')
+        // 帧日志：前缀是自增序号（同一进程内有序），后缀随机（多进程/重名不撞）
+        frameSeq += 1
+        const name = String(frameSeq).padStart(6, '0') + '-'
+          + Math.random().toString(36).slice(2, 8) + '.json'
+        const journal = await fs.resolve(config.sinkPath + '.frames/' + name)
+        try {
+          await fs.writeText(journal, JSON.stringify(frame) + '\n')
+        } catch (error) {
+          // 帧日志写不进去不该把字幕拖死：老路仍然有效，只是可能丢帧
+          console.log('[leion-pro] ⚠️ 帧日志写入失败（回落到最后一帧文件）：'
+            + (error && error.message ? error.message : error))
+        }
       },
     }
   }
