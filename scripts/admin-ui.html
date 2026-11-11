@@ -681,12 +681,20 @@ async function loadAudio() {
     }
     table.appendChild(body);
     host.appendChild(table);
-    if (data.legacyBytes > 0) {
-      warn.textContent = '另外还有旧模式的单文件 audio-in.pcm 占 ' + humanMb(data.legacyBytes)
-        + '（不按会议分，用 scripts/leion-clean.mjs 清理）。';
-    } else {
-      warn.textContent = data.note || '';
+    const notes = [];
+    // 5.173：同一场会磁盘上有两份音频（分轨 + 混流副本），列表里并成一行，
+    // 但必须说清"为什么一条音轨占了两次大小"，否则会以为是我算错了。
+    const hasMixed = rooms.some((room) => (room.tracks || []).some((one) => one.speaker === '(混流副本)'));
+    if (hasMixed) {
+      notes.push('同场两份说明：分轨（识别真正跟的）+ 混流副本（老的单文件模式用）'
+        + '是同一路音频的两份拷贝，删一次两份一起删。');
     }
+    if (data.legacyBytes > 0) {
+      notes.push('另外还有旧模式的单文件 audio-in.pcm 占 ' + humanMb(data.legacyBytes)
+        + '（所有房间共用一份，不按会议分；用 scripts/leion-clean.mjs 清理）。');
+    }
+    if (notes.length === 0 && data.note) notes.push(data.note);
+    warn.textContent = notes.join(' ');
   } catch (error) {
     if (warn) warn.textContent = '读不到音频占用：' + error.message;
   }

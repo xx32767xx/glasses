@@ -254,6 +254,28 @@ export async function runSegmentationSuite({ it, check }) {
     check('老的单文件也作为一个房间列出来',
       usage.rooms.some((one) => one.roomId === 'room-b' && one.bytes === 300))
 
+    // 5.173：同一场会在磁盘上有两份（分轨 `audio/<房间>/` + 混流副本 `audio/<房间>.pcm`），
+    // 早先被当成两场会列出来 —— 管理台上同一个邀请码出现两行、大小一模一样。
+    const dupDir = join(VAR_DIR, "test", "audio-usage-dup")
+    rmSync(dupDir, { recursive: true, force: true })
+    mkdirSync(join(dupDir, "audio", "136015"), { recursive: true })
+    writeFileSync(join(dupDir, "audio", "136015", "test11.pcm"), Buffer.alloc(600))
+    writeFileSync(join(dupDir, "audio", "136015.pcm"), Buffer.alloc(600))
+    const dup = audioUsage(dupDir)
+    check('同一场会只有一行（不再是"两场会"）',
+      dup.rooms.length === 1 && dup.rooms[0].roomId === '136015', JSON.stringify(dup.rooms))
+    check('两份都算进这一行', dup.rooms[0].bytes === 1200, String(dup.rooms[0].bytes))
+    check('混流副本作为一条音轨挂在同一行，且排在最后',
+      dup.rooms[0].tracks.length === 2
+      && dup.rooms[0].tracks[0].speaker === 'test11'
+      && dup.rooms[0].tracks[1].speaker === '(混流副本)',
+      JSON.stringify(dup.rooms[0].tracks))
+    const dupPurged = purgeRoomAudio(dupDir, '136015')
+    check('删一次两份一起删（不会剩一个删不掉的副本）',
+      dupPurged.ok === true && dupPurged.freedBytes === 1200
+      && audioUsage(dupDir).rooms.length === 0, JSON.stringify(dupPurged))
+    rmSync(dupDir, { recursive: true, force: true })
+
     const purged = purgeRoomAudio(dir, 'room-a')
     check('删一场：成功并报出释放量', purged.ok === true && purged.freedBytes === 1505,
       JSON.stringify(purged))
@@ -295,6 +317,7 @@ export async function runSegmentationSuite({ it, check }) {
     check('房名/邀请码进 innerHTML 前要转义（房名是用户自己起的）',
       /function escHtml/.test(html) && /escHtml\(name\)/.test(html))
     check('删除确认里用的是邀请码（不是裸 id）', /purgeAudio\(room\.roomId, room\.bytes, roomLabel\(room\)\)/.test(html))
+    check('界面说清"同场两份"为什么（不然会以为我算错了）', /同场两份说明/.test(html))
   })
 
   // 5.169：用户要「不用录音对表也能看出延迟落在哪一段」。四段各自留痕：
