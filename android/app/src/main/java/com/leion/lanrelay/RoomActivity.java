@@ -2465,8 +2465,19 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         scrollToBottom();
     }
 
+    /**
+     * 5.170：滚到最新一张卡。
+     *
+     * <p>`fullScroll(FOCUS_DOWN)` 在"刚 addView、还没布局完"时**经常无效**
+     * （它靠焦点找目标，而卡片里的 TextView 不抢焦点）—— 用户实测："会议界面不能
+     * 自动定位到最新字幕，要手动下翻"。所以改成直接滚到内容高度，并连做两次兜住
+     * "这一次绘制之后内容又长高"的情况。
+     */
     private void scrollToBottom() {
-        subtitleScroll.post(() -> subtitleScroll.fullScroll(View.FOCUS_DOWN));
+        if (subtitleScroll == null || subtitleList == null) return;
+        Runnable toBottom = () -> subtitleScroll.scrollTo(0, subtitleList.getHeight());
+        subtitleScroll.post(toBottom);
+        subtitleScroll.postDelayed(toBottom, 60);
     }
 
     /**

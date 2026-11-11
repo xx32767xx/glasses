@@ -50,6 +50,59 @@ export async function runRelaySuite({ it, check, assert }) {
   // 5.166：两帧挤在同一个轮询窗口里也不能丢（实机踩到：定稿被下一句的原文帧顶掉）。
   // 总线文件是「整文件覆盖 + 轮询读取」，两次紧挨着的写只有后一次能活下来。
   // 现在大脑额外写一份「帧日志」（一帧一个文件），relay 每轮先排空它 —— 于是任何一帧都不会丢。
+  // 5.170：「音频文件已达上限」只增不减（用户实测：跑完 20 分钟翻译官、再开会议，
+  // 一上来就报满）。原来 state.audioBytes 是"每收一块就 += size"，删文件、清理历史、
+  // 轮转都不会让它减回去 —— 只有重启进程才清零。现在判定前按磁盘实际占用重算。
+  await it('5.170：音频上限按磁盘算（删掉旧录音就能继续收，不用重启）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'audio-cap-'))
+    const secret = 'public-mode-secret-0123456789abcdef'
+    // 先造一段「旧录音」：等价于跑了一场长会留下的分轨文件
+    const trackDir = roomTrackDir(dir, 'room-old')
+    mkdirSync(trackDir, { recursive: true })
+    const oldFile = join(trackDir, 'me.pcm')
+    writeFileSync(oldFile, Buffer.alloc(64 * 1024, 1))
+    const oldBytes = 64 * 1024
+    const relay = await startRelay({
+      dataDir: dir, port: 0, host: '127.0.0.1', secret, quiet: true, pollHoldMs: 300, public: true,
+    })
+    const base = `http://127.0.0.1:${relay.port}`
+    const chunk = Buffer.alloc(16 * 1024, 2)
+    const upload = async () => {
+      const response = await fetch(`${base}/audio?rate=16000&lang=zh-CN&room=room-old`, {
+        method: 'POST',
+        headers: { 'X-Leion-Secret': secret, 'Content-Type': 'application/octet-stream' },
+        body: chunk,
+      })
+      return { status: response.status, json: await response.json().catch(() => null) }
+    }
+    const statusOf = async () => (await (await fetch(`${base}/status`, {
+      headers: { 'X-Leion-Secret': secret } })).json())
+    try {
+      const first = await upload()
+      check('第一次上传成功', first.status === 200, JSON.stringify(first.json))
+      const afterFirst = await statusOf()
+      check('统计里含旧录音（按磁盘算，不是从零累加）',
+        afterFirst.audioBytes >= oldBytes + chunk.length, String(afterFirst.audioBytes))
+
+      // 删掉旧录音（等价于 leion-clean / 管理员清理历史）—— 容量必须立刻回来
+      rmSync(trackDir, { recursive: true, force: true })
+      const second = await upload()
+      check('删掉旧录音后还能继续收（不再报已达上限）', second.status === 200,
+        JSON.stringify(second.json))
+      const afterSecond = await statusOf()
+      check('旧的 64KB 已经从统计里去掉（只增不减的计数器正是这次的 bug）',
+        afterSecond.audioBytes < oldBytes + chunk.length * 2,
+        `old=${oldBytes} chunk=${chunk.length} now=${afterSecond.audioBytes}`)
+      check('剩下的就是这两块新音频（不会凭空变大）',
+        afterSecond.audioBytes >= chunk.length * 2
+        && afterSecond.audioBytes <= oldBytes + chunk.length * 2,
+        String(afterSecond.audioBytes))
+    } finally {
+      await relay.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   await it('5.166：紧挨着写的两帧都要到达（帧日志兜住整文件覆盖的丢帧）', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bus-journal-'))
     const secret = 'journal-secret-0123456789'

@@ -1525,6 +1525,12 @@ export async function startRelay(rawOptions = {}) {
   }
 
   const busTimer = setInterval(() => { void pollBus() }, options.busPollMs)
+  // 5.170：每 30 秒把"已收音频总量"按磁盘重算一次 —— 管理台 /status 与上限判断都用它，
+  // 于是"删了旧录音，容量立刻回来"，不用重启进程。
+  const audioBytesSyncTimer = setInterval(() => {
+    try { state.audioBytes = audioDiskBytes() } catch { /* 磁盘在忙，下一轮再算 */ }
+  }, 30 * 1000)
+  audioBytesSyncTimer.unref?.()
   busTimer.unref?.()
 
   /**
@@ -1537,6 +1543,33 @@ export async function startRelay(rawOptions = {}) {
    *
    * 代价：磁盘占用约 2× 上限（`.1` 只留一份）。这在"写满磁盘"面前是划算的。
    */
+  /**
+   * 5.170：音频在磁盘上**实际占多少**（分轨目录 + 旧的单文件 + 它的轮转件）。
+   *
+   * <p>为什么必须按磁盘算，而不是一路累加：原来是"每收一块就 += size"，只增不减 ——
+   * 跑一场二十分钟的翻译官、再开一场会，这个数就永远停在高位，于是**谁都收不了音频**了
+   * （用户实测："刚打开会议就显示音频文件已达上限"）。清理脚本删掉文件、管理员清理历史、
+   * 轮转换文件，都不会让它减回去。改成"直接问磁盘"之后，删了就是删了。
+   */
+  function audioDiskBytes() {
+    const sum = (target) => {
+      let total = 0
+      for (const entry of readdirSync(target, { withFileTypes: true })) {
+        const full = join(target, entry.name)
+        try {
+          total += entry.isDirectory() ? sum(full) : statSync(full).size
+        } catch { /* 正在写 / 刚被删 */ }
+      }
+      return total
+    }
+    let total = 0
+    try { total += sum(join(options.dataDir, 'audio')) } catch { /* 还没有分轨目录 */ }
+    for (const one of [options.audio, `${options.audio}.1`]) {
+      try { total += statSync(one).size } catch { /* 没有就没有 */ }
+    }
+    return total
+  }
+
   async function rotateAudio() {
     const backup = options.audio + '.1'
     try {
@@ -2057,12 +2090,15 @@ export async function startRelay(rawOptions = {}) {
             })
             return
           }
+          // 5.170：判定前先按磁盘重算 —— 否则"删了文件仍然报满"（那个计数器只增不减）
+          state.audioBytes = audioDiskBytes()
           if (state.audioBytes + size > PUBLIC_LIMITS.maxAudioBytesTotal) {
             send(response, 507, {
               ok: false,
               error: 'audio-storage-full',
-              hint: `音频文件已达上限 ${PUBLIC_LIMITS.maxAudioBytesTotal} 字节，`
-                + '重启转发进程会清空（见 start-all）',
+              hint: `音频文件已达上限 ${(PUBLIC_LIMITS.maxAudioBytesTotal / 1024 / 1024).toFixed(0)} MB`
+                + `（现在 ${(state.audioBytes / 1024 / 1024).toFixed(0)} MB），`
+                + '删掉 <data-dir>/audio/ 下的旧录音或跑 scripts/leion-clean.mjs 即可继续；不必重启',
             })
             return
           }

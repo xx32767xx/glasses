@@ -97,15 +97,31 @@ public class SubtitleList {
         this.backToLatest = backToLatest;
 
         // 手指一碰滚动区就认为"用户在自己看历史" → 暂停跟随。
-        // 用 onTouchListener 而不是 onScrollChanged：后者在程序化滚动时也会触发，
-        // 会把"自动跟随"自己关掉，表现成字幕出了几条之后就不再自动滚了。
+        // 5.170：**跟随的判据改成"在不在底部"，而不是"有没有碰过屏幕"**。
+        //
+        // 原来是 ACTION_DOWN 就把 following 置 false —— 用户哪怕只是想点一下、或者
+        // 轻轻一碰把列表停住，从此新字幕**再也不自动滚**了（用户实测："会议和翻译官
+        // 界面都不能定位到最新字幕，要手动下翻"）。
+        // 现在：松手时看位置 —— 停在底部就继续跟随，翻上去了才停；而且滚回底部会自动恢复。
         scroll.setOnTouchListener((v, event) -> {
-            if (event.getAction() == android.view.MotionEvent.ACTION_DOWN) {
-                following = false;
+            if (event.getAction() == android.view.MotionEvent.ACTION_UP
+                    || event.getAction() == android.view.MotionEvent.ACTION_CANCEL) {
+                following = isAtBottom();
                 updateBackToLatest();
             }
             return false;
         });
+        // 位置一变就重算（程序化滚动那一下不算：suppressScrollCallback 期间跳过）
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            scroll.setOnScrollChangeListener((v, x, y, oldX, oldY) -> {
+                if (suppressScrollCallback) return;
+                boolean atBottom = isAtBottom();
+                if (atBottom != following) {
+                    following = atBottom;
+                    updateBackToLatest();
+                }
+            });
+        }
         if (backToLatest != null) {
             backToLatest.setOnClickListener(v -> {
                 following = true;
@@ -294,13 +310,39 @@ public class SubtitleList {
                 sourceView, targetView, tagView, noteView, langView);
     }
 
+    /**
+     * 5.170：滚到最新一条。
+     *
+     * <p>`fullScroll(FOCUS_DOWN)` 在"刚 addView、还没完成布局"时**经常什么都不做**
+     * （它靠焦点找目标，而字幕里的 TextView 不抢焦点）。所以改成直接滚到内容高度，
+     * 并连做两次：第一次在布局后，第二次兜住"内容又长高了一点"的那种情况。
+     */
     private void scrollToBottom() {
         suppressScrollCallback = true;
-        scroll.post(() -> {
-            scroll.fullScroll(View.FOCUS_DOWN);
+        Runnable toBottom = () -> {
+            int height = list.getHeight();
+            scroll.scrollTo(0, height);
+        };
+        scroll.post(toBottom);
+        scroll.postDelayed(toBottom, 60);
+        scroll.postDelayed(() -> {
             suppressScrollCallback = false;
+            following = true;
             updateBackToLatest();
-        });
+        }, 120);
+    }
+
+    /** 现在是不是停在底部（留一点容差：一两行的高度不算"翻上去了"）。 */
+    private boolean isAtBottom() {
+        if (scroll == null) return true;
+        int content = list.getHeight();
+        int visible = scroll.getHeight();
+        if (content <= visible) return true;
+        return scroll.getScrollY() + visible >= content - dp(48);
+    }
+
+    private int dp(int value) {
+        return Math.round(scroll.getResources().getDisplayMetrics().density * value);
     }
 
     private void updateBackToLatest() {

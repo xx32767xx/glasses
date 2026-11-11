@@ -1448,7 +1448,12 @@ export async function runAndroidOrderSuite({ it, check }) {
       '两种译文要合并成一条字幕里两行')
     check('合并有时间窗（免得把连说的两句同样的话并成一句）',
       /SENTENCE_MERGE_MS/.test(activity) && /now - entry\.getValue\(\)\.at > SENTENCE_MERGE_MS/.test(activity))
-    check('新句追加后滚到底部', /scrollToBottom\(\)/.test(activity) && /fullScroll\(View\.FOCUS_DOWN\)/.test(activity))
+    // 5.170：滚动实现从 fullScroll(FOCUS_DOWN) 换成「直接滚到内容底部」——
+    // 前者靠焦点找目标，而卡片里的 TextView 不抢焦点，新内容刚挂上时经常什么都不做
+    // （用户实测：不能自动定位到最新字幕，要手动下翻）。
+    check('新句追加后滚到底部',
+      /scrollToBottom\(\)/.test(activity)
+      && /subtitleScroll\.scrollTo\(0, subtitleList\.getHeight\(\)\)/.test(activity))
     check('自己的发言换底色（浅主色+主色边框）', /bg_subtitle_self/.test(activity) && /bg_subtitle_self/.test(room) === false)
     check('每条字幕有头像/姓名/源语言/状态',
       /bg_avatar/.test(activity) && /st_recognizing/.test(activity) && /st_done/.test(activity))
@@ -1774,6 +1779,35 @@ export async function runAndroidOrderSuite({ it, check }) {
   })
 
   // 5.168：用户要「测延迟」—— 卡上直接写这一帧到达手机的时刻，拿录音一对就知道差多少。
+  // 5.170：用户实测「会议和翻译官界面都不能定位到最新字幕，要手动下翻」。两个原因：
+  // ① 翻译官页的跟随开关是「手指一碰就关掉」（ACTION_DOWN → following=false），
+  //    碰一下、点一下之后再也不自动滚；
+  // ② 两页的滚动都用 fullScroll(FOCUS_DOWN) —— 它靠焦点找目标，而字幕 TextView 不抢焦点，
+  //    新内容刚 addView、还没布局完时经常什么都不做。
+  await it('5.170：字幕列表要能自动跟随最新（碰一下不该把跟随关掉）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const list = readFileSync(join(javaDir, 'SubtitleList.java'), 'utf-8')
+    const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+
+    check('跟随的判据是位置，不是碰没碰过屏幕',
+      !/ACTION_DOWN\) \{\s*following = false;/.test(list)
+      && /following = isAtBottom\(\)/.test(list))
+    check('松手时按位置判定（停在底部就继续跟随）',
+      /ACTION_UP[\s\S]{0,200}?following = isAtBottom\(\)/.test(list))
+    check('滚回底部会自动恢复跟随（不用点按钮）',
+      /setOnScrollChangeListener[\s\S]{0,300}?following = atBottom/.test(list))
+    check('有「是否在底部」的判据（带容差）',
+      /private boolean isAtBottom\(\)/.test(list) && /content - dp\(\d+\)/.test(list))
+    check('滚动改成滚到内容高度（不再靠焦点）',
+      /scroll\.scrollTo\(0, height\)/.test(list)
+      && !/scroll\.fullScroll\(View\.FOCUS_DOWN\);/.test(list))
+    check('连做两次滚动（兜住这次绘制之后内容又长高）',
+      /scroll\.post\(toBottom\)[\s\S]{0,200}?scroll\.postDelayed\(toBottom/.test(list))
+    check('会议页也用同一条（不是只修翻译官页）',
+      /subtitleScroll\.post\(toBottom\)/.test(room)
+      && /subtitleScroll\.scrollTo\(0, subtitleList\.getHeight\(\)\)/.test(room))
+  })
+
   await it('5.168：每张字幕卡带「到达手机的时刻」（开发模式带毫秒）', () => {
     const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
     const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
