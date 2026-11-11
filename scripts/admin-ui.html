@@ -217,6 +217,22 @@
       </div>
     </section>
 
+    <section class="panel" style="grid-column:1/-1" id="audioPanel">
+      <h2>音频占用 <span class="tag" id="audioMeta">—</span></h2>
+      <div class="body">
+        <div class="mono">
+          录音是<b>只增不减</b>的大文件（16 kHz / 16-bit / 单声道 ≈ 115 MB/小时/路）。
+          这里按会议列出占用，可以单独删掉某一场的录音 —— <b>只腾磁盘，不动字幕与历史</b>。
+          ⚠️ 删了就不能再回头核对原声（识别结果、转写全文都还在）。
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button class="btn ghost" onclick="loadAudio()">刷新</button>
+        </div>
+        <div id="audioTable"></div>
+        <div class="mono" id="audioWarn" style="white-space:pre-wrap"></div>
+      </div>
+    </section>
+
     <section class="panel" style="grid-column:1/-1">
       <h2>会议历史数据 <span class="pill" id="historyPill">—</span></h2>
       <div class="body">
@@ -349,6 +365,7 @@ function enterConsole() {
   loadHistoryAdmin();
   loadModels();
 loadSeg();
+loadAudio();
 }
 
 // ── 5.148 识别模型（全局策略）────────────────────────────────────────────
@@ -617,6 +634,75 @@ async function resetSeg() {
     await loadSeg();
   } catch (error) {
     document.getElementById('segWarn').textContent = '恢复失败：' + error.message;
+  }
+}
+
+function humanMb(bytes) {
+  const value = Number(bytes) || 0;
+  if (value >= 1024 * 1024 * 1024) return (value / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+  if (value >= 1024 * 1024) return (value / 1024 / 1024).toFixed(1) + ' MB';
+  if (value >= 1024) return (value / 1024).toFixed(0) + ' KB';
+  return value + ' B';
+}
+
+async function loadAudio() {
+  const host = document.getElementById('audioTable');
+  const warn = document.getElementById('audioWarn');
+  if (!host) return;
+  try {
+    const data = await api('/org/audio/usage');
+    const limits = data.limits || {};
+    document.getElementById('audioMeta').textContent =
+      humanMb(data.totalBytes) + (limits.publicTotalBytes ? ' / 上限 ' + humanMb(limits.publicTotalBytes) : '');
+    host.innerHTML = '';
+    const table = document.createElement('table');
+    table.innerHTML = '<thead><tr><th>会议</th><th>占用</th><th>音轨</th><th></th></tr></thead>';
+    const body = document.createElement('tbody');
+    const rooms = data.rooms || [];
+    if (rooms.length === 0) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td colspan="4" class="mono">现在没有录音。</td>';
+      body.appendChild(tr);
+    }
+    for (const room of rooms) {
+      const tr = document.createElement('tr');
+      const tracks = (room.tracks || []).map((one) => one.speaker + ' ' + humanMb(one.bytes)).join('、');
+      tr.innerHTML = '<td><code>' + room.roomId + '</code></td>'
+        + '<td>' + humanMb(room.bytes) + '</td>'
+        + '<td class="mono" style="font-size:12px;opacity:.8">' + tracks + '</td>';
+      const cell = document.createElement('td');
+      const button = document.createElement('button');
+      button.className = 'btn ghost';
+      button.textContent = '删掉这场录音';
+      button.onclick = () => purgeAudio(room.roomId, room.bytes);
+      cell.appendChild(button);
+      tr.appendChild(cell);
+      body.appendChild(tr);
+    }
+    table.appendChild(body);
+    host.appendChild(table);
+    if (data.legacyBytes > 0) {
+      warn.textContent = '另外还有旧模式的单文件 audio-in.pcm 占 ' + humanMb(data.legacyBytes)
+        + '（不按会议分，用 scripts/leion-clean.mjs 清理）。';
+    } else {
+      warn.textContent = data.note || '';
+    }
+  } catch (error) {
+    if (warn) warn.textContent = '读不到音频占用：' + error.message;
+  }
+}
+
+async function purgeAudio(roomId, bytes) {
+  const hint = '删掉 ' + roomId + ' 的录音（' + humanMb(bytes) + '）？\n\n'
+    + '只删音频文件：字幕、转写全文、会议记录都不动，但之后无法再回头核对原声。';
+  if (!confirm(hint)) return;
+  try {
+    const data = await api('/org/audio/purge', { method: 'POST', body: { roomId } });
+    document.getElementById('audioWarn').textContent =
+      '✅ 已删除 ' + roomId + ' 的录音，释放 ' + humanMb(data.freedBytes);
+    await loadAudio();
+  } catch (error) {
+    document.getElementById('audioWarn').textContent = '删除失败：' + error.message;
   }
 }
 

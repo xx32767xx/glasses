@@ -13,7 +13,7 @@
  *   ④ 端到端：PUT 之后 python 侧读到的是新值（用 python 直接调 load_global_segmentation）。
  */
 
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync as writeFile } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync as writeFile, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 
@@ -214,6 +214,75 @@ export async function runSegmentationSuite({ it, check }) {
     check('python 读到了文件里的值', /"max_speech_ms":\s*8000/.test(printed), printed.slice(-200))
     check('只认认识的字段（别的键被忽略）',
       !printed.includes('nope') && printed.includes('silence_ms'), printed.slice(-200))
+  })
+
+  // 5.171：用户实测"跑完长会 + 翻译官，磁盘满时只看到一句已达上限，不知道谁占的"。
+  // 这一节钉住：占用按房间列出来、能单独删、删完立刻按磁盘重算（上限随之松开）。
+  await it('5.171：音频占用按房间列出，且能单独删（删完立刻重算）', async () => {
+    const { audioUsage, purgeAllAudio, purgeRoomAudio, safeRoomId } = await import('../lib/audio-usage.mjs')
+    const relaySource = readFileSync(join(ROOT, 'relay', 'lan-relay.mjs'), 'utf-8')
+
+    // ① 路径清洗与 relay 同一套规则（两边不一致就会出现"列出来的房间删不掉"）
+    check('房间名清洗规则一致',
+      /replace\(\/\[\^A-Za-z0-9_-\]\/g, '_'\)\.slice\(0, 64\)/.test(relaySource)
+      && safeRoomId('room-a') === 'room-a'
+      && safeRoomId('a/b c') === 'a_b_c')
+    check('既认分轨目录也认老的单文件',
+      /entry\.isDirectory\(\)/.test(readFileSync(join(ROOT, 'lib', 'audio-usage.mjs'), 'utf-8')))
+
+    const dir = join(VAR_DIR, "test", "audio-usage")
+    rmSync(dir, { recursive: true, force: true })
+    mkdirSync(join(dir, "audio", "room-a"), { recursive: true })
+    writeFileSync(join(dir, "audio", "room-a", "ana.pcm"), Buffer.alloc(1000))
+    writeFileSync(join(dir, "audio", "room-a", "ana.pcm.lang"), "pt-BR")
+    writeFileSync(join(dir, "audio", "room-a", "bo.pcm"), Buffer.alloc(500))
+    writeFileSync(join(dir, "audio", "room-b.pcm"), Buffer.alloc(300))
+    writeFileSync(join(dir, "audio-in.pcm"), Buffer.alloc(200))
+
+    const usage = audioUsage(dir)
+    check('总数 = 各房间 + 旧单文件', usage.totalBytes === 1000 + 5 + 500 + 300 + 200,
+      String(usage.totalBytes))
+    check('旧单文件单独一列（不塞进任何房间）', usage.legacyBytes === 200, String(usage.legacyBytes))
+    check('房间按占用从大到小排',
+      usage.rooms[0].roomId === 'room-a'
+      && usage.rooms[0].bytes === 1505, JSON.stringify(usage.rooms.map((one) => one.roomId)))
+    check('旁文件算进那个说话人的音轨（不冒出一个叫 ana.pcm.lang 的说话人）',
+      usage.rooms[0].tracks.length === 2
+      && usage.rooms[0].tracks[0].speaker === 'ana'
+      && usage.rooms[0].tracks[0].bytes === 1005,
+      JSON.stringify(usage.rooms[0].tracks))
+    check('老的单文件也作为一个房间列出来',
+      usage.rooms.some((one) => one.roomId === 'room-b' && one.bytes === 300))
+
+    const purged = purgeRoomAudio(dir, 'room-a')
+    check('删一场：成功并报出释放量', purged.ok === true && purged.freedBytes === 1505,
+      JSON.stringify(purged))
+    check('删完只剩另一场', audioUsage(dir).rooms.length === 1
+      && audioUsage(dir).rooms[0].roomId === 'room-b'
+)
+    check('删不存在的房间要说清（不是静默成功）',
+      purgeRoomAudio(dir, 'room-zzz').ok === false)
+
+    const all = purgeAllAudio(dir)
+    check('一次清光：房间与旧单文件都清掉', all.ok === true && audioUsage(dir).rooms.length === 0
+      && audioUsage(dir).legacyBytes === 0, JSON.stringify(all))
+    rmSync(dir, { recursive: true, force: true })
+
+    // ② API + 管理台
+    const api = readFileSync(join(ROOT, 'relay', 'org-api.mjs'), 'utf-8')
+    check('API：读占用 + 删录音两个路由都在',
+      /segments\[1\] === 'audio' && segments\[2\] === 'usage'/.test(api)
+      && /segments\[1\] === 'audio' && segments\[2\] === 'purge'/.test(api))
+    check('删录音要管理员权限（history.purge）', /allowed\(role, 'history.purge'\)/.test(api))
+    check('删完让转发进程按磁盘重算（否则上限还挡着）', /onAudioPurged/.test(api)
+      && /onAudioPurged/.test(relaySource))
+
+    const html = readFileSync(join(ROOT, 'scripts', 'admin-ui.html'), 'utf-8')
+    check('管理台有音频占用面板', /id="audioPanel"/.test(html))
+    check('按房间列出占用与音轨', /humanMb\(room\.bytes\)/.test(html) && /one\.speaker/.test(html))
+    check('每场会一个删除按钮 + 二次确认',
+      /删掉这场录音/.test(html) && /confirm\(hint\)/.test(html))
+    check('界面说清只腾磁盘、不动字幕与历史', /只腾磁盘/.test(html))
   })
 
   // 5.169：用户要「不用录音对表也能看出延迟落在哪一段」。四段各自留痕：

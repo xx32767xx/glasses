@@ -2133,6 +2133,8 @@ export async function runAndroidOrderSuite({ it, check }) {
       '这台服务器没有配 TTS 服务', '连不上 TTS 服务', '合成服务返回了空音频',
       // 5.167：切句参数只在管理台网页用（手机没有这个界面），与 5.148 同一条规矩。
       '只支持 GET /org/segmentation',
+      // 5.171：音频占用/清理同样只在管理台用（手机上没有这个界面）。
+      '要删哪一场？给 roomId', '没有这场会的录音',
     ]
     const ignore = (raw) => IGNORE.some((i) => raw.startsWith(i))
     const matched = (raw) => exact.includes(raw) || pre.some((p) => raw.startsWith(p))

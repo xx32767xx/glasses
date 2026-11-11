@@ -31,6 +31,7 @@ import { loadStrategyTable, saveStrategyTable, validateStrategyTable } from '../
 import {
   SEGMENTATION_DEFAULTS, SEGMENTATION_RULES, loadSegmentation, saveSegmentation, validateSegmentation,
 } from '../lib/segmentation.mjs'
+import { audioUsage, purgeAllAudio, purgeRoomAudio } from '../lib/audio-usage.mjs'
 import { appendAudit, auditPath } from '../lib/room-strategy.mjs'
 
 /** 仓库根（`config/asr-models.json` 这类示例文件在这儿）。 */
@@ -510,6 +511,48 @@ export async function handleOrg(input) {
   //
   // 写表为什么是 PUT 整张表而不是若干 PATCH：表里三层叠加的语义（default / strategies /
   // languages）用零散字段改容易改出"半新半旧"；管理页本来就拿着完整一份来改。
+  // ── 5.171：音频占用（哪场会占了多少、能不能删）────────────────────────
+  // 用户实测：跑完一场长会 + 一段翻译官，磁盘满时只看到一句「音频文件已达上限」，
+  // 却不知道是谁占的。这里把占用按房间列出来，并能单独删掉某一场的录音。
+  if (segments[1] === 'audio' && segments[2] === 'usage' && method === 'GET') {
+    const usage = audioUsage(root)
+    const limits = typeof input.audioLimits === 'function' ? input.audioLimits() : {}
+    return {
+      status: 200,
+      json: {
+        ok: true,
+        totalBytes: usage.totalBytes,
+        legacyBytes: usage.legacyBytes,
+        rooms: usage.rooms,
+        limits,
+        note: '删录音只腾磁盘，不动字幕与历史（那些在「会议历史」里）',
+      },
+    }
+  }
+
+  if (segments[1] === 'audio' && segments[2] === 'purge' && method === 'POST') {
+    if (allowed(role, 'history.purge') !== true) return deny(role, 'history.purge')
+    const all = body !== null && body !== undefined && body.all === true
+    const roomId = String(body?.roomId ?? '').trim()
+    if (all !== true && roomId === '') return bad(400, '要删哪一场？给 roomId，或用 {all:true} 清空全部录音')
+    const result = all === true ? purgeAllAudio(root) : purgeRoomAudio(root, roomId)
+    if (result.ok !== true) return bad(409, result.error)
+    // 删完立刻让转发进程按磁盘重算「已收音频总量」—— 否则上限还会短时间挡着
+    if (typeof input.onAudioPurged === 'function') input.onAudioPurged()
+    logLine(input.log, `🗑 音频已清理：${all === true ? '全部' : roomId}，`
+      + `释放 ${(result.freedBytes / 1024 / 1024).toFixed(1)} MB`)
+    return {
+      status: 200,
+      json: {
+        ok: true,
+        all: all === true,
+        roomId: all === true ? null : (result.roomId ?? roomId),
+        freedBytes: result.freedBytes,
+        failed: result.failed ?? [],
+      },
+    }
+  }
+
   // ── 5.167：切句（分段）参数的全局旋钮 ────────────────────────────────
   // 为什么放管理台：同传延迟 ≈「一句攒多久」+ 识别 + 翻译，而「攒多久」全由这几个数决定。
   // 现场要调它却得改命令行重启整条管线，代价太大 —— 所以给管理员一个不用重启的旋钮。

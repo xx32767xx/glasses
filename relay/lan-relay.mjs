@@ -3206,6 +3206,14 @@ export async function startRelay(rawOptions = {}) {
               return parsed !== null && typeof parsed === 'object' ? parsed : null
             } catch { return null }
           },
+          // 5.171：管理台要显示「上限多少」，并在删完录音后立刻按磁盘重算占用
+          audioLimits: () => ({
+            publicTotalBytes: PUBLIC_LIMITS.maxAudioBytesTotal,
+            perRoomBytes: options.audioMaxBytes,
+          }),
+          onAudioPurged: () => {
+            try { state.audioBytes = audioDiskBytes() } catch { /* 磁盘忙：下一次轮询会再算 */ }
+          },
           audioBytesOf: (roomId) => {
             // 5.08：一场会的音频是**一个目录、每人一个文件**（另兼容旧的单文件）
             let total = 0
