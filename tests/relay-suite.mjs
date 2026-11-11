@@ -105,6 +105,50 @@ export async function runRelaySuite({ it, check, assert }) {
     }
   })
 
+  // 5.176：实机日志里同一帧连打两行一模一样的 `[延迟] 帧 #30（en-US）… 23 ms`。
+  // 那不是重复推送，是"一帧带两种译文"时**父帧也被记了一笔账** —— 父帧拆完就 return，
+  // 从来没被推出去。这条钉住：延迟账只在真正推出去的每一帧上各记一次。
+  await it('5.176：多语言合并帧只给拆出来的那几帧记账（不再给父帧多记一笔）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'latency-log-'))
+    // ⚠️ 总线**目录**要先建出来：startRelay 靠"路径是不是目录"来分辨单文件模式，
+    //    目录不存在就会被当成单文件，帧日志那条路根本不会走。
+    mkdirSync(join(dir, 'buses'), { recursive: true })
+    // 延迟账那行走的是 relay 的 console.log（debug()），所以这里临时接管 stdout
+    const logs = []
+    const original = console.log
+    console.log = (...args) => { logs.push(args.map(String).join(' ')) }
+    let relay = null
+    try {
+      relay = await startRelay({
+        dataDir: dir, port: 0, host: '127.0.0.1', secret: 'lat-secret', quiet: false,
+        bus: join(dir, 'buses'), pollHoldMs: 200, busPollMs: 30,
+      })
+      // 直接喂一帧"带两种译文"的定稿帧进总线目录（等价于大脑写完那一下）。
+      // ⚠️ 目录模式下 relay 是先列 `<房间>.json` 再去找它旁边的帧日志，
+      //    所以这个占位文件也得在 —— 否则连房间都不会被看到。
+      writeFileSync(join(dir, 'buses', 'room-lat.json'), JSON.stringify({ lines: [] }))
+      await mkdir(join(dir, 'buses', 'room-lat.json.frames'), { recursive: true })
+      const frame = {
+        device: 'x', speaker: 'them', lang: 'en-US', text: 'hi', source: '你好',
+        sourceLang: 'zh-CN', partial: false, lines: ['hi'], cols: 40, lineBudget: 6,
+        texts: { 'en-US': 'hi', 'pt-BR': 'oi' }, at: new Date().toISOString(),
+      }
+      writeFileSync(join(dir, 'buses', 'room-lat.json.frames', '000001-x.json'), JSON.stringify(frame))
+      await new Promise((resolve) => setTimeout(resolve, 400))
+      const latency = logs.filter((line) => line.includes('大脑写出→推送'))
+      const numbers = latency.map((line) => (line.match(/帧 #(\d+)/) ?? [])[1])
+      check('两种译文各记一次账（共两行）', latency.length === 2, JSON.stringify(latency))
+      check('两行是**不同**的帧号（父帧不再多记一笔）',
+        numbers.length === 2 && numbers[0] !== numbers[1], JSON.stringify(numbers))
+      check('记的是拆出来的语言', latency.every((line) => /（en-US）|（pt-BR）/.test(line)),
+        JSON.stringify(latency))
+    } finally {
+      console.log = original
+      if (relay !== null) await relay.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   await it('5.166：紧挨着写的两帧都要到达（帧日志兜住整文件覆盖的丢帧）', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'bus-journal-'))
     const secret = 'journal-secret-0123456789'

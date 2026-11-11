@@ -8,10 +8,10 @@
  *   ③ 发言权的互斥在**数据库层**成立：`floor_state` 一房一行，谁写谁生效，不会出现两行。
  */
 
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { COLUMN_PATCHES, appendUtterance, dbPath, importFromDataDir, openDb, purgeOldUtterances, purgeUtterancesIn, reconcileColumns, SCHEMA_VERSION } from '../lib/db.mjs'
+import { COLUMN_PATCHES, appendUtterance, dbPath, importFromDataDir, isBusyError, openDb, purgeOldUtterances, purgeUtterancesIn, reconcileColumns, SCHEMA_VERSION } from '../lib/db.mjs'
 import { readAccountsDoc, writeAccountsDoc } from '../lib/accounts-store.mjs'
 import { hashPassword, verifyPassword } from '../lib/accounts.mjs'
 
@@ -303,6 +303,35 @@ export async function runDbSuite({ it, check }) {
     check('只有一行', rows.length === 1, String(rows.length))
     check('名字补上了', rows[0]?.username === 'alice', JSON.stringify(rows[0]))
     check('译文也在', rows[0]?.dst_text === 'now named', JSON.stringify(rows[0]))
+  })
+
+  // 5.176：服务器日志里出现过 `[语言] 同步成员语言失败：database is locked`。
+  // 查下来有两个原因：① `busy_timeout` 设在 `journal_mode = WAL` **之后** ——
+  // 而要先"拿锁"才轮到忙等，那一刻忙等还是缺省的 0，别人一占锁就立刻失败；
+  // ② 一次失败就放弃，没有退避重试。
+  await it('5.176：忙等门槛先于任何要锁的 pragma；撞锁会退避重试', async () => {
+    const source = readFileSync(new URL('../lib/db.mjs', import.meta.url), 'utf-8')
+    // 盯**真正的 exec 调用**：注释里也会出现这两个名字，用裸 indexOf 会误判
+    const busyAt = source.indexOf("db.exec('PRAGMA busy_timeout")
+    const walAt = source.indexOf("db.exec('PRAGMA journal_mode")
+    check('busy_timeout 写在 journal_mode 之前（否则等于没设忙等）',
+      busyAt > 0 && walAt > busyAt, `busy@${busyAt} wal@${walAt}`)
+
+    const file = dbPath(mkdtempSync(join(tmpdir(), 'db-busy-')))
+    const db = openDb(file)
+    check('打开后 busy_timeout 真的是 3000',
+      Number(db.prepare('PRAGMA busy_timeout').get()?.timeout) === 3000,
+      JSON.stringify(db.prepare('PRAGMA busy_timeout').get()))
+    check('journal_mode 确实是 wal',
+      String(db.prepare('PRAGMA journal_mode').get()?.journal_mode).toLowerCase() === 'wal',
+      JSON.stringify(db.prepare('PRAGMA journal_mode').get()))
+    db.close()
+
+    check('认得出"撞锁"这类错误', isBusyError('database is locked') === true
+      && isBusyError('Error: SQLITE_BUSY: database is locked') === true)
+    check('不把别的错当撞锁（那些不该重试）',
+      isBusyError('no such column: hidden_at') === false
+      && isBusyError('database disk image is malformed') === false)
   })
 
   rmSync(dir, { recursive: true, force: true })

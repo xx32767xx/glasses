@@ -1101,16 +1101,6 @@ export async function startRelay(rawOptions = {}) {
   }
 
   function publishFrame(frame, roomHint = '') {
-    // 5.169：**延迟账的最后一段** —— 帧从"大脑写出"到"我们推给手机"隔了多久。
-    // 帧里自带 `at`（大脑写这一帧的时刻），与本机此刻相减 = 网络/轮询那一段的耗时。
-    // 只在**定稿**上打：增量帧太密，打出来纯粹刷屏。
-    if (frame !== null && typeof frame === 'object' && frame.partial !== true
-      && typeof frame.at === 'string' && frame.at !== '') {
-      const wroteAt = Date.parse(frame.at)
-      if (Number.isFinite(wroteAt)) {
-        debug(`[延迟] 帧 #${state.seq + 1}（${frame.lang ?? '?'}）大脑写出→推送 ${Date.now() - wroteAt} ms`)
-      }
-    }
     // 5.121：一帧带多种译文（`texts`）时，先**按语言拆开**再走后面那套逻辑。
     //
     // 为什么在这里拆：总线文件是"整文件覆盖 + 60ms 轮询"，而大脑那边几种语言的译文
@@ -1125,6 +1115,20 @@ export async function startRelay(rawOptions = {}) {
     }
     state.seq += 1
     state.frameCount += 1
+    // 5.169：**延迟账的最后一段** —— 帧从"大脑写出"到"我们推给手机"隔了多久。
+    // 帧里自带 `at`（大脑写这一帧的时刻），与本机此刻相减 = 网络/轮询那一段的耗时。
+    // 只在**定稿**上打：增量帧太密，打出来纯粹刷屏。
+    //
+    // ⚠️ 5.176：这一行必须在"拆帧"**之后**。以前它在最前面，于是"一帧带两种译文"
+    // （`texts`）时会先给**父帧**记一笔账 —— 而父帧在 splitMultiLangFrame 之后就 return
+    // 了，根本不会被推出去。实机日志的指纹就是同一帧连打两行一模一样的
+    // `[延迟] 帧 #30（en-US）… 23 ms`（父帧 + en-US 副本），看着像"重复推送"，其实只推了一次。
+    if (frame.partial !== true && typeof frame.at === 'string' && frame.at !== '') {
+      const wroteAt = Date.parse(frame.at)
+      if (Number.isFinite(wroteAt)) {
+        debug(`[延迟] 帧 #${state.seq}（${frame.lang ?? '?'}）大脑写出→推送 ${Date.now() - wroteAt} ms`)
+      }
+    }
     // 归属：文件来源（最准）→ 帧里的 roomId → 刚上传音频的房间 → 持麦者推断
     const attribution = roomHint !== ''
       ? { roomId: roomHint, reason: 'bus-file' }
