@@ -88,6 +88,16 @@ export async function runRelaySuite({ it, check, assert }) {
         zh !== undefined && zh.frame.text === '这个问题问得好。', JSON.stringify(zh && zh.frame.text))
       check('处理过的帧日志文件被删掉（不会每轮重复发一遍）',
         readdirSync(journal).length === 0, readdirSync(journal).join(','))
+      // 5.166b：**帧日志存在时老路必须让位**。否则同一帧会被两条路各发一次
+      // （实机日志里同一句定稿出现过 4 次：en / zh 各两遍）。
+      writeFileSync(bus, JSON.stringify({
+        roomId, speaker: 'them', lang: 'zh-CN', text: '这句只写老路。', source: 'Legacy only.',
+        sourceLang: 'en-US', partial: false, lines: ['这句只写老路。'], cols: 40, lineBudget: 3,
+      }))
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      const helloLegacy = await (await fetch(`${base}/hello`, { headers })).json()
+      check('有帧日志时不再读"最后一帧"文件（不重复发）',
+        helloLegacy.seq === helloAfter.seq, `${helloAfter.seq} → ${helloLegacy.seq}`)
     } finally {
       await relay.close()
       rmSync(dir, { recursive: true, force: true })

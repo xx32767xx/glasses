@@ -1238,7 +1238,7 @@ export async function startRelay(rawOptions = {}) {
     try {
       names = (await readdir(dir)).filter((name) => name.endsWith('.json')).sort()
     } catch {
-      return                       // 没有帧日志（老版本大脑）：走下面的老路
+      return false                 // 没有帧日志（老版本大脑）：让调用方走老的"最后一帧文件"
     }
     for (const name of names) {
       const path = join(dir, name)
@@ -1270,6 +1270,7 @@ export async function startRelay(rawOptions = {}) {
         await unlink(path)
       } catch { /* 磁盘上留一会儿：下一轮靠 journalSeen 跳过，再试一次删除 */ }
     }
+    return true                      // 目录存在 = 这个大脑会写帧日志
   }
 
   async function pollBus() {
@@ -1281,7 +1282,12 @@ export async function startRelay(rawOptions = {}) {
     // 5.166：**先把帧日志排空**。总线文件是"整文件覆盖"，两次紧挨着的写只有后一次能活下来，
     // 而"上一句定稿 + 下一句原文帧"完全可能只隔几十毫秒 —— 那会让定稿静默丢失，
     // 手机侧表现是"这一句永远在识别中，20 秒后变为未定稿（超时）"。
-    await drainFrameJournal(`${options.bus}.frames`, null)
+    const journal = `${options.bus}.frames`
+    const journaled = await drainFrameJournal(journal, null)
+    // 5.166b：**有帧日志就不再读"最后一帧"文件**。否则同一帧会被两条路各发一次
+    // （实机日志里同一句定稿出现过 4 次：en / zh 各两遍）。
+    // 判据用"目录存在"，而不是"这一轮读到几帧" —— 后者在空闲时会误判，导致又开始重复发。
+    if (journaled) return
     let raw
     try {
       raw = await readFile(options.bus, 'utf-8')
@@ -1304,15 +1310,8 @@ export async function startRelay(rawOptions = {}) {
   async function pollBusDir() {
     // 5.166：目录模式下每个 `<房间>.json` 旁边还有一个 `<房间>.json.frames/`（帧日志）。
     // 先把它们排空 —— 这样"两帧挤在同一个轮询窗口里"也不会丢任何一帧。
-    try {
-      for (const name of await readdir(options.bus)) {
-        if (!name.endsWith('.json')) continue
-        const roomId = name.replace(/\.json$/, '')
-        await drainFrameJournal(join(options.bus, `${name}.frames`), roomId)
-      }
-    } catch {
-      // 目录还没建（第一场会之前）—— 不是错误
-    }
+    // 5.166b：**有帧日志的房间就不再读它的 `<房间>.json`** —— 否则同一帧会被两条路各发一次。
+    const journaled = new Set()
     let names = []
     try {
       names = (await readdir(options.bus)).filter((name) => name.endsWith('.json'))
@@ -1320,6 +1319,12 @@ export async function startRelay(rawOptions = {}) {
       return                       // 目录还没建
     }
     for (const name of names) {
+      const roomId = name.replace(/\.json$/, '')
+      const hasJournal = await drainFrameJournal(join(options.bus, `${name}.frames`), roomId)
+      if (hasJournal) journaled.add(name)
+    }
+    for (const name of names) {
+      if (journaled.has(name)) continue   // 这个房间走帧日志，别再用老路重复发一遍
       const file = join(options.bus, name)
       let raw
       try {
