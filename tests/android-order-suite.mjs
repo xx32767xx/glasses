@@ -1773,6 +1773,30 @@ export async function runAndroidOrderSuite({ it, check }) {
     }
   })
 
+  // 5.168：用户要「测延迟」—— 卡上直接写这一帧到达手机的时刻，拿录音一对就知道差多少。
+  await it('5.168：每张字幕卡带「到达手机的时刻」（开发模式带毫秒）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+
+    check('卡片结构里有一个时间标签', /TextView atTime;/.test(room))
+    check('头部把它挂上去（在状态标签旁边）', /head\.addView\(atTime/.test(room))
+    check('每帧都更新（增量帧的时间也会变，所以每帧都写）',
+      /card\.atTime\.setText\(arrivalText\(\)\)/.test(room))
+    check('定稿后高亮加粗（一眼看出这句结束了、现在是什么时间）',
+      /Typeface\.NORMAL : android\.graphics\.Typeface\.BOLD/.test(room))
+    check('开发模式下带毫秒（测延迟需要）',
+      /DevMode\.enabled\(this\) \? "HH:mm:ss\.SSS" : "HH:mm:ss"/.test(room))
+    check('用的是本机时钟（服务端时间对表还要算时区）',
+      /new java\.text\.SimpleDateFormat\(/.test(room) && /new java\.util\.Date\(\)/.test(room))
+    // 第一次实现把 `boolean anyPartial = partial;` 写了两遍（javac 报「已在方法中定义」）——
+    // 这类「复制粘贴多一行」用机器守：同一个方法里这句声明只能出现一次。
+    const renderBody = room.slice(room.indexOf('private void renderSegment('),
+      room.indexOf('private void watchPartial('))
+    check('renderSegment 里 anyPartial 只声明一次',
+      (renderBody.match(/boolean anyPartial = partial;/g) ?? []).length === 1,
+      String((renderBody.match(/boolean anyPartial = partial;/g) ?? []).length))
+  })
+
   // 5.163：**会议页根本没接投屏这条线**（用户实测）。
   // 现象：设置页的测试字幕能上镜片，但会议里侧边栏明明写着「投屏设备：眼镜」，镜片却一片空白。
   // 根因：投屏会话是「我的 → 眼镜投屏」建的（共享单例），房间页只读了它的状态（isCasting），

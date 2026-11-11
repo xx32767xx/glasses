@@ -2215,6 +2215,14 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             refreshTranslationLabels(card);
         }
         boolean anyPartial = partial;
+        // 5.168：把"这一帧到达手机的时刻"写在卡片上 —— 测延迟要用它。
+        // 增量帧用次要色（还会变），定稿帧用主色并加粗（这一句到此为止）。
+        if (card.atTime != null) {
+            card.atTime.setText(arrivalText());
+            card.atTime.setTextColor(getColor(anyPartial ? R.color.ink_faint : R.color.brand));
+            card.atTime.setTypeface(null, anyPartial
+                    ? android.graphics.Typeface.NORMAL : android.graphics.Typeface.BOLD);
+        }
         card.state.setText(anyPartial ? getString(R.string.st_recognizing) : getString(R.string.st_done));
         card.state.setTextColor(getColor(anyPartial ? R.color.accent : R.color.ok));
         watchPartial(card, anyPartial);
@@ -2226,6 +2234,19 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         if (!partial && ttsMode == TTS_READ_TRANSLATION && !target.isEmpty() && isPrimaryLang(langKey)) {
             offerTts(target, langKey.isEmpty() ? hearLang : langKey, speakerName);
         }
+    }
+
+    /**
+     * 5.168：本机**收到这一帧的时刻**（HH:mm:ss；开发模式带毫秒）。
+     *
+     * <p>为什么不做成"服务端时间"：测延迟要的是"字幕什么时候出现在我眼前"，
+     * 而那只能是本机时钟。服务端时间在帧里的 `at` 字段里（排障时对日志用），
+     * 要让用户拿它对表还得算时区 —— 那不是"方便测量"。
+     */
+    private String arrivalText() {
+        java.text.SimpleDateFormat format = new java.text.SimpleDateFormat(
+                DevMode.enabled(this) ? "HH:mm:ss.SSS" : "HH:mm:ss", java.util.Locale.getDefault());
+        return format.format(new java.util.Date());
     }
 
     /**
@@ -2257,6 +2278,14 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         TextView source;
         LinearLayout translations;
         TextView state;
+        /**
+         * 5.168：这一帧**到达手机的时刻**（定稿时高亮）。
+         *
+         * <p>为什么放在卡上：用户要"测延迟"—— 而延迟只能拿"结果到达手机的时间"和
+         * "这句话说完的时间"去对。前者以前完全看不见（只有服务端日志有，还得算时区），
+         * 现在每张卡右上角直接写着，拿录音/秒表一对就知道差多少。
+         */
+        TextView atTime;
         /** 语种 → 那一行译文。 */
         final java.util.Map<String, TextView> lines = new java.util.LinkedHashMap<>();
         String key = "";
@@ -2336,6 +2365,15 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         View spacer = new View(this);
         head.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
 
+        // 5.168：到达时刻（定稿后高亮）。放在状态标签**左边**，窄屏也不会被挤掉。
+        final TextView atTime = new TextView(this);
+        atTime.setText("");
+        atTime.setTextColor(getColor(R.color.ink_faint));
+        atTime.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 10);
+        atTime.setPadding(0, 0, dp(6), 0);
+        head.addView(atTime, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
         final TextView state = new TextView(this);
         state.setText(getString(R.string.st_recognizing));
         state.setTextColor(getColor(R.color.accent));
@@ -2369,6 +2407,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         made.source = sourceLine;
         made.translations = translations;
         made.state = state;
+        made.atTime = atTime;
         made.key = key;
         sentenceCards.put(key, made);
 
