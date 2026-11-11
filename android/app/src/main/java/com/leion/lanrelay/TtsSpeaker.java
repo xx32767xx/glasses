@@ -60,6 +60,13 @@ public final class TtsSpeaker {
 
     private final Context context;
     private final AudioManager audioManager;
+    /**
+     * 5.164：没有近耳设备时**允许走喇叭**吗（远程会议为 true，面对面恒为 false）。
+     *
+     * <p>为什么交给调用方设：能不能外放属于"这一场会的规则"（见 {@link AudioPolicy}），
+     * 合成器自己不该知道参会方式；它只需要知道"没有耳机时准不准用喇叭"。
+     */
+    private volatile boolean allowSpeaker = false;
 
     private TextToSpeech tts;
     private volatile boolean ttsReady = false;
@@ -72,6 +79,11 @@ public final class TtsSpeaker {
     private volatile MediaPlayer player;
     private volatile CountDownLatch playbackLatch;
     private volatile boolean stopped = false;
+
+    /** 5.164：设置"没有耳机时能不能用喇叭"（远程会议 = true，面对面 = false）。 */
+    public void setAllowSpeaker(boolean value) {
+        allowSpeaker = value;
+    }
 
     public TtsSpeaker(Context context) {
         this.context = context.getApplicationContext();
@@ -97,10 +109,14 @@ public final class TtsSpeaker {
             return new Result(false, InterpreterErrorCodes.TTS_ENGINE,
                     ttsProblem.isEmpty() ? "这台设备没有可用的语音合成引擎" : ttsProblem, 0);
         }
-        // 输出设备：**只接受近耳**（耳机/蓝牙/眼镜 USB），没有就不播
+        // 输出设备（5.164）：
+        //   · 面对面（allowSpeaker=false）：**只接受近耳**（耳机/蓝牙/眼镜 USB），没有就不播；
+        //   · 远程（allowSpeaker=true）：没有近耳设备就走系统默认输出（通常是喇叭）。
+        // 为什么面对面连"念译文"也不许外放：喇叭的声音会被自己的麦克风录回去，
+        // 识别出"译文的中文"再翻一遍（自激循环）；旁边还坐着对方，外放等于念给他听。
         AudioDeviceInfo output = preferredOutput();
-        if (output == null) {
-            return new Result(false, InterpreterErrorCodes.NO_EARPHONE, "没有耳机或眼镜，已取消朗读（会议里禁止外放）", 0);
+        if (output == null && !allowSpeaker) {
+            return new Result(false, InterpreterErrorCodes.NO_EARPHONE, "没有耳机或眼镜，已取消朗读（面对面时不外放）", 0);
         }
         AudioFocusRequest focus = requestFocus();
         long startedAt = System.currentTimeMillis();
@@ -373,7 +389,7 @@ public final class TtsSpeaker {
                     .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build());
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && output != null) {
                 created.setPreferredDevice(output);
             }
             created.setDataSource(file.getAbsolutePath());

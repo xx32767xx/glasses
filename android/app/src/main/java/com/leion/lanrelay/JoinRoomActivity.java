@@ -183,9 +183,9 @@ public class JoinRoomActivity extends android.app.Activity {
         attendMode = mode == null ? "" : mode;
         // 5.07：记下来，房间页顶部那格「我说… · 面对面」要用（同 speakLang 的做法）
         if (!attendMode.isEmpty()) prefs.edit().putString("attendMode", attendMode).apply();
-        stylePills(R.id.joinModeOnsite, R.string.attend_mode_onsite, R.string.attend_mode_onsite_on,
+        stylePills(R.id.joinModeOnsite, R.string.attend_mode_onsite_no_speaker, R.string.attend_mode_onsite_no_speaker_on,
                 "onsite".equals(attendMode));
-        stylePills(R.id.joinModeRemote, R.string.attend_mode_remote, R.string.attend_mode_remote_on,
+        stylePills(R.id.joinModeRemote, R.string.attend_mode_remote_speaker, R.string.attend_mode_remote_speaker_on,
                 "remote".equals(attendMode));
         refreshSubmit();
     }

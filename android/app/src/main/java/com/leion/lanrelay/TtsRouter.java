@@ -8,8 +8,8 @@ package com.leion.lanrelay;
  *
  * <table>
  *   <tr><th>语言</th><th>默认走哪</th><th>为什么</th></tr>
- *   <tr><td>zh-CN</td><td>**手机本地**</td>
- *       <td>手机有中文语音包、零延迟、离线可用，多绕一趟网络没有收益</td></tr>
+ *   <tr><td>zh-CN</td><td>**服务器**（5.164 起；原来本地）</td>
+ *       <td>部分机型没有中文语音包，且第三方引擎音色不受控 —— 统一走服务器少一个变量</td></tr>
  *   <tr><td>pt-BR / en-US</td><td>**服务器 piper**</td>
  *       <td>手机基本没装这两门语言的语音包（实测巴葡没有），本地引擎直接"念不出来"</td></tr>
  * </table>
@@ -37,8 +37,11 @@ public final class TtsRouter {
     public static boolean prefersServer(String lang) {
         String code = lang == null ? "" : lang.trim().toLowerCase(java.util.Locale.ROOT);
         if (code.isEmpty()) return false;
-        if (code.startsWith("zh")) return false;
-        return code.startsWith("pt") || code.startsWith("en");
+        // 5.164：**三门语言都走服务器**（原来中文留在手机本地）。
+        // 理由：部分机型根本没有中文语音包（或只有第三方引擎，音色/稳定性都不受我们控制），
+        // 而服务器上的 piper 是同一套音色与同一套行为 —— 现场出问题时少一个变量。
+        // 手机本地那条路仍然保留，由「我的 → 语音合成」那颗开关整体切回去（备份 + 对比）。
+        return code.startsWith("zh") || code.startsWith("pt") || code.startsWith("en");
     }
 
     /**

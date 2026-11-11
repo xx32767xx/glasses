@@ -477,8 +477,11 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('参会方式两种：面对面 / 远程',
       /attend_mode_onsite/.test(createXml) && /attend_mode_remote/.test(createXml)
       && /attend_mode_onsite/.test(joinXml) && /attend_mode_remote/.test(joinXml))
-    check('选了面对面会明说"不外放声音"',
-      /"onsite"\.equals\(attendMode\)[\s\S]{0,200}attend_onsite_no_speaker/.test(createJava))
+    // 5.164：外放策略从"选了之后再弹一行小字"改成**直接写在选项文案上**
+    // （面对面 = 不允许外放 / 远程 = 允许外放），断言随之改成"选项文案就是它"。
+    check('面对面 / 远程的选项文案直接写明外放策略',
+      /attend_mode_onsite_no_speaker/.test(createJava)
+      && /attend_mode_remote_speaker/.test(createJava))
     check('参会方式随建房 / 加入请求发给服务端',
       /body\.put\("mode", mode\)/.test(readFileSync(join(javaDir, 'LanClient.java'), 'utf-8'))
       && /orgJoinRoom\(code, speakLang, attendMode,/.test(joinJava))
@@ -1679,6 +1682,67 @@ export async function runAndroidOrderSuite({ it, check }) {
       /room_strategy_locked/.test(roomJava) && /room_strategy_live/.test(roomJava))
   })
 
+  // 5.164：**面对面不许外放**（用户定的规矩）。原来两处各自判：合成器"没有耳机就不念"，
+  // 而实时传声（对方原声）根本没判 —— 于是在对方旁边，原声照样从喇叭里出来。
+  // 现在合成音与原声共用同一条判据（AudioPolicy）：面对面只认耳机/眼镜，远程允许喇叭。
+  await it('5.164：外放策略（面对面只认耳机/眼镜 · 远程允许喇叭）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+    const policy = readFileSync(join(javaDir, 'AudioPolicy.java'), 'utf-8')
+    const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+    const speaker = readFileSync(join(javaDir, 'TtsSpeaker.java'), 'utf-8')
+    const layout = readFileSync(join(resDir, 'layout', 'page_room.xml'), 'utf-8')
+
+    check('判据只有一处（AudioPolicy）', /public final class AudioPolicy/.test(policy))
+    check('只有明确的 remote 才算远程（空/未知按面对面，取保守那一边）',
+      /return MODE_REMOTE\.equals\(mode == null \? "" : mode\.trim\(\)\);/.test(policy))
+    check('允许外放 ⇔ 远程', /public static boolean allowsSpeaker\(String mode\) \{\s*\n\s*return isRemote\(mode\);/.test(policy))
+    check('能不能出声 = 远程 或 有近耳设备',
+      /if \(isRemote\(mode\)\) return true;/.test(policy) && /return hasNearEar;/.test(policy))
+    check('近耳设备判据与合成器同一套（USB/有线/蓝牙/助听）',
+      /TYPE_USB_HEADSET/.test(policy) && /TYPE_WIRED_HEADPHONES/.test(policy)
+      && /TYPE_BLUETOOTH_A2DP/.test(policy) && /TYPE_HEARING_AID/.test(policy))
+
+    check('实时传声也走这条判据（原来只有合成音在管）',
+      /AudioPolicy\.allowsPlayback\(/.test(room) && /&& canPlay;|&& canPlay\)/.test(room)
+      || /boolean canPlay = AudioPolicy\.allowsPlayback/.test(room))
+    check('合成器被告知"没有耳机时能否用喇叭"', /setAllowSpeaker\(attendRemote\)/.test(room))
+    check('面对面没有耳机时合成器拒绝（文案要说"面对面时不外放"）',
+      /output == null && !allowSpeaker/.test(speaker) && /面对面时不外放/.test(speaker))
+    check('远程时没有耳机就用系统默认输出（不设 preferredDevice）',
+      /&& output != null\) \{\s*\n\s*created\.setPreferredDevice/.test(speaker))
+
+    check('侧边栏有红色"未连接耳机或眼镜"告警',
+      /@\+id\/roomNoEarphone/.test(layout) && /@color\/err/.test(layout.slice(layout.indexOf('roomNoEarphone'), layout.indexOf('roomNoEarphone') + 400)))
+    check('告警默认隐藏，由策略决定显隐',
+      /@\+id\/roomNoEarphone[\s\S]{0,600}?android:visibility="gone"/.test(layout)
+      && /warn\.setVisibility\(blocked \? android\.view\.View\.VISIBLE : android\.view\.View\.GONE\)/.test(room))
+    check('插拔耳机要立刻重算（注册 + 注销音频设备回调）',
+      /registerAudioDeviceCallback\(deviceCallback, ui\)/.test(room)
+      && /unregisterAudioDeviceCallback\(deviceCallback\)/.test(room))
+
+    // 参会方式那一页：外放策略写在选项上，旧的小字说明删掉
+    for (const [name, layoutFile, activityFile, ids] of [
+      ['创建页', 'page_create_room.xml', 'CreateRoomActivity.java', ['createModeOnsite', 'createModeRemote']],
+      ['加入页', 'page_join_room.xml', 'JoinRoomActivity.java', ['joinModeOnsite', 'joinModeRemote']],
+    ]) {
+      const xml = readFileSync(join(resDir, 'layout', layoutFile), 'utf-8')
+      const java = readFileSync(join(javaDir, activityFile), 'utf-8')
+      check(`${name}的面对面选项写明"不允许外放"`,
+        /attend_mode_onsite_no_speaker/.test(java), activityFile)
+      check(`${name}的远程选项写明"允许外放"`, /attend_mode_remote_speaker/.test(java))
+      check(`${name}不再有那行小字说明`, !/@string\/attend_mode_hint/.test(xml))
+      check(`${name}的两个选项还在`, ids.every((id) => xml.includes(`@+id/${id}`)))
+    }
+    for (const dir of ['values', 'values-en', 'values-pt-rBR']) {
+      const xml = readFileSync(join(resDir, dir, 'strings.xml'), 'utf-8')
+      check(`${dir} 有三条外放策略文案 + 侧边栏告警`,
+        /name="attend_mode_onsite_no_speaker"/.test(xml)
+        && /name="attend_mode_remote_speaker"/.test(xml)
+        && /name="room_no_earphone_warn"/.test(xml))
+    }
+  })
+
   // 5.163：**会议页根本没接投屏这条线**（用户实测）。
   // 现象：设置页的测试字幕能上镜片，但会议里侧边栏明明写着「投屏设备：眼镜」，镜片却一片空白。
   // 根因：投屏会话是「我的 → 眼镜投屏」建的（共享单例），房间页只读了它的状态（isCasting），
@@ -2530,7 +2594,7 @@ export async function runAndroidOrderSuite({ it, check }) {
     // 5.30 起多了一个让路条件：正在朗读译文时不放对方原声（方案 1 二选一）；
     // 5.158 起它变成"**在念的时候整体静音原声**"（mutedByTts）——用户要求听译文时听不到说话人原声。
     check('它按"想听 + 没在说话 + 没在朗读 + 没在念"决定',
-      /boolean shouldPlay = listenWanted && !holding && !speakingTranslation && !mutedByTts;/.test(room))
+      /boolean shouldPlay = listenWanted && !holding && !speakingTranslation && !mutedByTts && canPlay;/.test(room))
     check('幂等（状态没变就不重启播放器、不重发消息）', /if \(shouldPlay == listening\)/.test(room))
     check('旧写法（一开口就永久关掉倾听）必须消失',
       // ⚠️ 必须**先剥注释**再查：那条旧写法在修完的代码里还出现在一段"为什么改"的注释里，

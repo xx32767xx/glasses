@@ -301,7 +301,8 @@ export async function runTtsSuite({ it, check }) {
         .includes('.SettingsActivity'))
     const roomSrc = readFileSync(room, 'utf-8')
     check('房间页按开关决定是否建队列',
-      /if \(TtsFeature\.enabled\(\)\) \{\s*ttsQueue = new TtsQueue/.test(roomSrc))
+      // 5.164：先造 speaker（要设 allowSpeaker），再包一层队列
+      /if \(TtsFeature\.enabled\(\)\) \{[\s\S]{0,600}?ttsQueue = new TtsQueue/.test(roomSrc))
     const interpSrc = readFileSync(join(JAVA_SRC, 'InterpreterActivity.java'), 'utf-8')
     check('翻译官页同样按开关建队列、配置行也跟着出现',
       /if \(TtsFeature\.enabled\(\)\) \{\s*ttsQueue = new TtsQueue/.test(interpSrc)

@@ -144,6 +144,11 @@
     <string name="attend_mode_onsite">Presencial</string>
     <string name="attend_mode_onsite_on">Presencial ✓</string>
     <string name="attend_mode_remote">Remoto</string>
+        <string name="attend_mode_onsite_no_speaker">Presencial (sem alto-falante)</string>
+        <string name="attend_mode_onsite_no_speaker_on">Presencial ✓ sem alto-falante</string>
+        <string name="attend_mode_remote_speaker">Remoto (alto-falante OK)</string>
+        <string name="attend_mode_remote_speaker_on">Remoto ✓ alto-falante OK</string>
+        <string name="room_no_earphone_warn">Sem fone nem óculos · alto-falante desligado</string>
     <string name="attend_mode_remote_on">Remoto ✓</string>
     <string name="attend_onsite_no_speaker">Presencial significa sem alto-falante (óculos ou fone captam o som) — a conexão de dispositivos ainda não está ligada, então a escolha só fica registrada</string>
     <string name="common_close">Fechar</string>

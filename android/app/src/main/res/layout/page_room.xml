@@ -267,6 +267,24 @@
                     android:textSize="@dimen/text_caption" />
 
                 <!--
+                    5.164：**面对面且没接耳机/眼镜**时亮起的红色告警。
+
+                    为什么要常驻一行而不是弹一次提示：这一条决定了"这一场到底有没有声音"，
+                    用户需要的是一眼看到"现在为什么不响"，而不是回忆几秒前闪过的一句话。
+                    文案直接说结论（未连接耳机或眼镜 · 不外放），不说"请检查设备"那种空话。
+                -->
+                <TextView
+                    android:id="@+id/roomNoEarphone"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="@dimen/space_gap_small"
+                    android:text="@string/room_no_earphone_warn"
+                    android:textColor="@color/err"
+                    android:textSize="@dimen/text_caption"
+                    android:textStyle="bold"
+                    android:visibility="gone" />
+
+                <!--
                     5.159/5.161：朗读 = **两态**（听原声 / 念译文），点下面那一行切换。
 
                     为什么只有两态：原来还有"念原文"，它和"听原声"其实指同一件事（让对方原话进耳朵），

@@ -166,6 +166,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
      * {@code roomTtsSwitch} 决定（偏好 {@code ttsReadOriginal}）。
      */
     private TtsQueue ttsQueue;
+    /** 5.164：合成器引用（外放策略要在设备变化时可改）。 */
+    private TtsSpeaker ttsSpeaker;
     /**
      * 5.159：朗读只有两态 —— **听原声 / 念译文**。
      *
@@ -221,6 +223,12 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     private boolean listening = false;
     /** 5.161：收到的原声块数（排查"听不到原声"时要分清是手机没开播、还是服务端没发）。 */
     private int audioChunks = 0;
+    /** 5.164：这一场是不是"远程"（远程允许外放；面对面只认耳机/眼镜）。 */
+    private boolean attendRemote = false;
+    /** 5.164：此刻有没有近耳输出设备（耳机 / 蓝牙 / 眼镜 USB）。 */
+    private boolean hasNearEar = false;
+    /** 5.164：音频设备变化回调（插拔耳机/蓝牙要立刻重算能不能出声）。 */
+    private android.media.AudioDeviceCallback deviceCallback;
     /**
      * 我**想不想**听（4.91）。
      *
@@ -441,12 +449,21 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // 4.76 的实时传声播放器；4.97 起**没有**手动开关（那颗胶囊已从底部删掉）——
         // 倾听全自动：进房间就听、自己说话时暂停防回声、说完恢复、重连重新订阅（见 applyListenState）。
         audioPlayer = new RoomAudioPlayer();
+        // 5.164：**这一场能不能外放**只看两件事：参会方式 + 有没有近耳设备。
+        // 判据统一在 AudioPolicy 里（面对面只认耳机/眼镜；远程允许喇叭）。
+        attendRemote = AudioPolicy.allowsSpeaker(AudioPolicy.attendMode(this));
+        refreshNearEar();
+        registerDeviceCallback();
         // 5.152：朗读（TTS）—— 老师要求加上，所以 5.38 的总开关已经打开
         // （{@link TtsFeature#enabled()}）。队列策略（积压丢弃/过期不播/关掉立刻闭嘴）
         // 与"只在耳机上播"这些规矩一条没动 —— 它们本来就是这层做对的。
         // 念**译文**还是**原文**由底部那颗开关决定（ttsReadOriginal）。
         if (TtsFeature.enabled()) {
-            ttsQueue = new TtsQueue(new TtsSpeaker(this));
+            TtsSpeaker speaker = new TtsSpeaker(this);
+            // 5.164：远程允许走喇叭；面对面没有耳机就不念（把外放这条路彻底关掉）
+            speaker.setAllowSpeaker(attendRemote);
+            ttsSpeaker = speaker;
+            ttsQueue = new TtsQueue(speaker);
             ttsQueue.setListener(new TtsQueue.Listener() {
                 @Override
                 public void onSpeaking(String text, boolean speaking) {
@@ -557,6 +574,17 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // 5.150：把"识别中"的超时表也清掉（否则 Activity 销毁后回调里还在碰 View）
         for (Runnable pending : partialWatch.values()) ui.removeCallbacks(pending);
         partialWatch.clear();
+        // 5.164：注销音频设备回调（否则回调里还在碰这个已经销毁的页面）
+        if (deviceCallback != null) {
+            try {
+                android.media.AudioManager manager =
+                        (android.media.AudioManager) getSystemService(AUDIO_SERVICE);
+                if (manager != null) manager.unregisterAudioDeviceCallback(deviceCallback);
+            } catch (Exception ignored) {
+                // 注销失败不影响退出
+            }
+            deviceCallback = null;
+        }
         ui.removeCallbacksAndMessages(null);
         super.onDestroy();
     }
@@ -1064,6 +1092,55 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     }
 
     /**
+     * 5.164：更新「现在有没有近耳设备」，并同步三处：原声能不能放、合成器准不准外放、
+     * 侧边栏那条红色告警。
+     *
+     * <p>为什么要在**设备变化时**刷新（而不是只在进房间时查一次）：插耳机 / 连蓝牙 / 摘掉眼镜
+     * 都是随时发生的，而这条策略直接决定"有没有声音"。只在进页面查一次的老做法，
+     * 表现就是"戴上耳机还是没声音、摘了耳机却在对方旁边外放"。
+     */
+    private void refreshNearEar() {
+        android.media.AudioManager manager =
+                (android.media.AudioManager) getSystemService(AUDIO_SERVICE);
+        hasNearEar = AudioPolicy.hasNearEar(manager);
+        if (ttsSpeaker != null) ttsSpeaker.setAllowSpeaker(attendRemote);
+        updateNoEarphoneWarn();
+        applyListenState();
+    }
+
+    /** 侧边栏那条红色告警：面对面且没有耳机/眼镜时亮起（其余情况隐藏）。 */
+    private void updateNoEarphoneWarn() {
+        TextView warn = findViewById(R.id.roomNoEarphone);
+        if (warn == null) return;
+        boolean blocked = !AudioPolicy.allowsPlayback(attendRemote ? AudioPolicy.MODE_REMOTE
+                : AudioPolicy.MODE_ONSITE, hasNearEar);
+        warn.setVisibility(blocked ? android.view.View.VISIBLE : android.view.View.GONE);
+    }
+
+    /** 注册音频设备变化（插拔耳机 / 蓝牙连上 / 眼镜接上都会回调）。 */
+    private void registerDeviceCallback() {
+        android.media.AudioManager manager =
+                (android.media.AudioManager) getSystemService(AUDIO_SERVICE);
+        if (manager == null) return;
+        try {
+            deviceCallback = new android.media.AudioDeviceCallback() {
+                @Override
+                public void onAudioDevicesAdded(android.media.AudioDeviceInfo[] added) {
+                    refreshNearEar();
+                }
+
+                @Override
+                public void onAudioDevicesRemoved(android.media.AudioDeviceInfo[] removed) {
+                    refreshNearEar();
+                }
+            };
+            manager.registerAudioDeviceCallback(deviceCallback, ui);
+        } catch (Exception error) {
+            android.util.Log.w("LeionRoom", "注册音频设备回调失败（插拔耳机不会自动刷新）：" + error);
+        }
+    }
+
+    /**
      * 按"要不要听 + 我此刻没在说话"决定really要不要收音频（4.91，4.97 起没有手动开关）。
      *
      * <p>幂等：状态没变就什么都不做（避免每次发言权刷新都重启播放器和重发一条 WS 消息）。
@@ -1078,7 +1155,10 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // 原来只在 `speakingTranslation` 期间暂停 —— 那只是"念的那两秒"，句间与合成延迟里
         // 原声照样在播，于是用户听到"葡语原声 + 中文朗读"叠在一起。
         boolean mutedByTts = ttsMode == TTS_READ_TRANSLATION;
-        boolean shouldPlay = listenWanted && !holding && !speakingTranslation && !mutedByTts;
+        // 5.164：能不能出声由参会方式决定 —— 面对面只认耳机/眼镜（不外放），远程允许外放。
+        boolean canPlay = AudioPolicy.allowsPlayback(attendRemote ? AudioPolicy.MODE_REMOTE
+                : AudioPolicy.MODE_ONSITE, hasNearEar);
+        boolean shouldPlay = listenWanted && !holding && !speakingTranslation && !mutedByTts && canPlay;
         if (shouldPlay == listening) return;
         // 5.161：每次**真的**改变播放状态都留一行 —— 排查"听不到原声"时，
         // 这一行能立刻分清是"我们没去播"还是"服务端没发音频"。

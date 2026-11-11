@@ -182,11 +182,12 @@ export async function runTtsHttpSuite({ it, check }) {
     }
   })
 
-  await it('5.157：手机侧路由规则（中文恒本地 / 葡英按开关 / 关掉全本地）', () => {
+  await it('5.164：手机侧路由规则（三门都走服务器 / 关掉开关全本地）', () => {
     const router = readFileSync(join(JAVA_DIR, 'TtsRouter.java'), 'utf-8')
-    check('中文恒走本地（即使开了服务器）',
-      /if \(code\.startsWith\("zh"\)\) return false;/.test(router))
-    check('葡语/英语走服务器', /code\.startsWith\("pt"\) \|\| code\.startsWith\("en"\)/.test(router))
+    // 5.164：中文**也**走服务器了 —— 部分机型没有中文语音包，统一由服务器念少一个变量。
+    check('中文走服务器（原来留本地，5.164 起改了）',
+      /return code\.startsWith\("zh"\) \|\| code\.startsWith\("pt"\) \|\| code\.startsWith\("en"\);/.test(router))
+    check('不再有"中文恒走本地"那条短路', !/if \(code\.startsWith\("zh"\)\) return false;/.test(router))
     check('关掉开关就全走本地', /public static boolean serverFor\(String lang, boolean useServer\) \{\s*\n\s*if \(!useServer\) return false;/.test(router))
     check('偏好键是公开常量（界面与合成器共用一个字符串）',
       /public static final String PREF_USE_SERVER = "ttsUseServer";/.test(router))
