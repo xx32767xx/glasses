@@ -41,7 +41,7 @@ import { readJson, writeJsonAtomic } from '../lib/store.mjs'
 import { listLibraries, loadLibrary, loadCategories, saveLibrary, importLibraries } from '../lib/libraries.mjs'
 import { createRequest, decideRequest, hideRequest, loadRequests, pendingOf, visibleOfMine, withdrawRequest } from '../lib/requests.mjs'
 import { writeMeetingSnapshot } from '../lib/snapshot.mjs'
-import { closeRoomByAdmin, createInterpreterSession, createRoom, hideHistoryForUser, isRoomClosed, joinRoom, leaveRoom, listHistory, listHistoryForAdmin, listMembers, listRoomTranscript, listRooms, purgeHistory, removeMember, roomByCode, roomById, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
+import { closeRoomByAdmin, createInterpreterSession, createRoom, hideHistoryForUser, isRoomClosed, joinRoom, leaveRoom, listHistory, listHistoryForAdmin, listMembers, listRoomTranscript, listRooms, purgeHistory, removeMember, roomByCode, roomById, roomLabels, roomLibraries, setRoomLibraries } from '../lib/rooms.mjs'
 import { FLOOR_LOCKED_LEASE_MS, FLOOR_LEASE_MS, floorState, forceReleaseFloor, heartbeatFloor, releaseFloor, setFloorLock, sweepExpiredFloor, takeFloor } from '../lib/floor.mjs'
 import { publishMeetingTerms } from '../lib/meeting-terms.mjs'
 import { appendUtterance } from '../lib/db.mjs'
@@ -517,13 +517,27 @@ export async function handleOrg(input) {
   if (segments[1] === 'audio' && segments[2] === 'usage' && method === 'GET') {
     const usage = audioUsage(root)
     const limits = typeof input.audioLimits === 'function' ? input.audioLimits() : {}
+    // 5.172：磁盘上的目录名是**内部房间 id**，管理员认不出是哪一场 —— 附上 6 位邀请码和房名。
+    // 查不到就留空（那种目录多半是历史清理后残留的），界面会写明"数据库里没有这场"。
+    const labels = roomLabels(root)
+    const rooms = usage.rooms.map((one) => {
+      const label = labels[one.roomId]
+      return {
+        ...one,
+        code: label ? label.code : '',
+        name: label ? label.name : '',
+        kind: label ? label.kind : '',
+        active: label ? label.active : null,
+        known: Boolean(label),
+      }
+    })
     return {
       status: 200,
       json: {
         ok: true,
         totalBytes: usage.totalBytes,
         legacyBytes: usage.legacyBytes,
-        rooms: usage.rooms,
+        rooms,
         limits,
         note: '删录音只腾磁盘，不动字幕与历史（那些在「会议历史」里）',
       },

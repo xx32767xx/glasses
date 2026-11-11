@@ -283,6 +283,18 @@ export async function runSegmentationSuite({ it, check }) {
     check('每场会一个删除按钮 + 二次确认',
       /删掉这场录音/.test(html) && /confirm\(hint\)/.test(html))
     check('界面说清只腾磁盘、不动字幕与历史', /只腾磁盘/.test(html))
+
+    // 5.172：管理员是拿**邀请码**去手机上找那场会的，不是内部房间 id
+    check('API 把磁盘目录名翻成邀请码/房名（含已散会的会）',
+      /roomLabels\(root\)/.test(api) && /code: label \? label\.code/.test(api)
+      && /known: Boolean\(label\)/.test(api))
+    check('表头写的是邀请码（不是"房间 id"）', /会议（邀请码）/.test(html))
+    check('表格主行显示邀请码，id 只是次要信息',
+      /<code style="font-size:16px;letter-spacing:1px">' \+ escHtml\(code\)/.test(html)
+      && /（数据库里没有这场）/.test(html))
+    check('房名/邀请码进 innerHTML 前要转义（房名是用户自己起的）',
+      /function escHtml/.test(html) && /escHtml\(name\)/.test(html))
+    check('删除确认里用的是邀请码（不是裸 id）', /purgeAudio\(room\.roomId, room\.bytes, roomLabel\(room\)\)/.test(html))
   })
 
   // 5.169：用户要「不用录音对表也能看出延迟落在哪一段」。四段各自留痕：

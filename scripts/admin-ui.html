@@ -656,7 +656,7 @@ async function loadAudio() {
       humanMb(data.totalBytes) + (limits.publicTotalBytes ? ' / 上限 ' + humanMb(limits.publicTotalBytes) : '');
     host.innerHTML = '';
     const table = document.createElement('table');
-    table.innerHTML = '<thead><tr><th>会议</th><th>占用</th><th>音轨</th><th></th></tr></thead>';
+    table.innerHTML = '<thead><tr><th>会议（邀请码）</th><th>占用</th><th>音轨</th><th></th></tr></thead>';
     const body = document.createElement('tbody');
     const rooms = data.rooms || [];
     if (rooms.length === 0) {
@@ -667,14 +667,14 @@ async function loadAudio() {
     for (const room of rooms) {
       const tr = document.createElement('tr');
       const tracks = (room.tracks || []).map((one) => one.speaker + ' ' + humanMb(one.bytes)).join('、');
-      tr.innerHTML = '<td><code>' + room.roomId + '</code></td>'
+      tr.innerHTML = '<td>' + roomTitle(room) + '</td>'
         + '<td>' + humanMb(room.bytes) + '</td>'
         + '<td class="mono" style="font-size:12px;opacity:.8">' + tracks + '</td>';
       const cell = document.createElement('td');
       const button = document.createElement('button');
       button.className = 'btn ghost';
       button.textContent = '删掉这场录音';
-      button.onclick = () => purgeAudio(room.roomId, room.bytes);
+      button.onclick = () => purgeAudio(room.roomId, room.bytes, roomLabel(room));
       cell.appendChild(button);
       tr.appendChild(cell);
       body.appendChild(tr);
@@ -692,14 +692,48 @@ async function loadAudio() {
   }
 }
 
-async function purgeAudio(roomId, bytes) {
-  const hint = '删掉 ' + roomId + ' 的录音（' + humanMb(bytes) + '）？\n\n'
+// 5.172：管理员是拿**邀请码**去手机上找那场会的，不是内部房间 id。
+// 所以表格主行显示邀请码（大、等宽、和手机上一样），房名跟在后面；
+// id 只作为次要信息留着 —— 数据库里查不到这一场时，它是唯一能对上的线索。
+function roomLabel(room) {
+  if (!room || !room.known) return '（未知会议）' + (room && room.roomId ? ' ' + room.roomId : '');
+  const code = String(room.code || '');
+  const name = String(room.name || '');
+  return (code ? code + ' ' : '') + (name || '未命名');
+}
+
+function roomTitle(room) {
+  const code = String((room && room.code) || '');
+  const name = String((room && room.name) || '');
+  let tag = '';
+  if (room && room.known !== true) tag = ' <span style="opacity:.6;font-size:12px">（数据库里没有这场）</span>';
+  else if (room && room.kind === 'interpreter') tag = ' <span style="opacity:.6;font-size:12px">（同传翻译官）</span>';
+  else if (room && room.active === false) tag = ' <span style="opacity:.6;font-size:12px">（已散会）</span>';
+  const head = code
+    ? '<code style="font-size:16px;letter-spacing:1px">' + escHtml(code) + '</code>'
+    : '<code style="font-size:12px">' + escHtml(String((room && room.roomId) || '')) + '</code>';
+  const sub = code
+    ? '<div style="font-size:12px;opacity:.75">' + (escHtml(name) || '未命名') + '</div>'
+    : '';
+  return head + tag + sub;
+}
+
+/** 房名来自数据库（用户自己起的），进 innerHTML 之前必须转义。 */
+function escHtml(text) {
+  return String(text == null ? '' : text)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+async function purgeAudio(roomId, bytes, label) {
+  const who = label || roomId;
+  const hint = '删掉 ' + who + ' 的录音（' + humanMb(bytes) + '）？\n\n'
     + '只删音频文件：字幕、转写全文、会议记录都不动，但之后无法再回头核对原声。';
   if (!confirm(hint)) return;
   try {
     const data = await api('/org/audio/purge', { method: 'POST', body: { roomId } });
     document.getElementById('audioWarn').textContent =
-      '✅ 已删除 ' + roomId + ' 的录音，释放 ' + humanMb(data.freedBytes);
+      '✅ 已删除 ' + who + ' 的录音，释放 ' + humanMb(data.freedBytes);
     await loadAudio();
   } catch (error) {
     document.getElementById('audioWarn').textContent = '删除失败：' + error.message;

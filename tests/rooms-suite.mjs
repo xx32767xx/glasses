@@ -2,7 +2,7 @@
 import { mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AUDIO_ROOM_TTL_MS, closeRoomByAdmin, createInterpreterSession, createRoom, interpreterPartnerLang, isRoomClosed, joinRoom, leaveRoom, listHistory, listMembers, listRooms, normalizeHearLangs, roomByCode, roomForFrame, roomLibraries, listRoomTranscript, resolveFrameRoom, setMemberHearLangs, setRoomLibraries, roomById, removeMember } from '../lib/rooms.mjs'
+import { AUDIO_ROOM_TTL_MS, closeRoomByAdmin, createInterpreterSession, createRoom, interpreterPartnerLang, isRoomClosed, joinRoom, leaveRoom, listHistory, listMembers, listRooms, normalizeHearLangs, roomByCode, roomForFrame, roomLabels, roomLibraries, listRoomTranscript, resolveFrameRoom, setMemberHearLangs, setRoomLibraries, roomById, removeMember } from '../lib/rooms.mjs'
 import { appendUtterance } from '../lib/db.mjs'
 import { floorState, takeFloor } from '../lib/floor.mjs'
 
@@ -313,6 +313,41 @@ export async function runRoomsSuite({ it, check }) {
         JSON.stringify(normalizeHearLangs('', 'en-US')) === JSON.stringify(['en-US']))
       check('说话语言与读语言都空 → 空数组（不硬塞一个）',
         JSON.stringify(normalizeHearLangs('', '')) === '[]')
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true })
+    }
+  })
+
+  // 5.172：管理台「音频占用」是按**磁盘目录**列出来的，而目录名是内部房间 id ——
+  // 管理员要认的是手机上那个 6 位邀请码。这一节钉住这层翻译。
+  await it('5.172：房间里翻得出邀请码（已散会的也要在，录音散会后还在）', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'labels-'))
+    try {
+      const room = createRoom(dataDir, { name: '圣保罗洽谈', host: 'boss', code: '654321' }).room
+      const labels = roomLabels(dataDir)
+      check('进行中的会：邀请码与房名都对得上',
+        labels[room.id]?.code === '654321' && labels[room.id]?.name === '圣保罗洽谈'
+        && labels[room.id]?.active === true, JSON.stringify(labels[room.id]))
+
+      // 散会（发起者退出）→ 仍然查得到，只是 active:false
+      leaveRoom(dataDir, { roomId: room.id, username: 'boss' })
+      const after = roomLabels(dataDir)
+      check('已散会的会仍然查得到（否则那场的录音就没人认得）',
+        after[room.id]?.code === '654321' && after[room.id]?.active === false,
+        JSON.stringify(after[room.id]))
+      check('listRooms 这时候已经查不到了（所以不能拿它来翻）',
+        listRooms(dataDir).every((one) => one.id !== room.id))
+
+      // 同传翻译官会话：同表，但类型要能看出来（界面上标「同传翻译官」）
+      const session = createInterpreterSession(dataDir, { host: 'ana', lang: 'zh-CN' }).session
+      check('翻译官会话标出 kind=interpreter',
+        roomLabels(dataDir)[session.id]?.kind === 'interpreter', JSON.stringify(roomLabels(dataDir)[session.id]))
+
+      // 查不到的房间（历史清理后的残留目录）
+      check('查不到就给 undefined（调用方据此显示"数据库里没有这场"）',
+        roomLabels(dataDir)['room-zzz-remnant'] === undefined)
+      check('没有数据库的数据目录也不炸（只跑转发时）',
+        JSON.stringify(roomLabels(mkdtempSync(join(tmpdir(), 'nodb-')))) === '{}')
     } finally {
       rmSync(dataDir, { recursive: true, force: true })
     }
