@@ -2667,6 +2667,8 @@ def run_queue_consumer(args, np, pool):
             if got is None:
                 continue
             meta, audio = got
+            # 5.169：延迟账要用"这一段什么时候被取走"（排队的终点）
+            picked_at_ms = int(time.time() * 1000)
             waited_ms_max = max(waited_ms_max, int(time.time() * 1000) - int(meta.get("queuedAt") or 0))
             language = meta.get("lang") or args.language
             # 5.148：**这一场（建房时）冻结的识别策略**优先于全局表。
@@ -2834,6 +2836,23 @@ def run_queue_consumer(args, np, pool):
                       f" → {seconds:.1f}s 出{'字' if has_cjk(text) else '词'} {units}"
                       f"，耗时 {elapsed:.2f}s",
                       file=sys.stderr, flush=True)
+                # 5.169：**延迟账**（用户要求：不用录音对表也能看出时间花在哪一段）。
+                # 切句那一段这里量不到（它是"等静音 / 等到上限"，发生在切句进程里），
+                # 所以把**配置值**写出来 —— 一眼就知道该不该去管理台调小。
+                try:
+                    queue_ms = max(0, picked_at_ms - int(meta.get("queuedAt") or picked_at_ms))
+                    seg_ms = int(meta.get("ms") or 0)
+                    # 切句参数取"命令行 + 全局旋钮"的合成值（策略表里的按语种覆盖是少数情况，不在这里猜）
+                    global_seg = load_global_segmentation(getattr(args, "data_dir", None))
+                    silence_ms = global_seg.get("silence_ms", args.silence_ms)
+                    max_ms = global_seg.get("max_speech_ms", args.max_speech_ms)
+                    print(f"[延迟] 房间 {meta.get('room')}：音频 {seg_ms / 1000.0:.1f}s"
+                          f"｜排队 {queue_ms / 1000.0:.2f}s｜识别 {elapsed:.2f}s"
+                          f"｜切句 silence={silence_ms}ms/max={max_ms}ms",
+                          file=sys.stderr, flush=True)
+                except Exception as error:                # noqa: BLE001
+                    print(f"[延迟] 记不了这一段（{type(error).__name__}: {error}）",
+                          file=sys.stderr, flush=True)
             processed += 1
             # ⚠️ 处理完就删：队列目录同时是"待处理清单"，删掉才算消费完。
             for suffix in (".pcm", QUEUE_META_SUFFIX):

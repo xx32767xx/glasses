@@ -1102,6 +1102,16 @@ export async function startRelay(rawOptions = {}) {
   }
 
   function publishFrame(frame, roomHint = '') {
+    // 5.169：**延迟账的最后一段** —— 帧从"大脑写出"到"我们推给手机"隔了多久。
+    // 帧里自带 `at`（大脑写这一帧的时刻），与本机此刻相减 = 网络/轮询那一段的耗时。
+    // 只在**定稿**上打：增量帧太密，打出来纯粹刷屏。
+    if (frame !== null && typeof frame === 'object' && frame.partial !== true
+      && typeof frame.at === 'string' && frame.at !== '') {
+      const wroteAt = Date.parse(frame.at)
+      if (Number.isFinite(wroteAt)) {
+        debug(`[延迟] 帧 #${state.seq + 1}（${frame.lang ?? '?'}）大脑写出→推送 ${Date.now() - wroteAt} ms`)
+      }
+    }
     // 5.121：一帧带多种译文（`texts`）时，先**按语言拆开**再走后面那套逻辑。
     //
     // 为什么在这里拆：总线文件是"整文件覆盖 + 60ms 轮询"，而大脑那边几种语言的译文

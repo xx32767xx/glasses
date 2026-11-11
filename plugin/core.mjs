@@ -2168,6 +2168,8 @@ export function createInterpreter(ctx, rawConfig, deps) {
       await refreshTerms()
       state.translating = true
       let partialsPushed = 0
+      // 5.169：延迟账要"翻译这一段花了多久"（从发起模型调用到拿到整段译文）
+      const translateStartedAt = Date.now()
       const result = await translator.translate({
         text: source,
         from,
@@ -2222,6 +2224,11 @@ export function createInterpreter(ctx, rawConfig, deps) {
 
       // ★ 热词归一：**译文出来后、上屏之前**做一次（docs/15 §7.1 / §14.6）
       //   零模型调用、纯字符串；没有表或开关关着时原样返回（行为逐字不变）。
+      // 5.169：翻译这一段花了多久（延迟账的最后一段；与识别那行合起来，四段就齐了）
+      if (typeof translateStartedAt === 'number') {
+        console.log('[leion-pro] 翻译耗时 ' + (Date.now() - translateStartedAt) + ' ms（'
+          + from + '→' + to + '，' + String(result.text || '').length + ' 字）')
+      }
       const normalized = applyTerms(result.text, to)
       await logTermsEvents(normalized.events, 'final')
       // ★ 热词观测（docs/15 §17）：提到了名字、译文却没写出规范写法 → 记一笔（不改字幕）。

@@ -216,6 +216,30 @@ export async function runSegmentationSuite({ it, check }) {
       !printed.includes('nope') && printed.includes('silence_ms'), printed.slice(-200))
   })
 
+  // 5.169：用户要「不用录音对表也能看出延迟落在哪一段」。四段各自留痕：
+  // 切句（配置值）｜排队｜识别（python 那行账）｜翻译（大脑）｜推送（relay）。
+  await it('5.169：四段延迟各自留痕（切句/排队/识别/翻译/推送）', () => {
+    const python = readFileSync(join(ROOT, 'bridge', 'whisper_stream.py'), 'utf-8')
+    const plugin = readFileSync(join(ROOT, 'plugin', 'core.mjs'), 'utf-8')
+    const relay = readFileSync(join(ROOT, 'relay', 'lan-relay.mjs'), 'utf-8')
+
+    check('识别侧打一行延迟账（音频/排队/识别/切句参数）',
+      /\[延迟\] 房间/.test(python) && /排队 /.test(python) && /切句 silence=/.test(python))
+    check('排队耗时的起点是这一段被取走的时刻', /picked_at_ms/.test(python))
+    check('切句参数取命令行 + 全局旋钮的合成值（不猜）',
+      /load_global_segmentation\(getattr\(args, "data_dir"/.test(python))
+    check('记不了也不拖停识别（包在 try 里并留一行）', /记不了这一段/.test(python))
+
+    check('大脑打翻译耗时', /翻译耗时 /.test(plugin) && /translateStartedAt/.test(plugin))
+    check('翻译耗时的起点在发起模型调用之前',
+      /const translateStartedAt = Date\.now\(\)[\s\S]{0,200}?translator\.translate\(/.test(plugin))
+
+    check('转发打「大脑写出 → 推送」的间隔（用帧自带的 at）',
+      /大脑写出→推送/.test(relay) && /Date\.parse\(frame\.at\)/.test(relay))
+    check('只在定稿上打（增量帧太密，打出来是刷屏）',
+      /frame\.partial !== true[\s\S]{0,400}?大脑写出→推送/.test(relay))
+  })
+
   await it('5.167：管理台有这块面板（输入框 + 校验 + 保存 + 恢复缺省）', () => {
     const html = readFileSync(join(ROOT, 'scripts', 'admin-ui.html'), 'utf-8')
     check('有面板', /id="segPanel"/.test(html))
