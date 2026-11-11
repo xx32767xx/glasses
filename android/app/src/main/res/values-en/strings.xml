@@ -144,10 +144,10 @@
     <string name="attend_mode_onsite">In person</string>
     <string name="attend_mode_onsite_on">In person ✓</string>
     <string name="attend_mode_remote">Remote</string>
-        <string name="attend_mode_onsite_no_speaker">In person (no speaker)</string>
-        <string name="attend_mode_onsite_no_speaker_on">In person ✓ no speaker</string>
-        <string name="attend_mode_remote_speaker">Remote (speaker OK)</string>
-        <string name="attend_mode_remote_speaker_on">Remote ✓ speaker OK</string>
+        <string name="attend_mode_onsite_no_speaker">In person\nno speaker</string>
+        <string name="attend_mode_onsite_no_speaker_on">In person ✓\nno speaker</string>
+        <string name="attend_mode_remote_speaker">Remote\nspeaker OK</string>
+        <string name="attend_mode_remote_speaker_on">Remote ✓\nspeaker OK</string>
         <string name="room_no_earphone_warn">No earphone or glasses · speaker muted</string>
     <string name="attend_mode_remote_on">Remote ✓</string>
     <string name="attend_onsite_no_speaker">In person means no loudspeaker playback (glasses or earphones pick up the sound) — device connect is not wired yet, so this choice is only recorded</string>

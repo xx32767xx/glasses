@@ -115,29 +115,37 @@
                     <TextView
                         android:id="@+id/joinModeOnsite"
                         android:layout_width="0dp"
-                        android:layout_height="@dimen/touch_min"
+                        android:minHeight="@dimen/touch_min"
+                        android:layout_height="wrap_content"
                         android:layout_weight="1"
                         android:background="@drawable/bg_pill"
                         android:clickable="true"
                         android:focusable="true"
                         android:gravity="center"
+                        android:maxLines="2"
+                        android:paddingTop="@dimen/space_gap_tiny"
+                        android:paddingBottom="@dimen/space_gap_tiny"
                         android:text="@string/attend_mode_onsite"
                         android:textColor="@color/ink"
-                        android:textSize="@dimen/text_body" />
+                        android:textSize="@dimen/text_secondary" />
 
                     <TextView
                         android:id="@+id/joinModeRemote"
                         android:layout_width="0dp"
-                        android:layout_height="@dimen/touch_min"
+                        android:minHeight="@dimen/touch_min"
+                        android:layout_height="wrap_content"
                         android:layout_marginStart="@dimen/space_gap_small"
                         android:layout_weight="1"
                         android:background="@drawable/bg_pill"
                         android:clickable="true"
                         android:focusable="true"
                         android:gravity="center"
+                        android:maxLines="2"
+                        android:paddingTop="@dimen/space_gap_tiny"
+                        android:paddingBottom="@dimen/space_gap_tiny"
                         android:text="@string/attend_mode_remote"
                         android:textColor="@color/ink"
-                        android:textSize="@dimen/text_body" />
+                        android:textSize="@dimen/text_secondary" />
                 </LinearLayout>
             </LinearLayout>
 

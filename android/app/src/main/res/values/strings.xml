@@ -455,10 +455,10 @@
     <string name="attend_mode_onsite">面对面</string>
     <string name="attend_mode_onsite_on">面对面 ✓</string>
     <string name="attend_mode_remote">远程</string>
-        <string name="attend_mode_onsite_no_speaker">面对面（不允许外放）</string>
-        <string name="attend_mode_onsite_no_speaker_on">面对面 ✓ 不允许外放</string>
-        <string name="attend_mode_remote_speaker">远程（允许外放）</string>
-        <string name="attend_mode_remote_speaker_on">远程 ✓ 允许外放</string>
+        <string name="attend_mode_onsite_no_speaker">面对面\n不允许外放</string>
+        <string name="attend_mode_onsite_no_speaker_on">面对面 ✓\n不允许外放</string>
+        <string name="attend_mode_remote_speaker">远程\n允许外放</string>
+        <string name="attend_mode_remote_speaker_on">远程 ✓\n允许外放</string>
         <string name="room_no_earphone_warn">未连接耳机或眼镜 · 不外放</string>
     <string name="attend_mode_remote_on">远程 ✓</string>
     <string name="attend_onsite_no_speaker">面对面时不外放声音（用眼镜或耳机收音）—— 设备那一层还没接上，先记下这个选择</string>

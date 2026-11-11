@@ -1734,6 +1734,36 @@ export async function runAndroidOrderSuite({ it, check }) {
       check(`${name}不再有那行小字说明`, !/@string\/attend_mode_hint/.test(xml))
       check(`${name}的两个选项还在`, ids.every((id) => xml.includes(`@+id/${id}`)))
     }
+    // 5.165：**葡语下那两颗胶囊文字太长，排版出问题**（用户实测）。
+    // 根因：文案是单行的「Presencial (sem alto-falante)」，塞进 48dp 高的等宽胶囊里会截断/换行重叠。
+    // 修法：文案拆成两行（第一行=方式，第二行=外放策略），胶囊允许 maxLines=2 并降一档字号。
+    // 判断依据是**三语都必须带换行**：只要有一种语言是单行长句，那颗胶囊就还会坏。
+    for (const dir of ['values', 'values-en', 'values-pt-rBR']) {
+      const xml = readFileSync(join(resDir, dir, 'strings.xml'), 'utf-8')
+      const pick = (key) => {
+        const m = new RegExp(`<string name="${key}">([^<]*)</string>`).exec(xml)
+        return m === null ? '' : m[1]
+      }
+      for (const key of ['attend_mode_onsite_no_speaker', 'attend_mode_onsite_no_speaker_on',
+        'attend_mode_remote_speaker', 'attend_mode_remote_speaker_on']) {
+        check(`${dir} 的 ${key} 是两行（否则葡语会撑破胶囊）`, pick(key).includes('\\n'), pick(key))
+      }
+    }
+    for (const [name, layoutFile, ids] of [
+      ['创建页', 'page_create_room.xml', ['createModeOnsite', 'createModeRemote']],
+      ['加入页', 'page_join_room.xml', ['joinModeOnsite', 'joinModeRemote']],
+    ]) {
+      const xml = readFileSync(join(resDir, 'layout', layoutFile), 'utf-8')
+      for (const id of ids) {
+        const at = xml.indexOf(`@+id/${id}`)
+        const block = at < 0 ? '' : xml.slice(at, at + 700)
+        check(`${name}的 ${id} 允许两行且不写死高度`,
+          /android:maxLines="2"/.test(block)
+          && /android:minHeight="@dimen\/touch_min"/.test(block)
+          && !/android:layout_height="@dimen\/touch_min"/.test(block), block.slice(0, 120))
+      }
+    }
+
     for (const dir of ['values', 'values-en', 'values-pt-rBR']) {
       const xml = readFileSync(join(resDir, dir, 'strings.xml'), 'utf-8')
       check(`${dir} 有三条外放策略文案 + 侧边栏告警`,
