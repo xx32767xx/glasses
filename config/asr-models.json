@@ -12,11 +12,11 @@
     "",
     "字段说明（切句侧，单位毫秒）：",
     "  silence_ms         说完多久算一句结束（越小字幕越快、越容易切碎；缺省 800）",
-    "  min_speech_ms      一段话至少要有多少语音才交出去（太小会产胡话碎片；缺省 500）",
-    "  max_speech_ms      一段最长多少（超了在内部停顿处断开；缺省 30000）",
-    "  short_utterance_ms 攒到多久才算“够长”，够长后用正常静音判定收句（缺省 800）",
-    "  short_silence_ms   还没攒够时，要多等多久静音才收句（缺省 1100）",
-    "  cut_pause_ms       到上限断句时，至少要找到多长的内部停顿才肯切（缺省 200）",
+    "  min_speech_ms      一段话至少要有多少语音才交出去（太小会产胡话碎片）",
+    "  max_speech_ms      一段最长多少（超了在内部停顿处断开；太长会让模型“补全”没听清的部分）",
+    "  short_utterance_ms 攒到多久才算“够长”，够长后用正常静音判定收句",
+    "  short_silence_ms   还没攒够时，要多等多久静音才收句",
+    "  cut_pause_ms       到上限断句时，至少要找到多长的内部停顿才肯切",
     "",
     "字段说明（识别侧）：",
     "  model         faster-whisper 的尺寸名（large-v3 / medium / small）或本地目录绝对路径",
@@ -33,31 +33,96 @@
     "  三者都可以写在 default / strategies[名字] / languages[语种] 任意一层，逐语种覆盖。",
     "  改完**下一段生效**（两侧都按 mtime 热读），不用重启。",
     "",
-    "下面这份**等价于当前产线**：照抄不会改变任何行为，只作为改写的起点。",
+    "══ 5.182：三个语种各一套策略（用户要求「手动去调」）══",
+    "为什么要拆成三份而不是共用 default：三种语言的毛病不一样 ——",
+    "  中文：最爱出繁体、也最容易在段末编话（“感谢观看”“请不吝点赞”），所以门槛更严；",
+    "  英语：口语连读多、碎片多，但不太编话；",
+    "  葡语：巴西口音连读严重，短段丢字比编话更常见。",
+    "三份现在都是「同一套保守值」起步（min_speech 700 / max_speech 8000），",
+    "**接下来按语种各自调**：改哪一份只影响那一种语言，互不牵扯。",
+    "看效果就用会议记录（<data-dir>/logs/rooms/）里每句的耗时与原文，或者跑 asr-eval 的冻结包。",
+    "",
+    "⚠️ compute_type 现在是 float16：这是**有 FP16 张量核的新卡**（V100S 一类）该用的值，",
+    "中文掉字比 int8_float32 明显更少。老机器（P40/Pascal）没有 FP16 张量核，",
+    "必须写 int8_float32，否则每次启动都会被自动纠正并打一行警告。",
+    "",
     "策略名会随数据往下走（队列 → 收件箱 → 日志），所以做 A/B 时请**按名字分组**看结果。",
-    "5.149：删掉了 en-tiny / en-fast / en-accurate 三条 —— tiny 是\"故意很差\"的验收对照，",
-    "fast/accurate 只是切句窗口变体（不是模型）。三条的历史定义在 git 里；要用就 --only 加回来。"
+    "历史上删过的策略（en-tiny / en-fast / en-accurate）定义都在 git 里，要用就加回来。"
   ],
   "version": 2,
   "default": {
     "strategy": "default",
     "model": "large-v3",
-    "_compute_type_note": "5.110：产线那台是 Tesla P40（Pascal），**没有 FP16 张量核心**，所以写 int8_float32。原样抄成 float16 会在每次启动被自动纠正并打一行警告（能跑，但那是硬件能力问题不该天天报）。换成 A 卡 / 新卡可以改回 float16。",
-    "compute_type": "int8_float32",
+    "_compute_type_note": "5.182：新卡（有 FP16 张量核）用 float16。老机器 P40/Pascal 必须改成 int8_float32 —— 那是硬件能力，不是偏好。",
+    "compute_type": "float16",
     "beam_size": 5,
     "segmentation": {
       "silence_ms": 800,
-      "min_speech_ms": 500,
-      "max_speech_ms": 30000,
+      "min_speech_ms": 700,
+      "max_speech_ms": 8000,
       "short_utterance_ms": 800,
       "short_silence_ms": 1100,
       "cut_pause_ms": 200
     }
   },
   "strategies": {
+    "zh-steady": {
+      "note": "中文：起步值。毛病是繁体与段末编话，所以 min_speech 抬到 700（把 100~600ms 的碎片挡在识别之前）、max_speech 压到 8000（长段里模型更爱“补全”）。要更严就 min_speech_ms 800~900；要更快就 silence_ms 700。",
+      "model": "large-v3",
+      "compute_type": "float16",
+      "beam_size": 5,
+      "segmentation": {
+        "silence_ms": 800,
+        "min_speech_ms": 700,
+        "max_speech_ms": 8000,
+        "short_utterance_ms": 800,
+        "short_silence_ms": 1100,
+        "cut_pause_ms": 200
+      },
+      "langs": [
+        "zh-CN"
+      ]
+    },
+    "en-steady": {
+      "note": "英语：起步值。口语连读多、碎片多，但不太编话 —— 所以与中文同一起点，先别急着收紧；真嫌慢就把 silence_ms 降到 700。",
+      "model": "large-v3",
+      "compute_type": "float16",
+      "beam_size": 5,
+      "segmentation": {
+        "silence_ms": 800,
+        "min_speech_ms": 700,
+        "max_speech_ms": 8000,
+        "short_utterance_ms": 800,
+        "short_silence_ms": 1100,
+        "cut_pause_ms": 200
+      },
+      "langs": [
+        "en-US"
+      ]
+    },
+    "pt-steady": {
+      "note": "葡语（巴西）：起步值。连读严重，短段丢字比编话更常见 —— 如果发现“少词”，把 min_speech_ms 退回 500~600；如果发现整句莫名其妙，再往 800 收。",
+      "model": "large-v3",
+      "compute_type": "float16",
+      "beam_size": 5,
+      "segmentation": {
+        "silence_ms": 800,
+        "min_speech_ms": 700,
+        "max_speech_ms": 8000,
+        "short_utterance_ms": 800,
+        "short_silence_ms": 1100,
+        "cut_pause_ms": 200
+      },
+      "langs": [
+        "pt-BR"
+      ]
+    },
     "en-turbo": {
-      "note": "英语候选（5.58）：large-v3-turbo，官方说快 3-4 倍、准确率略降。只改模型、不动切句 —— 这样和 default 的差才是「模型」的差。",
-      "model": "large-v3-turbo"
+      "note": "英语候选（5.58）：large-v3-turbo，官方说快 3-4 倍、准确率略降。只改模型、不动切句 —— 这样和 en-steady 的差才是「模型」的差。",
+      "model": "large-v3-turbo",
+      "langs": [
+        "en-US"
+      ]
     },
     "en-distil": {
       "note": "英语候选（5.58）：distil-large-v3（纯英文蒸馏版，约 756M）。同样是只改模型。",
@@ -76,7 +141,7 @@
       ]
     },
     "en-parakeet-gpu": {
-      "note": "同一份 Parakeet 的 **GPU 路线**（5.77 / 5.147）：NeMo 2.x + torch，走 CUDA。2026-11-09 换到 **Tesla V100S 32G（Volta，有 FP16 张量核）**，所以 compute_type 写 fp16 —— P40 那台是 Pascal，必须 fp32，别照抄老机器的值。需要 pip install -U \"nemo_toolkit[asr]\"（装之前把当前 torch 版本钉住，别让它顺手升级）。装完先跑 `python scripts/parakeet-gpu-doctor.py --wav <16k 单声道 wav>` 验一遍再切策略。",
+      "note": "同一份 Parakeet 的 **GPU 路线**（5.77 / 5.147）：NeMo 2.x + torch，走 CUDA。有 FP16 张量核的卡（V100S 一类）写 fp16；P40（Pascal）必须 fp32，别照抄。需要 pip install -U \"nemo_toolkit[asr]\"（装之前把当前 torch 版本钉住）。装完先跑 `python scripts/parakeet-gpu-doctor.py --wav <16k 单声道 wav>` 验一遍再切策略。",
       "engine": "parakeet",
       "runtime": "nemo",
       "model": "nvidia/parakeet-tdt-0.6b-v2",
@@ -103,21 +168,20 @@
       "langs": [
         "pt-BR"
       ]
-    },
-    "zh-steady": {
-      "note": "中文：与产线一致（留个名字，方便在日志里一眼看出这场走的是哪套）"
     }
   },
   "languages": {
     "zh-CN": {
-      "strategy": "zh-steady"
+      "strategy": "zh-steady",
+      "note": "5.182：中文单独一套，调它不会碰到英语/葡语"
     },
     "pt-BR": {
-      "strategy": "default"
+      "strategy": "pt-steady",
+      "note": "5.182：葡语单独一套。要试云端就改成 \"strategy\": \"pt-funasr\""
     },
     "en-US": {
-      "strategy": "default",
-      "note": "要 A/B 时把这一行改成 \"strategy\": \"en-fast\" 或 \"en-accurate\"，保存即生效"
+      "strategy": "en-steady",
+      "note": "5.182：英语单独一套。要 A/B 模型就把这一行改成 \"en-turbo\" / \"en-distil\" / \"en-parakeet\""
     }
   }
 }

@@ -278,5 +278,29 @@ export async function runAsrModelsApiSuite({ it, check }) {
       ['en-parakeet', 'en-parakeet-gpu', 'en-tencent', 'pt-funasr', 'zh-steady']
         .every((name) => example.strategies[name] !== undefined),
       JSON.stringify(Object.keys(example.strategies)))
+
+    // 5.182：三个语种各一套策略（用户要求"手动去调，互不牵扯"）。
+    //   起手值一样（min_speech 700 / max_speech 8000 / float16），但**必须分成三条**：
+    //   只在一条里调，才知道改的是哪种语言的效果。
+    const per = { 'zh-CN': 'zh-steady', 'en-US': 'en-steady', 'pt-BR': 'pt-steady' }
+    for (const [lang, name] of Object.entries(per)) {
+      const layer = example.strategies[name]
+      check(`${lang} 有自己的策略 ${name}`, layer !== undefined, JSON.stringify(Object.keys(example.strategies)))
+      check(`${name} 自己写明了切句参数（不靠继承，方便按语种单独调）`,
+        layer?.segmentation?.min_speech_ms === 700 && layer?.segmentation?.max_speech_ms === 8000,
+        JSON.stringify(layer?.segmentation))
+      check(`${lang} 指向 ${name}`, example.languages[lang]?.strategy === name,
+        JSON.stringify(example.languages[lang]))
+    }
+    check('三条策略都写死 float16（换卡之后不该再是 int8_float32）',
+      Object.values(per).every((name) => String(example.strategies[name].compute_type).toLowerCase() === 'float16'),
+      JSON.stringify(Object.fromEntries(Object.values(per).map((name) => [name, example.strategies[name].compute_type]))))
+    check('缺省层也跟着改用 float16（老机器要在部署时改回 int8_float32）',
+      String(example.default.compute_type).toLowerCase() === 'float16', String(example.default.compute_type))
+    check('三条策略各自绑一个语种（A/B 时不会串台）',
+      example.strategies['zh-steady'].langs?.includes('zh-CN')
+      && example.strategies['en-steady'].langs?.includes('en-US')
+      && example.strategies['pt-steady'].langs?.includes('pt-BR'),
+      JSON.stringify(Object.values(per).map((name) => example.strategies[name].langs)))
   })
 }

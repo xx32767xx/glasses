@@ -3932,10 +3932,15 @@ def main():
           "default=whisper/large-v3" in banner, banner)
     check("策略名写错时当场喊出来（不安静地按继承层跑）",
           "表里没有策略 'zh-steady'" in banner, banner)
-    check("真机那份示例表：pt-BR 现在就解析成 default（说明表里没有钉策略）",
-          "pt-BR=default → whisper/large-v3"
-          in whisper_stream.describe_asr_table(
-              json.loads((ROOT / "config" / "asr-models.json").read_text(encoding="utf-8")), cli5))
+    # 5.182：示例表改成"三个语种各钉一套策略"（用户要求手动分语种调）。
+    # 以前这条钉的是"pt-BR 没有钉策略"——那是历史事实，现在反过来：三语种都得钉上，
+    # 否则"只调中文"会误伤别的语言。
+    _example_banner = whisper_stream.describe_asr_table(
+        json.loads((ROOT / "config" / "asr-models.json").read_text(encoding="utf-8")), cli5)
+    check("真机那份示例表：三个语种各钉一套策略（zh/en/pt 互不牵扯）",
+          "zh-CN=zh-steady → whisper/large-v3" in _example_banner
+          and "en-US=en-steady → whisper/large-v3" in _example_banner
+          and "pt-BR=pt-steady → whisper/large-v3" in _example_banner, _example_banner)
     check("没有表时那行仍是人话（不退化成空串）",
           "没有模型表" in whisper_stream.describe_asr_table({}, cli5))
 
