@@ -168,7 +168,8 @@ export function isSafeRoomId(roomId) {
 /** 房间 id 的短名字（打日志用；完整 id 太长，三四个房间就挤满一行）。 */
 export function shortRoomId(roomId) {
   const text = String(roomId ?? '')
-  // `room-mvt9t5q9-vdkk` → `mvt9t5q9-vdkk`：去掉前缀，保留能区分的那段
+  // `room-mwd9acyp-0u2x` → `wd9acyp-0u2x`：去掉 `room-`，再取**后 12 位**
+  // （去掉前缀后正好 13 位时，首字母会被切掉 —— 日志里看到的短 id 就是这个规则的结果）
   return text.replace(/^room-/, '').slice(-12) || text
 }
 
