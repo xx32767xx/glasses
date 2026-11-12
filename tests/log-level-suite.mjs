@@ -44,13 +44,27 @@ export async function runLogLevelSuite({ it, check }) {
   await it('5.182b：start-multi / relay 都认这四档（生产那条命令不会再启动即崩）', async () => {
     const multi = await import('../scripts/start-multi.mjs')
     const relay = await import('../relay/lan-relay.mjs')
-    for (const level of LOG_LEVELS) {
-      check(`start-multi 接受 --log-level ${level}`,
-        multi.parseArgs(['--data-dir', 'var/x', '--log-level', level]).logLevel === level)
-      check(`relay 接受 --log-level ${level}`,
-        relay.parseArgs(['--data-dir', 'var/x', '--log-level', level]).logLevel === level)
+    // ⚠️ 5.181 的事故就是把 asr-worker / harness-side 漏了：
+    //   start-multi 传 quiet → 识别进程不认 → 「识别进程退出了」→ 整条链路停摆。
+    // 所以这四个**都得**在名单里，一个都不能少。
+    const worker = await import('../bridge/asr-worker.mjs')
+    const brain = await import('../scripts/harness-side.mjs')
+    const parsers = [
+      ['start-multi', (argv) => multi.parseArgs(argv)],
+      ['relay', (argv) => relay.parseArgs(argv)],
+      ['asr-worker', (argv) => worker.parseArgs(argv)],
+      ['harness-side', (argv) => brain.parseArgs(argv)],
+    ]
+    for (const [name, parse] of parsers) {
+      for (const level of LOG_LEVELS) {
+        const base = name === 'asr-worker'
+          ? ['--queue-dir', 'var/q', '--log-level', level]
+          : ['--data-dir', 'var/x', '--log-level', level]
+        check(`${name} 接受 --log-level ${level}`, parse(base).logLevel === level,
+          JSON.stringify(parse(base)))
+      }
     }
-    for (const parser of [multi.parseArgs, relay.parseArgs]) {
+    for (const [, parser] of parsers) {
       check('写错的档位仍然要报错（不是照单全收）', (() => {
         try {
           parser(['--data-dir', 'var/x', '--log-level', 'silen'])
@@ -60,6 +74,51 @@ export async function runLogLevelSuite({ it, check }) {
         }
       })())
     }
+  })
+
+  // 这条是本事故的"防复发"：不要在某个文件里手写一份档位名单。
+  // 规则：除了 lib/log-levels.mjs（唯一来源）与测试自己，任何地方出现"三档数组"都算错。
+  await it('5.182b：全仓库扫一遍 —— 不许再有手写的三档名单', async () => {
+    const { readdirSync } = await import('node:fs')
+    const { join: joinPath } = await import('node:path')
+    const offenders = []
+    const walk = (dir) => {
+      let names = []
+      try {
+        names = readdirSync(dir, { withFileTypes: true })
+      } catch {
+        return
+      }
+      for (const entry of names) {
+        const full = joinPath(dir, entry.name)
+        if (entry.isDirectory()) {
+          if (['node_modules', 'var', '.git', '.venv'].includes(entry.name)) continue
+          walk(full)
+          continue
+        }
+        if (/.(mjs|py)$/.test(entry.name) !== true) continue
+        // 唯一来源与测试自己除外
+        const rel = full.replace(/\\/g, '/').split('/').join('/')
+        if (rel.includes('/lib/log-levels.mjs') || rel.includes('/tests/log-level-suite.mjs')) continue
+        let text2 = ''
+        try {
+          text2 = readFileSync(full, 'utf-8')
+        } catch {
+          continue
+        }
+        // ⚠️ 四档写法 `["quiet", "summary", "detail", "trace"]` 里也含三档那串，
+        // 所以这里必须用否定后顾把"前面紧跟着 quiet"的排除掉。
+        const staleTs = /(?<!quiet', )'summary', 'detail', 'trace'/.test(text2)
+        const stalePy = /(?<!quiet", )"summary", "detail", "trace"/.test(text2)
+        const staleMsg = text2.includes('只能是 summary / detail / trace')
+        if (staleTs || stalePy || staleMsg) {
+          offenders.push(rel)
+        }
+      }
+    }
+    walk(ROOT)
+    check('没有文件还在用手写的三档名单（漏一处就等于生产上启动即崩）',
+      offenders.length === 0, offenders.join(' | '))
   })
 
   await it('5.182b：python 与大脑那边的名单与 JS 这份一致（不能 import，只能对账）', async () => {

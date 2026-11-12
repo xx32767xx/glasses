@@ -31,6 +31,7 @@ import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { assertLogLevel } from '../lib/log-levels.mjs'
 import { CHECKOUT } from '../lib/real-tools.mjs'
 import { ensureLoaderLinks } from '../lib/loader-links.mjs'
 import { buildComposition, LIVE_DATA_DIR, repoFile } from '../lib/composition.mjs'
@@ -118,12 +119,8 @@ export function parseArgs(argv) {
     const value = argv[index + 1]
     if (value === undefined || value.startsWith('--')) throw new Error(`--${key} 需要一个值`)
     index += 1
-    if (key === 'log-level') {
-      if (['summary', 'detail', 'trace'].includes(value) !== true) {
-        throw new Error(`--log-level 只能是 summary / detail / trace，收到 ${JSON.stringify(value)}`)
-      }
-      options.logLevel = value
-    }
+    // 5.182b：名单来自 lib/log-levels.mjs（唯一来源）—— 以前各写一份，漏一处就启动即崩
+    if (key === 'log-level') options.logLevel = assertLogLevel(value)
     else if (key === 'data-dir') options.dataDir = value
     else if (key === 'inbox') options.inbox = value
     else if (key === 'bus') options.bus = value

@@ -38,6 +38,8 @@ import { mkdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { ROOT } from '../lib/paths.mjs'
+// 5.182b：日志档位名单与其它进程共用一份（import 而不是各写一份，见 lib/log-levels.mjs）
+import { assertLogLevel } from '../lib/log-levels.mjs'
 
 const HELP = `asr-worker —— 唯一的识别消费者（一份模型服务所有房间）
 
@@ -108,12 +110,9 @@ export function parseArgs(argv = []) {
     if (key === 'queue-dir') options.queueDir = value
     else if (key === 'data-dir') options.dataDir = value
     else if (key === 'inbox-dir') options.inboxDir = value
-    else if (key === 'log-level') {
-      if (['summary', 'detail', 'trace'].includes(value) !== true) {
-        throw new Error(`--log-level 只能是 summary / detail / trace，收到 ${JSON.stringify(value)}`)
-      }
-      options.logLevel = value
-    }
+    // 5.182b：名单来自 lib/log-levels.mjs（唯一来源）。
+    // 这里曾经是手写三档 → start-multi 传 quiet 时识别进程直接退出、整条链路停摆。
+    else if (key === 'log-level') options.logLevel = assertLogLevel(value)
     else if (key === 'model') options.model = value
     else if (key === 'device') options.device = value
     else if (key === 'compute-type') options.computeType = value
