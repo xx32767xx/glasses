@@ -883,8 +883,12 @@ export async function startRelay(rawOptions = {}) {
     const entries = pending.entries ?? []
     if (entries.length === 0) return
     const first = entries[0]
-    const code = String(first.code ?? '')
     const roomId = String(first.roomId ?? '')
+    // 5.184：邀请码从帧里拿不到时（老切句写出的段没有 segId）就用房间标签补 ——
+    // 否则整场会的句子会落进 `noroom-<房间>.jsonl`，与开会那行分家，列表里也认不出。
+    const code = String(first.code ?? '') !== ''
+      ? String(first.code)
+      : String(roomLabelOf(roomId)?.code ?? '')
     const dst = {}
     let src = ''
     let srcLang = ''

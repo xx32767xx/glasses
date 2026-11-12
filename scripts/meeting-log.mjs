@@ -27,7 +27,7 @@
  */
 import { existsSync } from 'node:fs'
 import {
-  listMeetingLogs, logsDirOf, readMeetingEvents,
+  lastEventAt, listMeetingLogs, logsDirOf, readMeetingEvents,
 } from '../lib/meeting-log.mjs'
 import { readdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -264,10 +264,21 @@ export async function main(argv = process.argv.slice(2)) {
       const start = events.find((event) => event.kind === 'meeting' && event.event === 'start')
       const end = [...events].reverse().find((event) => event.kind === 'meeting' && event.event === 'end')
       const when = start?.t ?? (events[0]?.t ?? '')
+      // 5.184：**别把"没记到结束"说成"还没结束"**。
+      //   服务重启/崩溃会把散会那一刻带走，记录里就只剩 start；而管理台（数据库）那边
+      //   早就显示结束了 —— 两边不一致的根源就在这句提示上。
+      //   现在区分三种：已记结束 / 还在进行（最后一条记录是刚才）/ 未记录结束（很久没动静）。
+      const lastAt = lastEventAt(events)
+      const idleMs = lastAt > 0 ? Date.now() - lastAt : Number.POSITIVE_INFINITY
+      const stillLive = idleMs < 3 * 60 * 1000
+      const status = end !== undefined
+        ? ''
+        : (stillLive
+          ? '  ⏳ 进行中（最后一条记录是刚刚）'
+          : `  ⚠️ 未记录结束（最后一条记录 ${Math.round(idleMs / 60000)} 分钟前；服务重启或崩溃时没记上）`)
       process.stdout.write(`  ${clockOf(when, true).padEnd(14)}  邀请码 ${(one.code || '?').padEnd(7)}`
         + `  ${sentences} 句  ${(one.bytes / 1024).toFixed(0)} KB`
-        + `${start?.name ? `  ${start.name}` : ''}`
-        + `${end === undefined ? '  ⏳ 还没结束' : ''}\n`)
+        + `${start?.name ? `  ${start.name}` : ''}${status}\n`)
     }
     return 0
   }

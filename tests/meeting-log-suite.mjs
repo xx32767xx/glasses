@@ -133,6 +133,63 @@ export async function runMeetingLogSuite({ it, check }) {
     rmSync(base, { recursive: true, force: true })
   })
 
+  // 5.184：现场现象 —— 列表里一堆"⏳ 还没结束"，而后台（数据库）早就结束了。
+  // 根因：服务重启/崩溃把"散会"那一刻带走，记录里只剩 start。
+  // 修法两半：启动时给遗留记录补 end；列表措辞区分"进行中"与"未记录结束"。
+  await it('5.184：遗留记录在启动时补"结束"（列表不再谎报"进行中"）', async () => {
+    const { closeStaleMeetings, isMeetingOpen, lastEventAt } = await import('../lib/meeting-log.mjs')
+    rmSync(base, { recursive: true, force: true })
+    mkdirSync(base, { recursive: true })
+
+    // ① 正常结束的那场：不该被动
+    appendMeetingEvent(base, { code: '111111', roomId: 'room-a' }, {
+      kind: 'meeting', event: 'start', code: '111111', room: 'room-a', name: '开完了',
+    })
+    appendMeetingEvent(base, { code: '111111', roomId: 'room-a' }, {
+      kind: 'meeting', event: 'end', code: '111111', room: 'room-a', name: '开完了', minutes: 5,
+    })
+    // ② 被重启打断的那场：有 start、没 end
+    appendMeetingEvent(base, { code: '222222', roomId: 'room-b' }, {
+      kind: 'meeting', event: 'start', code: '222222', room: 'room-b', name: '被打断',
+    })
+
+    const logs = listMeetingLogs(base)
+    const openFile = logs.find((one) => one.code === '222222')
+    const closedFile = logs.find((one) => one.code === '111111')
+    check('isMeetingOpen 只看"有 start 且没有 end"',
+      isMeetingOpen(readMeetingEvents(openFile.path)) === true
+      && isMeetingOpen(readMeetingEvents(closedFile.path)) === false)
+    check('lastEventAt 能取到最后一条时间',
+      lastEventAt(readMeetingEvents(closedFile.path)) > 0)
+
+    // 补记：把"本次启动之前"的记录收尾（graceMs=0 表示不保护"刚刚写的"）
+    const closed = closeStaleMeetings(base, { now: Date.now() + 60000, graceMs: 0 })
+    check('只补没有结束的那一场', closed.length === 1 && closed[0].code === '222222',
+      JSON.stringify(closed.map((one) => one.code)))
+    const after = readMeetingEvents(openFile.path)
+    const endEvent = after.find((one) => one.kind === 'meeting' && one.event === 'end')
+    check('补上的 end 写明原因（process-restart）', endEvent?.reason === 'process-restart',
+      JSON.stringify(endEvent))
+    check('补完之后它不再算"进行中"', isMeetingOpen(after) === false)
+    check('正常结束的那场没有被重复补',
+      readMeetingEvents(closedFile.path).filter((one) => one.event === 'end').length === 1)
+
+    // 再跑一次：没有可补的了（幂等）
+    check('幂等：第二遍什么都不补', closeStaleMeetings(base, { now: Date.now() + 120000, graceMs: 0 }).length === 0)
+    rmSync(base, { recursive: true, force: true })
+  })
+
+  await it('5.184：列表措辞区分"进行中"与"未记录结束"（别把没记到说成还没结束）', async () => {
+    const source = readFileSync(join(ROOT, 'scripts', 'meeting-log.mjs'), 'utf-8')
+    check('超过 3 分钟没动静要说"未记录结束"而不是"⏳ 还没结束"',
+      /未记录结束/.test(source) && /服务重启或崩溃时没记上/.test(source), '缺这条措辞')
+    check('刚有动静的才说"进行中"', /进行中（最后一条记录是刚刚）/.test(source), '缺"进行中"')
+    check('启动时会补记（start-multi 调用 closeStaleMeetings）',
+      /closeStaleMeetings\(options\.dataDir\)/.test(readFileSync(join(ROOT, 'scripts', 'start-multi.mjs'), 'utf-8')))
+    check('relay 的句子记录在缺邀请码时用房间标签补（不再落成 noroom）',
+      /roomLabelOf\(roomId\)\?\.code/.test(readFileSync(join(ROOT, 'relay', 'lan-relay.mjs'), 'utf-8')))
+  })
+
   await it('5.181：服务级事件单独一个文件（不属于任何一场会的那种）', async () => {
     rmSync(base, { recursive: true, force: true })
     mkdirSync(base, { recursive: true })

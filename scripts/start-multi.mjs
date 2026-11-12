@@ -68,7 +68,7 @@ import { listRooms, closeRoomByAdmin } from '../lib/rooms.mjs'
 import { dbPath } from '../lib/db.mjs'
 import { currentTermsPaths, readCurrentMeeting } from '../lib/meeting-terms.mjs'
 import { LOG_LEVELS, assertLogLevel } from '../lib/log-levels.mjs'
-import { appendMeetingEvent, appendServiceEvent } from '../lib/meeting-log.mjs'
+import { appendMeetingEvent, appendServiceEvent, closeStaleMeetings } from '../lib/meeting-log.mjs'
 // 这五个都从 start-helpers 借：两份脚本各写一遍就会各错一遍（端口探测那个 SO_REUSEADDR 的坑尤其）。
 import {
   archiveSessionLogs, assertDataDirWritable, childEnv, flushLogStreams, portInUse, sessionStamp,
@@ -1531,6 +1531,20 @@ export async function main(argv = process.argv.slice(2)) {
 
   process.on('SIGINT', () => { void shutdown(0) })
   process.on('SIGTERM', () => { void shutdown(0) })
+
+  // 5.184：**给上次遗留的会议记录补一个"结束"**。
+  //
+  // 为什么：服务重启（尤其是崩溃重启）会把"散会"那一刻一起带走 —— 记录里只剩 start，
+  // 列表里就永远显示"⏳ 还没结束"，而管理台/数据库那边早就结束了。
+  // 这里在开始看房间表之前扫一遍：凡是"有 start、没 end"的都补上（reason=process-restart）。
+  try {
+    const closed = closeStaleMeetings(options.dataDir)
+    if (closed.length > 0) {
+      console.log(`  （补记了 ${closed.length} 场上次没来得及记结束的会议：${closed.map((one) => one.code).join(' / ')}）`)
+    }
+  } catch (error) {
+    console.error(`  ⚠️ 补记上次的会议结束失败（不影响运行）：${error && error.message ? error.message : error}`)
+  }
 
   // 先起**全局**进程：转发（所有人的出口）+ 队列模式下的识别消费者（模型只加载一次）。
   // 再开始看房间表 —— 房间是手机建的，只能边看边补。
