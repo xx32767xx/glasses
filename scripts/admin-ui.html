@@ -167,7 +167,7 @@
     </section>
 
     <section class="panel" style="grid-column:1/-1">
-      <h2>识别模型（全局策略） <span class="tag" id="modelsMeta">—</span></h2>
+      <h2>识别模型（每语种策略 + 切句） <span class="tag" id="modelsMeta">—</span></h2>
       <div class="body">
         <div class="mono">
           改的是服务器上的 <code>asr-models.json</code>：<b>只影响之后新建的会议</b>。
@@ -202,6 +202,8 @@
       <div class="body">
         <div class="mono">
           同传延迟 ≈ <b>一句话攒多久</b> + 静音判定 + 识别 + 翻译，而「攒多久」全由这几个数决定。
+          ⚠️ 这里的值<b>压过所有语种</b>（也压过「识别模型」里每门语言各自的切句参数），
+          是现场应急旋钮；要按语种分别调，请去上面「识别模型」里每门语言那一行的「切句」输入框。
           写的是服务器上的 <code>&lt;data-dir&gt;/segmentation.json</code>，
           <b>在下一段录音 / 下一场会生效</b>（切句器是按音频流创建的，不在句子中间重建）。
           ⚠️ 这里的值<b>压过</b>识别策略表里的同名项（现场应急优先），只有命令行仍然最强。
@@ -374,6 +376,11 @@ loadAudio();
 // 本场用了什么（房间详情里的 strategy），不参与选择。
 // 保存的语义是"影响之后新建的会议"——在跑的会按建房时冻结的快照跑，页面上写明这一点。
 let modelTable = null;
+/** 5.185：切句参数的字段顺序（与「切句参数」面板同一份 rules，这里只要键名）。 */
+const SEG_FIELDS = ['silence_ms', 'min_speech_ms', 'max_speech_ms',
+  'short_utterance_ms', 'short_silence_ms', 'cut_pause_ms'];
+/** 5.185：每门语言"现在实际生效"的切句值（服务端算好的），用于输入框占位与覆盖提示。 */
+let segStateByLang = {};
 /** 界面上标记为"要删掉"的策略名（保存时统一处理）。 */
 let modelDeletedStrategies = new Set();
 
@@ -418,6 +425,51 @@ function buildLanguageRow(lang, label, current) {
   info.textContent = [current.engine, current.model, current.runtime, current.compute_type,
     current.available].filter(Boolean).join(' · ') || '（这条策略没解析出模型）';
   row.appendChild(info);
+
+  // 5.185：**每门语言自己的切句参数**（用户要求：像命令行那样，按语种分开调）。
+  // 写进 languages[语种].segmentation —— 优先级高于策略表、低于「切句参数」全局旋钮。
+  // 留空 = 不写这一项（继承上一层）。占位符显示"现在实际生效的值"，一眼能看出继承到多少。
+  const segBox = document.createElement('div');
+  segBox.className = 'row';
+  segBox.style.marginTop = '2px';
+  segBox.style.opacity = '.92';
+  const segLabel = document.createElement('div');
+  segLabel.className = 'mono';
+  segLabel.style.width = '52px';
+  segLabel.style.fontSize = '12px';
+  segLabel.textContent = '切句';
+  segBox.appendChild(segLabel);
+  const effective = (segStateByLang[lang] || {});
+  for (const key of SEG_FIELDS) {
+    const rule = (segState.rules || {})[key] || {};
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.id = 'segLang_' + lang + '_' + key;
+    input.title = (rule.label || key) + '（留空 = 继承；范围 ' + (rule.min ?? '?') + '~' + (rule.max ?? '?') + '）';
+    input.style.width = '92px';
+    input.placeholder = String(effective[key] ?? '');
+    input.value = (current.segmentation && current.segmentation[key] !== undefined)
+      ? String(current.segmentation[key]) : '';
+    const tag = document.createElement('span');
+    tag.className = 'mono';
+    tag.style.fontSize = '11px';
+    tag.style.opacity = '.65';
+    tag.textContent = key.replace('_ms', '');
+    input.addEventListener('input', () => { input.dataset.touched = '1'; });
+    segBox.appendChild(tag);
+    segBox.appendChild(input);
+  }
+  const overrideNote = (effective.global || []).length > 0
+    ? '⚠️ 全局旋钮正压着：' + effective.global.join('、')
+    : '';
+  if (overrideNote !== '') {
+    const note = document.createElement('span');
+    note.className = 'tag';
+    note.style.color = '#c47f00';
+    note.textContent = overrideNote;
+    segBox.appendChild(note);
+  }
+  row.appendChild(segBox);
   return row;
 }
 
@@ -776,6 +828,11 @@ async function loadModels() {
     modelTable = Object.keys(table).length > 0
       ? table
       : { version: 2, default: { strategy: 'default' }, strategies: {}, languages: {} };
+    // 5.185：服务端算好的"每门语言实际生效值"（含被全局旋钮覆盖的那些字段）
+    segStateByLang = data.segmentation || {};
+    if (data.segmentationRules && Object.keys(segState.rules || {}).length === 0) {
+      segState.rules = data.segmentationRules;
+    }
     renderModels(data);
     loadModelHistory();
   } catch (error) {
@@ -804,6 +861,18 @@ function modelEditedTable() {
     // 清掉旧的"语言级覆盖"，让策略说话
     delete layer.model;
     delete layer.compute_type;
+    // 5.185：每门语言自己的切句参数（留空 = 继承上一层，不写这个字段）
+    const seg = {};
+    for (const key of SEG_FIELDS) {
+      const input = document.getElementById('segLang_' + lang + '_' + key);
+      const raw = input ? String(input.value).trim() : '';
+      if (raw === '') continue;
+      const value = Number(raw);
+      if (Number.isFinite(value) !== true) continue;
+      seg[key] = value;
+    }
+    if (Object.keys(seg).length > 0) layer.segmentation = seg;
+    else delete layer.segmentation;
     next.languages[lang] = layer;
   }
 

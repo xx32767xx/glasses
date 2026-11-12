@@ -303,4 +303,64 @@ export async function runAsrModelsApiSuite({ it, check }) {
       && example.strategies['pt-steady'].langs?.includes('pt-BR'),
       JSON.stringify(Object.values(per).map((name) => example.strategies[name].langs)))
   })
+  // 5.185：用户要求"按语种各自调切句参数，而且要在管理台里调"。
+  // 这一组钉住：写进 languages[语种].segmentation、读回来、越界拒绝、以及"谁覆盖谁"。
+  await it('5.185：按语种的切句参数在管理台可读可写（越界拒写）', async () => {
+    const table = sampleTable()
+    table.languages['zh-CN'] = { strategy: 'zh-steady', segmentation: { silence_ms: 700, min_speech_ms: 700, max_speech_ms: 8000 } }
+    table.strategies['zh-steady'] = { model: 'large-v3', compute_type: 'float16' }
+    const saved = await call({
+      method: 'PUT', path: '/org/asr/models', user: 'admin@x', role: 'admin', body: { table },
+    })
+    check('admin 能保存带切句参数的表', saved.status === 200 && saved.json.ok === true,
+      JSON.stringify(saved.json?.problems ?? saved.json))
+
+    const read = await call({ method: 'GET', path: '/org/asr/models', user: 'admin@x', role: 'admin' })
+    check('读回来带着这门语言的切句参数',
+      read.json.table.languages['zh-CN'].segmentation.max_speech_ms === 8000,
+      JSON.stringify(read.json.table.languages['zh-CN']))
+    check('服务端算出了"实际生效值"（界面占位符用它）',
+      read.json.segmentation?.['zh-CN']?.values?.min_speech_ms === 700,
+      JSON.stringify(read.json.segmentation?.['zh-CN']?.values))
+    check('并标出每个字段来自哪一层（语言 > 策略 > default）',
+      read.json.segmentation['zh-CN'].layers.min_speech_ms === '语言 zh-CN',
+      JSON.stringify(read.json.segmentation['zh-CN'].layers))
+    check('其他语言没被牵连（英语还是 default 层）',
+      read.json.segmentation['en-US'].layers.min_speech_ms !== '语言 zh-CN',
+      JSON.stringify(read.json.segmentation['en-US'].layers))
+    check('界面能拿到字段规则（每个框的 min/max/label）',
+      read.json.segmentationRules?.max_speech_ms?.max > 0
+      && typeof read.json.segmentationRules.max_speech_ms.label === 'string',
+      JSON.stringify(read.json.segmentationRules?.max_speech_ms))
+
+    // 越界：拒绝保存（切句侧拿到这种值只会每段报错/静默失效）
+    const bad = sampleTable()
+    bad.languages['zh-CN'] = { strategy: 'zh-steady', segmentation: { silence_ms: 999999 } }
+    const rejected = await call({
+      method: 'PUT', path: '/org/asr/models', user: 'admin@x', role: 'admin', body: { table: bad },
+    })
+    check('切句参数越界 → 409 invalid-segmentation',
+      rejected.status === 409 && rejected.json.error === 'invalid-segmentation',
+      JSON.stringify(rejected.json))
+    check('错误里指出是哪门语言', String((rejected.json.problems ?? []).join(' ')).includes('zh-CN'),
+      JSON.stringify(rejected.json.problems))
+    const stillGood = await call({ method: 'GET', path: '/org/asr/models', user: 'admin@x', role: 'admin' })
+    check('拒写之后表还是好的（没被写坏）',
+      stillGood.json.table.languages['zh-CN'].segmentation.max_speech_ms === 8000,
+      JSON.stringify(stillGood.json.table.languages['zh-CN']))
+  })
+
+  await it('5.185：管理台有"每语种一行"的切句输入框，并说明全局旋钮会压过它', async () => {
+    const html = readFileSync(join(ROOT, 'scripts', 'admin-ui.html'), 'utf-8')
+    check('每门语言一行切句输入框（id 带语种与字段名）',
+      /'segLang_' \+ lang \+ '_' \+ key/.test(html), '缺输入框构造')
+    check('六个字段都在名单里', /const SEG_FIELDS = \['silence_ms', 'min_speech_ms', 'max_speech_ms',/.test(html))
+    check('留空 = 继承（占位符显示实际生效值）', /input\.placeholder = String\(effective\[key\]/.test(html))
+    check('保存时写进 languages[语种].segmentation',
+      /layer\.segmentation = seg/.test(html) && /delete layer\.segmentation/.test(html))
+    check('被全局旋钮压住时界面会标出来', /全局旋钮正压着/.test(html))
+    check('全局面板明写"压过所有语种"并指向按语种入口',
+      /压过所有语种/.test(html) && /识别模型/.test(html))
+  })
+
 }

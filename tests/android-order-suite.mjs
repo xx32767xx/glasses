@@ -2210,6 +2210,8 @@ export async function runAndroidOrderSuite({ it, check }) {
       '要删哪一场？给 roomId', '没有这场会的录音',
       // 5.181：这行只进日志（warnLog），不给手机看 —— 与上面同一条规矩。
       '[语言] 同步成员语言失败',
+      // 5.185：按语种的切句参数只在管理台调（手机没有这个界面），与 5.167 同一条规矩。
+      '切句参数越界，已拒绝保存',
     ]
     const ignore = (raw) => IGNORE.some((i) => raw.startsWith(i))
     const matched = (raw) => exact.includes(raw) || pre.some((p) => raw.startsWith(p))

@@ -29,7 +29,8 @@ import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { loadStrategyTable, saveStrategyTable, validateStrategyTable } from '../lib/asr-engines.mjs'
 import {
-  SEGMENTATION_DEFAULTS, SEGMENTATION_RULES, loadSegmentation, saveSegmentation, validateSegmentation,
+  SEGMENTATION_DEFAULTS, SEGMENTATION_FIELDS, SEGMENTATION_RULES, loadSegmentation, saveSegmentation,
+  validateSegmentation,
 } from '../lib/segmentation.mjs'
 import { audioUsage, purgeAllAudio, purgeRoomAudio } from '../lib/audio-usage.mjs'
 import { appendAudit, auditPath } from '../lib/room-strategy.mjs'
@@ -504,6 +505,71 @@ export async function handleOrg(input) {
     return bad(404, `没有这个接口：${method} ${path}`)
   }
 
+  /**
+   * 5.185：每门语言**实际生效**的切句参数（以及它们各自从哪一层来）。
+   *
+   * <p>为什么要算这个：界面上要能显示"不填就是继承到 X"和"这一项正被全局旋钮压着"。
+   * 优先级（与 whisper_stream.py 的 _new_segmenter 一致）：
+   * 内置缺省 < default < strategies[名字] < languages[语种] < **全局 segmentation.json** < 命令行。
+   *
+   * @returns {{values: object, layers: object, global: string[]}} layers 记每个字段来自哪一层
+   */
+  /** 5.185：表里各语种切句参数的校验（与面板同一份规则）。@returns {string[]} 问题清单 */
+  const collectSegmentationProblems = (table) => {
+    const problems = []
+    const langs = table && typeof table === 'object' && table.languages && typeof table.languages === 'object'
+      ? table.languages
+      : {}
+    for (const [lang, layer] of Object.entries(langs)) {
+      if (layer === null || typeof layer !== 'object') continue
+      const seg = layer.segmentation
+      if (seg === null || typeof seg !== 'object') continue
+      const checked = validateSegmentation(seg)
+      for (const one of checked.problems ?? []) problems.push(`${lang} 的切句参数：${one}`)
+    }
+    return problems
+  }
+
+  const effectiveSegmentation = (table, lang) => {
+    const layers = {}
+    const values = { ...SEGMENTATION_DEFAULTS }
+    const take = (source, layer, tag) => {
+      if (layer === null || typeof layer !== 'object') return
+      const seg = layer.segmentation
+      if (seg === null || typeof seg !== 'object') return
+      for (const key of SEGMENTATION_FIELDS) {
+        const value = seg[key]
+        if (typeof value !== 'number' || Number.isFinite(value) !== true) continue
+        values[key] = value
+        layers[key] = tag
+      }
+      void source
+    }
+    take('default', table?.default, 'default')
+    const strategyName = typeof table?.languages?.[lang]?.strategy === 'string'
+      ? table.languages[lang].strategy
+      : 'default'
+    if (strategyName !== 'default') take('strategy', table?.strategies?.[strategyName], `策略 ${strategyName}`)
+    take('language', table?.languages?.[lang], `语言 ${lang}`)
+    // 全局旋钮（管理台「切句参数」面板）压过上面所有层
+    // ⚠️ 只有**文件真的存在**（source==='file'）时才算全局覆盖：
+    // loadSegmentation 在没有文件时会返回"内置缺省合并后的值"（source=defaults），
+    // 照单全收就会把每门语言自己设的值冲成缺省 —— 第一版就这么错了。
+    const loaded = loadSegmentation(root)
+    const global = []
+    const fromFile = loaded.source === 'file' && loaded.values && typeof loaded.values === 'object'
+      ? loaded.values
+      : {}
+    for (const key of SEGMENTATION_FIELDS) {
+      const value = fromFile[key]
+      if (typeof value !== 'number' || Number.isFinite(value) !== true) continue
+      values[key] = value
+      layers[key] = '全局旋钮'
+      global.push(key)
+    }
+    return { values, layers, global, strategy: strategyName }
+  }
+
   // ── 识别策略表（5.148）：管理员改全局表；**只影响之后新建的会议** ─────────
   //
   // 为什么不给手机加接口：选择权收归管理员（设计见 docs/33）。手机端只在开发者模式下
@@ -627,6 +693,11 @@ export async function handleOrg(input) {
               : '服务器上还没有策略表 → 现在用的是内置缺省（whisper / large-v3）；'
                 + '点「初始化示例表」可以写入一份带全部候选策略的模板',
             source: { found: loaded.found, path: loaded.path, problem: loaded.problem },
+            // 5.185：没有表也要给"现在实际生效的切句值"（界面占位符要用它）
+            segmentation: Object.fromEntries(['zh-CN', 'en-US', 'pt-BR']
+              .map((lang) => [lang, effectiveSegmentation({}, lang)])),
+            segmentationRules: SEGMENTATION_RULES,
+            segmentationDefaults: SEGMENTATION_DEFAULTS,
           },
         }
       }
@@ -639,6 +710,12 @@ export async function handleOrg(input) {
       if (MOJIBAKE.some((marker) => rawTable.includes(marker))) {
         report.warnings.push('策略表里的中文像是乱码（文件可能被按 GBK 存过）→ 建议点「初始化示例表」重建一份')
       }
+      // 5.185：界面要在"策略"行旁边显示每门语言**实际生效**的切句参数
+      //（不填就是继承，界面要能显示继承到多少；被全局旋钮压住时也要标出来）。
+      const segmentation = {}
+      for (const lang of ['zh-CN', 'en-US', 'pt-BR']) {
+        segmentation[lang] = effectiveSegmentation(loaded.table, lang)
+      }
       return {
         status: 200,
         json: {
@@ -650,6 +727,9 @@ export async function handleOrg(input) {
           note: '',
           // 读不到/读坏了要说清楚：管理页据此提示"现在根本没表"
           source: { found: loaded.found, path: loaded.path, problem: loaded.problem },
+          segmentation,
+          segmentationRules: SEGMENTATION_RULES,
+          segmentationDefaults: SEGMENTATION_DEFAULTS,
         },
       }
     }
@@ -684,11 +764,33 @@ export async function handleOrg(input) {
     if (method === 'POST' && segments[3] === 'validate' && segments.length === 4) {
       if (allowed(role, 'model.read') !== true) return deny(role, 'model.read')
       const report = validateStrategyTable(body.table, {})
+      const segProblems = collectSegmentationProblems(body.table)
+      if (segProblems.length > 0) {
+        return {
+          status: 409,
+          json: {
+            ok: false, error: 'invalid-segmentation', problems: segProblems,
+            hint: '切句参数越界，已拒绝保存（范围见「切句参数」面板每个字段后面的说明）',
+          },
+        }
+      }
       return { status: 200, json: { ok: true, ...report } }
     }
     if (method === 'PUT' && segments.length === 3) {
       if (allowed(role, 'model.write') !== true) return deny(role, 'model.write')
       const report = validateStrategyTable(body.table, {})
+      // 5.185：切句参数也校验（与「切句参数」面板**同一份**规则）——
+      // 越界就别写进表：写进去只会让切句侧每段都报错或静默失效。
+      const segProblems = collectSegmentationProblems(body.table)
+      if (segProblems.length > 0) {
+        return {
+          status: 409,
+          json: {
+            ok: false, error: 'invalid-segmentation', problems: segProblems,
+            hint: '切句参数越界，已拒绝保存（范围见「切句参数」面板每个字段后面的说明）',
+          },
+        }
+      }
       if (report.ok !== true) {
         // 写进去就会坏的东西**不进库**：宁可让管理员改一行，也不要留一张跑不起来的表
         return {

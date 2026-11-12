@@ -184,14 +184,19 @@ export async function runMeetingLogSuite({ it, check }) {
     appendMeetingEvent(base, { code: '900001', roomId: 'room-x' }, {
       kind: 'sentence', code: '900001', room: 'room-x', seg: 1, src: '最后一句',
     }, { at: '2026-11-12T10:42:00.000Z' })
-    closeStaleMeetings(base, { now: Date.parse('2026-11-12T12:30:00.000Z'), graceMs: 0 })
+    // ⚠️ 这里的 `now` 必须**晚于文件的真实 mtime**（那是"启动时刻"的语义），
+    // 否则会被"比启动更早才补"的保护跳过 —— 第一版就踩了这个坑（假 now 在过去）。
+    const bootAt = Date.now() + 3600 * 1000
+    closeStaleMeetings(base, { now: bootAt, graceMs: 0 })
     const timed = readMeetingEvents(listMeetingLogs(base)[0].path)
     const timedEnd = timed.find((entry) => entry.kind === 'meeting' && entry.event === 'end')
     check('结束时刻 = 最后一条记录的时间（10:42，不是补记的 12:30）',
       timedEnd?.t === '2026-11-12T10:42:00.000Z', String(timedEnd?.t))
     check('时长按真实活动算（42 分钟，不是 150 分钟）', timedEnd?.minutes === 42, String(timedEnd?.minutes))
     check('补记的时刻单独留一笔（可追查是什么时候补的）',
-      timedEnd?.recordedAt === '2026-11-12T12:30:00.000Z', String(timedEnd?.recordedAt))
+      typeof timedEnd?.recordedAt === 'string'
+      && Date.parse(timedEnd.recordedAt) > Date.parse('2026-11-12T10:42:00.000Z'),
+      String(timedEnd?.recordedAt))
 
     // 再跑一次：没有可补的了（幂等）
     check('幂等：第二遍什么都不补', closeStaleMeetings(base, { now: Date.now() + 120000, graceMs: 0 }).length === 0)
