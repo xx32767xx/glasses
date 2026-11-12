@@ -339,7 +339,67 @@ public class LanClient {
         if (lang != null && !lang.isEmpty()) {
             path.append("&lang=").append(java.net.URLEncoder.encode(lang, "UTF-8"));
         }
-        return requestRaw(path.toString(), pcm, 10000);
+        // 5.178：**偶发超时重试**。
+        //
+        // 现场：「上传音频失败：timeout」，重新开麦就好了 —— 说明不是配置错，而是某一次上传
+        // **碰上了**网络抖动 / 服务端一时忙 / 复用了正要关闭的长连接。让一整场同传因为
+        // 几秒的抖动结束，代价太大：所以这里最多试 3 次（首次 + 两次重试，退避 150/400ms），
+        // 而且只有**可重试**的错误才重试。
+        //
+        // ⚠️ 不重试：HTTP 4xx（密钥错、块太大、版本门禁）—— 那些重试一百次也一样。
+        IOException last = null;
+        for (int attempt = 0; attempt < 3; attempt += 1) {
+            try {
+                return requestRaw(path.toString(), pcm, 10000);
+            } catch (org.json.JSONException error) {
+                throw error;                       // 回执不是 JSON：不是网络问题
+            } catch (IOException error) {
+                last = error;
+                if (!isRetryableUploadError(error) || attempt == 2) {
+                    throw error;
+                }
+                try {
+                    Thread.sleep(attempt == 0 ? 150L : 400L);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw error;
+                }
+            }
+        }
+        throw last == null ? new IOException("上传失败（未知原因）") : last;
+    }
+
+    /**
+     * 5.178：这个上传错误**值不值得重试**。
+     *
+     * <p>判据是"同一次重发可能成功"：超时、连不上、连接被重置/半路断掉、服务端 5xx（一时忙）。
+     * 而 4xx 是"这次请求本身不被接受"，重试只会浪费时间。
+     */
+    private static boolean isRetryableUploadError(IOException error) {
+        if (error instanceof java.net.SocketTimeoutException) {
+            return true;
+        }
+        if (error instanceof java.net.ConnectException) {
+            return true;
+        }
+        if (error instanceof java.net.SocketException) {
+            return true;
+        }
+        String message = error.getMessage() == null ? "" : error.getMessage();
+        if (message.startsWith("HTTP ")) {
+            int code = 0;
+            try {
+                code = Integer.parseInt(message.substring(5, 8).trim());
+            } catch (RuntimeException ignored) {
+                code = 0;
+            }
+            return code >= 500 && code < 600;
+        }
+        String lower = message.toLowerCase(java.util.Locale.ROOT);
+        return lower.contains("timeout") || lower.contains("timed out")
+                || lower.contains("unexpected end of stream")
+                || lower.contains("broken pipe") || lower.contains("connection reset")
+                || lower.contains("connection abort");
     }
 
     /**

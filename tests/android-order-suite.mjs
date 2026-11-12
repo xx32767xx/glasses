@@ -217,6 +217,36 @@ function collectSources(dir, extensions, found = []) {
 }
 
 export async function runAndroidOrderSuite({ it, check }) {
+  // 5.178：现场「偶尔上传音频失败：timeout，重新开麦就好了」。
+  // 两个原因都在客户端：① 一次超时就把整场同传结束掉；② 没有重试。
+  await it('5.178：偶发上传超时不再结束整场（重试 + 容忍连续失败）', async () => {
+    const client = readFileSync(new URL('../android/app/src/main/java/com/leion/lanrelay/LanClient.java', import.meta.url), 'utf-8')
+    const uploader = readFileSync(new URL('../android/app/src/main/java/com/leion/lanrelay/MicUploader.java', import.meta.url), 'utf-8')
+    const zh = readFileSync(new URL('../android/app/src/main/res/values/strings.xml', import.meta.url), 'utf-8')
+    const en = readFileSync(new URL('../android/app/src/main/res/values-en/strings.xml', import.meta.url), 'utf-8')
+    const pt = readFileSync(new URL('../android/app/src/main/res/values-pt-rBR/strings.xml', import.meta.url), 'utf-8')
+
+    check('上传会重试（最多 3 次，带退避）',
+      /for \(int attempt = 0; attempt < 3; attempt \+= 1\)/.test(client)
+      && /Thread\.sleep\(attempt == 0 \? 150L : 400L\)/.test(client))
+    check('只重试可重试的错误（超时/连不上/连接重置/5xx）',
+      /isRetryableUploadError/.test(client) && /SocketTimeoutException/.test(client)
+      && /code >= 500 && code < 600/.test(client))
+    check('4xx 不重试（密钥错、块太大重试也没用）',
+      /message\.startsWith\("HTTP "\)/.test(client))
+    check('回执不是 JSON 时也不重试', /catch \(org\.json\.JSONException error\) \{\s*\n\s*throw error;/.test(client))
+
+    check('连续失败阈值常量存在（5 块）', /MAX_CONSECUTIVE_FAILURES = 5\b/.test(uploader))
+    check('没到阈值时**继续录音**（这一块丢掉而已）',
+      /consecutiveFailures < MAX_CONSECUTIVE_FAILURES|consecutiveFailures >= MAX_CONSECUTIVE_FAILURES/.test(uploader)
+      && /return true;/.test(uploader))
+    check('成功一次就把计数清零', /consecutiveFailures = 0;/.test(uploader))
+    check('用户主动停时仍然不报错', /if \(stopping\) \{/.test(uploader))
+
+    check('三语都有"重试中"的提示文案',
+      /up_upload_retry/.test(zh) && /up_upload_retry/.test(en) && /up_upload_retry/.test(pt))
+  })
+
   for (const target of TARGETS) {
     const lines = stripComments(readFileSync(target.file, 'utf-8')).split(/\r?\n/)
     const depths = annotateDepth(lines)

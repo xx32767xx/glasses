@@ -47,6 +47,49 @@ export async function runRelaySuite({ it, check, assert }) {
   await rm(TMP, { recursive: true, force: true })
   await mkdir(TMP, { recursive: true })
 
+  // 5.178：现场「偶尔上传音频失败：timeout」。服务端这一侧的一个诱因是：
+  // **每一块上传都把整个 audio/ 目录 stat 一遍**（所有房间所有说话人的文件），
+  // 这个开销正好压在"上传 → 回执"的必经之路上。现在 5 秒内复用缓存值。
+  await it('5.178：音频上限判定不再每块都遍历目录（但 /status 仍是真值）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'audio-cache-'))
+    const secret = 'cache-secret-0123456789abcdef'
+    const trackDir = roomTrackDir(dir, 'room-cache')
+    mkdirSync(trackDir, { recursive: true })
+    writeFileSync(join(trackDir, 'a.pcm'), Buffer.alloc(4096, 1))
+    const relay = await startRelay({
+      dataDir: dir, port: 0, host: '127.0.0.1', secret, quiet: true, public: true, pollHoldMs: 200,
+    })
+    try {
+      const upload = async (bytes) => {
+        const response = await fetch(`http://127.0.0.1:${relay.port}/audio?rate=16000&lang=zh-CN&room=room-cache`, {
+          method: 'POST',
+          headers: { 'X-Leion-Secret': secret, 'Content-Type': 'application/octet-stream' },
+          body: Buffer.alloc(bytes, 2),
+        })
+        return { status: response.status, json: await response.json().catch(() => null) }
+      }
+      const statusOf = async () => (await (await fetch(`http://127.0.0.1:${relay.port}/status`, {
+        headers: { 'X-Leion-Secret': secret } })).json())
+
+      const first = await upload(1024)
+      check('第一块成功', first.status === 200, JSON.stringify(first.json))
+      // 上传路径用缓存：连续两块都在 5 秒窗口内 → state.audioBytes 不自增到"含新块"的精确值，
+      // 但**绝不该**因为缓存而把上限判错（这里总量远低于上限，必须都是 200）
+      const second = await upload(1024)
+      check('5 秒内连续上传都成功（缓存不影响判定）', second.status === 200, JSON.stringify(second.json))
+
+      const status = await statusOf()
+      check('/status 的 audioBytes 是按磁盘重算的真值（含刚写进去的两块）',
+        Number(status.audioBytes) >= 4096 + 2048, String(status.audioBytes))
+      check('实时监测的 time 戳也刷新了（5 秒缓存有据可查）',
+        Number(relay.state?.audioBytesCheckedAt ?? 0) > 0,
+        String(relay.state?.audioBytesCheckedAt))
+    } finally {
+      await relay.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   // 5.166：两帧挤在同一个轮询窗口里也不能丢（实机踩到：定稿被下一句的原文帧顶掉）。
   // 总线文件是「整文件覆盖 + 轮询读取」，两次紧挨着的写只有后一次能活下来。
   // 现在大脑额外写一份「帧日志」（一帧一个文件），relay 每轮先排空它 —— 于是任何一帧都不会丢。

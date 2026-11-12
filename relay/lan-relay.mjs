@@ -1084,6 +1084,8 @@ export async function startRelay(rawOptions = {}) {
     writeChain: Promise.resolve(),
     /** 音频：已落盘字节数 / 已收块数 / 当前采样率（null = 还没收到过） */
     audioBytes: 0,
+    /** 5.178：上次"按磁盘重算占用"的时刻 —— 上传每秒 1 块，不能每块都走一遍目录。 */
+    audioBytesCheckedAt: 0,
     audioChunks: 0,
     /** 5.175：收到"不带房间号"的音频时只报一次（老模式删除后那种音频不落盘）。 */
     audioNoRoomWarned: false,
@@ -2265,8 +2267,19 @@ export async function startRelay(rawOptions = {}) {
             })
             return
           }
-          // 5.170：判定前先按磁盘重算 —— 否则"删了文件仍然报满"（那个计数器只增不减）
-          state.audioBytes = audioDiskBytes()
+          // 5.170：判定前按磁盘重算 —— 否则"删了文件仍然报满"（那个计数器只增不减）。
+          //
+          // 5.178：但**不能每一块都走一遍 audio/ 目录**。手机每秒 1 块，目录里是
+          // 所有房间所有说话人的文件 —— 大会场几百个文件时，这一趟 stat 就可能几十上百毫秒，
+          // 而它正好压在"上传 → 回执"的必经之路上（客户端上传超时 10 秒，
+          // 偶尔的 timeout 有一部分就是这么堆出来的）。
+          // 现在：距上次重算不到 5 秒就直接用缓存值（定时器每 30 秒还会兜底重算一次）。
+          if (Date.now() - state.audioBytesCheckedAt > 5000) {
+            try {
+              state.audioBytes = audioDiskBytes()
+              state.audioBytesCheckedAt = Date.now()
+            } catch { /* 磁盘在忙：用缓存值继续判 */ }
+          }
           if (state.audioBytes + size > PUBLIC_LIMITS.maxAudioBytesTotal) {
             send(response, 507, {
               ok: false,
@@ -2983,7 +2996,15 @@ export async function startRelay(rawOptions = {}) {
           inbox: options.inbox,
           bus: options.bus,
           audio: options.audio,
-          audioBytes: state.audioBytes,
+          // 5.178：/status 是诊断口、调用很少 —— 这里**每次真按磁盘重算**，让看到的占用永远是真的
+          // （上传路径上则走 5 秒缓存，见 /audio 里的注释）。
+          audioBytes: (() => {
+            try {
+              state.audioBytes = audioDiskBytes()
+              state.audioBytesCheckedAt = Date.now()
+            } catch { /* 磁盘在忙：退回缓存值 */ }
+            return state.audioBytes
+          })(),
           // 音频总量上限（5.175：不再有"老文件轮转"，只有 public 模式下的总量上限）
           audioMaxBytes: options.audioMaxBytes,
           audioChunks: state.audioChunks,
@@ -3375,7 +3396,10 @@ export async function startRelay(rawOptions = {}) {
             perRoomBytes: options.audioMaxBytes,
           }),
           onAudioPurged: () => {
-            try { state.audioBytes = audioDiskBytes() } catch { /* 磁盘忙：下一次轮询会再算 */ }
+            try {
+              state.audioBytes = audioDiskBytes()
+              state.audioBytesCheckedAt = Date.now()
+            } catch { /* 磁盘忙：下一次轮询会再算 */ }
           },
           audioBytesOf: (roomId) => {
             // 5.08：一场会的音频是**一个目录、每人一个文件**（另兼容旧的单文件）

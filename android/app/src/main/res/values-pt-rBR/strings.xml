@@ -430,6 +430,7 @@ Se não quiser ser gravado, não toque em Iniciar. Para apagar os registros do c
     <string name="up_status">Enviando: %1$ds enviados (%2$ds gravados, %3$d Hz)</string>
     <string name="up_interrupted">Gravação interrompida: %1$s</string>
     <string name="up_upload_failed">Falha ao enviar o áudio: %1$s</string>
+    <string name="up_upload_retry">Solavanco no envio (bloco %1$d falhou: %2$s) — nova tentativa automática, gravando</string>
     <string name="lang_pt_native">Português</string>
     <string name="home_my_lang_hint">Isto muda apenas o texto da interface; o idioma em que você fala é escolhido ao criar a reunião</string>
     <string name="greet_morning">Bom dia, %1$s</string>

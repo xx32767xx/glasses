@@ -67,6 +67,19 @@ public class MicUploader implements AudioSource {
     private static final long STOP_GRACE_MS = 2000L;
 
     /**
+     * 5.178：**连续失败多少块才真的停**。
+     *
+     * <p>现场：「偶尔上传音频失败：timeout，重新开麦就好了」。原来一次失败就
+     * `running = false` —— 也就是**整场同传被一次几秒的网络抖动结束了**，而服务端和
+     * 识别链路其实一直是好的。现在改成：这一块丢掉、继续录，只有**连续 5 块**
+     * 都传不上去才认输（5 块 ≈ 5 秒音频，那时确实该停下来告诉用户）。
+     */
+    private static final int MAX_CONSECUTIVE_FAILURES = 5;
+
+    /** 连续失败块数（成功后清零）。 */
+    private int consecutiveFailures = 0;
+
+    /**
      * 用来取文案的 Context（4.59）：本类会产生**给用户看**的句子（麦克风打不开、上传中断…），
      * 以前这里是写死的中文，英文/巴葡界面上照样冒中文。传的是 Activity（它的 Configuration 已按
      * 界面语言改过），生命周期与本类相同，不存在泄漏。
@@ -198,6 +211,7 @@ public class MicUploader implements AudioSource {
         sampleRate = chosen;
         // 每次开始都复位：停过一次之后必须重新"听得见错误"（见 stopping 的注释）
         stopping = false;
+        consecutiveFailures = 0;
         final int bytesPerChunk = Math.max(2, chosen * 2 * CHUNK_MS / 1000);
         final int readBytes = Math.max(2, chosen * 2 * READ_MS / 1000);
         running = true;
@@ -370,17 +384,31 @@ public class MicUploader implements AudioSource {
         try {
             // 回执里带"累计秒数"，需要时可用来做界面显示；这里确认没抛异常就够
             client.sendAudio(payload, sampleRate, fresh, language);
+            consecutiveFailures = 0;
             return true;
         } catch (Exception error) {
-            running = false;
             // 主动停（用户点了「结束同传」）时，这一块上传被打断是**预期**的：
             // 不报错，也别把界面上的「已停止上传」盖成红字。
             if (stopping) {
+                running = false;
                 return false;
             }
+            consecutiveFailures += 1;
             final String message = describe(error);
-            post(() -> listener.onUploadError(ctx.getString(R.string.up_upload_failed, message)));
-            return false;
+            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                // 连丢 5 块：这次是真断了，停下来并说清原因（用户重新开麦即可）
+                running = false;
+                post(() -> listener.onUploadError(ctx.getString(R.string.up_upload_failed,
+                        message + "（连续 " + MAX_CONSECUTIVE_FAILURES + " 块未成功，已停止上传）")));
+                return false;
+            }
+            // 还没到阈值：**继续录**，只把状态提示换成"这一块丢了、正在重试"。
+            // 为什么用 onUploadError 而不是新开一个回调：它是现成的"橙色提示"通道，
+            // 而这里确实需要用户知道"刚才那句可能缺了一句"，只是不该因此结束整场。
+            final int failed = consecutiveFailures;
+            post(() -> listener.onUploadError(ctx.getString(R.string.up_upload_retry,
+                    failed, message)));
+            return true;
         }
     }
 

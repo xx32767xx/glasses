@@ -750,6 +750,8 @@
     <string name="up_status">录音上传中：已上传 %1$d 秒（已录 %2$d 秒，采样率 %3$d Hz）</string>
     <string name="up_interrupted">录音中断：%1$s</string>
     <string name="up_upload_failed">上传音频失败：%1$s</string>
+    <!-- 5.178：偶发超时不再结束整场，先把这句说清楚（重试由客户端自动做） -->
+    <string name="up_upload_retry">上传遇到问题（第 %1$d 块未成功：%2$s），已自动重试并继续录音</string>
     <string name="lang_pt_native">Português</string>
     <string name="home_my_lang_hint">只改界面文字；说话用哪种语言在创建会议时选</string>
     <string name="greet_morning">早上好，%1$s</string>
