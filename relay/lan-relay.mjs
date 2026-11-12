@@ -49,6 +49,7 @@ import { loadStrategyTable } from '../lib/asr-engines.mjs'
 import { lockRoomStrategy, readRoomStrategy, resolveAllLanguages } from '../lib/room-strategy.mjs'
 import { createWsHub } from '../lib/ws-hub.mjs'
 import { publishMeetingTerms, readCurrentMeeting } from '../lib/meeting-terms.mjs'
+import { appendMeetingEvent, appendServiceEvent } from '../lib/meeting-log.mjs'
 import { loadSelection } from './org-api.mjs'
 import { listMembers, resolveFrameRoom, roomByCode, roomById, roomLabels, setMemberLang,
   interpreterPartnerLang } from '../lib/rooms.mjs'
@@ -216,7 +217,7 @@ const HELP = `lan-relay —— 手机 ↔ 电脑 的局域网转发进程
                         判据见 lib/translation-lint.mjs（专名新造、数字/房间号丢失、
                         性数不一致、量级错）。**只报不改**，不改字幕、不影响延迟。
   --no-lint             关掉译文质检
-  --log-level <档>      日志档位（5.177）：summary = **每句一行摘要**（缺省）；
+  --log-level <档>      日志档位：**quiet = 只报警**（生产用；每句内容在会议记录里）；summary = 每句一行摘要（缺省）；
                         detail = 再把切句/识别/延迟账逐句打出来；trace = 逐帧逐块全打
   --quiet               关掉调试输出（收到的音频/文字/字幕都不打印）
   --verbose             每一块音频都打印（缺省是每秒汇总一行）
@@ -339,7 +340,7 @@ export function parseArgs(argv) {
     else if (key === 'audio-max-bytes') options.audioMaxBytes = Number(value)
     // 5.177：日志档位
     else if (key === 'log-level') {
-      if (['summary', 'detail', 'trace'].includes(value) !== true) {
+      if (['quiet', 'summary', 'detail', 'trace'].includes(value) !== true) {
         throw new Error(`--log-level 只能是 summary / detail / trace，收到 ${JSON.stringify(value)}`)
       }
       options.logLevel = value
@@ -761,10 +762,20 @@ export async function startRelay(rawOptions = {}) {
   // 「这句出没出、多慢、有没有异常」，那刚好能用**一行**说清。
   //
   // 档位：summary（缺省，每句一行摘要）< detail < trace（逐帧逐块）。
-  const LOG_RANK = { summary: 0, detail: 1, trace: 2 }
+  // 5.181：**quiet 档**——生产只用它：每句一行摘要都不打，只留"出问题"的行。
+  // 会议内容去 <data-dir>/logs/rooms/ 的会议记录看；控制台/journald 只负责报警。
+  const LOG_RANK = { quiet: 0, summary: 1, detail: 2, trace: 3 }
   const OPTIONS_LOG_LEVEL = LOG_RANK[String(options.logLevel ?? 'summary')] === undefined
     ? 'summary'
     : String(options.logLevel ?? 'summary')
+  /**
+   * 5.181：**报警行**。不受档位影响（quiet 也打），只受老的 `--quiet` 影响。
+   * 生产 journald 里留下的应该只有这一类。
+   */
+  const warnLog = options.quiet
+    ? () => {}
+    : (...args) => console.log(`[${new Date().toTimeString().slice(0, 8)}] ⚠️`, ...args)
+
   function logLevelAtLeast(level) {
     const want = LOG_RANK[level] ?? 1
     return LOG_RANK[OPTIONS_LOG_LEVEL] >= want
@@ -819,7 +830,100 @@ export async function startRelay(rawOptions = {}) {
     const pending = summaryPending.get(key)
     if (pending === undefined) return
     summaryPending.delete(key)
-    debug(renderSummary(pending.entries, pending.segTag))
+    // 控制台那行看档位（quiet 下不打印）——日志与记录是两件事
+    if (logLevelAtLeast('summary')) debug(renderSummary(pending.entries, pending.segTag))
+    // 5.181：同一批数据顺手落一条**会议记录**（一场会一个文件、每句一行、实时追加）。
+    // 为什么在这里：relay 是唯一"同一句的几种译文都看见过"的地方 —— 正好拼出完整的一句
+    //（原文 + 各语言译文 + 四段耗时）。控制台只是给人扫一眼，记录才是事后能查的东西。
+    //
+    // ⚠️ 不能每批写一条：一种语言的帧可能比另一种早到几十毫秒（甚至落到下一轮轮询），
+    // 一批一条就会把同一句写成两三条。所以先攒进 sentenceAccum，攒齐/超时才落一条。
+    collectSentenceRecord(pending)
+  }
+
+  /**
+   * 5.181：攒句子记录 —— 同一句的几种译文到齐（或超时 1.2s）才写一条。
+   */
+  const sentenceAccum = new Map()
+  function collectSentenceRecord(pending) {
+    const entries = pending.entries ?? []
+    if (entries.length === 0) return
+    const first = entries[0]
+    const key = `${first.roomId ?? ''}|${pending.segTag === '' ? 'at:' + String(first.at ?? '') : pending.segTag}`
+    let accum = sentenceAccum.get(key)
+    if (accum === undefined) {
+      // 这一句"应该有几种译文"：优先看大脑给的 trMs（那是它真的翻了几种），
+      // 其次看 langs（拆分时复制的预期集合）—— 两个都没有就只等这一帧。
+      const expect = new Set(entries[0].langs ?? [])
+      for (const lang of Object.keys(entries[0].trMsByLang ?? {})) expect.add(lang)
+      if (expect.size === 0) expect.add(String(entries[0].lang ?? ''))
+      accum = { entries: [], expect, timer: null }
+      sentenceAccum.set(key, accum)
+    }
+    accum.entries = accum.entries.concat(entries)
+    for (const one of entries) accum.expect.add(String(one.lang ?? ''))
+    const seen = new Set(accum.entries.map((one) => String(one.lang ?? '')))
+    const complete = [...accum.expect].every((lang) => lang === '' || seen.has(lang))
+    if (accum.timer !== null) clearTimeout(accum.timer)
+    if (complete) {
+      writeSentenceRecord({ entries: accum.entries, segTag: pending.segTag })
+      sentenceAccum.delete(key)
+      return
+    }
+    const timer = setTimeout(() => {
+      sentenceAccum.delete(key)
+      writeSentenceRecord({ entries: accum.entries, segTag: pending.segTag })
+    }, 1200)
+    timer.unref?.()
+    accum.timer = timer
+  }
+
+  /**
+   * 5.181：把这一句写进会议记录。
+   *
+   * <p>文件：`<data-dir>/logs/rooms/<邀请码>-<房间id>.jsonl`，一行一条 JSON。
+   * 用户要求"实时更新"（要拿它现场校准），所以这里是**立即追加**，不是会议结束才落盘。
+   */
+  function writeSentenceRecord(pending) {
+    const entries = pending.entries ?? []
+    if (entries.length === 0) return
+    const first = entries[0]
+    const code = String(first.code ?? '')
+    const roomId = String(first.roomId ?? '')
+    const dst = {}
+    let src = ''
+    let srcLang = ''
+    let trSlowest = 0
+    const mergedTr = {}
+    for (const one of entries) {
+      if (String(one.text ?? '') !== '' && String(one.lang ?? '') !== '') dst[String(one.lang)] = String(one.text)
+      if (src === '' && String(one.source ?? '') !== '') src = String(one.source)
+      if (srcLang === '' && String(one.sourceLang ?? '') !== '') srcLang = String(one.sourceLang)
+      for (const [lang, ms] of Object.entries(one.trMsByLang ?? {})) mergedTr[lang] = Number(ms)
+      trSlowest = Math.max(trSlowest, Number(one.trMs ?? 0))
+    }
+    const silenceMs = Number(first.silenceMs ?? 0)
+    const queueMs = Number(first.queueMs ?? 0)
+    const asrMs = Number(first.asrMs ?? 0)
+    const pushMs = Number(first.pushMs ?? 0)
+    appendMeetingEvent(options.dataDir, { code, roomId }, {
+      kind: 'sentence',
+      code,
+      room: roomId,
+      seg: Number(first.segNo ?? 0) || undefined,
+      speaker: String(first.who ?? ''),
+      srcLang,
+      segMs: Number(first.segMs ?? 0),
+      queueMs,
+      asrMs,
+      silenceMs,
+      trMs: mergedTr,
+      pushMs,
+      // ⇒ = 说完到手机（等静音 + 排队 + 识别 + 最慢那份翻译 + 推送），与摘要行同口径
+      e2eMs: silenceMs + queueMs + asrMs + trSlowest + pushMs,
+      src,
+      dst,
+    })
   }
 
   function queueSummary(key, entry) {
@@ -866,7 +970,8 @@ export async function startRelay(rawOptions = {}) {
       }
       return
     }
-    if (logLevelAtLeast('summary') !== true) return
+    // ⚠️ 这里**不能**因为档位不够就 return：控制台可以安静（quiet），但
+    // **会议记录必须照写** —— 生产就是跑在 quiet 档上的，记录才是那里的主产出。
     const cost = frame.cost !== undefined && frame.cost !== null && typeof frame.cost === 'object'
       ? frame.cost
       : {}
@@ -896,17 +1001,24 @@ export async function startRelay(rawOptions = {}) {
     const key = `${roomId ?? ''}|${segTag === '' ? fallbackKey : segTag}${echo ? '|echo' : ''}`
     queueSummary(key, {
       segTag,
+      segNo: segNo > 0 ? segNo : 0,
+      code,
+      roomId: String(roomId ?? ''),
       who,
       segMs,
       queueMs,
       asrMs,
+      silenceMs,
       pushMs,
       endToEnd,
       echo,
       notice: frame.notice !== undefined && frame.notice !== null && frame.notice !== '',
       lang,
+      text: String(frame.text ?? ''),
+      source: String(frame.source ?? ''),
       sourceLang: String(frame.sourceLang ?? ''),
       trMs,
+      trMsByLang: trMap,
       textLen,
       langs,
     })
@@ -2368,7 +2480,7 @@ export async function startRelay(rawOptions = {}) {
                   debug(`[语言] ${speaker} 的参会语言更新为 ${lang}（按他上传时上报的语种）`)
                 }
               } catch (error) {
-                debug(`[语言] 同步成员语言失败（不影响字幕）：${error?.message ?? error}`)
+                warnLog(`[语言] 同步成员语言失败（不影响字幕）：${error?.message ?? error}`)
               }
             }
           }
@@ -2486,7 +2598,7 @@ export async function startRelay(rawOptions = {}) {
               // 所以现在**不落盘**，只报一行 —— 让"手机没带房间参数"这件事看得见，
               // 而不是静默丢音频、让人以为识别坏了。
               state.audioNoRoomWarned = true
-              debug('⚠️ 收到不带房间号的音频：已忽略（客户端不在会议里录音时会这样）')
+              warnLog('收到不带房间号的音频：已忽略（客户端不在会议里录音时会这样）')
             }
           }
           state.audioChunks += 1

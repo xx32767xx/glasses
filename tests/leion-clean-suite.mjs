@@ -136,11 +136,15 @@ export async function runLeionCleanSuite({ it, check }) {
     check('哪怕阈值是 0 天，plan 里也不会出现它们',
       !plan.plan.some((item) => item.name.includes('模型') || item.name.includes('评测')),
       JSON.stringify(plan.plan.map((item) => item.name)))
+    // 5.181：日志分两处 —— 新的「会议记录 logs」（在数据目录里）与「旧日志 var/logs」。
+    // 两者都受 --keep-logs 管：传了就不清。
     check('默认 --keep-logs 不传时日志可清、传了就不可清', (() => {
       const withLogs = collectPlan({ dataDir: 'x', olderThanDays: 3 })
       const without = collectPlan({ dataDir: 'x', olderThanDays: 3, keepLogs: true })
-      const row = (plan) => plan.rows.find((r) => r.name.includes('运行日志'))
+      const row = (plan) => plan.rows.find((r) => r.name.includes('会议记录'))
+      const legacy = (plan) => plan.rows.find((r) => r.name.includes('旧日志'))
       return row(withLogs).cleanable === true && row(without).cleanable === false
+        && legacy(withLogs).cleanable === true && legacy(without).cleanable === false
     })(), '')
   })
 

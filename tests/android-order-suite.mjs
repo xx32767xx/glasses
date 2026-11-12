@@ -2208,6 +2208,8 @@ export async function runAndroidOrderSuite({ it, check }) {
       '只支持 GET /org/segmentation',
       // 5.171：音频占用/清理同样只在管理台用（手机上没有这个界面）。
       '要删哪一场？给 roomId', '没有这场会的录音',
+      // 5.181：这行只进日志（warnLog），不给手机看 —— 与上面同一条规矩。
+      '[语言] 同步成员语言失败',
     ]
     const ignore = (raw) => IGNORE.some((i) => raw.startsWith(i))
     const matched = (raw) => exact.includes(raw) || pre.some((p) => raw.startsWith(p))

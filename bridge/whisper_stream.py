@@ -359,7 +359,7 @@ def parse_args(argv=None):
     parser.add_argument("--room-code", default=None,
                         help="房间的 6 位邀请码（5.177）：日志里的句子编号写成 <邀请码>#<序号>，"
                              "这样'原文行 / 摘要行 / 字幕帧'能用同一个号对上。不给就只写 #<序号>")
-    parser.add_argument("--log-level", default="summary", choices=["summary", "detail", "trace"],
+    parser.add_argument("--log-level", default="summary", choices=["quiet", "summary", "detail", "trace"],
                         help="日志档位（5.177）：summary=每句一行摘要 + 原文（**缺省**）；"
                              "detail=再把切句/识别/延迟账逐句打出来；trace=全都打")
     parser.add_argument("--queue-poll-ms", type=int, default=60,
@@ -449,12 +449,13 @@ def preview(text, limit=40):
 
 # 5.177：日志档位。缺省 summary —— 现场只看到"每句一行"，详情请加 --log-level detail。
 _LOG_LEVEL = {"value": "summary"}
-_LOG_RANK = {"summary": 0, "detail": 1, "trace": 2}
+# 5.181：quiet 才是生产用的（只报警）；每句的原文/译文去会议记录看
+_LOG_RANK = {"quiet": 0, "summary": 1, "detail": 2, "trace": 3}
 
 
 def log_level_at_least(level):
     """当前档位够不够打这一行（summary < detail < trace）。"""
-    return _LOG_RANK.get(_LOG_LEVEL["value"], 0) >= _LOG_RANK.get(level, 1)
+    return _LOG_RANK.get(_LOG_LEVEL["value"], 1) >= _LOG_RANK.get(level, 2)
 
 
 
@@ -2917,8 +2918,10 @@ def run_queue_consumer(args, np, pool):
                 # 这是 summary 档唯一"每句必有"的一行，所以它同时承担编号的锚点。
                 units = spoken_units(text)
                 label = seg_id or f"#{seg_no}" if seg_no > 0 else str(meta.get("room") or "?")
-                print(f"[原文] {label} {tag or '?'} {units}{'字' if has_cjk(text) else '词'}"
-                      f"「{preview(text)}」", file=sys.stderr, flush=True)
+# 5.181：这一行属于 summary 档；quiet（生产）下不打 —— 原文与译文都在会议记录里。
+                if log_level_at_least("summary"):
+                    print(f"[原文] {label} {tag or '?'} {units}{'字' if has_cjk(text) else '词'}"
+                          f"「{preview(text)}」", file=sys.stderr, flush=True)
                 # 以下两行（策略明细 / 延迟账）现在是 detail 档：内容已经进了摘要行，
                 # 现场不需要每句看两遍；排障时 --log-level detail 原样拿得到。
                 if log_level_at_least("detail"):

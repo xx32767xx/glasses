@@ -1556,7 +1556,8 @@ export function createInterpreter(ctx, rawConfig, deps) {
    * <p>为什么放插件里也要有：摘要行是 relay 打的，但"翻译耗时""策略明细"这类行在插件里 ——
    * 不跟着一起降，摘要化就只做了一半。档位从 config.logLevel 来（harness-side 传），缺省 summary。
    */
-  const LOG_RANK = { summary: 0, detail: 1, trace: 2 }
+  // 5.181：quiet 是生产档（只报警）；每句内容在会议记录里
+  const LOG_RANK = { quiet: 0, summary: 1, detail: 2, trace: 3 }
   const LOG_LEVEL = (() => {
     const raw = String((config && config.logLevel) || 'summary').trim().toLowerCase()
     return LOG_RANK[raw] === undefined ? 'summary' : raw
@@ -1814,9 +1815,12 @@ export function createInterpreter(ctx, rawConfig, deps) {
             //
             // 5.177：正文截到 40 字（用户决定）—— 全文本来就在总线/收件箱里，
             // 日志里留一截是为了"扫一眼译文对不对"，不是当存档用。
-            console.log('[leion-pro] ' + result.from + '→' + result.to
-              + (strategyTag(item) === '' ? '' : ' ' + strategyTag(item))
-              + '  ' + previewText(result.translation))
+            // 5.181：逐语言的译文预览属于 summary 档；quiet（生产）下不打
+            if (logLevelAtLeast('summary')) {
+              console.log('[leion-pro] ' + result.from + '→' + result.to
+                + (strategyTag(item) === '' ? '' : ' ' + strategyTag(item))
+                + '  ' + previewText(result.translation))
+            }
           } else {
             inbox.errors += 1
             inbox.lastError = result.failure

@@ -67,6 +67,7 @@ import { DEFAULT_DATA_DIR, roomTrackDir } from '../relay/lan-relay.mjs'
 import { listRooms, closeRoomByAdmin } from '../lib/rooms.mjs'
 import { dbPath } from '../lib/db.mjs'
 import { currentTermsPaths, readCurrentMeeting } from '../lib/meeting-terms.mjs'
+import { appendMeetingEvent, appendServiceEvent } from '../lib/meeting-log.mjs'
 // 这五个都从 start-helpers 借：两份脚本各写一遍就会各错一遍（端口探测那个 SO_REUSEADDR 的坑尤其）。
 import {
   archiveSessionLogs, assertDataDirWritable, childEnv, flushLogStreams, portInUse, sessionStamp,
@@ -181,6 +182,9 @@ export function roomColor(roomId) {
   return ROOM_COLORS[hash % ROOM_COLORS.length]
 }
 
+/** 5.181：`--quiet-logs` 已废弃（日志不再写 var/logs），只提示一次 */
+let quietLogsNoted = false
+
 export function parseArgs(argv = []) {
   const options = {
     dataDir: DEFAULT_DATA_DIR,
@@ -280,7 +284,16 @@ export function parseArgs(argv = []) {
     if (key === 'api-translate') { options.apiTranslate = true; continue }
     if (key === 'include-empty') { options.includeEmpty = true; continue }
     if (key === 'public') { options.public = true; continue }
-    if (key === 'quiet-logs') { options.writeLogs = false; continue }
+    if (key === 'quiet-logs') {
+      // 5.181：**已废弃**。日志不再写 var/logs，所以它现在没有作用 ——
+      // 但生产单元的命令行里还带着它，必须接受（否则服务起不来），只提示一次。
+      if (quietLogsNoted !== true) {
+        quietLogsNoted = true
+        console.log('  （--quiet-logs 已废弃：日志不再写 var/logs；会议记录在 <data-dir>/logs/rooms/）')
+      }
+      options.writeLogs = false
+      continue
+    }
     if (key === 'log-level') {
       const level = argv[index + 1] ?? ''
       if (['summary', 'detail', 'trace'].includes(level) !== true) {
@@ -1266,14 +1279,19 @@ export async function main(argv = process.argv.slice(2)) {
   let readErrorWarned = false
   let ramWarned = false
 
-  function ensureLog(key, headerNote) {
-    if (!options.writeLogs) return null
-    if (logStreams.has(key)) return logStreams.get(key)
-    mkdirSync(LOGS_DIR, { recursive: true })
-    const stream = createWriteStream(join(LOGS_DIR, `${key}.log`), { flags: 'w' })
-    stream.write(`# ${new Date().toISOString()}  start-multi  ${headerNote}\n`)
-    logStreams.set(key, stream)
-    return stream
+  /**
+   * 5.181：**不再写 var/logs**（用户拍板：本地调试日志不要了，只会带来干扰）。
+   *
+   * <p>为什么整段注释掉而不是留着开关：那套东西有三个硬伤 ——
+   * ① 每次启动 `flags:'w'` 截断（"上次崩溃前那几行"最容易丢）；
+   * ② 归档只在正常退出时发生（被 SIGKILL 就没有）；
+   * ③ 它在**代码仓库**里，与 `--data-dir` 无关，live/test 混在一起。
+   *
+   * <p>现在两个去处：控制台（生产进 journald，quiet 档只报警）与
+   * `<data-dir>/logs/rooms/`（会议记录，一场会一个文件、每句一行、实时追加）。
+   */
+  function ensureLog() {
+    return null
   }
 
   function spawnStep(step, roomId) {
@@ -1344,6 +1362,18 @@ export async function main(argv = process.argv.slice(2)) {
     const color = roomColor(room.id)
     console.log(`  ${color}▶ 房间 ${room.id}「${room.name || '未命名'}」${RESET} 邀请码 ${room.code}，`
       + `${room.members} 人在场${room.holder ? `，现在 ${room.holder} 在说` : ''}`)
+    // 5.181：会议记录从这里开始（一场会一个文件，实时追加）
+    appendMeetingEvent(options.dataDir, { code: room.code, roomId: room.id }, {
+      kind: 'meeting',
+      event: 'start',
+      code: String(room.code ?? ''),
+      room: String(room.id ?? ''),
+      name: String(room.name ?? ''),
+      host: String(room.host ?? ''),
+      members: Number(room.members ?? 0),
+      targetLang: String(room.targetLang ?? ''),
+      model: String(options.whisperModel ?? ''),
+    })
     console.log(`    ${DIM}总线 ${files.busFile.replace(/\\/g, '/')}${RESET}`)
     // 第二个房间起来的这一刻最容易把显存撑爆 —— 在这里就把账算给人看（只算一次）
     if (options.transcriber && running.size === 2 && ramWarned === false) {
@@ -1355,6 +1385,20 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   function stopRoom(roomId, reason) {
+    // 5.181：会议记录收尾（reason 说明是散会还是被收掉）
+    try {
+      const entry = running.get(roomId)
+      const room = entry?.room ?? null
+      appendMeetingEvent(options.dataDir, { code: room?.code ?? '', roomId }, {
+        kind: 'meeting',
+        event: 'end',
+        code: String(room?.code ?? ''),
+        room: String(roomId ?? ''),
+        name: String(room?.name ?? ''),
+        reason: String(reason ?? ''),
+        minutes: entry === undefined ? 0 : Math.round((Date.now() - entry.startedAt) / 60000),
+      })
+    } catch { /* 记录失败不影响收管线 */ }
     const entry = running.get(roomId)
     if (entry === undefined) return
     running.delete(roomId)
@@ -1380,7 +1424,9 @@ export async function main(argv = process.argv.slice(2)) {
           console.error('')
           console.error('  ⚠️ 大脑·API 连续退出 5 次，**不再重启**（会议不受影响，'
             + '但 external `POST /translate` 会一直回 503）。先看日志：')
-          console.error(`     ${join(LOGS_DIR, `${step.key}.log`).replace(ROOT, '.').replace(/\\/g, '/')}`)
+          // 5.181：不再有 var/logs —— 去看 journald 与会议记录
+          console.error('     journalctl -u <你的服务名> -n 200 --no-pager')
+          console.error(`     会议记录：${join(String(options.dataDir), 'logs', 'rooms')}`)
           return
         }
         const delayMs = Math.min(30000, 1000 * (2 ** (apiBrainRestarts - 1)))
@@ -1418,7 +1464,9 @@ export async function main(argv = process.argv.slice(2)) {
     if (gathered.count >= MAX_RETRIES) {
       console.error(`  这一场连挂 ${gathered.count} 次，**不再重试**（其他房间不受影响）。`)
       console.error('  修好原因后重跑本脚本；先看这台机器的日志：')
-      console.error(`     ${join(LOGS_DIR, `${step.key}.log`).replace(ROOT, '.').replace(/\\/g, '/')}`)
+      // 5.181：不再有 var/logs —— 去看 journald 与会议记录
+      console.error('     journalctl -u <你的服务名> -n 200 --no-pager')
+      console.error(`     会议记录：${join(String(options.dataDir), 'logs', 'rooms')}`)
     } else {
       console.error(`  ${Math.round(RETRY_COOLDOWN_MS / 1000)} 秒后重试（第 ${gathered.count + 1}/${MAX_RETRIES} 次）。`)
     }
@@ -1432,20 +1480,9 @@ export async function main(argv = process.argv.slice(2)) {
     console.log('  正在停止全部进程…')
     for (const child of children) killTree(child)
     await sleep(600)
-    if (logStreams.size > 0) {
-      await flushLogStreams(Object.fromEntries(logStreams))
-      try {
-        const result = archiveSessionLogs({
-          logsDir: LOGS_DIR, keys: [...logStreams.keys()], stamp: sessionStartedAt,
-        })
-        if (result.archived) {
-          console.log(`  日志已归档  ${result.dir.replace(ROOT, '.').replace(/\\/g, '/')}`
-            + `（${result.keys.length} 份）`)
-        }
-      } catch (error) {
-        console.log(`  ⚠️ 日志归档失败（日志仍在 var/logs/ 里）：${String(error?.message ?? error)}`)
-      }
-    }
+    // 5.181：日志不再写 var/logs，退出时也就没有可归档的东西（会议记录是实时追加的）
+    void archiveSessionLogs
+    void flushLogStreams
     console.log('  已全部停止。')
     process.exit(code)
   }
