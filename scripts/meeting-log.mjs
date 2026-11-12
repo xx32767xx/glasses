@@ -38,7 +38,12 @@ const SCRIPT_PATH = fileURLToPath(import.meta.url)
 
 export function parseArgs(argv = []) {
   const options = {
-    dataDir: join(VAR_DIR, 'live'),
+    // 5.181b：缺省先看 LEION_DATA_DIR（服务器上通常是 /var/lib/leion/test），
+    // 再退到仓库里的 var/live。**之前只认 var/live**，于是生产上明明有记录，
+    // 脚本却去 var/live/logs/rooms 找一个不存在的目录，报"没有会议记录"。
+    dataDir: process.env.LEION_DATA_DIR && String(process.env.LEION_DATA_DIR).trim() !== ''
+      ? String(process.env.LEION_DATA_DIR).trim()
+      : join(VAR_DIR, 'live'),
     code: '',
     tail: 0,
     all: false,
@@ -60,7 +65,7 @@ export function parseArgs(argv = []) {
       index += 1
       return next
     }
-    if (token === '--data-dir') options.dataDir = value()
+    if (token === '--data-dir') { options.dataDir = value(); options.dataDirExplicit = true }
     else if (token === '--code') options.code = value()
     else if (token === '--tail') options.tail = Number(value())
     else throw new Error(`不认识的参数：${token}（用 --help 看用法）`)
@@ -167,8 +172,52 @@ export function formatRecord(record, options = {}) {
   return [`${at}  ${label}${bits.length === 0 ? '' : '  ' + bits.join('  ')}`]
 }
 
+/**
+ * 5.181b：这个数据目录里没有会议记录时，去常见位置探一探。
+ *
+ * <p>为什么需要：数据目录是**启动参数**决定的（生产常是 `/var/lib/leion/test`），
+ * 而脚本缺省只会看一个地方。让用户每次都手填 `--data-dir` 不现实 ——
+ * 那就自己找一下，并**明说"我看的是哪个目录、记录实际在哪个目录"**。
+ */
+export function findDataDirWithRecords(preferred) {
+  const candidates = [
+    preferred,
+    process.env.LEION_DATA_DIR ?? '',
+    join(VAR_DIR, 'live'),
+    join(VAR_DIR, 'test'),
+    '/var/lib/leion/test',
+    '/var/lib/leion/live',
+  ].filter((one) => String(one ?? '').trim() !== '')
+  const tried = []
+  for (const candidate of candidates) {
+    const dir = String(candidate)
+    if (tried.includes(dir)) continue
+    tried.push(dir)
+    if (listMeetingLogs(dir).length > 0) return { dataDir: dir, found: true, tried }
+    // 数据目录里的 service-*.jsonl 也算"这台机器上有记录"
+    try {
+      const names = readdirSync(logsDirOf(dir))
+      if (names.some((name) => name.startsWith('service-') && name.endsWith('.jsonl'))) {
+        return { dataDir: dir, found: true, tried }
+      }
+    } catch { /* 目录不存在 */ }
+  }
+  return { dataDir: preferred, found: false, tried }
+}
+
 export async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv)
+  // 没显式给 --data-dir 时自动探路（给了就尊重用户）
+  if (options.dataDirExplicit !== true) {
+    const found = findDataDirWithRecords(options.dataDir)
+    if (found.found === true && found.dataDir !== options.dataDir) {
+      process.stdout.write(`（自动选中的数据目录：${found.dataDir}；'
+        + '要看别的加 --data-dir <目录>）\n`)
+      options.dataDir = found.dataDir
+    } else if (found.found === false) {
+      process.stdout.write(`（找过这些数据目录，都没有记录：${found.tried.join(' / ')}）\n`)
+    }
+  }
   if (options.help === true) {
     process.stdout.write(helpText() + '\n')
     return 0
@@ -201,8 +250,11 @@ export async function main(argv = process.argv.slice(2)) {
   // ── 没给 --code：列出有哪些会议记录 ──────────────────────────────────────
   if (options.code === '') {
     if (logs.length === 0) {
-      process.stdout.write(`没有会议记录（${logsDirOf(options.dataDir)}/rooms/）。\n`
-        + '  提示：记录是 5.181 之后才开始写的；更早的会只能去 journald 里翻。\n')
+      process.stdout.write(`没有会议记录（我找的是 ${logsDirOf(options.dataDir)}/rooms/）。\n`
+        + '  提示：\n'
+        + '    · 数据目录是**启动参数**定的（生产常是 /var/lib/leion/test），用 --data-dir 指过去；\n'
+        + '    · 记录是 5.181 之后才开始写的；更早的会只能去 journald 里翻；\n'
+        + '    · 确认服务已经跑的是新代码：grep -c logs/rooms ~/glasses/relay/lan-relay.mjs\n')
       return 0
     }
     process.stdout.write(`会议记录（${logs.length} 场，新的在前）：\n`)

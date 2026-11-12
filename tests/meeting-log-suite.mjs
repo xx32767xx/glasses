@@ -177,6 +177,35 @@ export async function runMeetingLogSuite({ it, check }) {
       && parseRenderArgs(['--code', '229415', '--tail', '5']).tail === 5)
   })
 
+  // 5.181b：生产上的坑 —— 服务用 --data-dir /var/lib/leion/test，而脚本缺省看 var/live，
+  // 于是"明明写了记录，脚本却说没有"。现在缺省认 LEION_DATA_DIR，并且会去常见位置探路、
+  // 找到就说清用的是哪个目录。
+  await it('5.181b：数据目录找得对（服务不在缺省位置时也能查到）', async () => {
+    const { findDataDirWithRecords } = await import('../scripts/meeting-log.mjs')
+    const home = join(ROOT, 'var', 'test', 'meeting-log-home')
+    const prod = join(ROOT, 'var', 'test', 'meeting-log-prod')
+    rmSync(home, { recursive: true, force: true })
+    rmSync(prod, { recursive: true, force: true })
+    mkdirSync(home, { recursive: true })
+    mkdirSync(prod, { recursive: true })
+    // 生产数据目录里有记录，home 里没有（正是"脚本看错地方"的情形）
+    appendMeetingEvent(prod, { code: '229415', roomId: 'room-a' }, {
+      kind: 'meeting', event: 'start', code: '229415', room: 'room-a', name: '测试会',
+    })
+    check('缺省目录没记录时不会瞎报（先看自己找没找到）',
+      listMeetingLogs(home).length === 0 && listMeetingLogs(prod).length === 1)
+    check('显式给的目录优先（--data-dir 说哪就是哪）', (() => {
+      const found = findDataDirWithRecords(prod)
+      return found.found === true && found.dataDir === prod
+    })())
+    check('探路会列出试过哪些目录（找不到时用户知道该指哪）', (() => {
+      const found = findDataDirWithRecords(home)
+      return Array.isArray(found.tried) && found.tried.length >= 2
+    })())
+    rmSync(home, { recursive: true, force: true })
+    rmSync(prod, { recursive: true, force: true })
+  })
+
   await it('5.181：写入失败不拖停业务（记录是旁路）', async () => {
     // 把 data-dir 指向一个"存在但是文件"的路径 → 建不了目录，写必然失败
     const bad = join(ROOT, 'var', 'test', 'meeting-log-bad')

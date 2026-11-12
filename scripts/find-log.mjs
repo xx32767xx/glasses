@@ -57,7 +57,10 @@ export function parseArgs(argv = []) {
     limit: 200,
     logPath: '',
     logsDir: join(VAR_DIR, 'logs'),
-    dataDir: join(VAR_DIR, 'live'),
+    // 5.181b：认 LEION_DATA_DIR（服务器上生产数据常在 /var/lib/leion/test）
+    dataDir: process.env.LEION_DATA_DIR && String(process.env.LEION_DATA_DIR).trim() !== ''
+      ? String(process.env.LEION_DATA_DIR).trim()
+      : join(VAR_DIR, 'live'),
     journal: '',
     date: '',
     useData: true,
