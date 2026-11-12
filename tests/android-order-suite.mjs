@@ -1905,6 +1905,40 @@ export async function runAndroidOrderSuite({ it, check }) {
       && /private void leaveRoom\(\)\s*\{[\s\S]{0,400}?leaving = true/.test(room))
   })
 
+  // 5.179：用户报「息屏之后新字幕就不推了，连上之后之前的字幕会消失」。
+  // 病根两半：① 只听不说的人没有前台服务 → 息屏后进程被系统冻结，长轮询停了；
+  //          ② 长轮询回来时服务端只给"最新一帧"，中间那些字幕永久丢了。
+  await it('5.179：息屏/重连不丢字幕（会话前台服务 + backlog 补发）', () => {
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+    const client = readFileSync(join(javaDir, 'LanClient.java'), 'utf-8')
+    const relay = readFileSync(join(ROOT, 'relay', 'lan-relay.mjs'), 'utf-8')
+
+    check('进房间那一刻就持有会话服务（不只开麦时）',
+      /inRoom = true;\s*\n\s*MeetingMicService\.start\(this\);/.test(room))
+    check('回到前台时把服务补起来（幂等）',
+      /protected void onResume\(\)[\s\S]{0,400}?if \(inRoom\) \{[\s\S]{0,120}?MeetingMicService\.start\(this\)/.test(room))
+
+    check('服务端保留每房间最近若干帧（环形缓冲）', /framesByRoomHistory/.test(relay))
+    check('带 since 回来时把错过的帧放进 backlog', /const backlogOf = \(roomId\) =>/.test(relay)
+      && /backlog: backlogOf\(roomParam\)/.test(relay))
+    check('backlog 只补"最新那帧之前"的（不重复投）',
+      /Number\(one\.seq\) > since && Number\(one\.seq\) < curSeq/.test(relay))
+
+    check('客户端先投 backlog 再投最新帧（顺序不能反）', (() => {
+      const backlogAt = client.indexOf('JSONArray backlog = response.optJSONArray("backlog")')
+      const deliverAt = client.indexOf('deliverFrame(missed)')
+      const mainAt = client.indexOf('JSONObject frame = response.optJSONObject("frame")')
+      return backlogAt > 0 && deliverAt > backlogAt && mainAt > deliverAt
+    })(), '客户端没按顺序补发')
+
+    for (const dir of ['values', 'values-en', 'values-pt-rBR']) {
+      const xml = readFileSync(join(ROOT, 'android', 'app', 'src', 'main', 'res', dir, 'strings.xml'), 'utf-8')
+      check(`${dir} 的服务通知文案不再只说"收音"`,
+        /mic_service_title/.test(xml) && /mic_service_text/.test(xml))
+    }
+  })
+
   await it('5.154：息屏之后继续收音（前台服务 + 不释放麦克风）', () => {
     const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
     const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
@@ -1938,7 +1972,16 @@ export async function runAndroidOrderSuite({ it, check }) {
       /power\.isInteractive\(\)/.test(room))
     check('开麦成功时启动服务（必须在还处于前台时起）',
       /if \(error == null\) \{[\s\S]{0,900}?MeetingMicService\.start\(this\)/.test(room))
-    check('释放音频时一起停服务', /private void releaseAudio\(\)[\s\S]{0,900}?MeetingMicService\.stop\(this\)/.test(room))
+    // 5.179：语义变了 —— 服务现在按"在会里"持有（听的人息屏也要能收字幕），
+    // 所以 releaseAudio 只在**不在会里**时才停它；真正的停止点在 leaveRoom / onDestroy。
+    check('releaseAudio 不再碰会话服务（它按"在会里"持有，与开麦无关）', (() => {
+      const at = room.indexOf('private void releaseAudio()')
+      const body = room.slice(at, at + 1600)
+      return at > 0 && /不在停会话服务|不再停会话服务|与"开麦\/关麦"无关/.test(body)
+    })(), 'releaseAudio 里没有说明它为何不再停服务')
+    check('离会时停服务', /private void leaveRoom\(\)[\s\S]{0,200}?MeetingMicService\.stop\(this\)/.test(room))
+    check('页面销毁时也停（通知条不许一直挂着）',
+      /protected void onDestroy\(\)[\s\S]{0,900}?MeetingMicService\.stop\(this\)/.test(room))
     check('通知权限是"尽力而为"（被拒不影响收音）',
       /if \(requestCode == REQ_NOTIFICATIONS\) return;/.test(room))
     check('清单有 POST_NOTIFICATIONS', /android\.permission\.POST_NOTIFICATIONS/.test(manifest))

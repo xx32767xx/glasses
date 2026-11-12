@@ -348,9 +348,9 @@
     <string name="srv_client_outdated">客户端版本过旧，请安装最新版后再用</string>
     <!-- 5.28：退到后台/锁屏时自动交还麦克风，回来需要重新开麦 -->
         <string name="mic_service_channel">会议收音</string>
-    <string name="mic_service_channel_desc">会议进行中、正在使用麦克风时显示</string>
-    <string name="mic_service_title">会议进行中 · 正在收音</string>
-    <string name="mic_service_text">息屏也会继续收音；结束时请回到会议页退出</string>
+    <string name="mic_service_channel_desc">会议进行中显示（息屏也保持连接）</string>
+    <string name="mic_service_title">会议进行中</string>
+    <string name="mic_service_text">息屏也继续收音与收字幕；结束时请回到会议页退出</string>
     <string name="st_audio_released">已退出前台，麦克风已释放（回来需重新点开麦）</string>
     <!-- 5.30：译文朗读（TTS） -->
     <string name="st_tts_speaking">正在朗读译文…</string>

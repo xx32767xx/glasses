@@ -218,6 +218,16 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
      * "这场会已经结束"，用户看到红字提示——明明是他自己按了两次。
      */
     private boolean leaving = false;
+
+    /**
+     * 5.179：**我在这场会里**（进会成功 → 离会/销毁）。
+     *
+     * <p>用途只有一个：决定"会话前台服务"要不要一直持有。以前那个前台服务只在**开麦**
+     * 期间存在（5.154 是为了息屏继续收音），于是"只听不说"的人一息屏就被系统当成
+     * 后台应用 —— 进程被冻结，长轮询停了，**新字幕一条也收不到**，
+     * 用户看到的就是"息屏之后字幕不推了"。
+     */
+    private boolean inRoom = false;
     // 4.97：「正在听」胶囊按钮已删除（倾听全自动），所以不再需要这个引用
     /** 我是不是正在听（与服务端的 listen 开关保持一致）。 */
     private boolean listening = false;
@@ -296,6 +306,12 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     @Override
     protected void onResume() {
         super.onResume();
+        // 5.179：回到前台时把会话服务补起来（幂等）。它让"息屏/切后台"期间进程不被冻结，
+        // 长轮询才能继续把字幕收进来 —— 只听不说的人也需要它。
+        if (inRoom) {
+            MeetingMicService.start(this);
+            ensureNotificationPermission();
+        }
         // 4.56：换语言会 recreate 本页，而本顿重建会**打断正在进行的发言**。
         // 所以只有没开麦时才自检；开着麦就先用旧语言，等这一段说完再说。
         if (mic == null) UiLang.trackShown(this);
@@ -433,6 +449,16 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         client.start();
         startFloorSocket(host, secret, token);
 
+        // 5.179：从进房间这一刻起就把它当成"会里"，并持有会话前台服务。
+        //
+        // 为什么现在就起（而不是等开麦）：**只听不说的人也需要它**。没有前台服务，
+        // 息屏/切后台之后系统会把进程当后台应用冻结，长轮询停了 —— 新字幕一条也收不到，
+        // 用户看到的就是"息屏之后字幕不推了，连上以后之前的也没了"。
+        // 通知文案已经写成"会议进行中"，对"正在听"同样是实话。
+        inRoom = true;
+        MeetingMicService.start(this);
+        ensureNotificationPermission();
+
         // ⚠️ 4.53 修：**必须**在 client 建好之后才拉房间详情。
         // 原来这行写在 client = new LanClient(...) 之前，于是线程里 NPE、被 catch 静默吞掉，
         // 表现就是顶部一直是「#------」占位、角色永远显示「参与者」。
@@ -559,6 +585,10 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         }
         // 5.28：退出房间的**唯一**音频收口（见 releaseAudio 的说明）
         releaseAudio();
+        // 5.179：页面销毁 = 会话结束，会话前台服务必须收掉（否则通知条一直挂着）。
+        // 放在 releaseAudio() 之后：那个方法才是音频的唯一出口，顺序不该被别的事插队。
+        inRoom = false;
+        MeetingMicService.stop(this);
         // 5.30：朗读引擎也要放掉（否则 TTS 服务会跟着进程活很久）
         if (ttsQueue != null) {
             ttsQueue.shutdown();
@@ -680,7 +710,8 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         mic = null;
         // ⑤ 5.154：收音停了，前台服务也要停 —— 那条常驻通知就是"现在还在录"的凭据，
         //    早停一秒会让用户以为还在录，晚停一秒会让系统继续为一次已经结束的采集供能。
-        MeetingMicService.stop(this);
+        // 5.179：**这里不再停会话服务**。它现在按"在会里"持有（听的人息屏也要收字幕），
+        // 与"开麦/关麦"无关；停止点只有两处：leaveRoom() 与 onDestroy()。
         // ③ 说话时加的"保持屏幕常亮"要撤掉（听而不说时不额外耗电）
         if (getWindow() != null) {
             getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -1189,6 +1220,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
 
     /** 退出房间：发起者退出会让整场结束（服务端规则）。 */
     private void leaveRoom() {
+        // 5.179：离会 = 会话结束，服务收掉（它现在按"会里"持有，不按"开麦"持有）
+        inRoom = false;
+        MeetingMicService.stop(this);
         // 5.154：退出只走一次。连按两次返回键 / 按钮 + 返回键同时按，不该发两次退会请求
         if (leaving || isFinishing()) return;
         leaving = true;

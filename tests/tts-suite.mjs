@@ -149,7 +149,7 @@ export async function runTtsSuite({ it, check }) {
       && /private void setTtsMode\(int next\)[\s\S]{0,1400}?applyListenState\(\)/.test(source))
     check('合成失败要把原因带进提示行、logcat 与服务器日志（"失败了却查不到"是不可接受的）',
       /client\.sendDiag\("tts-failed /.test(source) && /Log\.w\("LeionRoom", "🔈 合成失败：/.test(source))
-    check('releaseAudio 也把朗读停掉', /releaseAudio[\s\S]{0,700}?ttsQueue\.stop\(\)/.test(source))
+    check('releaseAudio 也把朗读停掉', /releaseAudio[\s\S]{0,900}?ttsQueue\.stop\(\)/.test(source))
     check('离开房间释放朗读引擎', /onDestroy[\s\S]{0,400}?ttsQueue\?\.?|ttsQueue\.shutdown\(\)/.test(source)
       || /ttsQueue\.shutdown\(\)/.test(source))
     check('朗读默认在念译文（而不是默认静音）',

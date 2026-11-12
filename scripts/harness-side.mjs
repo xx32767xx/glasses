@@ -78,12 +78,12 @@ const HELP = `harness-side —— 常驻的 harness 侧进程（给手机 + 局�
 `
 
 export function parseArgs(argv) {
-  const options = { mode: 'live', dataDir: LIVE_DATA_DIR, cols: 40, lines: 3, pollMs: 150, keepInbox: false, proofread: true, termsRescue: false, targetLang: '', hearLangsPath: '' }
+  const options = { mode: 'live', dataDir: LIVE_DATA_DIR, cols: 40, lines: 3, pollMs: 150, keepInbox: false, proofread: true, termsRescue: false, targetLang: '', hearLangsPath: '', logLevel: 'summary' }
   const takesValue = new Set(['data-dir', 'inbox', 'bus', 'cols', 'lines', 'poll-ms',
     // 2026-10-23：允许把「热词表」指向任意一份快照（会议级术语快照 = var/data/meetings/<场次>/）。
     // 为什么需要：库（libraries/）与插件之间必须有个"冻结成一份表"的中间物 ——
     // 插件只认两个文件 + 一个 user 键，所以由调用方把快照路径传进来，插件零改动。
-    'terms-path', 'terms-active-path'])
+    'terms-path', 'terms-active-path', 'log-level'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (token === '--offline') { options.mode = 'offline'; continue }
@@ -118,7 +118,13 @@ export function parseArgs(argv) {
     const value = argv[index + 1]
     if (value === undefined || value.startsWith('--')) throw new Error(`--${key} 需要一个值`)
     index += 1
-    if (key === 'data-dir') options.dataDir = value
+    if (key === 'log-level') {
+      if (['summary', 'detail', 'trace'].includes(value) !== true) {
+        throw new Error(`--log-level 只能是 summary / detail / trace，收到 ${JSON.stringify(value)}`)
+      }
+      options.logLevel = value
+    }
+    else if (key === 'data-dir') options.dataDir = value
     else if (key === 'inbox') options.inbox = value
     else if (key === 'bus') options.bus = value
     else if (key === 'cols') options.cols = Number(value)
@@ -209,6 +215,8 @@ async function main() {
       // 热词临时修正（方向一实验，docs/15 §18，缺省关）：
       // 观测到漏写时问一次模型，可验证才替换那一小段；不改整句、不把校对当反证。
       termsRescue: options.termsRescue ? 'on' : 'off',
+      // 5.179：日志档位（summary 每句一行摘要 / detail 逐句明细 / trace 逐帧）
+      logLevel: String(options.logLevel ?? 'summary'),
       // 5.00：目标语言（空串 = 老行为：按 opposite(源语言) 推导，即中↔葡互译）
       targetLang: options.targetLang,
       // 5.00：relay 写的"这个房间的听众语言"侧车（成员 lang 去重）。空串 = 老行为。

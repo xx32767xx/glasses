@@ -556,6 +556,8 @@ export function pipelineSteps(options, room) {
     // 收件箱由本脚本清（见 prepareRoomFiles），所以让大脑别自己再清一遍 ——
     // 两次清空之间隔着模型加载，可能把已经写进去的第一句清掉。
     '--keep-inbox']
+  // 5.179：日志档位也传给大脑（它的"翻译耗时"等行跟着降档）
+  brainArgs.push('--log-level', String(options.logLevel ?? 'summary'))
   brainArgs.push(options.proofread ? '--proofread' : '--no-proofread')
   if (options.offline) brainArgs.push('--offline')
   if (options.termsRescue) brainArgs.push('--terms-rescue')

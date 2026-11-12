@@ -55,8 +55,8 @@
     <string name="srv_client_outdated">Versão do aplicativo muito antiga, instale a versão mais recente</string>
         <string name="mic_service_channel">Microfone da reunião</string>
     <string name="mic_service_channel_desc">Mostrado enquanto a reunião está usando o microfone</string>
-    <string name="mic_service_title">Reunião em andamento · microfone ligado</string>
-    <string name="mic_service_text">A gravação continua com a tela apagada. Saia da reunião para parar.</string>
+    <string name="mic_service_title">Reunião em andamento</string>
+    <string name="mic_service_text">Áudio e legendas continuam com a tela apagada. Saia da reunião para parar.</string>
     <string name="st_audio_released">Saiu do primeiro plano — microfone liberado (toque no microfone para retomar)</string>
     <string name="st_tts_speaking">Lendo a tradução em voz alta…</string>
     <string name="set_tts_read">Ler a tradução em voz alta</string>

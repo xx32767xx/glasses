@@ -47,6 +47,65 @@ export async function runRelaySuite({ it, check, assert }) {
   await rm(TMP, { recursive: true, force: true })
   await mkdir(TMP, { recursive: true })
 
+  // 5.179：现场「息屏之后新字幕不会推给他，连上之后之前的字幕会消失」。
+  // 根因之一是**长轮询只能拿到最新那一帧** —— 中间错过的就永久丢了。
+  // 服务端现在保留每房间最近 40 帧，手机带 since 回来时把错过的（since 之后、
+  // 最新之前）放进 backlog，客户端按顺序补上。
+  await it('5.179：手机带 since 回来时，错过的帧会被补发（backlog，从旧到新）', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'backlog-'))
+    // ⚠️ 总线**目录**必须先建：startRelay 靠"这个路径是不是目录"来分辨单文件/目录模式，
+    //    目录不存在就会被当成单文件，帧日志那条路根本不会走（踩过一次）。
+    mkdirSync(join(dir, 'buses'), { recursive: true })
+    const secret = 'backlog-secret-0123456789'
+    const relay = await startRelay({
+      dataDir: dir, port: 0, host: '127.0.0.1', secret, quiet: true,
+      bus: join(dir, 'buses'), pollHoldMs: 300, busPollMs: 30,
+    })
+    try {
+      mkdirSync(join(dir, 'buses'), { recursive: true })
+      const roomId = 'room-backlog'
+      writeFileSync(join(dir, 'buses', roomId + '.json'), JSON.stringify({ lines: [] }))
+      mkdirSync(join(dir, 'buses', roomId + '.json.frames'), { recursive: true })
+      // 连写三帧：等价于"手机没在听的那段时间里出了三句字幕"
+      for (let index = 1; index <= 3; index += 1) {
+        const frame = {
+          device: 'x', speaker: 'them', lang: 'en-US', text: 'line ' + index, source: '第 ' + index + ' 句',
+          sourceLang: 'zh-CN', partial: false, lines: ['l' + index], cols: 40, lineBudget: 6,
+          at: new Date().toISOString(),
+        }
+        writeFileSync(join(dir, 'buses', roomId + '.json.frames', '00000' + index + '-x.json'),
+          JSON.stringify(frame))
+        await new Promise((resolve) => setTimeout(resolve, 120))
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300))
+
+      const ask = async (since) => (await (await fetch(
+        `http://127.0.0.1:${relay.port}/frame?since=${since}&room=${roomId}`,
+        { headers: { 'X-Leion-Secret': secret } })).json())
+
+      const fresh = await ask(0)
+      check('最新一帧照旧走 frame 字段', fresh.changed === true && fresh.frame !== null,
+        JSON.stringify({ seq: fresh.seq, frame: fresh.frame?.text }))
+      check('越靠后越新（seq 递增）', Number(fresh.seq) === 3, String(fresh.seq))
+      check('从 0 开始读时，前两帧进 backlog（最新那帧不重复放进去）',
+        Array.isArray(fresh.backlog) && fresh.backlog.length === 2
+        && fresh.backlog[0].frame.text === 'line 1' && fresh.backlog[1].frame.text === 'line 2',
+        JSON.stringify((fresh.backlog ?? []).map((one) => one.frame?.text)))
+      check('backlog 是**从旧到新**（顺序错了卡片就会乱）',
+        fresh.backlog.every((one, index) => Number(one.seq) === index + 1),
+        JSON.stringify((fresh.backlog ?? []).map((one) => one.seq)))
+
+      // 手机已经读到第 2 帧：只剩最新那帧要给它，backlog 应为空
+      const caughtUp = await ask(2)
+      check('已读过的不会再补（backlog 空）',
+        caughtUp.changed === true && Array.isArray(caughtUp.backlog) && caughtUp.backlog.length === 0,
+        JSON.stringify(caughtUp.backlog))
+    } finally {
+      await relay.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   // 5.178：现场「偶尔上传音频失败：timeout」。服务端这一侧的一个诱因是：
   // **每一块上传都把整个 audio/ 目录 stat 一遍**（所有房间所有说话人的文件），
   // 这个开销正好压在"上传 → 回执"的必经之路上。现在 5 秒内复用缓存值。

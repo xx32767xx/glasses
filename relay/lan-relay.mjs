@@ -856,6 +856,16 @@ export async function startRelay(rawOptions = {}) {
   function logSummary(frame, roomId) {
     // 增量帧不记账：一秒钟能来好几条，打出来就是刷屏（要看它们用 --log-level trace）
     if (frame.partial === true) return
+    // 5.179：**原文帧（echo）不打摘要**。它没有译文、也没有时间账（段长/识别在识别侧那条
+    // [原文] 行里），实机打出来长这样：
+    //   `test25/zh→zh │ 译— 推0.05s │ ⇒0.0s │ 无译文 无译文` —— 每句多一行，什么都没说。
+    // 要看它请 --log-level trace。
+    if (frame.echo === true) {
+      if (logLevelAtLeast('trace')) {
+        debug(`📺 原文帧（${frame.lang ?? '?'}）${previewText(frame.text, 24)}`)
+      }
+      return
+    }
     if (logLevelAtLeast('summary') !== true) return
     const cost = frame.cost !== undefined && frame.cost !== null && typeof frame.cost === 'object'
       ? frame.cost
@@ -1086,6 +1096,14 @@ export async function startRelay(rawOptions = {}) {
     audioBytes: 0,
     /** 5.178：上次"按磁盘重算占用"的时刻 —— 上传每秒 1 块，不能每块都走一遍目录。 */
     audioBytesCheckedAt: 0,
+    /**
+     * 5.179：每场会**最近若干帧**（roomId → [{seq, frame}]，只留最新 40 条）。
+     *
+     * <p>为什么需要：手机息屏 / 切后台 / 网络断一下之后，长轮询只能拿到"最新那一帧"，
+     * 中间几十条字幕**就永久丢了**；用户看到的是"息屏期间的说话完全没有字幕，
+     * 回来接着显示新的"。有了这份环形缓冲，手机带着自己的 seq 回来时可以把错过的补齐。
+     */
+    framesByRoomHistory: new Map(),
     audioChunks: 0,
     /** 5.175：收到"不带房间号"的音频时只报一次（老模式删除后那种音频不落盘）。 */
     audioNoRoomWarned: false,
@@ -1350,6 +1368,17 @@ export async function startRelay(rawOptions = {}) {
     if (attribution.roomId !== null) {
       const roomSeq = (state.seqByRoom.get(attribution.roomId) ?? 0) + 1
       state.seqByRoom.set(attribution.roomId, roomSeq)
+      // 5.179：进环形缓冲（补发用）。只留 40 条 —— 手机断十几秒也够补，
+      // 再多就是拿内存换"离线一小时也要补齐"，那既不现实也没必要。
+      {
+        let history = state.framesByRoomHistory.get(attribution.roomId)
+        if (history === undefined) {
+          history = []
+          state.framesByRoomHistory.set(attribution.roomId, history)
+        }
+        history.push({ seq: roomSeq, frame })
+        if (history.length > 40) history.splice(0, history.length - 40)
+      }
       state.framesByRoom.set(attribution.roomId, { seq: roomSeq, frame })
       // 5.53：同一句可能有两种译文（不同 lang），按语言各存一份最新的
       const frameLang = String(frame.lang ?? '').trim()
@@ -2833,6 +2862,26 @@ export async function startRelay(rawOptions = {}) {
         const curSeq = roomParam === '' ? state.seq : roomSeq
         const curFrame = roomParam === '' ? state.lastFrame : (roomFrame === undefined ? null : roomFrame.frame)
         /**
+         * 5.179：**补发错过的帧**。
+         *
+         * <p>场景（用户实测）：手机息屏或切后台之后，长轮询停了一段；回来时它带着"我读到
+         * `since`"，而服务端只回最新那一帧 —— 中间那几条字幕就永久丢了，用户看到的是
+         * "息屏期间一句都没推给我"。
+         *
+         * <p>现在把 `since` 之后、**最新那一帧之前**的都一并给回去（最多 20 条，从旧到新）。
+         * 最新那帧仍然走 `frame`/`frames` 老字段，所以老客户端行为不变；
+         * 新客户端按顺序把 `backlog` 里的补上，就不会"跳过一段"。
+         */
+        const backlogOf = (roomId) => {
+          if (roomId === '') return []
+          const history = state.framesByRoomHistory.get(roomId)
+          if (history === undefined || history.length === 0) return []
+          const missed = history.filter((one) => Number(one.seq) > since && Number(one.seq) < curSeq)
+          if (missed.length === 0) return []
+          const capped = missed.slice(Math.max(0, missed.length - 20))
+          return capped.map((one) => ({ seq: one.seq, frame: one.frame }))
+        }
+        /**
          * 5.53：按"我要看的语言"取出每一门的最新帧。
          *
          * <p>没带 `langs` 时返回空数组（老行为：只看单帧）。带了就按语言挑 —— 同一句的
@@ -2879,6 +2928,9 @@ export async function startRelay(rawOptions = {}) {
             seq: curSeq,
             frame: curFrame,
             frames: pickLangs(roomParam),
+            // 复位（转发进程重启）时也把最近的给回去：那是"我读到哪儿"已经对不上的场景
+            backlog: (state.framesByRoomHistory.get(roomParam) ?? []).slice(-20)
+              .map((one) => ({ seq: one.seq, frame: one.frame })),
           }))
           return
         }
@@ -2887,6 +2939,7 @@ export async function startRelay(rawOptions = {}) {
           send(response, 200, framePayload(info(), {
             ok: true, changed: true, seq: curSeq, frame: curFrame,
             frames: pickLangs(roomParam),
+            backlog: backlogOf(roomParam),
           }))
           return
         }

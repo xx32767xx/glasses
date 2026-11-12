@@ -1550,6 +1550,21 @@ export function createInterpreter(ctx, rawConfig, deps) {
   }
 
   /** 「[策略 en-fast/model large-v3]」这种小尾巴（没有就不写）。 */
+  /**
+   * 5.179：日志档位（summary 每句一行摘要 / detail 逐句明细 / trace 逐帧）。
+   *
+   * <p>为什么放插件里也要有：摘要行是 relay 打的，但"翻译耗时""策略明细"这类行在插件里 ——
+   * 不跟着一起降，摘要化就只做了一半。档位从 config.logLevel 来（harness-side 传），缺省 summary。
+   */
+  const LOG_RANK = { summary: 0, detail: 1, trace: 2 }
+  const LOG_LEVEL = (() => {
+    const raw = String((config && config.logLevel) || 'summary').trim().toLowerCase()
+    return LOG_RANK[raw] === undefined ? 'summary' : raw
+  })()
+  function logLevelAtLeast(level) {
+    return LOG_RANK[LOG_LEVEL] >= (LOG_RANK[level] === undefined ? 1 : LOG_RANK[level])
+  }
+
   function strategyTag(item) {
     if (item === null || item === undefined) return ''
     const name = typeof item.strategy === 'string' ? item.strategy.trim() : ''
@@ -2269,9 +2284,15 @@ export function createInterpreter(ctx, rawConfig, deps) {
       // ★ 热词归一：**译文出来后、上屏之前**做一次（docs/15 §7.1 / §14.6）
       //   零模型调用、纯字符串；没有表或开关关着时原样返回（行为逐字不变）。
       // 5.169：翻译这一段花了多久（延迟账的最后一段；与识别那行合起来，四段就齐了）
+      //
+      // 5.179：这行降为 detail 档 —— 摘要行里已经有"译X.XXs"（多语言还并排写成 1.08|1.16s），
+      // 每语言再打一行等于同一件事说三遍。要看逐句明细请 --log-level detail。
       if (typeof translateStartedAt === 'number') {
-        console.log('[leion-pro] 翻译耗时 ' + (Date.now() - translateStartedAt) + ' ms（'
-          + from + '→' + to + '，' + String(result.text || '').length + ' 字）')
+        const spent = Date.now() - translateStartedAt
+        if (logLevelAtLeast('detail')) {
+          console.log('[leion-pro] 翻译耗时 ' + spent + ' ms（'
+            + from + '→' + to + '，' + String(result.text || '').length + ' 字）')
+        }
       }
       const normalized = applyTerms(result.text, to)
       await logTermsEvents(normalized.events, 'final')

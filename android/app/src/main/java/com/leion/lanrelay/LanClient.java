@@ -895,6 +895,25 @@ public class LanClient {
                     listener.onStatus("电脑侧序号已重置（转发进程重启过），已自动跟随");
                 }
                 if (response.optBoolean("changed", false)) {
+                    // 5.179：**先把错过的补上**。
+                    //
+                    // 场景（用户实测）：息屏或切后台之后长轮询停了一段，回来时服务端只给
+                    // "最新那一帧"，中间那几条字幕就永久丢了 —— 用户看到"息屏期间的说话
+                    // 完全没有字幕"。服务端现在会把 since 之后、最新之前的帧放进 backward
+                    // 兼容的 `backlog` 数组（从旧到新），这里按顺序投一遍，再投最新那帧。
+                    //
+                    // 注意：**必须先投 backlog 再投主帧**，否则最新一句先上屏、旧句又追上来，
+                    // 卡片的顺序就乱了（而顺序正是"同传"最基本的东西）。
+                    JSONArray backlog = response.optJSONArray("backlog");
+                    if (backlog != null) {
+                        for (int i = 0; i < backlog.length(); i += 1) {
+                            JSONObject entry = backlog.optJSONObject(i);
+                            JSONObject missed = entry == null ? null : entry.optJSONObject("frame");
+                            if (missed != null) {
+                                deliverFrame(missed);
+                            }
+                        }
+                    }
                     seq = serverSeq;
                     // 5.53：带了 `langs` 时服务端会把**每种语言各一份**帧放在 `frames` 里；
                     // 老行为（单帧）仍然走 `frame`。两者都投一遍 —— 同一句的两种译文
