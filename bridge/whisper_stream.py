@@ -3024,7 +3024,15 @@ def probe_cloud_engines(table, engines):
             # 表里写了这个引擎但注册表里没有 —— resolve_engine 会在别处直接报错，这里不重复喊
             continue
         try:
-            engine.load({}, "cpu")
+            # ⚠️ 5.183：带上表里给这个引擎的 model —— 不给的话 funasr 会误报
+            #    「模型 ID 必须写在策略表里」，把人的注意力引到完全错误的地方。
+            profile = {"engine": key}
+            model_of_engine = ""
+            if isinstance(used, dict):
+                model_of_engine = used.get(key) or ""
+            if isinstance(model_of_engine, str) and model_of_engine != "":
+                profile["model"] = model_of_engine
+            engine.load(profile, "cpu")
         except Exception as error:                                  # noqa: BLE001
             lines.append(f"[whisper_stream] ⚠️ 表里用到了云端引擎 {key}，但这台机器的环境里用不了它："
                          f"{type(error).__name__}: {error}")
@@ -3033,14 +3041,27 @@ def probe_cloud_engines(table, engines):
 
 
 def _engines_used_by(table):
-    """这张表里用到了哪些**引擎**（default / strategies / languages 三层都看）。"""
-    used = set()
+    """这张表里用到了哪些**引擎** —— 返回 {引擎: 它对应的 model}（三层都看）。
+
+    <p>⚠️ 5.183：原来只返回引擎名的 set，于是 probe 里拿**空的 profile** 去 load() ——
+    funasr 的 load 一看没有 model 就报「模型 ID 必须写在策略表里」，而表里明明写着
+    fun-asr-realtime。现场看到的是一句指向完全错误的警告。
+    现在把 model 一并带出来：探测用真实 profile，报的才是真实原因（缺密钥 / 缺依赖）。
+
+    @returns {dict[str, str]} 引擎 → 表里给它的 model（多层都写时取最后出现的那个）
+    """
+    used = {}
 
     def add(entry):
         if isinstance(entry, dict):
             engine = str(entry.get("engine") or "").strip().lower()
-            if engine:
-                used.add(engine)
+            if not engine:
+                return
+            model = entry.get("model")
+            if isinstance(model, str) and model.strip() != "":
+                used[engine] = model.strip()
+            elif engine not in used:
+                used[engine] = ""
 
     if not isinstance(table, dict):
         return used

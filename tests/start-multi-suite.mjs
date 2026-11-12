@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { join } from 'node:path'
 import {
   isSafeRoomId, memoryHint, parseArgs, pickRooms, pipelineSteps, planStop, prepareRoomFiles,
-  readOpenRooms, relayStep, roomColor, roomFiles, shortRoomId, main, workerStep, describeMode, clearStaleRunState,
+  readOpenRooms, relayStep, roomColor, roomFiles, shortRoomId, main, workerStep, describeEffectiveAsr, describeMode, clearStaleRunState,
   chooseActiveRoom, describeSwitchReason, readRoomActivity,
   ttsStep,
   pickRoomsWithDenied, pipelineStatePath, writePipelineState, clearPipelineState,
@@ -398,11 +398,43 @@ export async function runStartMultiSuite({ it, check, assert }) {
       worker.args.join(' '))
     check('--inbox-dir 指向数据目录（收件箱按房间分文件放在这里）',
       worker.args[worker.args.indexOf('--inbox-dir') + 1] === options.dataDir, worker.args.join(' '))
-    check('模型/设备/精度在这里（只有这一个进程加载模型）',
-      worker.args.includes('--model') && worker.args.includes('--device')
-        && worker.args.includes('--compute-type'), worker.args.join(' '))
+    // 5.183：**用户没显式给就不传** model / compute-type —— 让策略表说话。
+    // 以前 start-multi 会把自己的缺省（float16）当"命令行值"传下去，于是识别进程打一行
+    // 「命令行 --compute float16，表里是 int8_float32 → 按表走」，而用户从没给过 --compute。
+    check('设备照传（那是硬件事实，不是策略）', worker.args.includes('--device'), worker.args.join(' '))
+    check('默认不传 model / compute-type（交给策略表）',
+      worker.args.includes('--model') === false && worker.args.includes('--compute-type') === false,
+      worker.args.join(' '))
+    check('显式给了 --compute / --whisper-model 才传下去', (() => {
+      const explicit = workerStep(parseArgs(['--data-dir', 'var/x', '--compute', 'int8_float32',
+        '--whisper-model', 'medium']))
+      return explicit.args.includes('--compute-type') && explicit.args.includes('--model')
+    })(), '显式参数没有传下去')
+    check('--cpu 也算显式（它同时改设备与精度）', (() => {
+      const cpu = workerStep(parseArgs(['--data-dir', 'var/x', '--cpu']))
+      return cpu.args.includes('--compute-type') && cpu.args.includes('--device')
+        && cpu.args[cpu.args.indexOf('--compute-type') + 1] === 'int8'
+    })(), '--cpu 没有传成 int8')
     check('--keep-inbox：清空由 start-multi 按房间做',
       worker.args.includes('--keep-inbox'), worker.args.join(' '))
+  })
+
+  // 5.183：横幅必须报"实际生效"的那份，而不是命令行缺省 —— 否则管理台显示 float16、
+  // 横幅显示 int8_float32，用户第一反应是"到底哪个是真的"。
+  await it('5.183：横幅那行按策略表说（有表看表，没表才说命令行）', async () => {
+    const withTable = parseArgs(['--data-dir', 'var/x', '--model-map', 'config/asr-models.json'])
+    const said = describeEffectiveAsr(withTable)
+    check('有表时写明"策略表"，并给出表里的模型/精度',
+      said.includes('策略表') && said.includes('large-v3') && said.includes('float16'), said)
+
+    const without = parseArgs(['--data-dir', 'var/x'])
+    const fallback = describeEffectiveAsr(without)
+    check('没有表时如实说"命令行"', fallback.includes('命令行') && fallback.includes('没有策略表'), fallback)
+
+    const broken = parseArgs(['--data-dir', 'var/x', '--model-map', 'config/不存在.json'])
+    const brokenSaid = describeEffectiveAsr(broken)
+    check('表读不出来时说不出来（不假装知道）',
+      brokenSaid.includes('读不出来'), brokenSaid)
   })
 
   await it('队列模式的参数能被 asr-worker 自己的 parseArgs() 接受', async () => {

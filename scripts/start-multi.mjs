@@ -276,7 +276,7 @@ export function parseArgs(argv = []) {
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
     const key = token.slice(2)
     if (key === 'help') { options.help = true; continue }
-    if (key === 'cpu') { options.device = 'cpu'; options.computeType = 'int8'; continue }
+    if (key === 'cpu') { options.device = 'cpu'; options.computeType = 'int8'; options.computeExplicit = true; continue }
     if (key === 'offline') { options.offline = true; continue }
     if (key === 'proofread') { options.proofread = true; continue }
     if (key === 'terms-rescue') { options.termsRescue = true; continue }
@@ -323,7 +323,14 @@ export function parseArgs(argv = []) {
       const allowed = ['float16', 'int8_float16', 'int8_float32', 'int8', 'float32']
       if (!allowed.includes(value)) throw new Error(`--compute 只能是 ${allowed.join(' / ')}`)
       options.computeType = value
-    } else if (key === 'whisper-model') options.whisperModel = value
+      // 5.183：**只有用户显式给了才往下传**。否则 start-multi 自己的缺省会被当成
+      // "命令行值"递给识别进程 —— 现场那条「命令行 --compute float16，表里是 int8_float32
+      // → 按表走」就是这么来的，而用户从来没给过 --compute。
+      options.computeExplicit = true
+    } else if (key === 'whisper-model') {
+      options.whisperModel = value
+      options.modelExplicit = true
+    }
     else if (key === 'model-map') options.modelMap = value
     else if (key === 'silence-skip-level') options.silenceSkipLevel = Number(value)
     else if (key === 'rms-threshold') {
@@ -526,6 +533,34 @@ export function relayStep(options) {
  * <p>两个文件都**只属于这一场**：收件箱按房间名分文件、字幕总线按房间名分文件。
  * 这就是"归属不串"的全部依据 —— 没有共享的可写状态，就不存在互相覆盖。
  */
+/**
+ * 5.183：横幅上那行"识别用的是什么" —— **按实际生效的配置说**，别再说命令行缺省值。
+ *
+ * <p>为什么要这个函数：管理台改的是策略表，横幅原来印的是 `--compute` 的缺省值，
+ * 于是同一件事在两个地方显示成两个数（表里 float16、横幅 int8_float32），
+ * 用户第一反应是"到底哪个是真的"。这里读一次表，把**真正会被加载的那份**写出来。
+ *
+ * <p>表读不出来（没放表 / 写坏了）就退回命令行值，并在后面注明来源 ——
+ * 不猜、不假装。
+ */
+export function describeEffectiveAsr(options) {
+  const cli = `${options.whisperModel} / ${options.computeType}`
+  if (!options.modelMap) return `${cli}（命令行；没有策略表）`
+  try {
+    const table = JSON.parse(readFileSync(options.modelMap, 'utf-8'))
+    const base = table && typeof table === 'object' && table.default && typeof table.default === 'object'
+      ? table.default
+      : {}
+    const model = typeof base.model === 'string' && base.model !== '' ? base.model : options.whisperModel
+    const compute = typeof base.compute_type === 'string' && base.compute_type !== ''
+      ? base.compute_type
+      : options.computeType
+    return `${model} / ${compute}（策略表）`
+  } catch {
+    return `${cli}（命令行；策略表读不出来）`
+  }
+}
+
 export function pipelineSteps(options, room) {
   const roomId = typeof room === 'string' ? room : room.id
   const files = roomFiles(options, roomId)
@@ -612,9 +647,12 @@ export function workerStep(options) {
   const args = [
     '--queue-dir', options.queueDir,
     '--inbox-dir', options.dataDir,
-    '--model', options.whisperModel,
+    // 5.183：只有用户显式给过才传 model / 精度。不传 = 识别进程按策略表（或它自己的缺省）
+    // 决定 —— 这样"命令行"与"表"就不会两个都声称自己说了算，日志里也不再出现
+    // 「命令行 --compute X，表里是 Y → 按表走」这种谁都没要求的警告。
+    ...(options.modelExplicit === true ? ['--model', options.whisperModel] : []),
     '--device', options.device,
-    '--compute-type', options.computeType,
+    ...(options.computeExplicit === true ? ['--compute-type', options.computeType] : []),
     '--queue-poll-ms', '60',
     '--depth-report-s', String(options.depthReportSec),
     // 5.177：日志档位（继续透传到 python 消费者：summary 只打"每句一行 + 原文"）
@@ -1195,7 +1233,11 @@ export async function main(argv = process.argv.slice(2)) {
       + `  ← 由「大脑·API」服务：${apiTranslateFiles(options.dataDir).inbox.replace(/\\/g, '/')}`}`)
   if (options.transcriber) {
     if (options.translateMode === 'queue') {
-      console.log(`  识别       一份模型（全局唯一）${options.whisperModel} / ${options.device} / ${options.computeType}`)
+      // 5.183：这行原来写的是**命令行值**，而真正生效的是策略表 —— 管理台显示 float16、
+      // 横幅显示 int8_float32，用户当然会问"哪个是真的"。
+      // 现在：有表就按表说（并写明"精度/模型由表决定"），没表才回落到命令行值。
+      const tableSummary = describeEffectiveAsr(options)
+      console.log(`  识别       一份模型（全局唯一）${tableSummary} / ${options.device}`)
       console.log(`  队列       ${options.queueDir.replace(/\\/g, '/')}/  ← 每场一个切句进程写这里（切句不加载模型）`)
       console.log(`  队列深度   每 ${options.depthReportSec}s 报一次（**不丢数据**：积压只报不丢）`)
       console.log(`  单独试识别 node scripts/asr-try.mjs --data-dir ${options.dataDir.replace(/\\/g, '/')}`

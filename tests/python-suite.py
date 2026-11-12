@@ -3251,11 +3251,22 @@ def main():
         "strategies": {"en-tencent": {"engine": "tencent", "model": "16k_en"}},
         "languages": {"en-US": {"strategy": "en-tencent"}},
     }
-    check("能认出这张表用到了哪些引擎（default / strategies / languages 三层）",
-          whisper_stream._engines_used_by(startup_table) == {"tencent"}
-          and whisper_stream._engines_used_by({"default": {"engine": "funasr"}}) == {"funasr"}
-          and whisper_stream._engines_used_by({}) == set(),
+    # 5.183：_engines_used_by 现在返回 {引擎: 表里给它的 model} —— 探测时要拿真实 profile
+    # 去 load()，否则 funasr 会误报「模型 ID 必须写在策略表里」（表里明明写着）。
+    check("能认出这张表用到了哪些引擎，并带上各自的 model（三层都看）",
+          whisper_stream._engines_used_by(startup_table) == {"tencent": "16k_en"}
+          and whisper_stream._engines_used_by({"default": {"engine": "funasr"}}) == {"funasr": ""}
+          and whisper_stream._engines_used_by({}) == {},
           str(whisper_stream._engines_used_by(startup_table)))
+    check("多层写同一个引擎时取最后出现的 model（strategies 盖过 default）",
+          whisper_stream._engines_used_by({
+              "default": {"engine": "funasr", "model": "旧名字"},
+              "strategies": {"pt-funasr": {"engine": "funasr", "model": "fun-asr-realtime"}},
+          }) == {"funasr": "fun-asr-realtime"},
+          str(whisper_stream._engines_used_by({
+              "default": {"engine": "funasr", "model": "旧名字"},
+              "strategies": {"pt-funasr": {"engine": "funasr", "model": "fun-asr-realtime"}},
+          })))
     _saved_probe = {name: os.environ.get(name) for name in ("TENCENT_ASR_SECRET_ID",
                                                             "TENCENT_ASR_SECRET_KEY",
                                                             "TENCENT_ASR_SECRET_FILE")}
