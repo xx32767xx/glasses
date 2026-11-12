@@ -158,9 +158,13 @@ export function formatRecord(record, options = {}) {
         + `${record.targetLang === '' || record.targetLang === undefined ? '' : `，译 ${shortLang(record.targetLang)}`}`
         + `${record.model === '' || record.model === undefined ? '' : `，模型 ${record.model}`}`]
     }
+    // 5.184b：补记的结束要**标明是补的**，并说清"结束时刻取的是最后一条记录" ——
+    // 否则看到 `minutes` 的人会以为是散会那一刻记下来的。
+    const backfilled = record.reason === 'process-restart'
     return [`${at}  ${what} 邀请码 ${record.code ?? '?'}`
       + `${record.minutes === undefined ? '' : `（${record.minutes} 分钟）`}`
-      + `${record.reason === undefined || record.reason === '' ? '' : `，原因 ${record.reason}`}`]
+      + `${record.reason === undefined || record.reason === '' ? '' : `，原因 ${record.reason}`}`
+      + `${backfilled ? '  ⟵ 补记：结束时刻取最后一条记录（不是散会那一刻）' : ''}`]
   }
   // warn / error / 其他：一行说完
   const label = kind === 'error' ? '⚠️ 错误' : (kind === 'warn' ? '⚠️ 注意' : kind)

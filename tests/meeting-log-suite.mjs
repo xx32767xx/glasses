@@ -174,6 +174,25 @@ export async function runMeetingLogSuite({ it, check }) {
     check('正常结束的那场没有被重复补',
       readMeetingEvents(closedFile.path).filter((one) => one.event === 'end').length === 1)
 
+    // 5.184b：时长必须按"最后一条记录"算，而不是"补记的此刻" ——
+    // 否则关机/排查的那几十分钟会被算进会议时长（现场：开 5 分钟显示 47 分钟）。
+    rmSync(base, { recursive: true, force: true })
+    mkdirSync(base, { recursive: true })
+    appendMeetingEvent(base, { code: '900001', roomId: 'room-x' }, {
+      kind: 'meeting', event: 'start', code: '900001', room: 'room-x', name: '时长测试',
+    }, { at: '2026-11-12T10:00:00.000Z' })
+    appendMeetingEvent(base, { code: '900001', roomId: 'room-x' }, {
+      kind: 'sentence', code: '900001', room: 'room-x', seg: 1, src: '最后一句',
+    }, { at: '2026-11-12T10:42:00.000Z' })
+    closeStaleMeetings(base, { now: Date.parse('2026-11-12T12:30:00.000Z'), graceMs: 0 })
+    const timed = readMeetingEvents(listMeetingLogs(base)[0].path)
+    const timedEnd = timed.find((entry) => entry.kind === 'meeting' && entry.event === 'end')
+    check('结束时刻 = 最后一条记录的时间（10:42，不是补记的 12:30）',
+      timedEnd?.t === '2026-11-12T10:42:00.000Z', String(timedEnd?.t))
+    check('时长按真实活动算（42 分钟，不是 150 分钟）', timedEnd?.minutes === 42, String(timedEnd?.minutes))
+    check('补记的时刻单独留一笔（可追查是什么时候补的）',
+      timedEnd?.recordedAt === '2026-11-12T12:30:00.000Z', String(timedEnd?.recordedAt))
+
     // 再跑一次：没有可补的了（幂等）
     check('幂等：第二遍什么都不补', closeStaleMeetings(base, { now: Date.now() + 120000, graceMs: 0 }).length === 0)
     rmSync(base, { recursive: true, force: true })
