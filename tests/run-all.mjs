@@ -34,6 +34,7 @@ import { runNetDoctorSuite } from './net-doctor-suite.mjs'
 import { runDoctorDbSuite } from './doctor-db-suite.mjs'
 import { runFindLogSuite } from './find-log-suite.mjs'
 import { runMeetingLogSuite } from './meeting-log-suite.mjs'
+import { runLogLevelSuite } from './log-level-suite.mjs'
 import { runBenchSuite } from './bench-suite.mjs'
 import { runLintSuite } from './lint-suite.mjs'
 import { runTermsSuite } from './terms-suite.mjs'
@@ -260,6 +261,9 @@ await runFindLogSuite(helpers)
 
 heading('会议记录（一场会一个文件 / 每句一条 / 实时追加）')
 await runMeetingLogSuite(helpers)
+
+heading('日志档位（四个进程共用一份名单）')
+await runLogLevelSuite(helpers)
 
 // ── 7c. 翻译模型横评的判据（"哪个模型翻译得好"全靠它下结论）─────────────────
 // 横评表好看不等于结论可信：判据写错一点，就会变成"所有模型都满分"。

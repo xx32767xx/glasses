@@ -67,6 +67,7 @@ import { DEFAULT_DATA_DIR, roomTrackDir } from '../relay/lan-relay.mjs'
 import { listRooms, closeRoomByAdmin } from '../lib/rooms.mjs'
 import { dbPath } from '../lib/db.mjs'
 import { currentTermsPaths, readCurrentMeeting } from '../lib/meeting-terms.mjs'
+import { LOG_LEVELS, assertLogLevel } from '../lib/log-levels.mjs'
 import { appendMeetingEvent, appendServiceEvent } from '../lib/meeting-log.mjs'
 // 这五个都从 start-helpers 借：两份脚本各写一遍就会各错一遍（端口探测那个 SO_REUSEADDR 的坑尤其）。
 import {
@@ -295,10 +296,9 @@ export function parseArgs(argv = []) {
       continue
     }
     if (key === 'log-level') {
-      const level = argv[index + 1] ?? ''
-      if (['summary', 'detail', 'trace'].includes(level) !== true) {
-        throw new Error(`--log-level 只能是 summary / detail / trace，收到 ${JSON.stringify(level)}`)
-      }
+      // 5.182b：名单来自 lib/log-levels.mjs（唯一来源）。以前每个进程各写一份，
+      // 给下游加了 quiet 却漏了这一处 → 生产上 `--log-level quiet` 抛错、systemd 反复重启。
+      const level = assertLogLevel(argv[index + 1] ?? '')
       options.logLevel = level
       index += 1
       continue

@@ -1556,7 +1556,8 @@ export function createInterpreter(ctx, rawConfig, deps) {
    * <p>为什么放插件里也要有：摘要行是 relay 打的，但"翻译耗时""策略明细"这类行在插件里 ——
    * 不跟着一起降，摘要化就只做了一半。档位从 config.logLevel 来（harness-side 传），缺省 summary。
    */
-  // 5.181：quiet 是生产档（只报警）；每句内容在会议记录里
+  // 5.181：quiet 是生产档（只报警）；每句内容在会议记录里。
+  // ⚠️ 名单与 lib/log-levels.mjs 一致（由 tests/log-level-suite.mjs 交叉核对）。
   const LOG_RANK = { quiet: 0, summary: 1, detail: 2, trace: 3 }
   const LOG_LEVEL = (() => {
     const raw = String((config && config.logLevel) || 'summary').trim().toLowerCase()

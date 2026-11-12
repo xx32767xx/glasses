@@ -449,7 +449,9 @@ def preview(text, limit=40):
 
 # 5.177：日志档位。缺省 summary —— 现场只看到"每句一行"，详情请加 --log-level detail。
 _LOG_LEVEL = {"value": "summary"}
-# 5.181：quiet 才是生产用的（只报警）；每句的原文/译文去会议记录看
+# 5.181：quiet 才是生产用的（只报警）；每句的原文/译文去会议记录看。
+# ⚠️ 这份名单与 lib/log-levels.mjs **必须一致**（python 没法 import JS，由
+# tests/log-level-suite.mjs 交叉核对；改一边就得改另一边）。
 _LOG_RANK = {"quiet": 0, "summary": 1, "detail": 2, "trace": 3}
 
 

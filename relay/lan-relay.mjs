@@ -50,6 +50,7 @@ import { lockRoomStrategy, readRoomStrategy, resolveAllLanguages } from '../lib/
 import { createWsHub } from '../lib/ws-hub.mjs'
 import { publishMeetingTerms, readCurrentMeeting } from '../lib/meeting-terms.mjs'
 import { appendMeetingEvent, appendServiceEvent } from '../lib/meeting-log.mjs'
+import { DEFAULT_LOG_LEVEL, assertLogLevel, levelAtLeast } from '../lib/log-levels.mjs'
 import { loadSelection } from './org-api.mjs'
 import { listMembers, resolveFrameRoom, roomByCode, roomById, roomLabels, setMemberLang,
   interpreterPartnerLang } from '../lib/rooms.mjs'
@@ -339,12 +340,7 @@ export function parseArgs(argv) {
       else if (key === 'utterance-retention-days') options.utteranceRetentionDays = Number(value)
     else if (key === 'audio-max-bytes') options.audioMaxBytes = Number(value)
     // 5.177：日志档位
-    else if (key === 'log-level') {
-      if (['quiet', 'summary', 'detail', 'trace'].includes(value) !== true) {
-        throw new Error(`--log-level 只能是 summary / detail / trace，收到 ${JSON.stringify(value)}`)
-      }
-      options.logLevel = value
-    }
+    else if (key === 'log-level') options.logLevel = assertLogLevel(value)
     else if (key === 'data-dir') options.dataDir = value
     else if (key === 'inbox') options.inbox = value
     else if (key === 'bus') options.bus = value
@@ -762,12 +758,12 @@ export async function startRelay(rawOptions = {}) {
   // 「这句出没出、多慢、有没有异常」，那刚好能用**一行**说清。
   //
   // 档位：summary（缺省，每句一行摘要）< detail < trace（逐帧逐块）。
-  // 5.181：**quiet 档**——生产只用它：每句一行摘要都不打，只留"出问题"的行。
-  // 会议内容去 <data-dir>/logs/rooms/ 的会议记录看；控制台/journald 只负责报警。
-  const LOG_RANK = { quiet: 0, summary: 1, detail: 2, trace: 3 }
-  const OPTIONS_LOG_LEVEL = LOG_RANK[String(options.logLevel ?? 'summary')] === undefined
-    ? 'summary'
-    : String(options.logLevel ?? 'summary')
+  // 5.181/5.182b：档位名单与排序来自 lib/log-levels.mjs（**唯一来源**）。
+  // quiet = 生产档：每句一行摘要都不打，只留"出问题"的行；内容去会议记录看。
+  const OPTIONS_LOG_LEVEL = DEFAULT_LOG_LEVEL !== '' && typeof options.logLevel === 'string'
+    && options.logLevel !== ''
+    ? options.logLevel
+    : DEFAULT_LOG_LEVEL
   /**
    * 5.181：**报警行**。不受档位影响（quiet 也打），只受老的 `--quiet` 影响。
    * 生产 journald 里留下的应该只有这一类。
@@ -777,8 +773,7 @@ export async function startRelay(rawOptions = {}) {
     : (...args) => console.log(`[${new Date().toTimeString().slice(0, 8)}] ⚠️`, ...args)
 
   function logLevelAtLeast(level) {
-    const want = LOG_RANK[level] ?? 1
-    return LOG_RANK[OPTIONS_LOG_LEVEL] >= want
+    return levelAtLeast(OPTIONS_LOG_LEVEL, level)
   }
 
   /** 日志里的一句话预览（前 N 字）。全文在总线/收件箱里，日志只负责"扫一眼"。 */
