@@ -557,4 +557,89 @@ export async function runAsrModelsApiSuite({ it, check }) {
       Object.keys(built.readNoiseRow('')).length === 0, JSON.stringify(built.readNoiseRow('')))
   })
 
+  await it('5.194：切句那六个框真的显示出生效值（用服务端真实响应形状跑一遍）', () => {
+    // 用户报：「silence / min_speech / max_speech … 对应的参数是空的，我看不到」。
+    // 真因：服务端给的是 {values, layers, strategy}，而界面把它**当成值本身**用，
+    // 于是 effective[key] 永远 undefined —— 占位符一直是空串、"当前生效"那行永不渲染。
+    // 这条测试喂的就是服务端的真实形状，所以那类错下次会直接红。
+    const html = readFileSync(join(ROOT, 'scripts', 'admin-ui.html'), 'utf-8')
+    const grabFn = (name) => {
+      const start = html.indexOf(`function ${name}(`)
+      check(`${name} 还在`, start > 0, name)
+      return html.slice(start, html.indexOf('\n}', start) + 2)
+    }
+    const code = [grabFn('buildLanguageRow'), 'return { buildLanguageRow }'].join('\n')
+
+    const makeEl = (tag) => ({
+      tag, id: '', className: '', style: {}, dataset: {}, children: [], value: '', textContent: '',
+      type: '', min: '', max: '', step: '', placeholder: '', title: '',
+      appendChild(child) { this.children.push(child); return child },
+      addEventListener() {},
+      querySelector() { return null },
+    })
+    const byId = new Map()
+    const stubDocument = {
+      createElement: (tag) => makeEl(tag),
+      getElementById: (id) => byId.get(id) ?? null,
+    }
+    const segFields = ['silence_ms', 'min_speech_ms', 'max_speech_ms',
+      'short_utterance_ms', 'short_silence_ms', 'cut_pause_ms']
+    // 服务端的真实形状：values / layers / strategy
+    const segStateByLang = {
+      'en-US': {
+        values: {
+          silence_ms: 900, min_speech_ms: 700, max_speech_ms: 8000,
+          short_utterance_ms: 800, short_silence_ms: 1100, cut_pause_ms: 200,
+        },
+        layers: {
+          silence_ms: '语言 en-US', min_speech_ms: '策略 en-steady', max_speech_ms: '策略 en-steady',
+          short_utterance_ms: '策略 en-steady', short_silence_ms: '策略 en-steady',
+          cut_pause_ms: '策略 en-steady',
+        },
+        strategy: 'en-steady',
+      },
+    }
+    const segState = { rules: {} }
+    // eslint-disable-next-line no-new-func
+    const built = new Function('document', 'SEG_FIELDS', 'segState', 'segStateByLang',
+      'modelStrategyNames', code)(stubDocument, segFields, segState, segStateByLang,
+      () => ['default', 'en-steady'])
+    const register = (el) => {
+      if (el.id) byId.set(el.id, el)
+      for (const child of el.children) register(child)
+      return el
+    }
+    const row = register(built.buildLanguageRow('en-US', '英语', { strategy: 'en-steady', segmentation: {} }))
+
+    check('六个切句输入框都在（值留空 = 继承）',
+      segFields.every((key) => byId.get('segLang_en-US_' + key)?.value === ''),
+      segFields.map((key) => byId.get('segLang_en-US_' + key)?.value).join(','))
+    check('**占位符写着生效值**（这正是原来空掉的那一处）',
+      byId.get('segLang_en-US_silence_ms').placeholder === '900'
+      && byId.get('segLang_en-US_max_speech_ms').placeholder === '8000',
+      segFields.map((key) => byId.get('segLang_en-US_' + key).placeholder).join(','))
+    check('悬停提示里也写着"现在生效"',
+      String(byId.get('segLang_en-US_silence_ms').title).includes('现在生效 900'),
+      String(byId.get('segLang_en-US_silence_ms').title))
+
+    // 行尾那行"当前生效：…"
+    const collectText = (el) => [el.textContent || '']
+      .concat(...el.children.map(collectText)).join(' ')
+    const said = collectText(row)
+    check('行尾写出全部六个生效值',
+      ['silence 900', 'min_speech 700', 'max_speech 8000', 'short_utterance 800',
+        'short_silence 1100', 'cut_pause 200'].every((one) => said.includes(one)), said)
+    check('并写明来源（哪一层定的）', said.includes('策略 en-steady') || said.includes('语言 en-US'), said)
+
+    // 反向：服务端给的是"值本身"（老形状）也不能崩（那时候会走兜底分支）
+    const legacy = new Function('document', 'SEG_FIELDS', 'segState', 'segStateByLang',
+      'modelStrategyNames', code)(stubDocument, segFields, segState,
+      { 'pt-BR': { silence_ms: 700, max_speech_ms: 6000 } }, () => ['default'])
+    register(legacy.buildLanguageRow('pt-BR', '葡语', { strategy: 'default' }))
+    check('老形状（直接给值）也不崩，照样显示生效值',
+      byId.get('segLang_pt-BR_silence_ms').placeholder === '700',
+      String(byId.get('segLang_pt-BR_silence_ms').placeholder))
+  })
+
+
 }

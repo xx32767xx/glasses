@@ -470,7 +470,16 @@ function buildLanguageRow(lang, label, current) {
   segLabel.style.fontSize = '12px';
   segLabel.textContent = '切句';
   segBox.appendChild(segLabel);
-  const effective = (segStateByLang[lang] || {});
+  // ⚠️ 5.194 修的真 bug：服务端给的是 `{values, layers, strategy}`，
+  // 而这里原来把它**当成值本身**用 —— 于是 `effective[key]` 永远是 undefined：
+  // 占位符一直是空串、"生效：…"那一行永远不渲染。用户看到的就是六个空框，
+  // 而值其实一直躺在响应里。这类"数据在、界面不显示"的错最难自己发现，
+  // 所以下面顺手把兜底也写清楚（老服务端若直接返回值对象，也认）。
+  const segStateOfLang = (segStateByLang[lang] || {});
+  const effective = segStateOfLang.values !== undefined
+    ? segStateOfLang.values
+    : (segStateOfLang.silence_ms !== undefined ? segStateOfLang : {});
+  const effectiveLayers = segStateOfLang.layers || {};
   for (const key of SEG_FIELDS) {
     const rule = (segState.rules || {})[key] || {};
     const input = document.createElement('input');
@@ -503,12 +512,13 @@ function buildLanguageRow(lang, label, current) {
   if (shown !== '') {
     const note = document.createElement('div');
     note.className = 'mono';
-    note.style.fontSize = '11px';
-    note.style.opacity = '.7';
+    note.id = 'segEff_' + lang;
+    note.style.fontSize = '12px';
+    note.style.opacity = '.85';
     note.style.marginLeft = '52px';
-    const layers = Object.values(effective.layers || {});
+    const layers = Object.values(effectiveLayers);
     const from = layers.length > 0 ? [...new Set(layers)].join(' / ') : '内置缺省';
-    note.textContent = '生效：' + shown + '（来源：' + from + '）';
+    note.textContent = '当前生效：' + shown + '（来源：' + from + '）';
     segBox.appendChild(note);
   }
   row.appendChild(segBox);
