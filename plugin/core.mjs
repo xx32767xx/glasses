@@ -81,6 +81,17 @@ export const CONFIG_DEFAULTS = {
   inboxPath: '',
   /** 轮询间隔（毫秒）。太小会空转，太大会加延迟；150–800 是合理区间。 */
   inboxPollMs: 700,
+  /**
+   * 5.189：**每份译文的最长等待**（毫秒）。超过就放弃这一份、让队列继续走。
+   *
+   * <p>为什么必须有：收件箱是**串行**处理的，一句挂在等译文上，后面所有句子就全排着。
+   * 2026-11-13 的课堂记录里因此整段停摆过 **2 次**（73 秒 / 130 秒），
+   * 而对应的译文耗时是 59.2 秒 / 121.0 秒 —— 其余 740 次调用都在 2 秒内。
+   *
+   * <p>20 秒这个值是按实测取的：正常上限在 2~3 秒，20 秒留了一个数量级的余量，
+   * 又不至于让人等半分钟还没字幕。写 0 = 关掉这条护栏（行为退回加它之前）。
+   */
+  translateDeadlineMs: 20000,
   /** 强制指定收件行的源语种（ASR 已知语种时有用）；留空 = 逐行自动判定。 */
   inboxFrom: '',
   /**
@@ -296,6 +307,73 @@ const HISTORY_CAP = 200
 /**
  * 校验配置。harness 的约定是「配置错误要响亮」：不合法的值在加载时就抛，不要留到运行期。
  */
+/**
+ * 5.189：**给一个 promise 套上硬截止**（纯函数：定时器、日志、返回值全由调用方给）。
+ *
+ * <p>为什么单独抽出来：这条护栏的全部价值在于"超时必须真的放手"，而它最容易写错的地方
+ * 是**没有放手**（只是加了个 `Promise.race` 但 `await` 的还是原来那个）——
+ * 那种错误在实机上表现为"看起来加了超时，还是卡两分钟"。抽成纯函数就能直接断言。
+ *
+ * @param {Promise<any>} job 要做的事
+ * @param {number} ms 截止毫秒（非有限数或 ≤0 = 不设截止）
+ * @param {{schedule?: (fn: () => void, ms: number) => (null | (() => void)),
+ *          onTimeout?: () => any, onLate?: (lateMs: number) => void}} hooks
+ * @returns {Promise<any>} 截止内完成 → 原值；超时 → `onTimeout()` 的返回值；失败 → 原异常
+ */
+export function raceWithDeadline(job, ms, hooks = {}) {
+  const guarded = Promise.resolve(job).then(
+    (value) => ({ value }),
+    (error) => ({ error }),
+  )
+  const settle = (one) => {
+    if (one.error !== undefined) throw one.error
+    return one.value
+  }
+  if (!Number.isFinite(Number(ms)) || Number(ms) <= 0) return guarded.then(settle)
+
+  const startedAt = Date.now()
+  let done = false
+  let dispose = null
+  return new Promise((resolve) => {
+    if (typeof hooks.schedule === 'function') {
+      dispose = hooks.schedule(() => {
+        if (done) return
+        done = true
+        resolve({ __timedOut: true })
+      }, Number(ms))
+    }
+    guarded.then((one) => {
+      if (done) {
+        // 迟到才回来的：交给调用方记一句（能区分"上游只是慢"与"上游挂死"）
+        if (typeof hooks.onLate === 'function') hooks.onLate(Date.now() - startedAt)
+        return
+      }
+      done = true
+      if (typeof dispose === 'function') dispose()
+      resolve(one)
+    })
+  }).then((one) => {
+    if (one.__timedOut === true) {
+      return typeof hooks.onTimeout === 'function' ? hooks.onTimeout() : undefined
+    }
+    return settle(one)
+  })
+}
+
+/**
+ * 5.189：收件箱积压的**当前快照**（排了几句、最早一句等了多久）。
+ *
+ * <p>抽成纯函数是为了能直接断言：积压这件事用户看得很清楚，而以前日志里一个字都没有
+ * （2026-11-13 那次只能事后从会议记录的 `trMs` 反推）。
+ */
+export function backlogSnapshot(queue, now = Date.now()) {
+  const depth = Array.isArray(queue) ? queue.length : 0
+  if (depth === 0) return { depth: 0, waitedMs: 0 }
+  const earliest = queue[0]?.receivedAt
+  const waitedMs = Number.isFinite(Number(earliest)) ? Math.max(0, now - Number(earliest)) : 0
+  return { depth, waitedMs }
+}
+
 export function validateConfig(raw) {
   const config = Object.assign({}, CONFIG_DEFAULTS, raw === undefined || raw === null ? {} : raw)
   if (config.transport !== 'mock' && config.transport !== 'file') {
@@ -364,6 +442,10 @@ export function validateConfig(raw) {
     if (!Number.isInteger(config.inboxPollMs) || config.inboxPollMs < 100) {
       throw new Error(`leion-pro: 配置了 inboxPath 时 inboxPollMs 必须是不小于 100 的整数，收到 ${JSON.stringify(config.inboxPollMs)}`)
     }
+  }
+  // 5.189：0 是合法的（= 关掉硬截止），负数和非数字不是 —— 后者只会让人以为护栏在，其实没设上。
+  if (!Number.isInteger(config.translateDeadlineMs) || config.translateDeadlineMs < 0) {
+    throw new Error(`leion-pro: translateDeadlineMs 必须是不小于 0 的整数（0 = 不设截止），收到 ${JSON.stringify(config.translateDeadlineMs)}`)
   }
   if (!['off', 'idle'].includes(config.proofread)) {
     throw new Error(`leion-pro: proofread 只能是 'off' / 'idle'，收到 ${JSON.stringify(config.proofread)}`)
@@ -1485,9 +1567,125 @@ export function createInterpreter(ctx, rawConfig, deps) {
      */
     hearLangs: { path: '', langs: [], readable: false },
     lastTargets: null,
+    /** 5.189：因为超过 `translateDeadlineMs` 而被放弃的译文份数（一句可能两份语言，各算一份）。 */
+    deadlineSkips: 0,
+    /** 5.189：观察到的最多积压句数，以及那一段积压里"最早一句等了多久"。 */
+    backlogMax: 0,
+    backlogLastWaitMs: 0,
   }
   const queue = []
   let pumping = false
+  /** 5.189："这个环境没有定时器"只喊一次（不然每句都刷一行）。 */
+  let deadlineUnavailableWarned = false
+  /** 5.189：当前这波积压的记账（最多积压几句、最早一句是什么时候进来的）。 */
+  let backlog = { depth: 0, since: 0, lastWarnAt: 0 }
+
+  /**
+   * 5.189：登记一次"现在排了多少句、最早那句等了多久"，必要时喊一声。
+   *
+   * <p>为什么要它：2026-11-13 那份课堂记录里，字幕整段停了两分多钟，而**日志上什么都没有**
+   * —— 只能靠会议记录里的 `trMs`（59 秒 / 121 秒）反推。这类"用户感知极强、日志全部静默"
+   * 的故障必须能自证：积压几句、最早等了多久，一行说清。
+   */
+  function noteBacklog() {
+    const { depth, waitedMs } = backlogSnapshot(queue)
+    if (depth === 0) return
+    backlog.depth = Math.max(backlog.depth, depth)
+    backlog.since = backlog.since === 0 ? Date.now() : backlog.since
+    const now = Date.now()
+    if (depth >= 3 && now - backlog.lastWarnAt >= 5000) {
+      backlog.lastWarnAt = now
+      console.log('[leion-pro] ⏳ 收件箱积压 ' + depth + ' 句（最早一句等了 '
+        + (waitedMs / 1000).toFixed(1) + ' 秒）—— 正在逐句译，屏幕会连着刷')
+    }
+  }
+
+  /** 5.189：这一波积压清空了，把"最多积压几句 / 最长等了多久"记下来。 */
+  function settleBacklog() {
+    if (backlog.depth === 0) return
+    inbox.backlogMax = Math.max(inbox.backlogMax, backlog.depth)
+    inbox.backlogLastWaitMs = backlog.depth === 0 ? 0 : Math.max(0, Date.now() - backlog.since)
+    if (backlog.depth >= 3) {
+      console.log('[leion-pro] ✅ 积压已清空（最多积压 ' + backlog.depth + ' 句，'
+        + '这一波总共用了 ' + (inbox.backlogLastWaitMs / 1000).toFixed(1) + ' 秒）')
+    }
+    backlog = { depth: 0, since: 0, lastWarnAt: 0 }
+  }
+
+  /**
+   * 5.189：安排一次性回调，返回"取消"函数（拿不到定时能力就返回 null）。
+   *
+   * <p>三档降级是刻意的：动态插件沙箱里**没有 `setTimeout`**（调用即抛），所以先问 cordis 的
+   * timer 服务；再退到全局 `setTimeout`；都没有就返回 null —— 那时**不设截止**，
+   * 行为与加这个功能之前完全一致，并且喊一次让人知道"这条护栏没生效"。
+   */
+  function scheduleOnce(callback, ms) {
+    // 顺序有讲究：真实 Cordis 的 timer 服务把 `setTimeout` / `timeout` 都混入 ctx
+    // （`vendor/timer/lib/index.js` 里 setTimeout 是 timeout 的旧名），
+    // 而测试台与部分沙箱只复刻了 `timeout` —— 两个都试，谁在就用谁。
+    for (const name of ['setTimeout', 'timeout']) {
+      try {
+        const method = ctx === null || ctx === undefined ? undefined : ctx[name]
+        if (typeof method === 'function') {
+          const handle = method.call(ctx, callback, ms)
+          return () => {
+            try {
+              if (typeof handle === 'function') handle()
+            } catch { /* 取消失败不影响主流程 */ }
+          }
+        }
+      } catch { /* 换下一档 */ }
+    }
+    try {
+      const handle = setTimeout(callback, ms)
+      return () => {
+        try { clearTimeout(handle) } catch { /* 同上 */ }
+      }
+    } catch {
+      if (deadlineUnavailableWarned !== true) {
+        deadlineUnavailableWarned = true
+        console.log('[leion-pro] ⚠️ 这个环境没有定时器，翻译硬截止**没生效**'
+          + '（一句卡住仍会拖住整场；正式插件与常驻进程不受影响）')
+      }
+      return null
+    }
+  }
+
+  /**
+   * 5.189：给**一份译文**（一种目标语言）套上硬截止，超时就当这一份失败。
+   *
+   * <p>为什么必须有（2026-11-13 线上实测）：一堂 71 分钟的课里字幕整段停摆了 **2 次**
+   * （73 秒、130 秒）。会议记录能对上：那两句的译文耗时 **59.2 秒 / 121.0 秒**，
+   * 而其余 740 次调用都在 2 秒内。机制在 `pump()` 那一行 `await`：它是**串行**的，
+   * 一句挂在等译文上，后面所有句子（识别那边还在正常往收件箱写）就全排着 ——
+   * 用户看到的是"字幕卡住两三分钟，然后积压的话一股脑全出来"。
+   *
+   * <p>取舍写清楚：超时只**放弃这一份译文**，队列继续走。屏幕上本来就已经有这一句的
+   * 原文帧（5.12 的 echo），所以观众看到的是"原文在、译文没来"，而不是"什么都没发生"。
+   * 最坏损失一句译文，而不是整场停两分钟。
+   */
+  function withDeadline(job, target) {
+    const deadlineMs = Number(config.translateDeadlineMs)
+    return raceWithDeadline(job, deadlineMs, {
+      schedule: (callback, ms) => scheduleOnce(callback, ms),
+      onTimeout: () => {
+        inbox.deadlineSkips += 1
+        console.log('[leion-pro] ⏱ 译文超时（' + target + '，超过 ' + (deadlineMs / 1000).toFixed(0)
+          + ' 秒）—— 放弃这一份，队列继续'
+          + (queue.length > 0 ? '（后面还有 ' + queue.length + ' 句在排队）' : ''))
+        return {
+          ok: false, to: target, failure: '翻译超时（超过 ' + (deadlineMs / 1000).toFixed(0) + ' 秒）',
+          partial: null, translation: '',
+        }
+      },
+      // 迟到才回来的那一份：说清楚它比截止晚了多久 —— 这能区分"上游只是慢"与"上游挂死"。
+      onLate: (elapsedMs) => {
+        console.log('[leion-pro] ⏰ 超时之后才回来的译文已丢弃（' + target + '，比截止晚了 '
+          + ((elapsedMs - deadlineMs) / 1000).toFixed(1) + ' 秒）')
+      },
+    })
+  }
+
   /** 由 api.translate 填充：收件箱要复用的就是那条翻译管线。 */
   let runTranslate = null
 
@@ -1614,7 +1812,8 @@ export function createInterpreter(ctx, rawConfig, deps) {
         if (item === null) continue
         // 配置里强制了源语种就补上（ASR 已知语种时能避免自动判定出错）。
         if (item.from === undefined && config.inboxFrom !== '') item.from = config.inboxFrom
-        queue.push(item)
+        // 5.189：记下"这一句是什么时候进来的" —— 积压时要用它算"最早一句等了多久"。
+        queue.push(Object.assign({ receivedAt: Date.now() }, item))
         added += 1
       } catch (error) {
         // 坏行只计数、不中断：一条写坏的 JSON 不该让整条同传停摆。
@@ -1717,6 +1916,9 @@ export function createInterpreter(ctx, rawConfig, deps) {
     pumping = true
     try {
       while (queue.length > 0) {
+        // 5.189：一张口就说"现在排了几句、最早等了多久"——积压是用户能看见的故障，
+        // 日志里也必须有对应的数（以前完全没有，只能事后从会议记录反推）。
+        noteBacklog()
         const item = queue.shift()
         inbox.lastLine = item.text
         const args = { text: item.text }
@@ -1801,7 +2003,9 @@ export function createInterpreter(ctx, rawConfig, deps) {
           // 校对只对**主目标**（第一份）做：翻倍花钱只改个别字，而第二份语言通常只有一个人在看。
           if (index > 0) one.noProofread = true
           const startedAt = Date.now()
-          return runTranslate(one).finally(() => { trMs[target] = Date.now() - startedAt })
+          // 5.189：每份译文各套一个硬截止 —— 一种语言的上游挂住，不该把另一种语言也拖住，
+          // 更不该把后面所有句子拖住（见 withDeadline 的说明）。
+          return withDeadline(runTranslate(one), target).finally(() => { trMs[target] = Date.now() - startedAt })
         }))
         let firstOk = null
         for (let index = 0; index < results.length; index += 1) {
@@ -1880,6 +2084,8 @@ export function createInterpreter(ctx, rawConfig, deps) {
       console.log('[leion-pro] ✗ 处理收件箱时抛异常：' + inbox.lastError)
     } finally {
       pumping = false
+      // 5.189：这一波清空了就把"最多积压几句 / 花了多久"落成一行日志 + 状态。
+      settleBacklog()
     }
   }
 
@@ -1945,6 +2151,12 @@ export function createInterpreter(ctx, rawConfig, deps) {
         startedAt: inbox.startedAt,
         lastLine: inbox.lastLine,
         lastError: inbox.lastError,
+        // 5.189：硬截止与积压的可查状态 —— "字幕卡了两分钟"以前在日志里一个字都没有，
+        // 只能事后从会议记录的 trMs 反推。现在这两个数会跟着 status 一起出来。
+        deadlineMs: config.translateDeadlineMs,
+        deadlineSkips: inbox.deadlineSkips,
+        backlogMax: inbox.backlogMax,
+        backlogLastWaitMs: inbox.backlogLastWaitMs,
         // 5.11：最近一句的"译文目标 + 依据"，以及听众语言侧车的读取情况。
         // 这个功能静默失效过一次（永远走 opposite 兜底，中文→英语根本出不来），
         // 所以把它做成**可查的状态**，而不是只打一行日志。
@@ -2482,6 +2694,14 @@ export function createInterpreter(ctx, rawConfig, deps) {
               + (info === undefined ? '文件还不存在，等外部 ASR 创建' : '已就绪')
               + '），运行中 ' + (inbox.running ? '是' : '否')
               + '，已处理 ' + inbox.processed + ' 条，错误 ' + inbox.errors + ' 条')
+            // 5.189：只有出过事才多说一句 —— 平时不占地方，出过事时**能看见**
+            // （"字幕卡了两分钟"以前在日志里一个字都没有）。
+            if (inbox.deadlineSkips > 0 || inbox.backlogMax >= 3) {
+              notes.push('  · 曾经：积压最多 ' + inbox.backlogMax + ' 句、'
+                + '那次积压用了 ' + (inbox.backlogLastWaitMs / 1000).toFixed(1) + ' 秒；'
+                + '译文超时放弃 ' + inbox.deadlineSkips + ' 份'
+                + '（每份最长等 ' + (config.translateDeadlineMs / 1000).toFixed(0) + ' 秒）')
+            }
           } catch (error) {
             notes.push('收件箱不可用：' + String(error && error.message ? error.message : error))
           }

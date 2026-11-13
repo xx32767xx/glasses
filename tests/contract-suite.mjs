@@ -666,6 +666,59 @@ export async function runContractSuite(adapter, { it, check, assert }) {
     await auto.tools.get('leion_inbox').execute({ action: 'stop' })
   })
 
+  await it('5.189：一句译文卡住时，后面的句子照样往后走（不许整场停住）', async () => {
+    // 现场事实：一堂 71 分钟的课里字幕整段停摆 2 次（73 秒 / 130 秒），
+    // 对应那两句的译文耗时 59.2 秒 / 121.0 秒，其余 740 次调用都在 2 秒内。
+    // 机制是 `pump()` 串行：一句挂在 `await` 上，后面全排队 —— 用户看到"卡两三分钟，
+    // 然后积压的话一股脑全出来"。这条钉的就是"超时必须真的放手"。
+    const store = new Map()
+    const path = inboxPathOf('inbox-hang.jsonl')
+    const inner = makeFakeLlm()
+    // 按**输入文本**决定要不要挂住，而不是"第一次调用" ——
+    // 插件加载时可能先有一次自己的调用（自检/预热），用"第一次"当标记会挂错那一次。
+    const hangingLlm = {
+      listProviders: inner.listProviders,
+      listModels: inner.listModels,
+      stream(options) {
+        const said = JSON.stringify(options.messages ?? '')
+        if (said.includes('travar')) {
+          // 这一句永不产出 finish（模拟上游挂死）。超时之后它会被丢掉。
+          return (async function* stalled() {
+            yield { type: 'block-start', index: 0, blockType: 'text' }
+            await new Promise(() => {})
+          })()
+        }
+        return inner.stream(options)
+      },
+    }
+    const slow = await adapter.create({
+      llm: hangingLlm,
+      fs: makeFakeFs(store),
+      config: { inboxPath: path, inboxPollMs: 120, translateDeadlineMs: 200 },
+    })
+    const statusOf = async () => slow.tools.get('leion_inbox').execute({ action: 'status' })
+
+    // ⚠️ 这两行必须带**明显的葡语标记**（reunião / equipamento…）：语种判不出来时
+    //    收件箱会走"不需要译文"的分支（不调模型），那样这条测试根本测不到挂住。
+    store.set(path, 'A reunião vai travar, não sei o que houve com o equipamento.\n'
+      + 'A segunda frase precisa passar, então vamos continuar a reunião.\n')
+    const moved = await waitFor(async () => (await statusOf()).processed >= 1, { timeout: 8000 })
+    check('卡住的那一句被放弃之后，**后面的句子仍然被处理了**（以前会一直等到上游回来）', moved,
+      JSON.stringify(await statusOf()))
+    const status = await statusOf()
+    check('超时被记成"放弃了一份译文"（可查状态，不是只打一行日志）',
+      status.deadlineSkips >= 1, JSON.stringify(status.deadlineSkips))
+    check('积压也记账了（最多几句、那次用了多久）',
+      typeof status.backlogMax === 'number' && typeof status.backlogLastWaitMs === 'number',
+      JSON.stringify({ backlogMax: status.backlogMax, wait: status.backlogLastWaitMs }))
+    check('缺省就不设截止时这个配置是 20000（日志里也带着它）',
+      (await adapter.create({
+        llm: makeFakeLlm(), fs: makeFakeFs(new Map()),
+        config: { inboxPath: inboxPathOf('inbox-default-deadline.jsonl'), inboxPollMs: 120 },
+      }).then((one) => one.tools.get('leion_inbox').execute({ action: 'status' }))).deadlineMs === 20000)
+    await slow.tools.get('leion_inbox').execute({ action: 'stop' })
+  })
+
   await it('5.12：说话人自己也收到一帧原文（否则他屏幕上什么都没有）', async () => {
     // 译文帧是按语言分发出去的：说中文、对方读葡语时，说中文的人**一帧都收不到** ——
     // 屏幕上除了自己说话一片空白，看起来像"我说话了但系统没反应"。

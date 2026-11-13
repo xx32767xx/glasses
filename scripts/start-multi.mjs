@@ -107,6 +107,10 @@ const HELP = `start-multi —— 一条命令起「多场会并行」
   --offline              大脑用离线例句表（不联网，只认得剧本那 14 句）
   --proofread            打开大模型校对（缺省关；多场并行时每句多一次模型调用，自己权衡）
   --terms-rescue         打开热词临时修正（实验，缺省关，见 docs/15 §18）
+  --translate-deadline-ms <n>
+                         每份译文最长等多久（缺省 20000；0 = 不设截止）。
+                         超时就放弃这一份、队列继续 —— 大脑收件箱是**串行**的，
+                         一句挂在等译文上，后面所有句子都会停住（5.189 实测卡过 121 秒）
   --no-transcriber       只起转发 + 每场的大脑（手输文字那条路不需要识别）
   --tts                  顺带起**服务器合成语音**（bridge/tts-server.py，piper；全局一个）。
                          手机自己没有巴葡/英语的语音包，那两门语言靠它念；中文仍走手机本地。
@@ -270,7 +274,7 @@ export function parseArgs(argv = []) {
     'max-rooms', 'only', 'whisper-model', 'compute', 'switch-idle-ms', 'min-hold-ms',
     'queue-dir', 'depth-report-s', 'translate-mode', 'model-map', 'max-models',
     'interpreter-idle-min', 'silence-skip-level', 'idle-flush-ms', 'rms-threshold',
-    'tts-port', 'tts-voice-dir'])
+    'tts-port', 'tts-voice-dir', 'translate-deadline-ms'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -385,10 +389,16 @@ export function parseArgs(argv = []) {
     else if (key === 'lines') options.lines = Number(value)
     else if (key === 'port') options.port = Number(value)
     else if (key === 'data-dir') options.dataDir = value
+    else if (key === 'translate-deadline-ms') options.translateDeadlineMs = Number(value)
     else options.busesDir = value
   }
   if (options.help === true) return options
-  for (const key of ['port', 'pollMs', 'cols', 'lines']) {
+  // 5.189：0 合法（= 关掉译文硬截止），负数/小数/非数字当场拒绝。
+  if (options.translateDeadlineMs !== undefined
+    && (!Number.isInteger(options.translateDeadlineMs) || options.translateDeadlineMs < 0)) {
+    throw new Error('--translate-deadline-ms 必须是不小于 0 的整数（0 = 不设截止），'
+      + `收到 ${JSON.stringify(options.translateDeadlineMs)}`)
+  }  for (const key of ['port', 'pollMs', 'cols', 'lines']) {
     if (!Number.isInteger(options[key]) || options[key] <= 0) {
       throw new Error(`--${key === 'pollMs' ? 'poll-ms' : key} 必须是正整数，收到 ${JSON.stringify(options[key])}`)
     }
@@ -613,6 +623,10 @@ export function pipelineSteps(options, room) {
     '--keep-inbox']
   // 5.179：日志档位也传给大脑（它的"翻译耗时"等行跟着降档）
   brainArgs.push('--log-level', String(options.logLevel ?? 'summary'))
+  // 5.189：每份译文的最长等待。不传 = 用大脑自己的缺省（20 秒）；0 = 关掉这条护栏。
+  if (Number.isInteger(options.translateDeadlineMs)) {
+    brainArgs.push('--translate-deadline-ms', String(options.translateDeadlineMs))
+  }
   brainArgs.push(options.proofread ? '--proofread' : '--no-proofread')
   if (options.offline) brainArgs.push('--offline')
   if (options.termsRescue) brainArgs.push('--terms-rescue')

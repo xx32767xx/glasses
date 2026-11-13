@@ -56,6 +56,10 @@ const HELP = `harness-side —— 常驻的 harness 侧进程（给手机 + 局�
   --cols <n>            AR 显示宽度（缺省 40；眼镜到手后按实测改）
   --lines <n>           AR 可见行数（缺省 3；眼镜到手后按实测改）
   --poll-ms <n>         收件箱轮询间隔（缺省 150）
+  --translate-deadline-ms <n>
+                        每份译文最长等多久（缺省 20000；0 = 不设截止）。
+                        超时就放弃这一份、让队列继续 —— 一句卡住不该拖住整场
+                        （收件箱是串行处理的，见 plugin/core.mjs 的 5.189）
   --terms-path <path>       热词表文件（缺省 <data-dir>/terms.json）
   --terms-active-path <p>   "这一场用哪个 user 键"（缺省 <data-dir>/terms-active.json）
                             这两个参数用来指向**会议级术语快照**：
@@ -84,7 +88,9 @@ export function parseArgs(argv) {
     // 2026-10-23：允许把「热词表」指向任意一份快照（会议级术语快照 = var/data/meetings/<场次>/）。
     // 为什么需要：库（libraries/）与插件之间必须有个"冻结成一份表"的中间物 ——
     // 插件只认两个文件 + 一个 user 键，所以由调用方把快照路径传进来，插件零改动。
-    'terms-path', 'terms-active-path', 'log-level'])
+    'terms-path', 'terms-active-path', 'log-level',
+    // 5.189：每份译文的最长等待（0 = 不设截止）
+    'translate-deadline-ms'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (token === '--offline') { options.mode = 'offline'; continue }
@@ -128,12 +134,21 @@ export function parseArgs(argv) {
     else if (key === 'lines') options.lines = Number(value)
     else if (key === 'terms-path') options.termsPath = value
     else if (key === 'terms-active-path') options.termsActivePath = value
+    else if (key === 'translate-deadline-ms') options.translateDeadlineMs = Number(value)
     else options.pollMs = Number(value)
   }
   if (options.help === true) return options
   for (const key of ['cols', 'lines', 'pollMs']) {
     if (!Number.isInteger(options[key]) || options[key] <= 0) {
       throw new Error(`${key} 必须是正整数，收到 ${JSON.stringify(options[key])}`)
+    }
+  }
+  // 5.189：0 是合法值（关掉硬截止）。负数/小数/非数字要当场拒绝 ——
+  // 让一个写错的值一路传进插件，护栏就变成"看起来有、其实没有"。
+  if (options.translateDeadlineMs !== undefined) {
+    if (!Number.isInteger(options.translateDeadlineMs) || options.translateDeadlineMs < 0) {
+      throw new Error(`--translate-deadline-ms 必须是不小于 0 的整数（0 = 不设截止），`
+        + `收到 ${JSON.stringify(options.translateDeadlineMs)}`)
     }
   }
   // ⚠️ 必须解析成**绝对路径**：相对路径会一路传到插件配置里，
@@ -193,6 +208,10 @@ async function main() {
       sinkPath: options.bus,
       inboxPath: options.inbox,
       inboxPollMs: options.pollMs,
+      // 5.189：每份译文的最长等待。不给就用插件缺省（20 秒），0 = 关掉。
+      ...(options.translateDeadlineMs === undefined
+        ? {}
+        : { translateDeadlineMs: options.translateDeadlineMs }),
       cols: options.cols,
       lines: options.lines,
       // 校对（第二遍）：**缺省开启**（plugin/core.mjs 的默认值也是 'idle'）。

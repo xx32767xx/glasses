@@ -496,6 +496,29 @@ export async function runStartMultiSuite({ it, check, assert }) {
     check('所有组合都能被识别进程接受，并透传给 python', failures.length === 0, failures.join(' | '))
   })
 
+  await it('5.189：译文硬截止能从 start-multi 一路传到大脑（0 = 关掉）', async () => {
+    // 这条护栏的意义是"一句卡住不许拖住整场"：实测卡过 121 秒、整段字幕停 2 分钟。
+    // 所以参数必须真的到得了大脑 —— 否则现场调不到、也关不掉。
+    const quiet = parseArgs(['--data-dir', 'var/x'])
+    const brainArgsOf = (options) => pipelineSteps(options, { id: ROOM_A })
+      .filter((step) => step.role === 'brain')
+    check('不传就不往大脑塞这个参数（用大脑自己的缺省 20 秒）',
+      brainArgsOf(quiet).every((step) => step.args.includes('--translate-deadline-ms') === false),
+      JSON.stringify(brainArgsOf(quiet).map((step) => step.args.join(' '))))
+    check('给 0 是合法的（= 关掉护栏）', parseArgs(['--data-dir', 'var/x', '--translate-deadline-ms', '0'])
+      .translateDeadlineMs === 0)
+    const tuned = parseArgs(['--data-dir', 'var/x', '--translate-deadline-ms', '8000'])
+    check('给了 8000 就传给大脑', brainArgsOf(tuned)
+      .every((step) => step.args[step.args.indexOf('--translate-deadline-ms') + 1] === '8000'),
+      JSON.stringify(brainArgsOf(tuned).map((step) => step.args.join(' '))))
+    for (const bad of ['-1', '1.5', 'abc']) {
+      let message = ''
+      try { parseArgs(['--data-dir', 'var/x', '--translate-deadline-ms', bad]) } catch (error) { message = String(error.message) }
+      check(`--translate-deadline-ms ${bad} 被拒（否则会让人以为护栏在，其实没设上）`,
+        message.includes('translate-deadline-ms'), message)
+    }
+  })
+
   await it('5.186：降噪开关缺省全关，开了能一路传到 python 并真的关得掉', async () => {
     // 为什么值得单独钉：这两项一旦缺省打开，会**静默改变所有语种**的识别行为 ——
     // 而用户的诉求恰恰是"只在教室那门语言上开"（逐语种）。所以缺省必须是关。
