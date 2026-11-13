@@ -4458,6 +4458,105 @@ def main():
     check("--limit 取最前面 N 段", _replay.take_sampled(_items, 0, 3) == [0, 1, 2])
     shutil.rmtree(_sheet_dir, ignore_errors=True)
 
+    # ── 5.191：把"标注成本"降下来（免标注对比 + 段长对齐）────────────────────────
+    #
+    # 用户只有一天时间，不可能给 386 段填真话。所以补两条路：
+    #   ① compare：**不需要参考文本**，跑两组配置把输出并排摆出来，人眼看变化；
+    #   ② 段长对齐：修掉"按序号对齐"那个真 bug（产线丢过段 → 从第一个洞开始全体错位一句，
+    #      而错位后的 prod 列看起来完全正常，人工按"对"就等于把别的句子记成这一句的真话）。
+    heading("免标注对比 + 段长对齐（5.191）")
+
+    # ① 真实数据：2026-11-13 那场课的开头 14 段（左=重放切出来的段长，右=产线句子段长）。
+    #    产线 seg8 当时被丢了（编号从 7 跳到 9），而且重放第 1 段比产线长 800ms
+    #    （前导缓存/裁尾不一样）—— 这两件事都必须在同一份对齐里被处理对。
+    _replay_ms = [2800, 1500, 2200, 13400, 13700, 12100, 6200, 800, 4900, 7000, 4400, 4000, 1000, 2300]
+    _prod_ms = [2000, 1400, 2200, 13400, 13700, 12100, 6200, 4900, 7000, 4400, 4000, 1000, 2300]
+    _aligned = _replay.align_by_duration(_replay_ms, _prod_ms)
+    check("段长对齐：前 7 段一对一", _aligned[:7] == [0, 1, 2, 3, 4, 5, 6], str(_aligned[:7]))
+    check("产线丢过的那一段（重放 800ms 那段）标成「产线没有这一句」，而不是错位去凑",
+          _aligned[7] is None, str(_aligned[7]))
+    check("后面的段**没有**跟着错位（这正是按序号对齐会翻车的地方）",
+          _aligned[8:] == [7, 8, 9, 10, 11, 12], str(_aligned[8:]))
+    check("段长差 800ms 的真配对仍然认下来（边界不完全一样的同一句话）",
+          _aligned[0] == 0, str(_aligned[0]))
+    check("空序列不炸", _replay.align_by_duration([], [1000]) == []
+          and _replay.align_by_duration([1000], []) == [None])
+
+    # ② 可疑度：三个信号都不需要参考文本
+    _row = {"dur_ms": 900, "rms": 0.05, "prod": "Thank you for watching."}
+    _reasons = _replay.suspicion_of(_row)
+    check("碎片（<1.2 秒）+ 电平低 + 像幻听 都被标出来",
+          "碎片" in _reasons and "电平低" in _reasons and "像幻听" in _reasons, str(_reasons))
+    check("正常段不贴标签（否则可疑段就没意义了）",
+          _replay.suspicion_of({"dur_ms": 5000, "rms": 0.08, "prod": "we use Python"}) == [],
+          str(_replay.suspicion_of({"dur_ms": 5000, "rms": 0.08, "prod": "we use Python"})))
+    check("产线没有这一句也值得听", "产线无此句" in _replay.suspicion_of({"dur_ms": 3000, "rms": 0.08, "prod": ""}))
+
+    # ③ 差异标记：改了一个词就要看得出来，没改就原样返回
+    _marked = _replay.diff_markup("we use the library", "we use the labor")
+    check("差异标记把那两个词标出来", "library" in _marked and "labor" in _marked and "⟦" in _marked, _marked)
+    check("完全相同的两句不加标记",
+          "⟦" not in _replay.diff_markup("we use Python", "we use Python"))
+    check("中文按字比（不会被当成一个整块）",
+          "⟦" in _replay.diff_markup("我们在用这个库", "我们在用那个库"),
+          _replay.diff_markup("我们在用这个库", "我们在用那个库"))
+
+    # ④ 术语命中与幻听计数（报告里最硬的两列）
+    check("术语按**词边界**算，不会把 Pythonic 当成 Python",
+          _replay.count_terms("Pythonic style", ["Python"]) == []
+          and _replay.count_terms("we use Python here", ["Python"]) == ["Python"],
+          str(_replay.count_terms("Pythonic style", ["Python"])))
+    check("幻听惯用语认得出来", _replay.hallucination_hits("Thank you for watching") != [],
+          str(_replay.hallucination_hits("Thank you for watching")))
+
+    # ⑤ 免标注对比报告：三件事必须成立 —— 差异数、整句变空要单独数、没变化的要说"没影响"
+    class _Args:
+        sheet = "x.tsv"
+        top = 5
+
+    _rows = [{"seg": 1, "file": "seg-0001.pcm"}, {"seg": 2, "file": "seg-0002.pcm"},
+             {"seg": 3, "file": "seg-0003.pcm"}]
+    _baseline = [{"seg": 1, "text": "we use the library"},
+                 {"seg": 2, "text": "it is a reserved word"},
+                 {"seg": 3, "text": "Python is a dynamic language"}]
+    _variant = [{"seg": 1, "text": "we use the labor", "ms": 80},
+                {"seg": 2, "text": "", "ms": 70},
+                {"seg": 3, "text": "Python is a dynamic language", "ms": 75}]
+    _report = _replay.format_diff_report(_Args(), _rows, {"float16": _variant}, "prod",
+                                         _baseline, ["library"], "（3 段）")
+    check("报告写明这不是错误率", "这不是错误率" in _report, _report[:120])
+    check("有差异的段数数对了（2 / 3）", "2 / 3" in _report, _report[:400])
+    check("整句变空单独占一列（那是最糟的一种变化）", "整句变空" in _report and "| 1 |" in _report,
+          _report.split("## 逐段对照")[0][-400:])
+    check("逐段对照里带着两边的原文", "we use the library" in _report and "labor" in _report)
+    check("术语那张表在", "术语命中" in _report and "library" in _report)
+    _flat = _replay.format_diff_report(_Args(), _rows, {"hp0": [
+        {"seg": 1, "text": "we use the library", "ms": 60},
+        {"seg": 2, "text": "it is a reserved word", "ms": 60},
+        {"seg": 3, "text": "Python is a dynamic language", "ms": 60}]}, "prod", _baseline, [], "")
+    check("一句都没变时明说「这个旋钮没影响」", "一句都没变" in _flat, _flat[:200])
+
+    # ⑥ 只统计"核对过"的行：把 prod 整列抄进 truth 这种事必须拦得住
+    _rev_dir = Path(ROOT / "var" / "test" / "replay-reviewed")
+    shutil.rmtree(_rev_dir, ignore_errors=True)
+    shutil.copytree(ROOT / "var" / "test" / "replay-probe", _rev_dir) if (
+        ROOT / "var" / "test" / "replay-probe").exists() else _rev_dir.mkdir(parents=True, exist_ok=True)
+    _rev_sheet = _rev_dir / "sheet.tsv"
+    _replay.write_sheet(_rev_sheet, [
+        {"seg": 1, "file": "seg-0001.pcm", "dur_ms": 1000, "prod": "copied prod",
+         "truth": "copied prod", "reviewed": 0},
+        {"seg": 2, "file": "seg-0002.pcm", "dur_ms": 1000, "prod": "copied prod",
+         "truth": "really checked", "reviewed": 1},
+    ])
+    _parsed = _replay.read_sheet(_rev_sheet)
+    check("对照表带上 reviewed 列", all("reviewed" in one for one in _parsed),
+          str(list(_parsed[0])))
+    _reviewed_rows = [one for one in _parsed
+                      if str(one.get("reviewed") or "") == "1" and str(one.get("truth") or "").strip() != ""]
+    check("没核对的行即使有 truth 也不算（否则复制 prod 就能造出 0% 错误率）",
+          len(_reviewed_rows) == 1 and _reviewed_rows[0]["seg"] == "2", str(_reviewed_rows))
+    shutil.rmtree(_rev_dir, ignore_errors=True)
+
     heading("丢掉音节时必须说话（5.52 诊断：用户报「academic 被识别成 Islamic」）")
     # 这句错法的机制：词的**前半截**被切走 / 被当成静音，模型只看到 "-demic" 这种残片，
     # 于是补成另一个以 -ic 结尾的常见词。以前这类丢失**日志里一个字都没有**（只在内存里记账），

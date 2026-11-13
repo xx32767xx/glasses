@@ -49,6 +49,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -64,7 +65,8 @@ import asr_score                                                      # noqa: E4
 import whisper_stream                                                 # noqa: E402
 
 DEFAULT_WORKROOT = ROOT / "var" / "asr-eval" / "replay"
-SHEET_HEADER = ["seg", "file", "start_ms", "end_ms", "dur_ms", "rms", "prodSeg", "prod", "truth"]
+SHEET_HEADER = ["seg", "file", "start_ms", "end_ms", "dur_ms", "rms",
+                 "prodSeg", "prod", "suspect", "truth", "reviewed"]
 
 # ── 变体：一组配置 = 一次识别要用到的全部差异 ────────────────────────────────
 #
@@ -102,6 +104,22 @@ def parse_args(argv=None):
     sheet.add_argument("--meeting-log", default=None, help="那场会的会议记录 JSONL（用来带出产线原文）")
     sheet.add_argument("--out", default=None, help="对照表写到哪（缺省 <workdir>/sheet.tsv）")
     shared(sheet)
+
+    compare = sub.add_parser(
+        "compare", help="**不需要参考文本**：跑几组配置，把输出并排摆出来用人眼比（快）")
+    compare.add_argument("--sheet", default=None, help="对照表（缺省 <workdir>/sheet.tsv）")
+    compare.add_argument("--variants", default="base,float16",
+                         help="要对比的配置（逗号分隔）")
+    compare.add_argument("--baseline", default="prod",
+                         help="拿谁当对照：prod = 用对照表里**产线当时**的原文（零额外推理）；"
+                              "base = 重新跑一遍当前配置；也可以写某个变体名")
+    compare.add_argument("--terms-file", default=None, help="术语清单（一行一个；统计写得对不对）")
+    compare.add_argument("--model", default=None, help="覆盖模型名")
+    compare.add_argument("--compute-type", default=None, help="覆盖精度")
+    compare.add_argument("--device", default="auto", help="auto / cuda / cpu")
+    compare.add_argument("--top", type=int, default=40, help="逐段列出变化最大的多少段（缺省 40）")
+    compare.add_argument("--out", default=None, help="报告写到哪（缺省 <workdir>/diff.md）")
+    shared(compare)
 
     score = sub.add_parser("score", help="按填好的对照表跑多组配置并打分（需要模型）")
     score.add_argument("--refs", required=True, help="填好 truth 的对照表（sheet 的输出）")
@@ -264,6 +282,102 @@ def read_meeting_sentences(path):
     return rows
 
 
+def align_by_duration(replay_durs, prod_durs, max_match_ms=1200, gap_ms=700):
+    """按**段长序列**把重放切出来的段对齐到产线的句子。
+
+    <p>⚠️ 为什么不能用"第 N 段对第 N 句"（2026-11-13 实测踩到）：产线那次会丢过段
+    （静音闸/最短语音把它吃了），于是产线的句子编号本来就有洞（…7, 9, 10…）。
+    按序号对会让**从第一个洞开始全部错位一句** —— 而错位表现出来的样子特别坏：
+    表里看起来正常，人工照着听、按"对"确认，等于把**别的句子**记成了这一句的真话。
+    实测那份 386 段的表里，从第 8 段起就全体错位了一句。
+
+    <p>为什么段长能当指纹：重放用的是**同一段音频、同一套切句参数**，
+    所以真正对应的那两句，段长基本相等（毫秒级）。用序列对齐 + 允许两边各有缺口，
+    就能把"产线丢了的段"和"重放多出来的段"都摆到正确位置上。
+
+    @returns {list[int|None]} 与 replay_durs 等长：对应 prod_durs 的下标，None = 产线没有这一句
+    """
+    a = [int(value) for value in replay_durs]
+    b = [int(value) for value in prod_durs]
+    n = len(a)
+    m = len(b)
+    if n == 0:
+        return []
+    if m == 0:
+        return [None] * n
+    # 动态规划：对角线=配对（代价=段长差，超过 max_match_ms 视为很差的配对），
+    # 上/左=某一侧多出来的一段（代价 gap_ms）。
+    #
+    # 参数是怎么定的（实测，2026-11-13 那场 71 分钟的课）：同一句话在两边段长最多差 ~800ms
+    #   —— 前导缓存、句尾裁静音、以及产线的 idle 截断都会让边界差一截。
+    # 所以容差取 1200ms（宁可认下差一点的一对，也不要因为差 800ms 就判成"产线没有这一句"），
+    # 缺口代价取 700ms：小段（几百毫秒）宁可算缺口，也不能把小段错配到长句上。
+    cap = max_match_ms * 2
+    inf = float("inf")
+    cost = [[inf] * (m + 1) for _ in range(n + 1)]
+    move = [[None] * (m + 1) for _ in range(n + 1)]
+    cost[0][0] = 0
+    for i in range(n + 1):
+        for j in range(m + 1):
+            here = cost[i][j]
+            if here == inf:
+                continue
+            if i < n and j < m:
+                step = min(abs(a[i] - b[j]), cap) + here
+                if step < cost[i + 1][j + 1]:
+                    cost[i + 1][j + 1] = step
+                    move[i + 1][j + 1] = "match"
+            if i < n and here + gap_ms < cost[i + 1][j]:
+                cost[i + 1][j] = here + gap_ms
+                move[i + 1][j] = "drop_replay"
+            if j < m and here + gap_ms < cost[i][j + 1]:
+                cost[i][j + 1] = here + gap_ms
+                move[i][j + 1] = "drop_prod"
+    out = [None] * n
+    i, j = n, m
+    while i > 0 or j > 0:
+        step = move[i][j]
+        if step == "match":
+            # 差得太多就不认这一对（宁可空着，也不要给人工一个错的原话）
+            if abs(a[i - 1] - b[j - 1]) <= max_match_ms:
+                out[i - 1] = j - 1
+            i -= 1
+            j -= 1
+        elif step == "drop_replay":
+            i -= 1
+        else:
+            j -= 1
+    return out
+
+
+# 产线那几条幻听惯用语（与 whisper_stream.HALLUCINATION_SAMPLES 同源，这里只用来挑可疑段）
+SUSPECT_HINTS = ("感谢观看", "中文字幕", "请不吝点赞", "订阅", "thank you for watching",
+                 "thanks for watching", "subscribe")
+
+
+def suspicion_of(row):
+    """这一段为什么值得人听一遍（返回原因列表；空列表 = 看起来正常）。
+
+    <p>挑可疑段的三个信号都不需要参考文本：段太短（碎片区）、电平太低（听不清）、
+    产线那句本身就像幻听。**排序**用它们，是为了把人工时间花在错得最多的地方；
+    但要记住由此抽出来的样本偏难，绝对 CER 会偏高（报告里会写明这一点）。
+    """
+    reasons = []
+    dur = int(row.get("dur_ms") or 0)
+    rms = float(row.get("rms") or 0)
+    prod = str(row.get("prod") or "")
+    if dur < 1200:
+        reasons.append("碎片")
+    if 0 < rms < 0.055:
+        reasons.append("电平低")
+    if prod == "":
+        reasons.append("产线无此句")
+    lowered = prod.lower()
+    if any(hint.lower() in lowered for hint in SUSPECT_HINTS):
+        reasons.append("像幻听")
+    return reasons
+
+
 def pick_track(args):
     if args.track:
         return Path(args.track)
@@ -327,20 +441,39 @@ def command_sheet(args):
     print(f"[replay] 切出 {len(segments)} 段，合计 "
           f"{sum(one['dur_ms'] for one in segments) / 1000.0:.1f} 秒语音")
 
-    # 段数与产线句子数差得多时**必须说出来**：那份 prod 列就不是"同一句"的意思了
+    # 5.191：**按段长对齐**，不是按序号（序号对齐会从产线第一个丢段开始全体错位一句，
+    # 而那会让"照听、按对"变成把别的句子记成这一句的真话 —— 实测踩到过）。
+    aligned = align_by_duration([one["dur_ms"] for one in segments],
+                                [int(row.get("segMs") or 0) for row in meeting])
     if meeting:
-        ratio = len(segments) / float(len(meeting))
-        if not (0.9 <= ratio <= 1.1):
-            print(f"[replay] ⚠️ 重放切出 {len(segments)} 段，而产线记录是 {len(meeting)} 句"
-                  f"（相差 {(ratio - 1) * 100:+.0f}%）→ prod 列**只能参考**，不能当成逐句对齐",
-                  file=sys.stderr)
+        missed_replay = sum(1 for one in aligned if one is None)
+        used = {index for index in aligned if index is not None}
+        missed_prod = len(meeting) - len(used)
+        print(f"[replay] 段长对齐：{len(segments)} 段 ↔ 产线 {len(meeting)} 句"
+              f"（重放多出 {missed_replay} 段，产线多出 {missed_prod} 句）")
+        # 差得多的配对要列出来：段长差超过 500ms 还硬凑成一对，说明这条对齐不可靠，
+        # 而 prod 列是要被人当"这一句的原话"看的 —— 错一句就等于记错一句真话。
+        loose = []
+        for index, prod_index in enumerate(aligned):
+            if prod_index is None:
+                continue
+            left = int(segments[index]["dur_ms"])
+            right = int(meeting[prod_index].get("segMs") or 0)
+            if abs(left - right) > 500:
+                loose.append((index + 1, int(meeting[prod_index].get("seg")) or 0, left, right))
+        if loose:
+            print(f"[replay] ⚠️ {len(loose)} 对段长差超过 500ms（边界不完全一样），"
+                  f"前 5 对：" + "、".join(f"重放{s}#{a} {b}ms↔产线#{c} {d}ms"
+                                          for s, a, b, c, d in [(one[0], one[0], one[2], one[1], one[3])
+                                                                for one in loose[:5]]))
+            print("[replay]   这些段的 prod 列只能参考；审听时以音频为准")
 
     rows = []
     for index, one in enumerate(segments, start=1):
         name = f"seg-{index:04d}.pcm"
         write_pcm(segments_dir / name, one["audio"])
-        prod = meeting[index - 1] if index - 1 < len(meeting) else None
-        rows.append({
+        prod = None if aligned[index - 1] is None else meeting[aligned[index - 1]]
+        row = {
             "seg": index,
             "file": name,
             "start_ms": one["start_ms"],
@@ -350,13 +483,18 @@ def command_sheet(args):
             "prodSeg": int(prod.get("seg")) if prod else "",
             "prod": str(prod.get("src") or "") if prod else "",
             "truth": "",
-        })
+            "reviewed": 0,
+        }
+        row["suspect"] = "|".join(suspicion_of(row))
+        rows.append(row)
     out = Path(args.out) if args.out else (workdir / "sheet.tsv")
     write_sheet(out, rows)
     print(f"[replay] 对照表已写出：{out}")
     print(f"[replay] 每段音频在：{segments_dir}")
-    print("[replay] 下一步：把 truth 那一列填上人工对照（留空的段会被跳过），"
-          "然后跑 score 子命令")
+    suspicious = sum(1 for row in rows if str(row.get("suspect") or "") != "")
+    print(f"[replay] 其中可疑段 {suspicious} 段（碎片 / 电平低 / 产线无此句 / 像幻听）")
+    print("[replay] 下一步：跑 review 子命令生成**审听页**（本地浏览器里点着听、点着确认），"
+          "或者在 tsv 里手工填 truth 列")
     return 0
 
 
@@ -635,6 +773,227 @@ def format_report(args, variants, results, refs, unit, terms):
     return "\n".join(lines) + "\n"
 
 
+def run_variant(model, rows, workdir, spec, lang, silence_floor):
+    """跑一个配置，返回逐段识别结果（**不打分** —— 这条路的判据是人眼）。"""
+    out = []
+    for row in rows:
+        audio = read_pcm(workdir / "segments" / str(row["file"]))
+        if audio.size == 0:
+            continue
+        text, ms = transcribe_clip(model, audio, spec, lang, silence_floor)
+        out.append({"seg": int(row["seg"]), "text": text, "ms": ms})
+    return out
+
+
+def diff_markup(base_text, other_text, max_marks=6):
+    """把两句的差异标出来（词级/字级 LCS），用 ⟦…⟧ 括住变的部分。
+
+    <p>为什么人眼对比需要它：两句长句里改了一个词，肉眼扫十行也看不出来；
+    标出来之后"到底改了哪几个词"一眼就看见 —— 而这正是判断"这组配置有没有用"的全部依据。
+    """
+    import difflib
+
+    def tokens(text):
+        # 中文按字、拉丁按词：这样标记不会把整句都包住
+        return re.findall(r"[A-Za-z']+|[^\sA-Za-z']", str(text))
+
+    left = tokens(base_text)
+    right = tokens(other_text)
+    matcher = difflib.SequenceMatcher(None, left, right)
+    pieces = []
+    marks = 0
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            pieces.append("".join(left[i1:i2]))
+            continue
+        if marks < max_marks:
+            marks += 1
+            changed = "".join(right[j1:j2]) if j2 > j1 else ""
+            gone = "".join(left[i1:i2]) if i2 > i1 else ""
+            if changed != "" and gone != "":
+                pieces.append("⟦" + gone + "→" + changed + "⟧")
+            elif changed != "":
+                pieces.append("⟦+" + changed + "⟧")
+            else:
+                pieces.append("⟦-" + gone + "⟧")
+        else:
+            pieces.append("⟦…⟧")
+    return " ".join("".join(pieces).split())
+
+
+def hallucination_hits(text):
+    lowered = str(text).lower()
+    return [hint for hint in SUSPECT_HINTS if hint.lower() in lowered]
+
+
+def count_terms(text, terms):
+    """这句里写对了几个术语（人眼报告里最硬的一列：那类同音词到底修好没修好）。"""
+    hits = []
+    for term in terms:
+        if term.strip() == "":
+            continue
+        if re.fullmatch(r"[A-Za-z][A-Za-z .'-]*", term):
+            if re.search(r"(?<![A-Za-z])" + re.escape(term.strip()) + r"(?![A-Za-z])", text, re.I):
+                hits.append(term.strip())
+        elif term.strip().lower() in str(text).lower():
+            hits.append(term.strip())
+    return hits
+
+
+def format_diff_report(args, rows, results, baseline_name, baseline_rows, terms, unit_note):
+    """把"几组配置对同一批段"的输出摊成人眼能比的表（**不需要参考文本**）。
+
+    <p>为什么要有这条路：标注几百段真话要几个小时，而"哪组配置更好"这件事，
+    大多数时候人眼看三十段对照就能定。代价必须说清：**它给不出错误率**，
+    只能看出"变了什么、变得像不像人话、有没有少一句"。
+    """
+    lines = []
+    lines.append("# 免标注对比：同一批段，几组配置的输出并排看\n")
+    lines.append("- 对照表：" + str(args.sheet or ""))
+    lines.append("- 段数：**" + str(len(rows)) + "**" + unit_note)
+    lines.append("- 基线：`" + baseline_name + "`"
+                 + ("（对照表里**产线当时**的原文，零额外推理）" if baseline_name == "prod" else ""))
+    lines.append("- ⚠️ 这不是错误率：没有参考文本就没有 CER。它回答「变了什么」，不回答「对了几成」。")
+    lines.append("")
+
+    by_seg_base = {one["seg"]: one for one in baseline_rows}
+    lines.append("| 配置 | 有差异的段 | 变短 / 变长 | 整句变空 | 幻听命中 | 平均耗时 | p95 |")
+    lines.append("|---|---|---|---|---|---|---|")
+    detail = {}
+    for name, rows_of in results.items():
+        changed = []
+        shorter = longer = emptied = 0
+        halluc = 0
+        times = []
+        for one in rows_of:
+            base = by_seg_base.get(one["seg"])
+            if base is None:
+                continue
+            times.append(one["ms"])
+            was = str(base.get("text") or "")
+            now = str(one["text"] or "")
+            if was.strip() == now.strip():
+                continue
+            changed.append((one["seg"], was, now))
+            if was.strip() != "" and now.strip() == "":
+                emptied += 1
+            delta = len(now) - len(was)
+            if delta < 0:
+                shorter += 1
+            elif delta > 0:
+                longer += 1
+            halluc += len(hallucination_hits(now)) - len(hallucination_hits(was))
+        times.sort()
+        mean_ms = (sum(times) / len(times)) if times else 0
+        p95 = asr_score.percentile(times, 0.95) if times else 0
+        detail[name] = changed
+        lines.append("| `" + name + "` | " + str(len(changed)) + " / " + str(len(rows_of))
+                     + " | " + str(shorter) + " / " + str(longer) + " | " + str(emptied)
+                     + " | " + ("+" + str(halluc) if halluc >= 0 else str(halluc))
+                     + " | {:.0f} ms | {:.0f} ms |".format(mean_ms, p95))
+    lines.append("")
+
+    if terms:
+        lines.append("## 术语命中（" + str(len(terms)) + " 个词；数的是**写出正确写法的段数**）\n")
+        lines.append("| 术语 | " + " | ".join("`" + name + "`" for name in results) + " |")
+        lines.append("|---" * (1 + len(results)) + "|")
+        for term in terms:
+            cells = []
+            for name in results:
+                hits = sum(1 for one in results[name] if term in count_terms(one["text"], [term]))
+                cells.append(str(hits))
+            lines.append("| " + term + " | " + " | ".join(cells) + " |")
+        lines.append("")
+
+    lines.append("## 逐段对照（变化最大的前 " + str(args.top) + " 段）\n")
+    for name, changed in detail.items():
+        if not changed:
+            lines.append("### `" + name + "`：**一句都没变** —— 这个旋钮在这批音频上没影响\n")
+            continue
+        scored = []
+        for seg, was, now in changed:
+            size = abs(len(now) - len(was)) + (200 if now.strip() == "" and was.strip() != "" else 0)
+            scored.append((size, seg, was, now))
+        scored.sort(reverse=True)
+        lines.append("### `" + name + "`（" + str(len(changed)) + " 段有变化）\n")
+        for size, seg, was, now in scored[:max(0, int(args.top))]:
+            lines.append("- **seg" + str(seg) + "**（听 `segments/seg-" + str(seg).zfill(4) + ".pcm`）")
+            lines.append("  - " + baseline_name + "：" + str(was))
+            lines.append("  - " + name + "：" + diff_markup(was, now))
+        lines.append("")
+    lines.append("## 怎么读这张表（以及它骗人的地方）\n")
+    lines.append("- **「一句都没变」= 这个旋钮没用**，别为了它再折腾；")
+    lines.append("- **变短的段多** → 很可能在吃字；")
+    lines.append("- **整句变空** → 那一段被四道闸之一丢掉了，听着像「漏了一句」；")
+    lines.append("- **幻听命中变多** → 这组配置更容易编话；")
+    lines.append("- 想把它变成**错误率**，就得给几十段填真话（跑 review 子命令，几分钟）。")
+    return "\n".join(lines) + "\n"
+
+
+def command_compare(args):
+    workdir = Path(args.workdir) if args.workdir else (Path(args.sheet).parent if args.sheet else None)
+    if workdir is None:
+        sys.exit("要给 --workdir（切段那个目录）或 --sheet")
+    sheet_path = Path(args.sheet) if args.sheet else (workdir / "sheet.tsv")
+    if not sheet_path.exists():
+        sys.exit("没有对照表：" + str(sheet_path) + "（先跑 sheet 子命令）")
+    # 报告里要写出**真正用的**那份表（调用方没给 --sheet 时是推导出来的）
+    args.sheet = str(sheet_path)
+    rows = read_sheet(sheet_path)
+    if not rows:
+        sys.exit("对照表是空的")
+
+    table = {}
+    if args.data_dir:
+        path = Path(args.data_dir) / whisper_stream.ASR_MODELS_FILE
+        if path.exists():
+            table, _problem = whisper_stream.load_asr_models(str(path))
+    table = table or {}
+    profile = whisper_stream.resolve_strategy(args.lang, {}, table)
+    if args.model:
+        profile["model"] = args.model
+    if args.compute_type:
+        profile["compute_type"] = args.compute_type
+    silence_floor = float(profile.get("silence_skip_level") or whisper_stream.SILENCE_SKIP_RMS)
+    terms = read_terms(args.terms_file)
+
+    names = [name.strip() for name in str(args.variants).split(",") if name.strip() != ""]
+    baseline_name = str(args.baseline or "prod")
+    baseline_rows = []
+    if baseline_name == "prod":
+        baseline_rows = [{"seg": int(row["seg"]), "text": str(row.get("prod") or "")}
+                         for row in rows]
+        if all(one["text"].strip() == "" for one in baseline_rows):
+            sys.exit("对照表里 prod 列是空的（跑 sheet 时没给 --meeting-log？）→ 换成 --baseline base")
+        print("[replay] 基线 = 产线当时的原文（零额外推理）")
+    else:
+        names = list(dict.fromkeys(names + [baseline_name]))
+
+    specs = dict(variant_specs(names, profile, terms))
+    cache = {}
+    results = {}
+    for name, spec in specs.items():
+        model = load_model(spec, args, cache)
+        started = time.perf_counter()
+        results[name] = run_variant(model, rows, workdir, spec, args.lang, silence_floor)
+        print("[replay] ▶ " + name + "：" + str(len(results[name])) + " 段，"
+              + "{:.0f}s".format(time.perf_counter() - started), flush=True)
+        if baseline_name != "prod" and name == baseline_name:
+            baseline_rows = results[name]
+    if baseline_name != "prod":
+        results = {name: value for name, value in results.items() if name != baseline_name}
+
+    note = "（" + ("基线来自产线当时" if baseline_name == "prod" else "基线 " + baseline_name) + "）"
+    report = format_diff_report(args, rows, results, baseline_name, baseline_rows, terms, note)
+    out = Path(args.out) if args.out else (workdir / "diff.md")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(report, encoding="utf-8")
+    print("")
+    print("[replay] 对比报告已写出：" + str(out))
+    print(report.split("## 逐段对照")[0])
+    return 0
+
+
 def command_score(args):
     refs = [row for row in read_sheet(args.refs) if str(row.get("truth") or "").strip() != ""]
     if not refs:
@@ -696,8 +1055,11 @@ def command_score(args):
 
 def main(argv=None):
     args = parse_args(argv)
-    if getattr(args, "command", None) == "sheet":
+    command = getattr(args, "command", None)
+    if command == "sheet":
         return command_sheet(args)
+    if command == "compare":
+        return command_compare(args)
     return command_score(args)
 
 
