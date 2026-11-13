@@ -539,9 +539,53 @@ def read_sheet(path):
 
 # ── 子命令：score ────────────────────────────────────────────────────────────
 
+# 这些变体只对 whisper 有意义（精度 / beam / 高通 / VAD / 术语提示词都是它的参数）。
+# 2026-11-13 实测踩到：那台机器的 en-US 在策略表里走的是 **parakeet**（.nemo 文件），
+# 于是 base 变体把 "/opt/leion/models/parakeet-tdt-0.6b-v2.nemo" 当模型名喂给
+# faster-whisper，报的是 huggingface_hub 的 "Repo id must be in the form ..." ——
+# 一个和真实原因（引擎不对）毫无关系的错。所以这里必须**先看引擎**。
+WHISPER_ONLY_VARIANTS = ("float16", "int8", "beam8", "hp0", "hp100", "vad", "terms")
+
+
+def engine_of(profile):
+    """策略表里这一路用哪个引擎（空 = whisper）。"""
+    return str((profile or {}).get("engine") or "whisper").strip().lower() or "whisper"
+
+
+def require_engine(args, profile, variant_names):
+    """非 whisper 引擎时的处置：要么明确切到 whisper，要么说清为什么不做。
+
+    <p>为什么不让它自动改成 whisper 就跑：那样 base 就悄悄换成了另一个引擎，
+    报告会写"base = 产线配置"但实际不是 —— 这种**看起来对、其实换了被测对象**的错，
+    比直接报错糟得多。
+    """
+    engine = engine_of(profile)
+    if engine == "whisper":
+        return engine
+    model = str(profile.get("model") or "")
+    whisper_only = [name for name in variant_names if name.strip() in WHISPER_ONLY_VARIANTS]
+    if not whisper_only:
+        # 只跑 base：也应该说清"我跑的不是 whisper"，但仍然照实去做没意义（工具只认 whisper）
+        pass
+    if args is not None and getattr(args, "model", None):
+        print("[replay] ⚠️ 策略表里这一路是 " + engine + "（" + model + "）；"
+              "已按 --model 换成 whisper —— 报告里的 base **不是**产线配置", file=sys.stderr)
+        return "whisper"
+    sys.exit(
+        "这一路在策略表里走的是 **" + engine + "**（模型 " + model + "），" + "\n" +
+        "而这个工具的所有变体（" + " / ".join(WHISPER_ONLY_VARIANTS) + "）都是 **whisper** 的参数。" + "\n" +
+        "\n" +
+        "两个选择：" + "\n" +
+        "  ① 比 whisper 的这几档：加 --model large-v3" + "\n" +
+        "     （base 就变成 whisper large-v3；--baseline prod 仍是产线 " + engine + " 当时的原文" + "\n" +
+        "       —— 这正好就是「换成 whisper 会不会更好」的 A/B）" + "\n" +
+        "  ② 比 " + engine + " 自己的参数：这个工具还没接（要我接就说一声）" + "\n")
+
+
 def variant_specs(names, profile, terms):
     """把变体名翻译成"覆盖哪些字段"。缺省值全部来自策略表（也就是产线当前配置）。"""
     base = {
+        "engine": engine_of(profile),
         "model": profile.get("model") or "large-v3",
         "compute_type": profile.get("compute_type") or "float16",
         "beam_size": profile.get("beam_size") or 5,
@@ -624,6 +668,12 @@ def read_terms(path):
 
 
 def load_model(spec, args, cache):
+    engine = str(spec.get("engine") or "whisper").strip().lower() or "whisper"
+    if engine != "whisper":
+        # 走到这里说明上面的 require_engine 被绕过了（或者以后加了新调用点）。
+        # 再兜一道：宁可报一句人话，也不要让 faster-whisper 去解释 ".nemo 不是 repo id"。
+        sys.exit("这个变体要的引擎是 " + engine + "，而本工具只会跑 whisper"
+                 "（模型 " + str(spec.get("model")) + "）—— 加 --model large-v3 切到 whisper 再跑")
     key = (spec["model"], spec["compute_type"])
     if key in cache:
         return cache[key]
@@ -980,6 +1030,7 @@ def command_compare(args):
     terms = read_terms(args.terms_file)
 
     names = [name.strip() for name in str(args.variants).split(",") if name.strip() != ""]
+    require_engine(args, profile, names)
     baseline_name = str(args.baseline or "prod")
     baseline_rows = []
     if baseline_name == "prod":
@@ -1038,6 +1089,7 @@ def command_score(args):
         profile["compute_type"] = args.compute_type
     silence_floor = float(profile.get("silence_skip_level") or whisper_stream.SILENCE_SKIP_RMS)
     unit = args.unit or ("char" if asr_score.has_cjk(refs[0]["truth"]) else "word")
+    require_engine(args, profile, str(args.variants).split(","))
     terms = read_terms(args.terms_file)
     specs = variant_specs(args.variants.split(","), profile, terms)
 

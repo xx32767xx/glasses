@@ -180,8 +180,10 @@
         <div class="mono">
           <b>高通</b>是线性滤波：只砍掉截止频率以下的轰鸣（空调、桌面震动、音箱低音），
           不剪时长、不改语音结构，代价约 3 ms/秒音频 —— 所以<b>缺省开 100Hz</b>；写 <code>0</code> 关掉。
-          <b>VAD</b> 是二次确认，会<b>剪掉不像人声的头尾</b>，短句上可能吃掉第一个音节 ——
-          所以<b>缺省关</b>：先开着一门语言跑一场，看会议记录里有没有"少词"再决定。
+          <b>VAD 已经不在这里配了</b>（5.197）：它挪到**引擎之前**统一做，语义也改了 ——
+          只判"这段里有没有人声"，没有就整段**丢掉**、不剪音频（剪首尾会吃音节）。
+          它对所有引擎生效（whisper / parakeet / 云端），所以要开请在策略表里写
+          <code>vad: true</code>；这里不再提供开关，免得以为"关了就不判"。
           留空 = 继承上一层；这里是<b>逐语种</b>的，改哪一行只影响哪一门语言。
           <br>改完点<b>下面那排「保存」</b>（它和「策略定义」后面那个保存是同一个动作：
           把整张 <code>asr-models.json</code> 一次写入）；不点保存只在页面上好看。
@@ -406,8 +408,14 @@ let segState = { rules: {} };
  *   · 高通（缺省 100）：线性滤波，不剪时长、不改语音结构，只是砍掉 100Hz 以下的轰鸣；
  *   · VAD（缺省关）：会剪掉不像人声的头尾 —— 短句上可能吃掉第一个音节，要看现场数据再开。
  */
-const NOISE_FIELDS = ['highpass_hz', 'vad', 'vad_max_ms', 'vad_threshold'];
-const NOISE_SHORT = { highpass_hz: '高通Hz', vad: 'VAD', vad_max_ms: '短段上限', vad_threshold: '门槛' };
+// 5.197：**界面只留高通**（用户要求）。VAD 变成流水线前置层的"判定式"之后，
+// 把它摆在每门语言里当开关会让人以为"我关了它就不判了"，而实际那是个引擎前的全局行为。
+// 表里那几个字段**仍然有效**（写了 vad:true 照样生效），只是不再从界面改。
+// ⚠️ 所以"界面渲染的"与"保存时保留的"必须分开：只改前者，才会出现
+//    "在界面里存一次 → VAD 配置被悄悄删掉"那种事故。
+const NOISE_FIELDS = ['highpass_hz'];
+const NOISE_KEEP = ['highpass_hz', 'vad', 'vad_max_ms', 'vad_threshold'];
+const NOISE_SHORT = { highpass_hz: '高通Hz' };
 /** 每门语言"现在实际生效"的降噪值（含 default 层），服务端算好；用于占位与"谁定的"提示。 */
 let noiseStateByLang = {};
 let noiseRules = {};
@@ -586,8 +594,7 @@ function buildNoiseRow(scope, label, layer, effective, effectiveLayers) {
     said.className = 'tag';
     said.style.opacity = '.8';
     const from = (key) => ((effectiveLayers || {})[key] || '内置缺省');
-    said.textContent = `生效：高通 ${effective.highpass_hz}（${from('highpass_hz')}）· `
-      + `VAD ${effective.vad ? '开' : '关'}（${from('vad')}）`;
+    said.textContent = `生效：高通 ${effective.highpass_hz}（${from('highpass_hz')}）`;
     row.appendChild(said);
   }
   return row;
@@ -979,11 +986,11 @@ function modelEditedTable() {
     }
     if (Object.keys(seg).length > 0) layer.segmentation = seg;
     else delete layer.segmentation;
-    // 5.187：这一门语言的降噪四项（留空 = 删掉这一字段 = 继承上一层）
+    // 5.187 / 5.197：这一门语言的降噪（界面只有高通；VAD 三项原样保留，不被这次保存抹掉）
     const noise = readNoiseRow(lang);
-    for (const key of NOISE_FIELDS) {
+    for (const key of NOISE_KEEP) {
       if (key in noise) layer[key] = noise[key];
-      else delete layer[key];
+      else if (NOISE_FIELDS.indexOf(key) >= 0) delete layer[key];
     }
     next.languages[lang] = layer;
   }
@@ -1008,7 +1015,7 @@ function modelEditedTable() {
   next.default = applyLayer(next.default, 'default');
   // 5.187：全局那一行的降噪（写进 default 层；留空 = 删掉 = 回到内置缺省）
   const globalNoise = readNoiseRow('');
-  for (const key of NOISE_FIELDS) {
+  for (const key of NOISE_KEEP) {
     if (key in globalNoise) next.default[key] = globalNoise[key];
     else if (document.getElementById('noiseDefault_' + key)) delete next.default[key];
   }

@@ -2607,9 +2607,16 @@ def main():
     check("消费者每行都带 room（下游靠它送回正确的房间）", '"room":' in consumer_src.replace("'", '"')
           or "\"room\":" in consumer_src, consumer_src[:200])
     check("消费者处理完就删那一段（队列目录同时是待办清单）", "os.unlink" in consumer_src)
-    check("消费者只**报**队列深度、不丢数据（没有任何按深度/时长丢弃的逻辑）",
-          "drop" not in consumer_src.lower() and "max_queue" not in consumer_src.lower()
-          and "queue_max" not in consumer_src.lower(), "看起来开始丢数据了")
+    # 5.197 修正：允许**内容层面**丢——前置 VAD 判定"这段里没有人声"就不送识别。
+    # 但"为了追上队列而按深度/等待时长丢"仍然是**绝对禁止**的（那是用户 2026-10-30 定的：
+    # 积压只报告，不丢）。所以这里分开判：只许 vad_dropped，不许任何 max_queue 之类的旋钮。
+    check("消费者只**报**队列深度，绝不按深度/时长丢数据",
+          "max_queue" not in consumer_src.lower()
+          and "queue_max" not in consumer_src.lower()
+          and "drop_oldest" not in consumer_src.lower(), "看起来开始丢数据了")
+    check("允许的唯一丢弃是**内容层面**的（前置 VAD 判没人声），而且必须记账",
+          "vad_dropped += 1" in consumer_src and "preprocess_segment(" in consumer_src,
+          "内容层面的丢弃没有记账或没有走前置层")
     check("删段只发生在**转写之后**（处理完才算消费，绝不提前删）",
           consumer_src.index("os.unlink") > consumer_src.index("processed += 1"),
           "unlink 出现在转写之前")
@@ -4260,7 +4267,9 @@ def main():
         check(f"{_lang} 默认仍不开 VAD（要现场数据再开）",
               _resolved.get("vad") in (None, False), str(_resolved.get("vad")))
 
-    # 引擎这一层：命令行 / 策略 / 显式关，谁说了算
+    # 5.197：引擎这一层**不再**做降噪 —— 挪到引擎分发之前的 preprocess_segment。
+    # 所以这里钉两件事：① 引擎里不再按 profile 取高通/VAD（否则会滤两遍）；
+    #                 ② preprocess_segment 对所有引擎都生效，并按 profile 决定做不做。
     _hp_calls = []
     _real_highpass = whisper_stream.highpass_biquad
 
@@ -4272,22 +4281,71 @@ def main():
     try:
         _noise_model = _FakeModel()
         _noise_audio = _hp_tone(1.0)
-        for _label, _argv, _profile, _want_cut, _want_vad in (
-            ("命令行开", ["--vad", "--highpass-hz", "100"], None, 100.0, True),
-            ("策略开", [], {"highpass_hz": 60, "vad": True}, 60.0, True),
-            ("缺省关", [], None, None, False),
-            ("--no-vad 压过 --vad", ["--vad", "--no-vad"], None, None, False),
-            ("策略里显式写 false 也关得掉", ["--vad"], {"vad": False}, None, False),
+        # ① 引擎内：不管 profile 写什么都没滤（只有前置层滤）
+        _engine = whisper_stream.WhisperEngine(_FakeModel, whisper_stream.parse_args(
+            ["--queue-dir", "var/test/noise-probe", "--vad", "--highpass-hz", "100"]))
+        _engine.transcribe((_noise_model, None), _noise_audio, "en-US",
+                           {"highpass_hz": 60, "vad": True})
+        check("引擎内**不再**做高通（否则前置层滤完这里又滤一遍）",
+              _hp_calls == [], str(_hp_calls))
+        check("引擎内**不再**传 vad_filter（VAD 归前置层管）",
+              "vad_filter" not in _noise_model.calls[-1], str(sorted(_noise_model.calls[-1])))
+
+        # ② 前置层：按 profile 决定，而且**不分引擎**
+        for _label, _profile, _want_cut in (
+            ("策略写 100", {"highpass_hz": 100}, 100.0),
+            ("策略写 60", {"highpass_hz": 60, "engine": "parakeet"}, 60.0),
+            ("缺省（没写）= 不过滤", {}, None),
+            ("显式写 0 = 关掉", {"highpass_hz": 0}, None),
         ):
             _hp_calls.clear()
-            _engine = whisper_stream.WhisperEngine(_FakeModel, whisper_stream.parse_args(
-                ["--queue-dir", "var/test/noise-probe", *_argv]))
-            _engine.transcribe((_noise_model, None), _noise_audio, "en-US", _profile)
-            _got_cut = _hp_calls[-1] if _hp_calls else None
-            _got_vad = _noise_model.calls[-1].get("vad_filter")
-            check(f"{_label}：高通 {_got_cut} / VAD {_got_vad}",
-                  _got_cut == _want_cut and (_got_vad is True) == _want_vad,
-                  str((_got_cut, _got_vad)))
+            whisper_stream.preprocess_segment(_noise_audio, 16000, _profile, np)
+            _got = _hp_calls[-1] if _hp_calls else None
+            check(f"前置高通（{_label}）：{_got}", _got == _want_cut, str(_got))
+
+        # ③ 前置 VAD 是"判定式"：判没人声 → 丢掉这一段；判有人声 → 原样放行
+        _silence = (np.random.default_rng(9).normal(0, 0.0005, 16000)).astype(np.float32)
+        _kept, _why_quiet = whisper_stream.preprocess_segment(
+            _silence, 16000, {"vad": True, "highpass_hz": 0}, np)
+        check("前置 VAD：近乎静音的段被判定为「没有人声」并给出原因",
+              _why_quiet is not None and "VAD" in str(_why_quiet), str(_why_quiet))
+        check("判定式**不剪音频**（长度一个字都不少，剪首尾会吃音节）",
+              len(_kept) == len(_silence), str((len(_kept), len(_silence))))
+        # ⚠️ 实测（这条一开始写错了，值得留着）：**纯正弦音调会被 silero 判成"没有人声"**。
+        # 那不是 bug —— silero 判的是"像不像人声"，正弦波确实不是。但它说明一件必须记住的事：
+        # 前置 VAD 只能用来挡**非人声**（音调、音乐、敲击），挡不住"小声的真话"，
+        # 而后者恰恰是教室里的常态。所以它必须是**逐语种显式打开**的，不能默认开。
+        _voice = (np.sin(2 * np.pi * 300 * np.arange(16000) / 16000.0) * 0.3).astype(np.float32)
+        _unused, _why_voice = whisper_stream.preprocess_segment(
+            _voice, 16000, {"vad": True, "highpass_hz": 0}, np)
+        check("纯音调被判成「没有人声」（silero 判的是像不像人声，不是响不响）",
+              _why_voice is not None, str(_why_voice))
+
+        # 反过来：**依赖缺失或判定出错时必须放行**（宁可多送一段，不能因为一个可选优化丢真话）
+        _real_has_speech = whisper_stream.has_speech
+        whisper_stream.has_speech = lambda *a, **k: True
+        try:
+            _unused, _why_pass = whisper_stream.preprocess_segment(
+                _silence, 16000, {"vad": True, "highpass_hz": 0}, np)
+            check("判定函数说「有人声」时原样放行（判定与丢弃的接线是对的）",
+                  _why_pass is None, str(_why_pass))
+        finally:
+            whisper_stream.has_speech = _real_has_speech
+        whisper_stream.has_speech = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+        try:
+            _unused, _why_err = whisper_stream.preprocess_segment(
+                _silence, 16000, {"vad": True, "highpass_hz": 0}, np)
+            check("判定本身抛异常时**放行**（降噪坏了不许连累识别）",
+                  _why_err is None, str(_why_err))
+        finally:
+            whisper_stream.has_speech = _real_has_speech
+        _long = (np.sin(2 * np.pi * 300 * np.arange(16000 * 3) / 16000.0) * 0.3).astype(np.float32)
+        _unused, _why_long = whisper_stream.preprocess_segment(
+            _long, 16000, {"vad": True, "vad_max_ms": 2000, "highpass_hz": 0}, np)
+        check("超过 vad_max_ms 的长段不做判定（省时间，长段几乎不会没人声）",
+              _why_long is None, str(_why_long))
+        _unused, _why_off = whisper_stream.preprocess_segment(_silence, 16000, {"highpass_hz": 0}, np)
+        check("没写 vad 就完全不判（缺省行为不变）", _why_off is None, str(_why_off))
     finally:
         whisper_stream.highpass_biquad = _real_highpass
 
@@ -4469,6 +4527,31 @@ def main():
           and "terms" in _missing_said, _missing_said[:160])
     check("提示里不是 FileNotFoundError 的 traceback（那是甩锅给用户）",
           "Traceback" not in _missing_said, _missing_said[:120])
+
+    # ⑥c 引擎不对时**不许**把 .nemo 当 whisper 模型名喂进去（2026-11-13 实机踩到）
+    _parakeet_profile = {"engine": "parakeet",
+                         "model": "/opt/leion/models/parakeet-tdt-0.6b-v2.nemo",
+                         "compute_type": "int8_float32"}
+    _no_model = type("A", (), {"model": None})()
+    try:
+        _replay.require_engine(_no_model, _parakeet_profile, ["base", "float16"])
+        _engine_said = ""
+    except SystemExit as _exit:
+        _engine_said = str(_exit)
+    check("策略表里这一路不是 whisper：直接说清引擎与两条出路",
+          "parakeet" in _engine_said and "--model large-v3" in _engine_said,
+          _engine_said[:120])
+    check("报错里**不能**出现 huggingface 那套 Repo id 的话（那是下游的错，会把人带偏）",
+          "Repo id" not in _engine_said, _engine_said[:120])
+    check("给了 --model 就放行（并明说 base 不再是产线配置）",
+          _replay.require_engine(type("A", (), {"model": "large-v3"})(), _parakeet_profile,
+                                 ["base"]) == "whisper")
+    check("whisper 引擎时什么都不拦",
+          _replay.require_engine(_no_model, {"engine": "whisper", "model": "large-v3"}, ["base"])
+          == "whisper")
+    check("变体定义里带着引擎（否则 load_model 又会把 .nemo 喂给 faster-whisper）",
+          dict(_replay.variant_specs(["base"], {"engine": "whisper", "model": "large-v3"}, []))
+          ["base"].get("engine") == "whisper")
 
     # ⑦ 抽样：想先拿 20 段试一组配置时，要均匀取而不是只取开头
     _items = list(range(100))

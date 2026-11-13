@@ -1593,23 +1593,19 @@ class WhisperEngine(AsrEngine):
         floor = (profile or {}).get("silence_skip_level")
         if not isinstance(floor, (int, float)) or floor <= 0:
             floor = self.args.silence_skip_level
-        # 5.186：高通与 VAD 可以**按策略**给（表里写了就用表里的）——
-        # 教室场景只需要给吵闹的那门语言开，安静场景不受影响。
-        # 用 getattr 读命令行那几项：老 fixture / 别的调用方传进来的 args 里可能没有它们
-        # （没有 = 关，与 5.186 之前的行为一致）。
-        highpass = (profile or {}).get("highpass_hz")
-        if not isinstance(highpass, (int, float)) or highpass < 0:
-            highpass = float(getattr(self.args, "highpass_hz", 0.0) or 0.0)
-        vad_on = (profile or {}).get("vad")
-        if not isinstance(vad_on, bool):
-            vad_on = bool(getattr(self.args, "vad", False)) and not bool(
-                getattr(self.args, "no_vad", False))
-        vad_max = (profile or {}).get("vad_max_ms")
-        if not isinstance(vad_max, int) or vad_max <= 0:
-            vad_max = int(getattr(self.args, "vad_max_ms", 2000) or 2000)
-        vad_threshold = (profile or {}).get("vad_threshold")
-        if not isinstance(vad_threshold, (int, float)) or not (0.05 <= vad_threshold <= 0.95):
-            vad_threshold = float(getattr(self.args, "vad_threshold", 0.5) or 0.5)
+        # ── 5.197：降噪两项**不在这里做了** ───────────────────────────────
+        # 以前（5.186/5.187）高通和 VAD 是 whisper 分支专有的：写在 transcribe() 里，
+        # 而 parakeet / 腾讯 / 云端那些引擎走的是各自的 transcribe()，**根本不经过这里**。
+        # 于是"管理台把高通开了"这件事，在英语走 parakeet 的机器上等于没开 ——
+        # 界面上看着配好了，实际一行都没执行，这是最坏的一种"配了但没生效"。
+        #
+        # 现在统一挪到**引擎分发之前**（preprocess_segment，见 run_queue_consumer）：
+        #   · 高通：所有引擎都过一遍，只在这一处；
+        #   · VAD ：改成语义更稳的"判定式"——判这段里有没有人声，没有就不送去识别，
+        #           **不剪音频**（剪首尾会吃音节，5.186 踩过）。
+        # 所以这里显式传 0/关：不是"没配"，是"不归我管"。
+        # ⚠️ 千万别在这里再按 profile 取一遍：那样会**滤两遍**（高频被削两次），
+        #    听感上只是"变薄了"，日志里完全看不出来。
         text, empty, reason, overrode, kind, resolved_language = transcribe(
             model, audio, language,
             self.args.min_logprob, self.args.no_speech_prob,
@@ -1619,10 +1615,8 @@ class WhisperEngine(AsrEngine):
             context_text=None,
             do_normalize=not self.args.no_normalize,
             candidates=self.args.lang_candidates,
-            highpass_hz=float(highpass),
-            vad=vad_on,
-            vad_max_ms=int(vad_max),
-            vad_threshold=float(vad_threshold),
+            highpass_hz=0.0,
+            vad=False,
         )
         return {"text": text, "empty": empty, "reason": reason,
                 "resolved_language": resolved_language}
@@ -2717,6 +2711,94 @@ class ModelPool:
         return "；".join(f"{tag} ×{count}" for tag, count in sorted(self.counts.items()))
 
 
+# ── 5.197：引擎分发**之前**统一做的降噪（对所有引擎生效）─────────────────────
+#
+# 为什么要挪到这一层：高通和 VAD 原来只写在 whisper 分支里，而 parakeet / 腾讯 / 云端
+# 走各自的实现，**根本不经过** whisper 的 transcribe()。于是管理台开了高通，在英语走
+# parakeet 的机器上等于没开 —— "配了但没生效"是最难查的一类问题。
+#
+# 两项的语义（都不改音频长度，和 whisper 内部的 VAD **不一样**）：
+#   · 高通：二阶 Butterworth，砍掉 cutoff 以下的低频轰鸣。线性、不剪时长。
+#   · VAD ：**判定式** —— 问"这段里有没有人声"，没有就**整段丢掉**，不送去识别。
+#           ⚠️ 刻意**不剪首尾**：剪掉头 60~100ms 在短句上就是吃掉第一个音节
+#           （5.186 的实测教训：评测里写死 vad_filter=True，删除率凭空涨到 88%）。
+#           判定式最坏只丢一段"本来就没人的"，不会伤到真话。
+VAD_DECIDE_MAX_MS = 2000      # 只给不超过这么长的段做判定（长段几乎不会没人声，省时间）
+_VAD_PREFILTER_WARNED = {"done": False}
+
+
+def highpass_amount(profile, fallback=0.0):
+    """这一路要不要高通、截止多少（表里给了就用表里的）。"""
+    value = (profile or {}).get("highpass_hz")
+    if not isinstance(value, (int, float)) or value < 0:
+        return float(fallback or 0.0)
+    return float(value)
+
+
+def vad_wanted(profile):
+    """这一路要不要做 VAD 判定（表里显式写了 true 才做）。"""
+    return (profile or {}).get("vad") is True
+
+
+def has_speech(audio, samplerate, threshold=0.5, np=None):
+    """这段音频里**有没有人声**（silero VAD，只判定、不剪）。
+
+    <p>依赖不在（老版本 faster-whisper）时**说一次**然后返回 True —— 宁可多送一段给引擎，
+    也不能因为一个可选优化把整句真话丢掉。
+    """
+    try:
+        from faster_whisper.vad import VadOptions, get_speech_timestamps
+    except Exception as error:                                  # noqa: BLE001
+        if _VAD_PREFILTER_WARNED["done"] is not True:
+            _VAD_PREFILTER_WARNED["done"] = True
+            print(f"[识别] ⚠️ 这台机器的 faster-whisper 没有 VAD（{type(error).__name__}: {error}）"
+                  "→ 前置 VAD 判定**没生效**，所有段照常送识别", file=sys.stderr, flush=True)
+        return True
+    try:
+        options = VadOptions(threshold=float(threshold),
+                             min_speech_duration_ms=200,    # 更短的"语音"多半是噪声瞬态
+                             min_silence_duration_ms=100,
+                             speech_pad_ms=60)
+        stamps = get_speech_timestamps(audio, options)
+        return bool(stamps)
+    except Exception:                                          # noqa: BLE001
+        # 判定本身出错不改变业务：照常送识别
+        return True
+
+
+def preprocess_segment(audio, samplerate, profile, np):
+    """引擎分发前统一做两件事：高通、以及"这段到底有没有人声"的判定。
+
+    @returns (处理后的音频, None | 丢弃原因)。原因非空 → 这一段**不要送去识别**。
+    """
+    processed = np.asarray(audio, dtype=np.float32)
+    cutoff = highpass_amount(profile)
+    if cutoff > 0:
+        processed = highpass_biquad(processed, samplerate, cutoff)
+    if not vad_wanted(profile):
+        return processed, None
+    ms = int(len(processed) * 1000.0 / float(samplerate or 16000))
+    max_ms = (profile or {}).get("vad_max_ms")
+    limit = int(max_ms) if isinstance(max_ms, int) and max_ms > 0 else VAD_DECIDE_MAX_MS
+    if ms > limit:
+        # 长段不做判定：几乎不会是"没人声"，做了只是白花时间
+        return processed, None
+    threshold = (profile or {}).get("vad_threshold")
+    if not isinstance(threshold, (int, float)) or not (0.05 <= threshold <= 0.95):
+        threshold = 0.5
+    try:
+        speech = has_speech(processed, samplerate, threshold, np=np)
+    except Exception as error:                                 # noqa: BLE001
+        # 判定本身抛异常 → **放行**。降噪是可选优化，它坏了绝不许连累识别
+        # （这类"护栏变路障"是本项目反复踩过的坑：宁可多送一段，也不能丢真话）。
+        print(f"[识别] ⚠️ 前置 VAD 判定出错（{type(error).__name__}: {error}）→ 这一段照常送识别",
+              file=sys.stderr, flush=True)
+        speech = True
+    if speech:
+        return processed, None
+    return processed, f"前置 VAD 判定这段没有人声（{ms}ms，threshold {threshold}）—— 不送识别"
+
+
 def _read_segment(queue_dir, base, np):
     """读出一段；读不到返回 None（可能刚被别的进程消费掉了）。"""
     try:
@@ -2748,6 +2830,10 @@ def run_queue_consumer(args, np, pool):
         print(f"[识别] 模型表 {args.model_map}（改了会自动重新读，不用重启）",
               file=sys.stderr, flush=True)
     processed = 0
+    # 5.197：被"前置 VAD 判定这段没有人声"丢掉的段数。
+    # 单独记一个数、而不是混进 processed：这正是"漏了一句"和"这一段本来就没说话"
+    # 的分界线，事后要能分开看。
+    vad_dropped = 0
     last_report = time.monotonic()
     waited_ms_max = 0
     map_stamp = _stamp_of(args.model_map)
@@ -2828,6 +2914,23 @@ def run_queue_consumer(args, np, pool):
                     print(f"[识别] 电平门槛：{language} 用**表里**的 {table_floor}"
                           f"（命令行给的是 {cli_floor}）→ 表优先；要让命令行生效就把表里那个字段删掉",
                           file=sys.stderr, flush=True)
+            # ── 5.197：**引擎无关的降噪**（高通 + "有没有人声"的判定）─────────────
+            # 位置很关键：在 `pool.get` / 引擎分发**之前**。放这里才对所有引擎生效
+            # （whisper / parakeet / 腾讯 / 云端走的是各自的 transcribe()，谁也不会替别人调）。
+            # 高通是线性滤波、不改时长；VAD 只判不剪 —— 判成"没有人声"就把这一段丢掉。
+            try:
+                audio, denoise_reason = preprocess_segment(
+                    audio, int(meta.get("rate") or args.samplerate), profile, np)
+            except Exception as error:                         # noqa: BLE001
+                # 降噪出问题绝不拖停识别：退回原始音频，照常往下走（并说一句）
+                denoise_reason = None
+                print(f"[识别] ⚠️ 前置降噪出错（{type(error).__name__}: {error}）→ 这一段用原始音频",
+                      file=sys.stderr, flush=True)
+            if denoise_reason is not None:
+                vad_dropped += 1
+                if log_level_at_least("summary"):
+                    print(f"[识别] 跳过一段：{denoise_reason}", file=sys.stderr, flush=True)
+                continue
             pool.note(strategy, strategyName)
             try:
                 handle = pool.get(profile, device=args.device)
@@ -3006,7 +3109,9 @@ def run_queue_consumer(args, np, pool):
                 # 5.177：队列**空着**时不报 —— 安静时那两行是纯噪音；有积压才说
                 # （那是"识别跟不上"的唯一证据），而且并成一行。
                 print(f"[识别] 队列积压 {pending} 段，最长已等 {waited_ms_max / 1000.0:.1f}s"
-                      f"（累计转写 {processed} 段）", file=sys.stderr, flush=True)
+                      f"（累计转写 {processed} 段"
+                      + (f"，前置 VAD 丢掉 {vad_dropped} 段" if vad_dropped > 0 else "")
+                      + "）", file=sys.stderr, flush=True)
                 # 5.40：把"哪一级决定了哪个模型、各处理了多少段"摊开 ——
                 # 没有这一行，A/B 时根本说不清"这些字幕到底是哪个模型出的"
                 if log_level_at_least("detail"):

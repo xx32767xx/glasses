@@ -450,19 +450,24 @@ export async function runAsrModelsApiSuite({ it, check }) {
       JSON.stringify(stillGood.json.table.languages['zh-CN']))
   })
 
-  await it('5.187：管理台有「降噪」面板（全局一行 + 每语种一行，高通/VAD 手动开关）', async () => {
+  await it('5.187/5.197：管理台「降噪」面板只留高通（VAD 已挪到引擎之前）', async () => {
     const html = readFileSync(join(ROOT, 'scripts', 'admin-ui.html'), 'utf-8')
     check('面板容器在（#noisePanel）', /id="noisePanel"/.test(html), '缺面板')
     check('每个语种一行、id 带语种与字段名',
       /'noiseLang_' \+ scope \+ '_' \+ key/.test(html) && /noiseLang_/.test(html), '缺按语种的输入框')
     check('全局那一行也有（写 default 层）', /noiseDefault_/.test(html), '缺全局输入框')
-    check('VAD 是下拉开关（继承 / 开 / 关），不是一个要手输 true 的框',
-      /\['', '继承'\], \['on', '开'\], \['off', '关'\]/.test(html), 'VAD 不是开关')
+    // 5.197：VAD 变成引擎前的"判定式"，界面不再给开关（否则会让人以为"关了就不判"）
+    check('界面不再渲染 VAD 开关',
+      /const NOISE_FIELDS = \['highpass_hz'\];/.test(html), 'NOISE_FIELDS 里还有 VAD')
+    check('但表里的 VAD 三项**保存时原样保留**（不许被这次保存抹掉）',
+      /const NOISE_KEEP = \['highpass_hz', 'vad', 'vad_max_ms', 'vad_threshold'\];/.test(html)
+      && /for \(const key of NOISE_KEEP\)/.test(html), 'NOISE_KEEP 缺失')
     check('留空 = 继承（占位符显示实际生效值）',
       /input\.placeholder = effective && effective\[key\]/.test(html))
-    check('行尾写明"生效值 + 是谁定的"', /生效：高通/.test(html) && /from\('vad'\)/.test(html))
-    check('说明里点明代价不同（高通缺省开 / VAD 缺省关）',
-      /高通缺省开/.test(html) && /VAD 缺省关/.test(html) && /剪掉不像人声的头尾/.test(html))
+    check('行尾写明「生效值 + 是谁定的」', /生效：高通/.test(html) && /from\('highpass_hz'\)/.test(html))
+    check('说明里点明高通的代价与 VAD 的去向',
+      /高通缺省开/.test(html) && /VAD 已经不在这里配了/.test(html)
+      && /不剪音频/.test(html), '说明没跟上 5.197')
     check('保存时写进 languages[语种] / default 的同名层',
       /readNoiseRow\(lang\)/.test(html) && /readNoiseRow\(''\)/.test(html))
     check('校验失败会把具体问题带到界面上（不只一个错误码）',
@@ -522,9 +527,6 @@ export async function runAsrModelsApiSuite({ it, check }) {
     }
     const rules = {
       highpass_hz: { min: 0, max: 2000, step: 10, label: '高通 (Hz)', note: 'x' },
-      vad: { type: 'switch', note: 'y' },
-      vad_max_ms: { min: 200, max: 30000, step: 100 },
-      vad_threshold: { min: 0.05, max: 0.95, step: 0.05 },
     }
     // eslint-disable-next-line no-new-func
     const built = new Function('document', 'noiseRules', code)(stubDocument, rules)
@@ -536,23 +538,24 @@ export async function runAsrModelsApiSuite({ it, check }) {
 
     const effective = { highpass_hz: 100, vad: false, vad_max_ms: 2000, vad_threshold: 0.5 }
     register(built.buildNoiseRow('', '全局', { highpass_hz: 100 }, effective, { highpass_hz: 'default' }))
-    check('全局那一行渲染出四个控件（高通 / VAD / 短段上限 / 门槛）',
-      ['highpass_hz', 'vad', 'vad_max_ms', 'vad_threshold']
-        .every((key) => byId.has('noiseDefault_' + key)), [...byId.keys()].join(','))
+    // 5.197：界面只剩高通一个控件（VAD 三项挪到引擎之前，不再逐语种配）
+    check('全局那一行渲染出高通这一个控件',
+      byId.has('noiseDefault_highpass_hz') && byId.has('noiseDefault_vad') === false,
+      [...byId.keys()].join(','))
     check('只写了高通的全局行，读回来也只有高通（留空 = 继承，不写这一项）',
       JSON.stringify(built.readNoiseRow('')) === '{"highpass_hz":100}',
       JSON.stringify(built.readNoiseRow('')))
 
     register(built.buildNoiseRow('zh-CN', '中文', { highpass_hz: 0, vad: true }, effective, {}))
-    check('语种行渲染出的 id 带语种（保存时读得到同一批值）',
-      ['highpass_hz', 'vad', 'vad_max_ms', 'vad_threshold']
-        .every((key) => byId.has('noiseLang_zh-CN_' + key)), [...byId.keys()].join(','))
-    check('高通 0 与 VAD 开都能原样读回来（0 是"关"，不是"没填"）',
-      JSON.stringify(built.readNoiseRow('zh-CN')) === '{"highpass_hz":0,"vad":true}',
+    check('语种行渲染出的 id 带语种（保存时读得到那个值）',
+      byId.has('noiseLang_zh-CN_highpass_hz'), [...byId.keys()].join(','))
+    // ⚠️ 表里原有的 vad:true 不再有输入框，所以 readNoiseRow 也读不到它 —— 这是**对的**：
+    //    保存时走 NOISE_KEEP，那一项原样保留（有专门一条测试钉着）。
+    check('高通 0 能原样读回来（0 是"关"，不是"没填"）',
+      JSON.stringify(built.readNoiseRow('zh-CN')) === '{"highpass_hz":0}',
       JSON.stringify(built.readNoiseRow('zh-CN')))
 
     byId.get('noiseDefault_highpass_hz').value = ''
-    byId.get('noiseDefault_vad').value = ''
     check('全留空 = 一项都不写（回到继承 / 内置缺省）',
       Object.keys(built.readNoiseRow('')).length === 0, JSON.stringify(built.readNoiseRow('')))
   })
