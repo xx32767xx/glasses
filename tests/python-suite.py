@@ -4250,6 +4250,16 @@ def main():
           whisper_stream.resolve_strategy("en-US", {}, {"default": {"model": "large-v3"}}).get("vad")
           in (None, False))
 
+    # 5.187：用户拍板"高通默认打开"。仓库里那份模板表的 default 层写了 highpass_hz=100，
+    # 所以三门语言**都**该拿到 100（VAD 仍关）—— 这条一旦倒退，现场就等于悄悄关了降噪。
+    _shipped = json.loads((ROOT / "config" / "asr-models.json").read_text(encoding="utf-8"))
+    for _lang in ("zh-CN", "en-US", "pt-BR"):
+        _resolved = whisper_stream.resolve_strategy(_lang, {}, _shipped)
+        check(f"模板表让 {_lang} 默认走 100Hz 高通",
+              _resolved.get("highpass_hz") == 100, str(_resolved.get("highpass_hz")))
+        check(f"{_lang} 默认仍不开 VAD（要现场数据再开）",
+              _resolved.get("vad") in (None, False), str(_resolved.get("vad")))
+
     # 引擎这一层：命令行 / 策略 / 显式关，谁说了算
     _hp_calls = []
     _real_highpass = whisper_stream.highpass_biquad

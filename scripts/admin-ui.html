@@ -176,6 +176,16 @@
         </div>
         <div id="models"></div>
 
+        <h2>降噪（逐语种） <span class="tag">高通缺省开 · VAD 缺省关</span></h2>
+        <div class="mono">
+          <b>高通</b>是线性滤波：只砍掉截止频率以下的轰鸣（空调、桌面震动、音箱低音），
+          不剪时长、不改语音结构，代价约 3 ms/秒音频 —— 所以<b>缺省开 100Hz</b>；写 <code>0</code> 关掉。
+          <b>VAD</b> 是二次确认，会<b>剪掉不像人声的头尾</b>，短句上可能吃掉第一个音节 ——
+          所以<b>缺省关</b>：先开着一门语言跑一场，看会议记录里有没有"少词"再决定。
+          留空 = 继承上一层；这里是<b>逐语种</b>的，改哪一行只影响哪一门语言。
+        </div>
+        <div id="noisePanel"></div>
+
         <h2>策略定义（模型 + 精度） <span class="tag">换策略 = 换模型</span></h2>
         <div class="mono">
           模型名与精度<b>挂在策略上</b>：上面给语言选了一个策略，它用什么模型/精度就由这里这一行决定。
@@ -312,7 +322,14 @@ async function api(path, options = {}) {
     showLogin('共享密钥不对或没填：看电脑上 start-all 横幅里的那串');
     throw new Error('需要共享密钥');
   }
-  if (data.ok === false) throw new Error(data.error || ('HTTP ' + response.status));
+  // 5.187：校验失败时把 problems 一起带出来 —— 只显示一个 `invalid-noise`
+  // 等于告诉人"你错了"却不说哪个字段，改起来只能猜。
+  if (data.ok === false) {
+    const detail = Array.isArray(data.problems) && data.problems.length > 0
+      ? '：' + data.problems.slice(0, 6).join('；')
+      : '';
+    throw new Error((data.error || ('HTTP ' + response.status)) + detail);
+  }
   return data;
 }
 
@@ -381,6 +398,18 @@ const SEG_FIELDS = ['silence_ms', 'min_speech_ms', 'max_speech_ms',
   'short_utterance_ms', 'short_silence_ms', 'cut_pause_ms'];
 /** 5.185：每门语言"现在实际生效"的切句值（服务端算好的），用于输入框占位与覆盖提示。 */
 let segStateByLang = {};
+/**
+ * 5.187：降噪四项（高通 + VAD）——**和切句参数同一套做法**：全局 default 一行 + 每门语言一行，
+ * 留空 = 继承上一层。两项代价不同，所以缺省不同：
+ *   · 高通（缺省 100）：线性滤波，不剪时长、不改语音结构，只是砍掉 100Hz 以下的轰鸣；
+ *   · VAD（缺省关）：会剪掉不像人声的头尾 —— 短句上可能吃掉第一个音节，要看现场数据再开。
+ */
+const NOISE_FIELDS = ['highpass_hz', 'vad', 'vad_max_ms', 'vad_threshold'];
+const NOISE_SHORT = { highpass_hz: '高通Hz', vad: 'VAD', vad_max_ms: '短段上限', vad_threshold: '门槛' };
+/** 每门语言"现在实际生效"的降噪值（含 default 层），服务端算好；用于占位与"谁定的"提示。 */
+let noiseStateByLang = {};
+let noiseRules = {};
+let noiseDefaults = { highpass_hz: 0, vad: false, vad_max_ms: 2000, vad_threshold: 0.5 };
 /** 界面上标记为"要删掉"的策略名（保存时统一处理）。 */
 let modelDeletedStrategies = new Set();
 
@@ -473,6 +502,74 @@ function buildLanguageRow(lang, label, current) {
   return row;
 }
 
+/**
+ * 5.187：一行「降噪」设置（作用范围 = 全局 default，或某一门语言）。
+ *
+ * <p>为什么做成和切句参数一样的形状（留空 = 继承）：现场只有一部分语言的环境糟，
+ * 而"我这一门到底现在是 100 还是 0、是谁定的"必须一眼看得出 —— 所以占位符显示**实际生效值**，
+ * 行尾再补一句"生效：… （来自 default / 语言 xx）"。
+ *
+ * @param {string} scope '' = 全局（写 table.default）；否则是语种（写 languages[语种]）
+ */
+function buildNoiseRow(scope, label, layer, effective, effectiveLayers) {
+  const row = document.createElement('div');
+  row.className = 'row';
+
+  const name = document.createElement('div');
+  name.className = 'mono';
+  name.style.width = '52px';
+  name.textContent = label;
+  row.appendChild(name);
+
+  const idOf = (key) => (scope === '' ? 'noiseDefault_' + key : 'noiseLang_' + scope + '_' + key);
+  for (const key of NOISE_FIELDS) {
+    const rule = (noiseRules || {})[key] || {};
+    const tag = document.createElement('span');
+    tag.className = 'mono';
+    tag.style.fontSize = '11px';
+    tag.style.opacity = '.65';
+    tag.textContent = NOISE_SHORT[key] || key;
+    row.appendChild(tag);
+    if (key === 'vad') {
+      const select = document.createElement('select');
+      select.id = idOf(key);
+      for (const [value, text] of [['', '继承'], ['on', '开'], ['off', '关']]) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = text;
+        select.appendChild(option);
+      }
+      select.value = layer && layer.vad === true ? 'on' : (layer && layer.vad === false ? 'off' : '');
+      select.title = (rule.note || 'VAD 二次确认') + '（留空 = 继承上一层）';
+      row.appendChild(select);
+      continue;
+    }
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.id = idOf(key);
+    input.style.width = '96px';
+    if (rule.min !== undefined) input.min = String(rule.min);
+    if (rule.max !== undefined) input.max = String(rule.max);
+    input.step = String(rule.step ?? 1);
+    input.title = (rule.label || key) + (rule.note ? '：' + rule.note : '')
+      + '（留空 = 继承；范围 ' + (rule.min ?? '?') + '~' + (rule.max ?? '?') + '）';
+    input.placeholder = effective && effective[key] !== undefined ? String(effective[key]) : '';
+    input.value = layer && layer[key] !== undefined ? String(layer[key]) : '';
+    row.appendChild(input);
+  }
+
+  if (effective) {
+    const said = document.createElement('span');
+    said.className = 'tag';
+    said.style.opacity = '.8';
+    const from = (key) => ((effectiveLayers || {})[key] || '内置缺省');
+    said.textContent = `生效：高通 ${effective.highpass_hz}（${from('highpass_hz')}）· `
+      + `VAD ${effective.vad ? '开' : '关'}（${from('vad')}）`;
+    row.appendChild(said);
+  }
+  return row;
+}
+
 /** 一行表头：给下面的输入框配一句最短的解释（用户要求：不然不知道这列是什么）。 */
 function buildHeader(cells) {
   const row = document.createElement('div');
@@ -555,6 +652,26 @@ function renderModels(data) {
   ]));
   for (const [lang, label] of MODEL_LANGS) {
     langsHost.appendChild(buildLanguageRow(lang, label, (data.languages || {})[lang] || {}));
+  }
+
+  // 5.187：降噪（全局一行 + 每门语言一行），就放在语言行的下面 —— 它管的就是"语言这一层"。
+  const noiseHost = document.getElementById('noisePanel');
+  if (noiseHost) {
+    noiseHost.innerHTML = '';
+    noiseHost.appendChild(buildHeader([
+      { text: '范围', width: '52px' },
+      { text: '留空 = 继承上层；高通写 0 = 关；VAD 选"继承/开/关"' },
+    ]));
+    const globalEffective = { ...(noiseDefaults || {}) };
+    for (const key of NOISE_FIELDS) {
+      if (table.default && table.default[key] !== undefined) globalEffective[key] = table.default[key];
+    }
+    noiseHost.appendChild(buildNoiseRow('', '全局', table.default || {}, globalEffective, {}));
+    for (const [lang, label] of MODEL_LANGS) {
+      const state = (noiseStateByLang || {})[lang] || {};
+      noiseHost.appendChild(buildNoiseRow(lang, label, (table.languages || {})[lang] || {},
+        state.values, state.layers));
+    }
   }
 
   const strategiesHost = document.getElementById('modelStrategies');
@@ -833,6 +950,10 @@ async function loadModels() {
     if (data.segmentationRules && Object.keys(segState.rules || {}).length === 0) {
       segState.rules = data.segmentationRules;
     }
+    // 5.187：降噪四项同理（实际生效值 + 每项来自哪一层）
+    noiseStateByLang = data.noise || {};
+    noiseRules = data.noiseRules || noiseRules;
+    noiseDefaults = data.noiseDefaults || noiseDefaults;
     renderModels(data);
     loadModelHistory();
   } catch (error) {
@@ -849,6 +970,29 @@ async function loadModels() {
  *     —— 那两层的优先级高于策略，留着就会压住新策略（"换了策略模型不变"的根因）；
  *   · 模型/精度/引擎/runtime 写在 default 与 strategies[名字] 上。
  */
+/**
+ * 5.187：把界面上某一行「降噪」读成要写进表里的字段。
+ *
+ * <p>留空 = **不写这个字段**（继承上一层）；高通写 0 = 显式关；VAD 下拉框的"继承/开/关"
+ * 分别对应"删字段 / true / false"。故意不做"猜"：看不懂的值一律不写，交给服务端校验。
+ */
+function readNoiseRow(scope) {
+  const out = {};
+  for (const key of NOISE_FIELDS) {
+    const el = document.getElementById(scope === '' ? 'noiseDefault_' + key : 'noiseLang_' + scope + '_' + key);
+    if (!el) continue;
+    const raw = String(el.value).trim();
+    if (raw === '') continue;
+    if (key === 'vad') {
+      out.vad = raw === 'on';
+      continue;
+    }
+    const value = Number(raw);
+    if (Number.isFinite(value)) out[key] = value;
+  }
+  return out;
+}
+
 function modelEditedTable() {
   const next = JSON.parse(JSON.stringify(modelTable || { version: 2 }));
   next.languages = next.languages && typeof next.languages === 'object' ? next.languages : {};
@@ -873,6 +1017,12 @@ function modelEditedTable() {
     }
     if (Object.keys(seg).length > 0) layer.segmentation = seg;
     else delete layer.segmentation;
+    // 5.187：这一门语言的降噪四项（留空 = 删掉这一字段 = 继承上一层）
+    const noise = readNoiseRow(lang);
+    for (const key of NOISE_FIELDS) {
+      if (key in noise) layer[key] = noise[key];
+      else delete layer[key];
+    }
     next.languages[lang] = layer;
   }
 
@@ -894,6 +1044,12 @@ function modelEditedTable() {
   };
 
   next.default = applyLayer(next.default, 'default');
+  // 5.187：全局那一行的降噪（写进 default 层；留空 = 删掉 = 回到内置缺省）
+  const globalNoise = readNoiseRow('');
+  for (const key of NOISE_FIELDS) {
+    if (key in globalNoise) next.default[key] = globalNoise[key];
+    else if (document.getElementById('noiseDefault_' + key)) delete next.default[key];
+  }
   const strategies = next.strategies && typeof next.strategies === 'object' ? next.strategies : {};
   for (const name of Object.keys(strategies)) {
     strategies[name] = applyLayer(strategies[name], name);

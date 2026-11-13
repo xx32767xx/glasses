@@ -2212,6 +2212,8 @@ export async function runAndroidOrderSuite({ it, check }) {
       '[语言] 同步成员语言失败',
       // 5.185：按语种的切句参数只在管理台调（手机没有这个界面），与 5.167 同一条规矩。
       '切句参数越界，已拒绝保存',
+      // 5.187：降噪四项同理（管理台「降噪」面板专用），报错正文是给管理员看的技术细节。
+      '降噪参数不合法，已拒绝保存',
     ]
     const ignore = (raw) => IGNORE.some((i) => raw.startsWith(i))
     const matched = (raw) => exact.includes(raw) || pre.some((p) => raw.startsWith(p))

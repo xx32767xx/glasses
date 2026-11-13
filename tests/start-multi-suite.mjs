@@ -526,24 +526,36 @@ export async function runStartMultiSuite({ it, check, assert }) {
       workerOnly.join(' '))
   })
 
-  await it('5.186：仓库里那份策略表不偷偷开降噪，但把"怎么开"写清楚', async () => {
+  await it('5.187：仓库里那份策略表 = 高通默认开 100、VAD 默认关，并写清怎么开', async () => {
     // 缺省表是**模板**：它会被人整个复制到 <data-dir>，所以里面写什么就会在那台机器上生效。
-    // 因此"文档里说怎么开"与"表里缺省不开"这两件事都得成立。
+    // 5.187 用户拍板：高通默认开（线性滤波、不剪时长），VAD 默认关（会剪首尾、短句有吃字风险）。
     const table = JSON.parse(readFileSync('config/asr-models.json', 'utf8'))
+    check('default 层把高通打开了（100Hz）', Number(table.default?.highpass_hz) === 100,
+      String(table.default?.highpass_hz))
+    check('default 层没有偷偷开 VAD（它要现场数据再开）',
+      table.default?.vad === undefined && table.default?.vad !== true,
+      JSON.stringify(table.default?.vad))
+    check('default 层写明了这两项的取舍（_noise_note）',
+      typeof table.default?._noise_note === 'string' && table.default._noise_note.includes('VAD'),
+      String(table.default?._noise_note))
     const noisy = Object.entries(table.strategies || {})
-      .filter(([, entry]) => entry.highpass_hz !== undefined || entry.vad !== undefined)
+      .filter(([, entry]) => entry.vad === true)
       .map(([name]) => name)
-    check('没有哪个策略偷偷开着降噪（缺省表 = 保守起点）', noisy.length === 0, noisy.join(','))
+    check('没有哪个具名策略偷偷开着 VAD', noisy.length === 0, noisy.join(','))
     for (const name of ['zh-steady', 'en-steady', 'pt-steady']) {
       const entry = table.strategies?.[name] || {}
-      check(`${name} 写明了怎么开降噪（_noise_note）`,
+      check(`${name} 写明了怎么再收紧降噪（_noise_note）`,
         typeof entry._noise_note === 'string' && entry._noise_note.length > 8,
         String(entry._noise_note))
     }
-    check('注释里写清了两项的名字与建议值（highpass_hz / vad）', (() => {
+    check('注释里写清了两项的名字与建议值（highpass_hz / vad / 100）', (() => {
       const said = (table._comment || []).join('\\n')
       return said.includes('highpass_hz') && said.includes('vad_max_ms') && said.includes('100')
     })(), '注释里没写降噪字段')
+    check('注释里说明"管理台「降噪」面板改这四项"（管理员不用命令行）', (() => {
+      const said = (table._comment || []).join('\\n')
+      return said.includes('降噪') && said.includes('面板')
+    })(), '注释里没提管理台入口')
   })
 
   await it('python 切句端真的认这些参数（源码里三个都要在）', async () => {

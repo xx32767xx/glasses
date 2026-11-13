@@ -363,4 +363,174 @@ export async function runAsrModelsApiSuite({ it, check }) {
       /压过所有语种/.test(html) && /识别模型/.test(html))
   })
 
+  // 5.187：用户拍板"高通默认打开、VAD 做成和切句参数一样的配法、管理台手动开关"。
+  // 这一组钉住四件事：读得到实际生效值与来源、按语种可写、越界拒写、界面真有那两排开关。
+  await it('5.187：降噪四项（高通 / VAD）逐语种可读可写（越界拒写）', async () => {
+    const base = sampleTable()
+    base.default = { ...(base.default || {}), highpass_hz: 100 }
+    base.languages['zh-CN'] = { strategy: 'default' }
+    const savedDefault = await call({
+      method: 'PUT', path: '/org/asr/models', user: 'admin@x', role: 'admin', body: { table: base },
+    })
+    check('高通写在 default 层也能保存', savedDefault.status === 200 && savedDefault.json.ok === true,
+      JSON.stringify(savedDefault.json?.problems ?? savedDefault.json))
+
+    const read = await call({ method: 'GET', path: '/org/asr/models', user: 'admin@x', role: 'admin' })
+    check('界面拿得到每门语言实际生效的降噪值',
+      read.json.noise?.['zh-CN']?.values?.highpass_hz === 100,
+      JSON.stringify(read.json.noise?.['zh-CN']?.values))
+    check('并说清高通是 default 层给的（继承链能看见）',
+      read.json.noise['zh-CN'].layers.highpass_hz === 'default',
+      JSON.stringify(read.json.noise['zh-CN'].layers))
+    check('VAD 缺省是关（会剪首尾，不悄悄开）',
+      read.json.noise['zh-CN'].values.vad === false, JSON.stringify(read.json.noise['zh-CN'].values))
+    check('字段规则给到界面（VAD 是开关、高通有上下限）',
+      read.json.noiseRules?.vad?.type === 'switch' && read.json.noiseRules?.highpass_hz?.max > 0,
+      JSON.stringify(read.json.noiseRules))
+    check('内置缺省也给了（没有表时界面照实显示"高通关、VAD 关"）',
+      read.json.noiseDefaults?.highpass_hz === 0 && read.json.noiseDefaults?.vad === false,
+      JSON.stringify(read.json.noiseDefaults))
+
+    // 关掉高通的写法就是 0（否则用户只能删字段，而删字段是"继承"不是"关"）
+    const offTable = sampleTable()
+    offTable.default = { ...(offTable.default || {}), highpass_hz: 100 }
+    offTable.languages['zh-CN'] = { strategy: 'default', highpass_hz: 0, vad: true, vad_threshold: 0.6 }
+    const offSaved = await call({
+      method: 'PUT', path: '/org/asr/models', user: 'admin@x', role: 'admin', body: { table: offTable },
+    })
+    check('按语种关掉高通（0）、开 VAD、调门槛都能存',
+      offSaved.status === 200 && offSaved.json.ok === true, JSON.stringify(offSaved.json?.problems ?? ''))
+    const offRead = await call({ method: 'GET', path: '/org/asr/models', user: 'admin@x', role: 'admin' })
+    check('中文这一路读回来是高通关 / VAD 开',
+      offRead.json.noise['zh-CN'].values.highpass_hz === 0 && offRead.json.noise['zh-CN'].values.vad === true,
+      JSON.stringify(offRead.json.noise['zh-CN'].values))
+    check('语言层压过 default 层（来源写得出来）',
+      offRead.json.noise['zh-CN'].layers.vad === '语言 zh-CN',
+      JSON.stringify(offRead.json.noise['zh-CN'].layers))
+    check('别的语言没被牵连（英语还是 default 的 100 / 关）',
+      offRead.json.noise['en-US'].values.highpass_hz === 100
+      && offRead.json.noise['en-US'].values.vad === false,
+      JSON.stringify(offRead.json.noise['en-US'].values))
+
+    // 写错的东西不许进表：识别侧遇到 "100" 这种字符串只会静默不生效，比报错难查得多
+    const badString = sampleTable()
+    badString.languages['zh-CN'] = { strategy: 'default', highpass_hz: '100' }
+    const rejectedType = await call({
+      method: 'PUT', path: '/org/asr/models', user: 'admin@x', role: 'admin', body: { table: badString },
+    })
+    check('高通写成字符串 → 409 invalid-noise',
+      rejectedType.status === 409 && rejectedType.json.error === 'invalid-noise',
+      JSON.stringify(rejectedType.json))
+    check('错误里指出是哪门语言的哪一项',
+      String((rejectedType.json.problems ?? []).join(' ')).includes('zh-CN'),
+      JSON.stringify(rejectedType.json.problems))
+
+    const badRange = sampleTable()
+    badRange.languages['en-US'] = { strategy: 'en-parakeet-gpu', vad_threshold: 3 }
+    const rejectedRange = await call({
+      method: 'PUT', path: '/org/asr/models', user: 'admin@x', role: 'admin', body: { table: badRange },
+    })
+    check('VAD 门槛写 3（超出 0.05~0.95）也被拒',
+      rejectedRange.status === 409 && rejectedRange.json.error === 'invalid-noise',
+      JSON.stringify(rejectedRange.json.problems))
+
+    const badVad = sampleTable()
+    badVad.languages['pt-BR'] = { strategy: 'pt-funasr', vad: 'yes' }
+    const rejectedVad = await call({
+      method: 'PUT', path: '/org/asr/models', user: 'admin@x', role: 'admin', body: { table: badVad },
+    })
+    check('VAD 只能写 true / false（写字符串会被拒，而不是当成开）',
+      rejectedVad.status === 409 && rejectedVad.json.error === 'invalid-noise',
+      JSON.stringify(rejectedVad.json.problems))
+
+    const stillGood = await call({ method: 'GET', path: '/org/asr/models', user: 'admin@x', role: 'admin' })
+    check('拒写之后表还是上一版好的（没被写坏）',
+      stillGood.json.table.languages['zh-CN'].highpass_hz === 0,
+      JSON.stringify(stillGood.json.table.languages['zh-CN']))
+  })
+
+  await it('5.187：管理台有「降噪」面板（全局一行 + 每语种一行，高通/VAD 手动开关）', async () => {
+    const html = readFileSync(join(ROOT, 'scripts', 'admin-ui.html'), 'utf-8')
+    check('面板容器在（#noisePanel）', /id="noisePanel"/.test(html), '缺面板')
+    check('每个语种一行、id 带语种与字段名',
+      /'noiseLang_' \+ scope \+ '_' \+ key/.test(html) && /noiseLang_/.test(html), '缺按语种的输入框')
+    check('全局那一行也有（写 default 层）', /noiseDefault_/.test(html), '缺全局输入框')
+    check('VAD 是下拉开关（继承 / 开 / 关），不是一个要手输 true 的框',
+      /\['', '继承'\], \['on', '开'\], \['off', '关'\]/.test(html), 'VAD 不是开关')
+    check('留空 = 继承（占位符显示实际生效值）',
+      /input\.placeholder = effective && effective\[key\]/.test(html))
+    check('行尾写明"生效值 + 是谁定的"', /生效：高通/.test(html) && /from\('vad'\)/.test(html))
+    check('说明里点明代价不同（高通缺省开 / VAD 缺省关）',
+      /高通缺省开/.test(html) && /VAD 缺省关/.test(html) && /剪掉不像人声的头尾/.test(html))
+    check('保存时写进 languages[语种] / default 的同名层',
+      /readNoiseRow\(lang\)/.test(html) && /readNoiseRow\(''\)/.test(html))
+    check('校验失败会把具体问题带到界面上（不只一个错误码）',
+      /Array\.isArray\(data\.problems\)/.test(html), 'problems 没带出来')
+  })
+
+  await it('5.187：界面渲染出的 id 与保存时读的 id 对得上（最小 DOM 桩真跑一遍）', () => {
+    // 这条不能只靠正则：`noiseDefault_x` / `noiseLang_<语种>_x` 是**渲染**与**保存**两处各写一遍的
+    // 字符串，写歪了界面上一片正常、保存时却把值悄悄丢了 —— 最难查的一类。
+    const html = readFileSync(join(ROOT, 'scripts', 'admin-ui.html'), 'utf-8')
+    const grabFn = (name) => {
+      const start = html.indexOf(`function ${name}(`)
+      check(`${name} 还在（改名时这条测试要跟着改）`, start > 0, name)
+      return html.slice(start, html.indexOf('\n}', start) + 2)
+    }
+    const grabConst = (name) => {
+      const start = html.indexOf(`const ${name} = `)
+      check(`${name} 还在`, start > 0, name)
+      return html.slice(start, html.indexOf('\n', start))
+    }
+    const code = [grabConst('NOISE_FIELDS'), grabConst('NOISE_SHORT'), grabFn('buildHeader'),
+      grabFn('buildNoiseRow'), grabFn('readNoiseRow'),
+      'return { buildNoiseRow, readNoiseRow }'].join('\n')
+
+    const makeEl = (tag) => ({
+      tag, id: '', className: '', style: {}, dataset: {}, children: [], value: '', textContent: '',
+      type: '', min: '', max: '', step: '', placeholder: '', title: '',
+      appendChild(child) { this.children.push(child); return child },
+    })
+    const byId = new Map()
+    const stubDocument = {
+      createElement: (tag) => makeEl(tag),
+      getElementById: (id) => byId.get(id) ?? null,
+    }
+    const rules = {
+      highpass_hz: { min: 0, max: 2000, step: 10, label: '高通 (Hz)', note: 'x' },
+      vad: { type: 'switch', note: 'y' },
+      vad_max_ms: { min: 200, max: 30000, step: 100 },
+      vad_threshold: { min: 0.05, max: 0.95, step: 0.05 },
+    }
+    // eslint-disable-next-line no-new-func
+    const built = new Function('document', 'noiseRules', code)(stubDocument, rules)
+    const register = (el) => {
+      if (el.id) byId.set(el.id, el)
+      for (const child of el.children) register(child)
+      return el
+    }
+
+    const effective = { highpass_hz: 100, vad: false, vad_max_ms: 2000, vad_threshold: 0.5 }
+    register(built.buildNoiseRow('', '全局', { highpass_hz: 100 }, effective, { highpass_hz: 'default' }))
+    check('全局那一行渲染出四个控件（高通 / VAD / 短段上限 / 门槛）',
+      ['highpass_hz', 'vad', 'vad_max_ms', 'vad_threshold']
+        .every((key) => byId.has('noiseDefault_' + key)), [...byId.keys()].join(','))
+    check('只写了高通的全局行，读回来也只有高通（留空 = 继承，不写这一项）',
+      JSON.stringify(built.readNoiseRow('')) === '{"highpass_hz":100}',
+      JSON.stringify(built.readNoiseRow('')))
+
+    register(built.buildNoiseRow('zh-CN', '中文', { highpass_hz: 0, vad: true }, effective, {}))
+    check('语种行渲染出的 id 带语种（保存时读得到同一批值）',
+      ['highpass_hz', 'vad', 'vad_max_ms', 'vad_threshold']
+        .every((key) => byId.has('noiseLang_zh-CN_' + key)), [...byId.keys()].join(','))
+    check('高通 0 与 VAD 开都能原样读回来（0 是"关"，不是"没填"）',
+      JSON.stringify(built.readNoiseRow('zh-CN')) === '{"highpass_hz":0,"vad":true}',
+      JSON.stringify(built.readNoiseRow('zh-CN')))
+
+    byId.get('noiseDefault_highpass_hz').value = ''
+    byId.get('noiseDefault_vad').value = ''
+    check('全留空 = 一项都不写（回到继承 / 内置缺省）',
+      Object.keys(built.readNoiseRow('')).length === 0, JSON.stringify(built.readNoiseRow('')))
+  })
+
 }

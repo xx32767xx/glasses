@@ -506,6 +506,101 @@ export async function handleOrg(input) {
   }
 
   /**
+   * 5.187：降噪四项（高通 + VAD）——**逐语种可读可写**，与切句参数同一套做法。
+   *
+   * <p>为什么做成"和切句参数一样"：现场的问题是"教室吵"和"偶尔冒出一句没人说过的话"，
+   * 而这两个毛病在不同语种上轻重不同（中文最爱在段末编话）。所以配置必须能按语种分开，
+   * 管理台要能看见"不填就继承到多少"，也能一眼看出是谁定的。
+   *
+   * <p>代价不同，缺省也就不同：高通是**线性滤波**（不剪时长、不改语音结构），所以缺省开 100；
+   * VAD 会**剪掉不像人声的头尾**，短句上可能吃掉第一个音节，所以缺省关、要现场数据再开。
+   */
+  const NOISE_FIELDS = ['highpass_hz', 'vad', 'vad_max_ms', 'vad_threshold']
+  const NOISE_DEFAULTS = { highpass_hz: 0, vad: false, vad_max_ms: 2000, vad_threshold: 0.5 }
+  const NOISE_RULES = {
+    highpass_hz: {
+      label: '高通 (Hz)', min: 0, max: 2000, step: 10, type: 'number',
+      note: '0 = 关；100 = 砍掉 100Hz 以下（空调/桌面震动）。线性滤波，不剪时长',
+    },
+    vad: {
+      label: 'VAD 二次确认', type: 'switch',
+      note: '会剪掉不像人声的头尾 —— 短句上可能吃字，所以缺省关',
+    },
+    vad_max_ms: {
+      label: 'VAD 只跑短段 (ms)', min: 200, max: 30000, step: 100, type: 'number',
+      note: '只给不超过这个长度的段做 VAD（幻听集中在短段，长段不做以省延迟）',
+    },
+    vad_threshold: {
+      label: 'VAD 门槛', min: 0.05, max: 0.95, step: 0.05, type: 'number',
+      note: '越大越严（更少幻听，但可能漏掉轻声）',
+    },
+  }
+
+  /** 5.187：表里降噪四项的校验（与面板同一份规则）。@returns {string[]} 问题清单 */
+  const noiseProblemOf = (where, layer) => {
+    const problems = []
+    if (layer === null || typeof layer !== 'object') return problems
+    for (const key of NOISE_FIELDS) {
+      if (!(key in layer)) continue
+      const value = layer[key]
+      const rule = NOISE_RULES[key]
+      if (key === 'vad') {
+        if (typeof value !== 'boolean') problems.push(`${where} 的 VAD 要写 true / false（现在是 ${JSON.stringify(value)}）`)
+        continue
+      }
+      if (typeof value !== 'number' || Number.isFinite(value) !== true) {
+        problems.push(`${where} 的 ${rule.label} 要是数字（现在是 ${JSON.stringify(value)}）`)
+        continue
+      }
+      if (value < rule.min || value > rule.max) {
+        problems.push(`${where} 的 ${rule.label} 超出 ${rule.min}~${rule.max}（现在是 ${value}）`)
+      }
+      if (key === 'highpass_hz' && value !== 0 && value < 20) {
+        problems.push(`${where} 的高通设成 ${value}Hz 基本等于没开：要么写 0（关），要么 ≥20`)
+      }
+    }
+    return problems
+  }
+
+  const collectNoiseProblems = (table) => {
+    const problems = []
+    if (table === null || typeof table !== 'object') return problems
+    problems.push(...noiseProblemOf('default', table.default))
+    for (const [name, layer] of Object.entries(table.strategies ?? {})) {
+      problems.push(...noiseProblemOf(`策略 ${name}`, layer))
+    }
+    for (const [lang, layer] of Object.entries(table.languages ?? {})) {
+      problems.push(...noiseProblemOf(`语言 ${lang}`, layer))
+    }
+    return problems
+  }
+
+  /** 5.187：某门语言**实际生效**的降噪四项，以及各自来自哪一层。 */
+  const effectiveNoise = (table, lang) => {
+    const values = { ...NOISE_DEFAULTS }
+    const layers = {}
+    const take = (layer, tag) => {
+      if (layer === null || typeof layer !== 'object') return
+      for (const key of NOISE_FIELDS) {
+        if (!(key in layer)) continue
+        const value = layer[key]
+        if (key === 'vad') {
+          if (typeof value !== 'boolean') continue
+        } else if (typeof value !== 'number' || Number.isFinite(value) !== true) continue
+        values[key] = value
+        layers[key] = tag
+      }
+    }
+    take(table?.default, 'default')
+    const strategyName = typeof table?.languages?.[lang]?.strategy === 'string'
+      ? table.languages[lang].strategy
+      : 'default'
+    if (strategyName !== 'default') take(table?.strategies?.[strategyName], `策略 ${strategyName}`)
+    take(table?.languages?.[lang], `语言 ${lang}`)
+    return { values, layers, strategy: strategyName }
+  }
+
+  /**
    * 5.185：每门语言**实际生效**的切句参数（以及它们各自从哪一层来）。
    *
    * <p>为什么要算这个：界面上要能显示"不填就是继承到 X"和"这一项正被全局旋钮压着"。
@@ -698,6 +793,11 @@ export async function handleOrg(input) {
               .map((lang) => [lang, effectiveSegmentation({}, lang)])),
             segmentationRules: SEGMENTATION_RULES,
             segmentationDefaults: SEGMENTATION_DEFAULTS,
+            // 5.187：降噪四项同理（没有表时就是"高通关、VAD 关"，界面照实显示）
+            noise: Object.fromEntries(['zh-CN', 'en-US', 'pt-BR']
+              .map((lang) => [lang, effectiveNoise({}, lang)])),
+            noiseRules: NOISE_RULES,
+            noiseDefaults: NOISE_DEFAULTS,
           },
         }
       }
@@ -716,6 +816,11 @@ export async function handleOrg(input) {
       for (const lang of ['zh-CN', 'en-US', 'pt-BR']) {
         segmentation[lang] = effectiveSegmentation(loaded.table, lang)
       }
+      // 5.187：每门语言实际生效的降噪四项（界面占位符与"谁定的"都用它）
+      const noise = {}
+      for (const lang of ['zh-CN', 'en-US', 'pt-BR']) {
+        noise[lang] = effectiveNoise(loaded.table, lang)
+      }
       return {
         status: 200,
         json: {
@@ -730,6 +835,9 @@ export async function handleOrg(input) {
           segmentation,
           segmentationRules: SEGMENTATION_RULES,
           segmentationDefaults: SEGMENTATION_DEFAULTS,
+          noise,
+          noiseRules: NOISE_RULES,
+          noiseDefaults: NOISE_DEFAULTS,
         },
       }
     }
@@ -774,6 +882,17 @@ export async function handleOrg(input) {
           },
         }
       }
+      // 5.187：降噪四项也校验（写了 "100" 字符串、写反了 true/false 这类，识别侧只会静默不生效）
+      const noiseProblems = collectNoiseProblems(body.table)
+      if (noiseProblems.length > 0) {
+        return {
+          status: 409,
+          json: {
+            ok: false, error: 'invalid-noise', problems: noiseProblems,
+            hint: '降噪参数不合法，已拒绝保存（VAD 要写 true/false，高通要写数字，0 = 关）',
+          },
+        }
+      }
       return { status: 200, json: { ok: true, ...report } }
     }
     if (method === 'PUT' && segments.length === 3) {
@@ -788,6 +907,17 @@ export async function handleOrg(input) {
           json: {
             ok: false, error: 'invalid-segmentation', problems: segProblems,
             hint: '切句参数越界，已拒绝保存（范围见「切句参数」面板每个字段后面的说明）',
+          },
+        }
+      }
+      // 5.187：降噪四项同理 —— 写进表却让识别侧静默忽略，比直接拒绝糟得多
+      const noiseProblems = collectNoiseProblems(body.table)
+      if (noiseProblems.length > 0) {
+        return {
+          status: 409,
+          json: {
+            ok: false, error: 'invalid-noise', problems: noiseProblems,
+            hint: '降噪参数不合法，已拒绝保存（VAD 要写 true/false，高通要写数字，0 = 关）',
           },
         }
       }
