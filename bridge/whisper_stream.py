@@ -336,6 +336,19 @@ def parse_args(argv=None):
                         help="no_speech_prob 高于这个值就丢弃该段（防幻听）")
     parser.add_argument("--min-logprob", type=float, default=-1.00,
                         help="avg_logprob 低于这个值就丢弃该段（太不确定就别显示）")
+    parser.add_argument("--highpass-hz", type=float, default=0.0,
+                        help="高通滤波截止频率（5.186）：教室/会议室里空调、桌子震动、音箱低音"
+                             "会顶高能量门槛。100 几乎不伤语音；0 = 关（缺省）")
+    parser.add_argument("--vad", action="store_true",
+                        help="用 silero VAD 做**二次确认**（5.186）：过了能量闸之后，再用"
+                             "「像不像人声」判一遍，专治'有声音但不是人'的幻听。缺省关")
+    parser.add_argument("--no-vad", action="store_true", help="显式关掉 VAD（策略表里写好记得清掉）")
+    parser.add_argument("--vad-max-ms", type=int, default=2000,
+                        help="只对**短于这么多毫秒**的段做 VAD（缺省 2000）。"
+                             "幻听几乎都发生在短段/弱段上，长段基本不会编，"
+                             "这样 VAD 的耗时被压在几十毫秒以内，不影响字幕延迟")
+    parser.add_argument("--vad-threshold", type=float, default=0.5,
+                        help="VAD 判人声的门槛（缺省 0.5，越大越严：0.6 更少幻听、可能漏轻话）")
     parser.add_argument("--silence-skip-level", type=float, default=SILENCE_SKIP_RMS,
                         help="原始电平（归一化之前）低于这个值就在**解码前**丢掉："
                              "既不给幻听机会，也省一次识别。缺省 0.02 与人声门槛同一个数；"
@@ -453,6 +466,9 @@ _LOG_LEVEL = {"value": "summary"}
 # ⚠️ 这份名单与 lib/log-levels.mjs **必须一致**（python 没法 import JS，由
 # tests/log-level-suite.mjs 交叉核对；改一边就得改另一边）。
 _LOG_RANK = {"quiet": 0, "summary": 1, "detail": 2, "trace": 3}
+
+# 5.186：VAD 依赖不在时只说一次（别每段都刷）
+_VAD_WARNED = {"done": False}
 
 
 def log_level_at_least(level):
@@ -1576,6 +1592,23 @@ class WhisperEngine(AsrEngine):
         floor = (profile or {}).get("silence_skip_level")
         if not isinstance(floor, (int, float)) or floor <= 0:
             floor = self.args.silence_skip_level
+        # 5.186：高通与 VAD 可以**按策略**给（表里写了就用表里的）——
+        # 教室场景只需要给吵闹的那门语言开，安静场景不受影响。
+        # 用 getattr 读命令行那几项：老 fixture / 别的调用方传进来的 args 里可能没有它们
+        # （没有 = 关，与 5.186 之前的行为一致）。
+        highpass = (profile or {}).get("highpass_hz")
+        if not isinstance(highpass, (int, float)) or highpass < 0:
+            highpass = float(getattr(self.args, "highpass_hz", 0.0) or 0.0)
+        vad_on = (profile or {}).get("vad")
+        if not isinstance(vad_on, bool):
+            vad_on = bool(getattr(self.args, "vad", False)) and not bool(
+                getattr(self.args, "no_vad", False))
+        vad_max = (profile or {}).get("vad_max_ms")
+        if not isinstance(vad_max, int) or vad_max <= 0:
+            vad_max = int(getattr(self.args, "vad_max_ms", 2000) or 2000)
+        vad_threshold = (profile or {}).get("vad_threshold")
+        if not isinstance(vad_threshold, (int, float)) or not (0.05 <= vad_threshold <= 0.95):
+            vad_threshold = float(getattr(self.args, "vad_threshold", 0.5) or 0.5)
         text, empty, reason, overrode, kind, resolved_language = transcribe(
             model, audio, language,
             self.args.min_logprob, self.args.no_speech_prob,
@@ -1585,6 +1618,10 @@ class WhisperEngine(AsrEngine):
             context_text=None,
             do_normalize=not self.args.no_normalize,
             candidates=self.args.lang_candidates,
+            highpass_hz=float(highpass),
+            vad=vad_on,
+            vad_max_ms=int(vad_max),
+            vad_threshold=float(vad_threshold),
         )
         return {"text": text, "empty": empty, "reason": reason,
                 "resolved_language": resolved_language}
@@ -3863,6 +3900,47 @@ def spoken_units(text):
     return len(value.split())
 
 
+# ── 5.186：高通滤波（去低频轰鸣：空调、桌子震动、音箱低音）──────────────────────
+#
+# 为什么值得做：教室里的低频轰鸣能量很高，会让"按能量切句"以为一直有人在说话，
+# 也会把识别侧的电平门槛顶高。砍掉 100 Hz 以下几乎不伤语音（人声基频男 ~85Hz、
+# 女 ~200Hz，但**可懂度主要靠 300Hz 以上**），代价却接近零。
+#
+# 为什么自己写 biquad 而不是用 scipy：这台机器上 scipy 不是必需依赖，为了一行滤波
+# 再引入一个几十 MB 的包不划算。二阶 IIR 用 numpy 循环 4 行就够（每段音频几毫秒）。
+def highpass_biquad(signal, samplerate, cutoff_hz):
+    """二阶高通（Butterworth Q=0.707）。返回新数组，不改原地。"""
+    import numpy as np
+    x = np.asarray(signal, dtype=np.float32)
+    if x.size == 0 or cutoff_hz <= 0 or samplerate <= 0:
+        return x
+    nyquist = 0.5 * float(samplerate)
+    if cutoff_hz >= nyquist * 0.9:          # 截止频率高到没意义：不动
+        return x
+    import math
+    w0 = 2.0 * math.pi * float(cutoff_hz) / float(samplerate)
+    cos_w0 = math.cos(w0)
+    alpha = math.sin(w0) / (2.0 * (1.0 / math.sqrt(2.0)))
+    b0 = (1.0 + cos_w0) / 2.0
+    b1 = -(1.0 + cos_w0)
+    b2 = (1.0 + cos_w0) / 2.0
+    a0 = 1.0 + alpha
+    a1 = -2.0 * cos_w0
+    a2 = 1.0 - alpha
+    # 归一化系数（a0 除到左边）
+    b0, b1, b2, a1, a2 = b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0
+    # 直接 II 型转置，逐样本递推（段只有几百毫秒到几秒，numpy 标量循环也够快）
+    y = np.empty_like(x)
+    x1 = x2 = y1 = y2 = 0.0
+    for index in range(x.size):
+        value = float(x[index])
+        out = b0 * value + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+        x2, x1 = x1, value
+        y2, y1 = y1, out
+        y[index] = out
+    return y
+
+
 def silence_skip_reason(audio, threshold=SILENCE_SKIP_RMS) -> str | None:
     """明显不是人声就返回丢弃原因（None = 照常解码）。
 
@@ -4240,7 +4318,8 @@ def whisper_language_code(code):
 def transcribe(model, audio, language, min_logprob, no_speech_prob,
                beam_size=1, initial_prompt=None, do_normalize=True,
                speech_floor=SPEECH_RMS_FLOOR, candidates=None, context_text=None,
-               hint_text=None, silence_floor=SILENCE_SKIP_RMS):
+               hint_text=None, silence_floor=SILENCE_SKIP_RMS, highpass_hz=0.0,
+               vad=False, vad_max_ms=2000, vad_threshold=0.5):
     """把一段音频识别成文字，并过四道闸。
 
     返回 `(文字, 是否被丢弃, 丢弃原因, 是否用"电平证据"压过了 no_speech_prob, 丢弃类别)`。
@@ -4265,7 +4344,14 @@ def transcribe(model, audio, language, min_logprob, no_speech_prob,
     skip = silence_skip_reason(audio, silence_floor)
     if skip is not None:
         return "", True, skip, False, "silence", language
-    data = normalize_peak(audio) if do_normalize else audio
+    # 5.186：**高通在电平闸之后、归一化之前** —— 顺序有讲究：
+    #   电平闸要看原始录音的真实电平（高通会削掉低频能量，先滤会让门槛判断失真）；
+    #   归一化要放大"滤波后的语音"，所以高通必须在它前面。
+    data = None
+    if highpass_hz > 0:
+        data = highpass_biquad(audio, 16000, highpass_hz)
+    data = normalize_peak(data if data is not None else audio) if do_normalize else (
+        data if data is not None else audio)
 
     # 拼给模型的提示词：指令在前、上文在后（顺序与实验一致）。
     # `initial_prompt` 显式给了就用它（那是调用方直接指定的指令），否则由两段拼出来。
@@ -4308,16 +4394,52 @@ def transcribe(model, audio, language, min_logprob, no_speech_prob,
                       f"限定到 {tuple(candidates)} 后取 {picked}",
                       file=sys.stderr, flush=True)
             language = picked
+    # 5.186：**VAD 二次确认**（silero，faster-whisper 自带，不需要额外装包）。
+    #
+    # 为什么只对**短段**做：幻听几乎都发生在"短 + 弱"的段上（1.8 秒、电平刚好过闸那种），
+    # 长段模型有足够上下文，极少凭空编话。而 silero 的耗时大致与音频长度成正比，
+    # 只给 ≤2 秒的段做，实测在几十毫秒量级 —— 用户给的预算是 0.1 秒。
+    use_vad = bool(vad) and int(len(data) * 1000 / 16000) <= int(vad_max_ms)
+    vad_kwargs = {}
+    if use_vad:
+        try:
+            from faster_whisper.vad import VadOptions
+            vad_kwargs = {
+                "vad_filter": True,
+                "vad_parameters": VadOptions(
+                    threshold=float(vad_threshold),
+                    min_speech_duration_ms=200,     # 太短的"语音"多半是噪声瞬态
+                    min_silence_duration_ms=100,
+                    speech_pad_ms=60,
+                ),
+            }
+        except Exception as error:                      # noqa: BLE001
+            # 依赖不在（老版本 faster-whisper）：**说一次**然后照常跑，绝不因此丢字幕
+            if _VAD_WARNED["done"] is not True:
+                _VAD_WARNED["done"] = True
+                print(f"[识别] ⚠️ 这台机器上的 faster-whisper 没有 VAD 支持（{type(error).__name__}: "
+                      f"{error}）→ 这一段照常识别，VAD 二次确认**没生效**",
+                      file=sys.stderr, flush=True)
+            use_vad = False
+            vad_kwargs = {}
+    # 5.186：VAD 的耗时要能看见（用户给的预算是 0.1 秒/段）—— 只在真开了 VAD 时测
+    vad_started = time.perf_counter() if use_vad else None
     segments, _info = model.transcribe(
         data,
         language=language,
         # beam search 比贪心准，代价是多花一点解码时间。GPU 上实测很便宜
         # （14.7 秒音频：small beam5 只要 0.35~0.56 秒），所以缺省用 5 而不是 1。
         beam_size=beam_size,
-        vad_filter=False,       # 我们已经按能量切好了，不需要再切
+        # 能量闸已经切好了段；这里只让 VAD 做"这一段到底像不像人声"的二次确认
+        **vad_kwargs,
         condition_on_previous_text=False,   # 句间独立，避免上一句的错误污染下一句
         initial_prompt=prompt,
     )
+    if vad_started is not None and log_level_at_least("detail"):
+        print(f"[识别] VAD 二次确认 {len(data) / 16000.0:.1f}s 段，耗时 "
+              f"{(time.perf_counter() - vad_started) * 1000:.0f} ms（含在这段识别耗时里）",
+              file=sys.stderr, flush=True)
+
     # 这一句实际用的语种：显式指定了就是它；没指定时是模型检测出来的那个。
     # 它要跟着句子一起发出去（--format json），否则插件只能自己再猜一遍。
     resolved_language = language if language is not None else getattr(_info, "language", None)

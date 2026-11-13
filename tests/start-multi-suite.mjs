@@ -465,6 +465,9 @@ export async function runStartMultiSuite({ it, check, assert }) {
       ['--data-dir', 'var/x', '--translate-mode', 'queue', '--whisper-model', 'medium'],
     // 5.70：实机按日志建议加 --silence-skip-level 时，这个脚本原来直接报「未知选项」
     ['--data-dir', 'var/x', '--model-map', 'config/asr-models.json', '--silence-skip-level', '0.008'],
+    // 5.186：降噪两项（教室场景）—— 同样走"拼命令 → 识别进程 → python"三层
+    ['--data-dir', 'var/x', '--model-map', 'config/asr-models.json',
+      '--highpass-hz', '100', '--vad', '--vad-max-ms', '1500', '--vad-threshold', '0.4'],
     ]
     const failures = []
     for (const argv of combos) {
@@ -479,11 +482,68 @@ export async function runStartMultiSuite({ it, check, assert }) {
           if (!pyArgs.includes('--max-models')) failures.push(`python 没收到 --max-models（${argv.join(' ')}）`)
         }
         if (!pyArgs.includes('--data-dir')) failures.push(`python 没收到 --data-dir（${argv.join(' ')}）`)
+        // 5.186：降噪开关也是"拼错就白给"的一类 —— 只在给了的时候要求，别把别的组合带红
+        if (argv.includes('--vad') && !pyArgs.includes('--vad')) {
+          failures.push(`python 没收到 --vad（${argv.join(' ')}）`)
+        }
+        if (argv.includes('--highpass-hz') && pyArgs[pyArgs.indexOf('--highpass-hz') + 1] !== '100') {
+          failures.push(`python 没收到 --highpass-hz 100（${argv.join(' ')}）`)
+        }
       } catch (error) {
         failures.push(`${argv.join(' ')} → ${error.message}`)
       }
     }
     check('所有组合都能被识别进程接受，并透传给 python', failures.length === 0, failures.join(' | '))
+  })
+
+  await it('5.186：降噪开关缺省全关，开了能一路传到 python 并真的关得掉', async () => {
+    // 为什么值得单独钉：这两项一旦缺省打开，会**静默改变所有语种**的识别行为 ——
+    // 而用户的诉求恰恰是"只在教室那门语言上开"（逐语种）。所以缺省必须是关。
+    const { parseArgs: workerParse, consumerCommand } = await import('../bridge/asr-worker.mjs')
+    const pyOf = argv => consumerCommand(workerParse(workerStep(parseArgs(argv)).args)).args
+
+    const quiet = pyOf(['--data-dir', 'var/x', '--model-map', 'config/asr-models.json'])
+    check('缺省不传 --vad（不悄悄开 VAD）', quiet.includes('--vad') === false, quiet.slice(-90))
+    check('缺省不传 --highpass-hz（不悄悄改频响）', quiet.includes('--highpass-hz') === false,
+      quiet.slice(-90))
+
+    const opened = pyOf(['--data-dir', 'var/x', '--highpass-hz', '100', '--vad',
+      '--vad-max-ms', '1500', '--vad-threshold', '0.4'])
+    check('开了之后 python 真收到 --highpass-hz 100',
+      opened[opened.indexOf('--highpass-hz') + 1] === '100', opened.slice(-120))
+    check('python 真收到 --vad', opened.includes('--vad'), opened.slice(-120))
+    check('VAD 的三个附带参数也跟过去（段长上限/阈值）',
+      opened[opened.indexOf('--vad-max-ms') + 1] === '1500'
+      && opened[opened.indexOf('--vad-threshold') + 1] === '0.4', opened.slice(-120))
+
+    const closed = pyOf(['--data-dir', 'var/x', '--vad', '--no-vad'])
+    check('--no-vad 能显式关掉（传 --no-vad 而不是干脆不传）',
+      closed.includes('--no-vad') && closed.includes('--vad') === false, closed.slice(-90))
+
+    const workerOnly = workerStep(parseArgs(['--data-dir', 'var/x', '--highpass-hz', '100'])).args
+    check('高通只改频响、不该顺手把 VAD 打开',
+      workerOnly.includes('--highpass-hz') && workerOnly.includes('--vad') === false,
+      workerOnly.join(' '))
+  })
+
+  await it('5.186：仓库里那份策略表不偷偷开降噪，但把"怎么开"写清楚', async () => {
+    // 缺省表是**模板**：它会被人整个复制到 <data-dir>，所以里面写什么就会在那台机器上生效。
+    // 因此"文档里说怎么开"与"表里缺省不开"这两件事都得成立。
+    const table = JSON.parse(readFileSync('config/asr-models.json', 'utf8'))
+    const noisy = Object.entries(table.strategies || {})
+      .filter(([, entry]) => entry.highpass_hz !== undefined || entry.vad !== undefined)
+      .map(([name]) => name)
+    check('没有哪个策略偷偷开着降噪（缺省表 = 保守起点）', noisy.length === 0, noisy.join(','))
+    for (const name of ['zh-steady', 'en-steady', 'pt-steady']) {
+      const entry = table.strategies?.[name] || {}
+      check(`${name} 写明了怎么开降噪（_noise_note）`,
+        typeof entry._noise_note === 'string' && entry._noise_note.length > 8,
+        String(entry._noise_note))
+    }
+    check('注释里写清了两项的名字与建议值（highpass_hz / vad）', (() => {
+      const said = (table._comment || []).join('\\n')
+      return said.includes('highpass_hz') && said.includes('vad_max_ms') && said.includes('100')
+    })(), '注释里没写降噪字段')
   })
 
   await it('python 切句端真的认这些参数（源码里三个都要在）', async () => {

@@ -1627,8 +1627,18 @@ def main():
         harness_source = (ROOT / "asr-eval" / "segment_eval.py").read_text(encoding="utf-8")
         pipeline_source = (ROOT / "bridge" / "whisper_stream.py").read_text(encoding="utf-8")
         check("评测据实透传 args.vad（不再写死 True）", "vad_filter=bool(args.vad)" in harness_source)
-        check("产线那边确实是 vad_filter=False（它已经按能量切好了）",
-              "vad_filter=False" in pipeline_source)
+        # 5.186：产线现在支持"VAD 二次确认"，但**缺省仍然是关**（要显式 --vad 或策略里写 vad:true）。
+        # 这条判据随之改成"默认不做、只有开关打开才做"，而不是"代码里写死 False"。
+        check("产线默认仍不做 VAD（只有显式开启或策略里 vad:true 才做）",
+              "use_vad = bool(vad)" in pipeline_source
+              and "vad_kwargs" in pipeline_source
+              and "if use_vad:" in pipeline_source)
+        check("VAD 依赖缺失时要说一次、而不是安静地不生效",
+              "_VAD_WARNED" in pipeline_source and "没生效" in pipeline_source)
+        check("高通滤波在电平闸之后、归一化之前（顺序错了门槛判断会失真）",
+              pipeline_source.index("silence_skip_reason(audio, silence_floor)")
+              < pipeline_source.index("highpass_biquad(audio, 16000, highpass_hz)")
+              < pipeline_source.index("data = normalize_peak("))
         bogus = workdir / "bogus.json"
         bogus.write_text('{"hello": "world"}', encoding="utf-8")
         message = _exit_message_of(lambda: _seg.run_rescore(bogus))
@@ -1981,6 +1991,132 @@ def main():
           _ws.looks_like_hallucination("中文字幕提供") and _ws.looks_like_hallucination("中文字幕志愿者 李宗盛"))
     check("但不把「中文字幕」这种短词一并钉死（用户真说时不能被吃）",
           _ws.looks_like_hallucination("请打开中文字幕") is False)
+
+    # 5.186：降噪两项（高通 / VAD 二次确认）。用户给的延迟预算是 0.1 秒，
+    # 判错的代价是双向的 —— 高通顺序或截止点错了会削掉真语音，VAD 用在全长段上会吃掉预算。
+    heading("降噪 · 高通滤波与 VAD 二次确认（5.186）")
+    _hp_rate = 16000
+    _hp_t = np.arange(_hp_rate) / _hp_rate
+    _hp_rms = lambda arr: float(np.sqrt(np.mean(np.asarray(arr, dtype=np.float32) ** 2)))
+
+    # 听感/能量口径：100 Hz 以下（教室低频轰鸣、空调、桌面震动）该被压掉，
+    # 150 Hz 以上（人声基频起点，女声/童声更高）必须留住 —— 这条是"不许削掉真话"那一侧。
+    _hp_ratios = {}
+    for _freq in (30, 50, 150, 1000):
+        _sig = (np.sin(2 * np.pi * _freq * _hp_t) * 0.5).astype(np.float32)
+        _out = _ws.highpass_biquad(_sig, _hp_rate, 100)
+        # 只量后半段：前 1/4 是滤波器起振（截止点越低越慢），量进去会把结论带偏。
+        _hp_ratios[_freq] = _hp_rms(_out[_hp_rate // 4:]) / _hp_rms(_sig[_hp_rate // 4:])
+    check("高通 100Hz 压掉 30Hz 轰鸣（保留 < 0.2）", _hp_ratios[30] < 0.2, f"{_hp_ratios[30]:.3f}")
+    check("高通 100Hz 压掉 50Hz 电源/震动（保留 < 0.4）", _hp_ratios[50] < 0.4, f"{_hp_ratios[50]:.3f}")
+    check("高通 100Hz 留住 150Hz 人声基频（保留 > 0.7）", _hp_ratios[150] > 0.7, f"{_hp_ratios[150]:.3f}")
+    check("高通 100Hz 不碰 1kHz 语音主区（保留 > 0.95）", _hp_ratios[1000] > 0.95, f"{_hp_ratios[1000]:.3f}")
+    check("衰减是单调的：越低越狠（30 < 50 < 150 < 1000）",
+          _hp_ratios[30] < _hp_ratios[50] < _hp_ratios[150] < _hp_ratios[1000],
+          str({f: round(v, 3) for f, v in _hp_ratios.items()}))
+
+    _dc_in = np.full(_hp_rate, 0.3, dtype=np.float32)
+    check("高通把直流（麦克风偏置）滤掉，否则会一直顶着电平闸",
+          _hp_rms(_ws.highpass_biquad(_dc_in, _hp_rate, 100)[_hp_rate // 4:]) < 0.02,
+          str(_hp_rms(_ws.highpass_biquad(_dc_in, _hp_rate, 100)[_hp_rate // 4:])))
+    _keep = np.full(_hp_rate, 0.3, dtype=np.float32)
+    check("cutoff=0 时原样返回（关掉就是真的关掉）",
+          np.array_equal(_ws.highpass_biquad(_keep, _hp_rate, 0), _keep))
+    _orig = (np.sin(2 * np.pi * 300 * _hp_t) * 0.4).astype(np.float32)
+    _copy = _orig.copy()
+    _ws.highpass_biquad(_orig, _hp_rate, 100)
+    check("不改原地（调用方还要拿原始电平去判静音闸）", np.array_equal(_orig, _copy))
+    check("空音频不炸", _ws.highpass_biquad(np.zeros(0, dtype=np.float32), _hp_rate, 100).size == 0)
+
+    # ── VAD 二次确认：只在"短段"上做 ────────────────────────────────────────
+    # 幻听集中在"短 + 弱"的段上；长段模型有上下文、极少编话，所以长段不做，
+    # 把 silero 的耗时留在用户给的 0.1 秒预算以内。
+    class _FakeSeg:
+        text = "hello"
+        no_speech_prob = 0.1
+        avg_logprob = -0.2
+        compression_ratio = 1.2
+
+    class _FakeInfo:
+        language = "en"
+        language_probability = 0.99
+        duration = 1.0
+
+    class _FakeModel:
+        def __init__(self):
+            self.calls = []
+
+        def transcribe(self, data, **kwargs):
+            self.calls.append(kwargs)
+            return [_FakeSeg()], _FakeInfo()
+
+        def detect_language(self, data):
+            return "en", 0.99, {"en": 0.99}
+
+    def _hp_tone(seconds):
+        _tt = np.arange(int(_hp_rate * seconds)) / _hp_rate
+        return (np.sin(2 * np.pi * 300 * _tt) * 0.3).astype(np.float32)
+
+    try:
+        from faster_whisper.vad import VadOptions as _VadOptions   # noqa: F401
+        _has_vad = True
+    except Exception:                                             # noqa: BLE001
+        _has_vad = False
+    if _has_vad:
+        _short = _FakeModel()
+        _ws.transcribe(_short, _hp_tone(1.0), "en-US", -1.0, 0.6, vad=True, vad_max_ms=2000)
+        check("短段（1 秒）走 VAD 二次确认：vad_filter=True",
+              _short.calls[0].get("vad_filter") is True, str(_short.calls[0].get("vad_filter")))
+        _params = _short.calls[0].get("vad_parameters")
+        check("VAD 参数按配置传下去（阈值 / 最短语音 200ms）",
+              _params is not None and abs(_params.threshold - 0.5) < 1e-6
+              and _params.min_speech_duration_ms == 200, str(_params))
+
+        _long = _FakeModel()
+        _ws.transcribe(_long, _hp_tone(3.0), "en-US", -1.0, 0.6, vad=True, vad_max_ms=2000)
+        check("长段（3 秒）不做 VAD（幻听少、省延迟，预算才守得住）",
+              "vad_filter" not in _long.calls[0], str(sorted(_long.calls[0])))
+
+        _threshold_low = _FakeModel()
+        _ws.transcribe(_threshold_low, _hp_tone(1.0), "en-US", -1.0, 0.6,
+                       vad=True, vad_threshold=0.3)
+        check("阈值可调（--vad-threshold 真的接上了）",
+              abs(_threshold_low.calls[0]["vad_parameters"].threshold - 0.3) < 1e-6)
+    else:
+        print("  (这台机器没装 faster-whisper 的 VAD，跳过 VAD 三条行为断言)")
+
+    _off = _FakeModel()
+    _ws.transcribe(_off, _hp_tone(0.8), "en-US", -1.0, 0.6, vad=False)
+    check("缺省（vad=False）任何段都不做 VAD：产线行为不变",
+          "vad_filter" not in _off.calls[0], str(sorted(_off.calls[0])))
+
+    _both = _FakeModel()
+    _ws.transcribe(_both, _hp_tone(0.9), "en-US", -1.0, 0.6, vad=True, highpass_hz=100, vad_max_ms=2000)
+    check("高通与 VAD 可以同时开（两项互不干扰）",
+          _both.calls[0].get("vad_filter") is True or not _has_vad,
+          str(_both.calls[0].get("vad_filter")))
+
+    for _lang in ("zh-CN", "en-US", "pt-BR"):
+        _one = _FakeModel()
+        _ws.transcribe(_one, _hp_tone(0.9), _lang, -1.0, 0.6, highpass_hz=100, vad=True,
+                       vad_max_ms=2000)
+        check(f"{_lang} 同样能走高通（与语种无关，三门语言都受益）",
+              _one.calls[0].get("vad_filter") is True or not _has_vad,
+              str(_one.calls[0].get("vad_filter")))
+
+    _cli_off = _ws.parse_args([])
+    check("命令行缺省：VAD 关、高通 0（不悄悄改变现有行为）",
+          bool(_cli_off.vad) is False and float(_cli_off.highpass_hz) == 0.0,
+          f"vad={_cli_off.vad} highpass={_cli_off.highpass_hz}")
+    _cli_on = _ws.parse_args(["--vad", "--highpass-hz", "100", "--vad-max-ms", "1500",
+                              "--vad-threshold", "0.4"])
+    check("命令行开关都接上了（--vad / --highpass-hz / --vad-max-ms / --vad-threshold）",
+          _cli_on.vad is True and _cli_on.highpass_hz == 100.0
+          and _cli_on.vad_max_ms == 1500 and abs(_cli_on.vad_threshold - 0.4) < 1e-6,
+          str((_cli_on.vad, _cli_on.highpass_hz, _cli_on.vad_max_ms, _cli_on.vad_threshold)))
+    _cli_no = _ws.parse_args(["--vad", "--no-vad"])
+    check("--no-vad 能压过策略表里的 vad:true（显式关掉的口子）",
+          bool(_cli_no.no_vad) is True)
 
     heading("收音质量量化 · 指标算法（合成信号，已知答案）")
     probe_rate = 16000
@@ -4081,6 +4217,69 @@ def main():
               str(produced_meta))
         check("段里带这一路的语种", produced_meta.get("lang") == "en", str(produced_meta))
     shutil.rmtree(sim_dir, ignore_errors=True)
+
+    # ── 5.186：降噪两项（高通 / VAD）怎么一层层落下来 ──────────────────────────
+    #
+    # 用户要的是"每个语种各自开"（教室只有一门语言的收音环境糟），所以判据是：
+    #   ① 策略层写的只影响那一门语言；② languages 行能再覆盖；③ 命令行是兜底；
+    #   ④ 显式关得掉；⑤ 最后**真的**进了转写（否则参数只是好看）。
+    heading("降噪随策略下来（5.186）：逐语种开、命令行兜底、转写里真用上")
+    noise_table = {
+        "default": {"model": "large-v3"},
+        "strategies": {
+            "zh-steady": {"highpass_hz": 100, "vad": True},
+            "en-steady": {"model": "large-v3"},
+        },
+        "languages": {"zh-CN": {"strategy": "zh-steady"},
+                      "en-US": {"strategy": "en-steady"}},
+    }
+    zh_profile = whisper_stream.resolve_strategy("zh-CN", {}, noise_table)
+    en_profile = whisper_stream.resolve_strategy("en-US", {}, noise_table)
+    check("中文那一路拿到 highpass_hz=100 与 vad=True（策略层写的）",
+          zh_profile.get("highpass_hz") == 100 and zh_profile.get("vad") is True,
+          str((zh_profile.get("highpass_hz"), zh_profile.get("vad"))))
+    check("英语那一路**不受影响**（没写就是关，逐语种互不牵扯）",
+          zh_profile.get("vad") is True and en_profile.get("vad") in (None, False),
+          str(en_profile.get("vad")))
+    check("languages 行能再覆盖策略层的值（最后一层说了算）",
+          whisper_stream.resolve_strategy("zh-CN", {}, {
+              "strategies": {"zh-steady": {"highpass_hz": 100}},
+              "languages": {"zh-CN": {"strategy": "zh-steady", "highpass_hz": 60}},
+          }).get("highpass_hz") == 60)
+    check("表里什么都不写时两项都是关（缺省不改变现有行为）",
+          whisper_stream.resolve_strategy("en-US", {}, {"default": {"model": "large-v3"}}).get("vad")
+          in (None, False))
+
+    # 引擎这一层：命令行 / 策略 / 显式关，谁说了算
+    _hp_calls = []
+    _real_highpass = whisper_stream.highpass_biquad
+
+    def _spy_highpass(signal, samplerate, cutoff_hz):
+        _hp_calls.append(float(cutoff_hz))
+        return _real_highpass(signal, samplerate, cutoff_hz)
+
+    whisper_stream.highpass_biquad = _spy_highpass
+    try:
+        _noise_model = _FakeModel()
+        _noise_audio = _hp_tone(1.0)
+        for _label, _argv, _profile, _want_cut, _want_vad in (
+            ("命令行开", ["--vad", "--highpass-hz", "100"], None, 100.0, True),
+            ("策略开", [], {"highpass_hz": 60, "vad": True}, 60.0, True),
+            ("缺省关", [], None, None, False),
+            ("--no-vad 压过 --vad", ["--vad", "--no-vad"], None, None, False),
+            ("策略里显式写 false 也关得掉", ["--vad"], {"vad": False}, None, False),
+        ):
+            _hp_calls.clear()
+            _engine = whisper_stream.WhisperEngine(_FakeModel, whisper_stream.parse_args(
+                ["--queue-dir", "var/test/noise-probe", *_argv]))
+            _engine.transcribe((_noise_model, None), _noise_audio, "en-US", _profile)
+            _got_cut = _hp_calls[-1] if _hp_calls else None
+            _got_vad = _noise_model.calls[-1].get("vad_filter")
+            check(f"{_label}：高通 {_got_cut} / VAD {_got_vad}",
+                  _got_cut == _want_cut and (_got_vad is True) == _want_vad,
+                  str((_got_cut, _got_vad)))
+    finally:
+        whisper_stream.highpass_biquad = _real_highpass
 
     heading("丢掉音节时必须说话（5.52 诊断：用户报「academic 被识别成 Islamic」）")
     # 这句错法的机制：词的**前半截**被切走 / 被当成静音，模型只看到 "-demic" 这种残片，

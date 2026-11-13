@@ -295,6 +295,12 @@ export function parseArgs(argv = []) {
       options.writeLogs = false
       continue
     }
+    // 5.186：降噪（教室场景）
+    if (key === 'vad') { options.vad = true; continue }
+    if (key === 'no-vad') { options.vad = false; continue }
+    if (key === 'highpass-hz') { options.highpassHz = Number(argv[index += 1]); continue }
+    if (key === 'vad-max-ms') { options.vadMaxMs = Number(argv[index += 1]); continue }
+    if (key === 'vad-threshold') { options.vadThreshold = Number(argv[index += 1]); continue }
     if (key === 'log-level') {
       // 5.182b：名单来自 lib/log-levels.mjs（唯一来源）。以前每个进程各写一份，
       // 给下游加了 quiet 却漏了这一处 → 生产上 `--log-level quiet` 抛错、systemd 反复重启。
@@ -674,6 +680,18 @@ export function workerStep(options) {
   // 5.70：电平门槛（不给就用识别进程的缺省；实机验证时几乎总要调低）
   if (options.silenceSkipLevel !== null && options.silenceSkipLevel !== undefined) {
     args.push('--silence-skip-level', String(options.silenceSkipLevel))
+  }
+  // 5.186：降噪三项（缺省全关；策略表里也能按语种开，见 config/asr-models.json）
+  if (Number.isFinite(options.highpassHz) && options.highpassHz > 0) {
+    args.push('--highpass-hz', String(options.highpassHz))
+  }
+  if (options.vad === true) args.push('--vad')
+  if (options.vad === false) args.push('--no-vad')
+  if (Number.isInteger(options.vadMaxMs) && options.vadMaxMs > 0) {
+    args.push('--vad-max-ms', String(options.vadMaxMs))
+  }
+  if (Number.isFinite(options.vadThreshold)) {
+    args.push('--vad-threshold', String(options.vadThreshold))
   }
   return {
     key: 'asr-worker', role: 'worker', tag: '识别', label: '识别', color: '\x1b[35m',

@@ -95,7 +95,9 @@ export function parseArgs(argv = []) {
     // 5.70：电平门槛（实机麦克风只有 0.007~0.020，缺省 0.02 会把整句丢掉）
     'silence-skip-level',
     // 5.177：日志档位（透传给 python 消费者）
-    'log-level'])
+    'log-level',
+    // 5.186：高通滤波与 VAD 二次确认（教室/会议室降噪用）
+    'highpass-hz', 'vad-max-ms', 'vad-threshold'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -103,6 +105,9 @@ export function parseArgs(argv = []) {
     if (key === 'help') { options.help = true; continue }
     if (key === 'keep-inbox') { options.keepInbox = true; continue }
     if (key === 'dry-run') { options.dryRun = true; continue }
+    // 5.186：VAD 二次确认（缺省关；开启时只对短段跑，见 whisper_stream.py 的说明）
+    if (key === 'vad') { options.vad = true; continue }
+    if (key === 'no-vad') { options.vad = false; continue }
     if (!takesValue.has(key)) throw new Error(`未知选项 --${key}（用 --help 看用法）`)
     const value = argv[index + 1]
     if (value === undefined || value.startsWith('--')) throw new Error(`--${key} 需要一个值`)
@@ -113,6 +118,9 @@ export function parseArgs(argv = []) {
     // 5.182b：名单来自 lib/log-levels.mjs（唯一来源）。
     // 这里曾经是手写三档 → start-multi 传 quiet 时识别进程直接退出、整条链路停摆。
     else if (key === 'log-level') options.logLevel = assertLogLevel(value)
+    else if (key === 'highpass-hz') options.highpassHz = Number(value)
+    else if (key === 'vad-max-ms') options.vadMaxMs = Number(value)
+    else if (key === 'vad-threshold') options.vadThreshold = Number(value)
     else if (key === 'model') options.model = value
     else if (key === 'device') options.device = value
     else if (key === 'compute-type') options.computeType = value
@@ -295,6 +303,21 @@ export function consumerCommand(options) {
   }
   // 5.177：日志档位透给识别进程（summary = 每句一行；detail 才逐句打延迟账）
   args.push('--log-level', String(options.logLevel ?? 'summary'))
+  // 5.186：降噪相关的三项（给了才传；不给就用识别进程的缺省 = 全关）
+  if (Number.isFinite(options.highpassHz) && options.highpassHz > 0) {
+    args.push('--highpass-hz', String(options.highpassHz))
+  }
+  if (options.vad === true) {
+    args.push('--vad')
+    if (Number.isInteger(options.vadMaxMs) && options.vadMaxMs > 0) {
+      args.push('--vad-max-ms', String(options.vadMaxMs))
+    }
+    if (Number.isFinite(options.vadThreshold)) {
+      args.push('--vad-threshold', String(options.vadThreshold))
+    }
+  } else if (options.vad === false) {
+    args.push('--no-vad')
+  }
   return { script: join(ROOT, 'bridge', 'whisper_stream.py'), args }
 }
 

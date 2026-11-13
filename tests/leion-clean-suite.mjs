@@ -65,8 +65,12 @@ export async function runLeionCleanSuite({ it, check }) {
     check('报告里能看到各类占地方（含模型缓存/评测数据）',
       plan.rows.some((row) => row.name.includes('分轨音频'))
       && plan.rows.some((row) => row.name.includes('模型缓存')), JSON.stringify(plan.rows.map(r => r.name)))
+    // ⚠️ 只数**这个基准目录**里的：`var/tmp` 是仓库公共目录（别的测试也会往里面写），
+    //    里面躺着几天前的残留时，"恰好 2 个"会变成假失败 —— 那不是清理工具的问题。
+    //    (下面 `--older-than 0` 那条早就因为同一个原因只做"有没有"的断言了。)
     check('plan 里只有 10 天前那两个（旧音频 + 旧收件箱），今天的新文件不在里面', (() => {
       const files = plan.plan.flatMap((item) => item.files)
+        .filter((one) => one.startsWith(base))
       return files.length === 2
         && files.some((one) => one.endsWith('old.pcm'))
         && files.some((one) => one.endsWith('asr-inbox-room-a.jsonl'))
@@ -75,7 +79,12 @@ export async function runLeionCleanSuite({ it, check }) {
     check('collectPlan 之后文件一个都没少（只读）',
       readdirSync(join(base, 'audio', 'room-a')).length === 2, '')
 
-    const applied = applyPlan(plan.plan)
+    // 只把**基准目录**那部分交给 applyPlan：报告里同时会列出仓库 `var/tmp` 里的旧残留，
+    // 真按整份 plan 删就会动到别的测试的现场（清理工具本身没问题，是测试不该越界）。
+    const scoped = plan.plan
+      .map((item) => ({ ...item, files: item.files.filter((one) => one.startsWith(base)) }))
+      .filter((item) => item.files.length > 0)
+    const applied = applyPlan(scoped)
     const left = readdirSync(join(base, 'audio', 'room-a'))
     check('applyPlan 之后旧的没了、新的还在',
       applied.removed === 2 && left.length === 1 && left[0] === 'fresh.pcm', JSON.stringify(left))
