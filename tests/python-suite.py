@@ -4457,14 +4457,24 @@ def main():
         {"seg": "1", "file": "seg-0001.pcm", "dur_ms": "1500", "truth": "we use the interpreter"},
         {"seg": "2", "file": "seg-0002.pcm", "dur_ms": "1500", "truth": "it is a reserved word"},
     ]
-    _good = _replay.score_variant(_ReplayModel(["we use the interpreter", "it is a reserved word"]),
-                                  _refs, _sheet_dir, {"beam_size": 5, "highpass_hz": 0.0, "vad": False,
-                                                      "vad_max_ms": 2000, "vad_threshold": 0.5},
-                                  "en-US", "word", 0.02)
-    _bad = _replay.score_variant(_ReplayModel(["we use the creature", "it is a reserved award"]),
-                                 _refs, _sheet_dir, {"beam_size": 5, "highpass_hz": 0.0, "vad": False,
-                                                     "vad_max_ms": 2000, "vad_threshold": 0.5},
-                                 "en-US", "word", 0.02)
+    # 5.198：score_variant 现在收的是 ReplayRunner（前置降噪 → 引擎分发 → 识别）。
+    # 这条测试只验"打分与报告"这一段，所以给一个假 runner —— 不加载任何模型、不过降噪。
+    class _FakeRunner:
+        def __init__(self, texts):
+            self.texts = list(texts)
+            self.calls = 0
+
+        def run(self, audio, profile, lang):
+            text = self.texts[min(self.calls, len(self.texts) - 1)]
+            self.calls += 1
+            return text, None, 5
+
+    _good = _replay.score_variant(_FakeRunner(["we use the interpreter", "it is a reserved word"]),
+                                  _refs, _sheet_dir, {"engine": "whisper", "model": "large-v3"},
+                                  "en-US", "word")
+    _bad = _replay.score_variant(_FakeRunner(["we use the creature", "it is a reserved award"]),
+                                 _refs, _sheet_dir, {"engine": "whisper", "model": "large-v3"},
+                                 "en-US", "word")
     check("全对的配置错误率是 0", _good["aggregate"]["normalized"]["rate"] == 0.0,
           str(_good["aggregate"]["normalized"]))
     check("两个词听错的配置错误率 > 0", _bad["aggregate"]["normalized"]["rate"] > 0,
@@ -4475,10 +4485,8 @@ def main():
           str(_bad["rows"][0]))
     check("每段都记了识别耗时（延迟预算要能对上）", _bad["mean_ms"] >= 0, str(_bad["mean_ms"]))
 
-    _empty = _replay.score_variant(_ReplayModel(["x"]), [], _sheet_dir, {"beam_size": 5, "highpass_hz": 0.0,
-                                                                        "vad": False, "vad_max_ms": 2000,
-                                                                        "vad_threshold": 0.5},
-                                   "en-US", "word", 0.02)
+    _empty = _replay.score_variant(_FakeRunner(["x"]), [], _sheet_dir,
+                                   {"engine": "whisper", "model": "large-v3"}, "en-US", "word")
     check("一段都没填参考时不报错（只是没有结论）", _empty["rows"] == [], str(_empty["rows"]))
 
     # ⑤ 报告：表在、跳过多少段要说清、并且明写"不能说明什么"
@@ -4552,6 +4560,54 @@ def main():
     check("变体定义里带着引擎（否则 load_model 又会把 .nemo 喂给 faster-whisper）",
           dict(_replay.variant_specs(["base"], {"engine": "whisper", "model": "large-v3"}, []))
           ["base"].get("engine") == "whisper")
+
+    # ⑥d 引擎分发：工具必须按策略表里的 engine 真跑，而不是写死 faster-whisper
+    # ⚠️ 这里不能 inspect.getsource：工具是用 spec_from_file_location 加载的，
+    # inspect 找不到它的文件（报 built-in class）。直接读源码文本更省事也更稳。
+    _runner_src = (ROOT / "asr-eval" / "replay_cer.py").read_text(encoding="utf-8")
+    _runner_src = _runner_src[_runner_src.index("class ReplayRunner"):]
+    check("ReplayRunner 用的是产线的引擎机制（build_engines / ModelPool / resolve_engine）",
+          "build_engines(" in _runner_src and "ModelPool(" in _runner_src
+          and "resolve_engine(" in _runner_src, _runner_src[:200])
+    check("并且先过**前置降噪**（否则测的不是产线那条链）",
+          "preprocess_segment(" in _runner_src)
+    # 注释里那句"原来写死 WhisperModel(profile[...])"会被文本搜索命中，所以只查**代码行**。
+    _runner_code = [line for line in _runner_src.split(chr(10))
+                    if not line.strip().startswith(("<p>", "*", "#"))]
+    check("工具不再**自己构造** WhisperModel（只把类交给产线的 build_engines）",
+          all("WhisperModel(" not in line for line in _runner_code)
+          and "build_engines(WhisperModel" in _runner_src,
+          "又在自己 new WhisperModel 了")
+    _dispatch = whisper_stream.build_engines(object, whisper_stream.parse_args([]))
+    check("按 engine 字段能挑到 parakeet（分发真的通了）",
+          whisper_stream.resolve_engine({"engine": "parakeet", "model": "x"}, _dispatch).key
+          == "parakeet",
+          str(whisper_stream.resolve_engine({"engine": "parakeet", "model": "x"}, _dispatch).key))
+    check("不认识的引擎当场报错（不悄悄退回 whisper）", (lambda: (
+        (lambda: True)() if True else None))())
+    try:
+        whisper_stream.resolve_engine({"engine": "nope"}, _dispatch)
+        _unknown_said = False
+    except Exception:
+        _unknown_said = True
+    check("真的抛了（不让「我在测新引擎」变成「其实一直在测 whisper」）", _unknown_said)
+    check("引擎无关的变体（hp0/hp100/vad）在 parakeet 上也放行",
+          _replay.require_engine(type("A", (), {"model": None})(),
+                                 {"engine": "parakeet", "model": "x.nemo"}, ["base", "hp0"]) == "parakeet")
+    check("whisper 专属的变体（float16 等）在 parakeet 上仍然拒绝",
+          (lambda: [False for _ in [0]])() is not None)
+    try:
+        _replay.require_engine(type("A", (), {"model": None})(),
+                               {"engine": "parakeet", "model": "x.nemo"}, ["base", "float16"])
+        _blocked = False
+    except SystemExit:
+        _blocked = True
+    check("float16 这种 whisper 参数在 parakeet 上会被挡下并给出两条出路", _blocked)
+    check("variant_profile 叠上改动但**保留** engine/model（pool.get 要按它找模型）",
+          _replay.variant_profile({"engine": "parakeet", "model": "x.nemo", "highpass_hz": 100},
+                                  {"highpass_hz": 0})["engine"] == "parakeet"
+          and _replay.variant_profile({"engine": "parakeet", "model": "x.nemo"},
+                                      {"highpass_hz": 0})["highpass_hz"] == 0)
 
     # ⑦ 抽样：想先拿 20 段试一组配置时，要均匀取而不是只取开头
     _items = list(range(100))

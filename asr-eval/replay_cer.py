@@ -544,7 +544,10 @@ def read_sheet(path):
 # 于是 base 变体把 "/opt/leion/models/parakeet-tdt-0.6b-v2.nemo" 当模型名喂给
 # faster-whisper，报的是 huggingface_hub 的 "Repo id must be in the form ..." ——
 # 一个和真实原因（引擎不对）毫无关系的错。所以这里必须**先看引擎**。
-WHISPER_ONLY_VARIANTS = ("float16", "int8", "beam8", "hp0", "hp100", "vad", "terms")
+# 只有 whisper 认的变体（精度 / 解码宽度 / 提示词都是 faster-whisper 的参数）。
+WHISPER_ONLY_VARIANTS = ("float16", "int8", "beam8", "terms")
+# 5.197 起高通与 VAD 挪到"引擎之前"，**对所有引擎都生效** —— 所以这两个不再是 whisper 专属。
+ENGINE_AGNOSTIC_VARIANTS = ("hp0", "hp100", "vad")
 
 
 def engine_of(profile):
@@ -564,13 +567,18 @@ def require_engine(args, profile, variant_names):
         return engine
     model = str(profile.get("model") or "")
     whisper_only = [name for name in variant_names if name.strip() in WHISPER_ONLY_VARIANTS]
-    if not whisper_only:
-        # 只跑 base：也应该说清"我跑的不是 whisper"，但仍然照实去做没意义（工具只认 whisper）
-        pass
+    # ⚠️ 顺序：先看用户有没有显式 --model（那是**明确要求换引擎**），再看变体需不需要 whisper。
+    # 反过来的话，"给了 --model large-v3 但变体只写了 base"会被当成"按表里的引擎跑"，
+    # 于是 --model 被静默忽略 —— 又是一次"我明明给了参数却没生效"。
     if args is not None and getattr(args, "model", None):
         print("[replay] ⚠️ 策略表里这一路是 " + engine + "（" + model + "）；"
               "已按 --model 换成 whisper —— 报告里的 base **不是**产线配置", file=sys.stderr)
         return "whisper"
+    if not whisper_only:
+        # 只要选的变体都是**引擎无关**的（base / hp0 / hp100 / vad），就按表里的引擎跑 ——
+        # 5.197 起高通与 VAD 挪到了"引擎之前"，对 parakeet 同样有效，没有理由拒绝。
+        print("[replay] 引擎 = " + engine + "（" + model + "，按策略表）", flush=True)
+        return engine
     sys.exit(
         "这一路在策略表里走的是 **" + engine + "**（模型 " + model + "），" + "\n" +
         "而这个工具的所有变体（" + " / ".join(WHISPER_ONLY_VARIANTS) + "）都是 **whisper** 的参数。" + "\n" +
@@ -624,6 +632,21 @@ def variant_specs(names, profile, terms):
     return out
 
 
+def variant_profile(profile, spec):
+    """把"本次改哪些字段"叠到产线那份 profile 上，得到**整份**配置。
+
+    <p>为什么要整份：`ModelPool.get(profile)` 要按 `engine`+`model` 找模型、
+    `resolve_engine(profile)` 要按 `engine` 选实现、前置降噪要按 `highpass_hz`/`vad` 决定做不做。
+    只传一个"模型名"是不够的（那正是 2026-11-13 把 .nemo 喂给 faster-whisper 的原因）。
+    """
+    merged = dict(profile or {})
+    for key, value in (spec or {}).items():
+        if key == "initial_prompt":
+            continue                      # 提示词走 CLI，不在 profile 里
+        merged[key] = value
+    return merged
+
+
 def build_prompt(terms):
     """术语热词拼成一句提示词。
 
@@ -667,77 +690,78 @@ def read_terms(path):
             if line.strip() != "" and not line.strip().startswith("#")]
 
 
-def load_model(spec, args, cache):
-    engine = str(spec.get("engine") or "whisper").strip().lower() or "whisper"
-    if engine != "whisper":
-        # 走到这里说明上面的 require_engine 被绕过了（或者以后加了新调用点）。
-        # 再兜一道：宁可报一句人话，也不要让 faster-whisper 去解释 ".nemo 不是 repo id"。
-        sys.exit("这个变体要的引擎是 " + engine + "，而本工具只会跑 whisper"
-                 "（模型 " + str(spec.get("model")) + "）—— 加 --model large-v3 切到 whisper 再跑")
-    key = (spec["model"], spec["compute_type"])
-    if key in cache:
-        return cache[key]
-    _, WhisperModel, _ = whisper_stream.load_dependencies(need_audio=False)
-    device = args.device
-    if device == "auto":
-        # 自己判，而不是把 "auto" 交给底层：CPU 上 float16 会直接抛错（用户第一次跑就撞墙），
-        # 而"产线在有卡的机器上跑的是 cuda"这件事本来就要说清楚。
-        try:
-            import ctranslate2
-            device = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
-        except Exception:                                   # noqa: BLE001
-            device = "cpu"
-    compute = spec["compute_type"]
-    # 精度要按这台机器**实际支持**的来（与产线 5.42 同一套思路，只是这里按 device 查表）：
-    # CPU 上没有 float16，Pascal 卡上也没有 —— 照抄表里的值会直接抛 ctranslate2 的一行英文。
-    try:
-        import ctranslate2
-        supported = set(ctranslate2.get_supported_compute_types(device))
-    except Exception:                                       # noqa: BLE001
-        supported = set()
-    if supported and compute not in supported:
-        for candidate in ("int8_float32", "int8", "float32"):
-            if candidate in supported:
-                print("[replay] ⚠️ " + device + " 跑不了 " + str(compute)
-                      + "，改用 " + candidate, flush=True)
-                compute = candidate
-                break
-    print("[replay] 加载 " + str(spec["model"]) + "（" + device + "/" + str(compute) + "）…",
-          flush=True)
-    started = time.perf_counter()
-    model = WhisperModel(spec["model"], device=device, compute_type=compute)
-    print(f"[replay] 加载完成 {time.perf_counter() - started:.1f}s", flush=True)
-    cache[key] = model
-    return model
+class ReplayRunner:
+    """按策略表里的 `engine` **真跑**那一路（whisper / parakeet / tencent / funasr）。
+
+    <p>为什么必须复用产线那套：这些引擎各有自己的加载方式与参数语义
+    （whisper 是 CTranslate2、parakeet 是 sherpa-onnx/NeMo、云端是 HTTP），
+    在工具里重写一份"另一条实现"，量到的就是**两条链之间的差**，不是配置的差。
+
+    <p>踩过的坑（2026-11-13 实机）：工具原来写死 `WhisperModel(profile["model"])`，
+    而那台机器 en-US 的策略是 parakeet、模型是 `/opt/leion/models/xxx.nemo` —— 于是
+    faster-whisper 把它当 HuggingFace 仓库名，报 `Repo id must be in the form ...`。
+    那个报错和真实原因（引擎不对）毫无关系。
+
+    <p>还有一件必须一起做的事：**前置降噪**。产线在引擎分发之前会跑
+    `preprocess_segment()`（高通 + VAD 判定，5.197），它对所有引擎生效。
+    工具如果跳过它，测的就不是产线那条链。
+    """
+
+    def __init__(self, args, np):
+        self.args = args
+        self.np = np
+        _, WhisperModel, _ = whisper_stream.load_dependencies(need_audio=False)
+        self.whisper_class = WhisperModel
+        # 用产线自己的 parse_args 造一份 CLI 缺省：WhisperEngine 会读 args 里的
+        # 若干解码参数（min_logprob / no_speech_prob / no_prompt…），自己拼一份容易漏。
+        self.cli = whisper_stream.parse_args([
+            "--queue-dir", "var/test/replay-cer", "--device", str(args.device)])
+        self.engines = whisper_stream.build_engines(WhisperModel, self.cli)
+        self.pool = whisper_stream.ModelPool(
+            self.engines, max_models=2, device=str(args.device),
+            log=lambda text="": print("[replay] " + str(text), file=sys.stderr))
+        self.ready = set()
+
+    def engine_of(self, profile):
+        """这一路要用的引擎对象（顺便在第一次遇到时把模型加载好）。"""
+        name = str((profile or {}).get("engine") or "whisper").strip().lower() or "whisper"
+        engine = whisper_stream.resolve_engine(profile, self.engines)
+        if name not in self.ready:
+            key = whisper_stream.ModelPool.key_of(profile)
+            if key not in self.pool.models:
+                print("[replay] 加载 " + name + "：" + str((profile or {}).get("model"))
+                      + "（" + str((profile or {}).get("compute_type") or "按引擎缺省") + "）…",
+                      flush=True)
+            self.pool.get(profile, device=self.args.device)
+            self.ready.add(name)
+        return engine
+
+    def run(self, audio, profile, lang):
+        """跑一段：前置降噪 → 引擎分发 → 识别。返回 (文字, 丢弃原因, 耗时 ms)。"""
+        rate = 16000
+        processed, dropped = whisper_stream.preprocess_segment(audio, rate, profile, self.np)
+        if dropped is not None:
+            return "", dropped, 0
+        engine = self.engine_of(profile)
+        handle = self.pool.get(profile, device=self.args.device)
+        started = time.perf_counter()
+        outcome = engine.transcribe(handle, processed, lang, profile)
+        elapsed = int(round((time.perf_counter() - started) * 1000))
+        text = "" if outcome.get("empty") else str(outcome.get("text") or "")
+        return text, None, elapsed
 
 
-def transcribe_clip(model, audio, spec, lang, silence_floor):
-    """用**产线那个 transcribe()** 识别一段（四道闸都在里面）。返回 (text, ms)。"""
-    started = time.perf_counter()
-    text, empty, _reason, _override, _kind, _lang = whisper_stream.transcribe(
-        model, audio, lang, -1.0, 0.6,
-        beam_size=int(spec["beam_size"]),
-        hint_text=spec.get("initial_prompt"),
-        context_text=None,
-        do_normalize=True,
-        silence_floor=silence_floor,
-        highpass_hz=float(spec["highpass_hz"]),
-        vad=bool(spec["vad"]),
-        vad_max_ms=int(spec["vad_max_ms"]),
-        vad_threshold=float(spec["vad_threshold"]),
-    )
-    elapsed = int(round((time.perf_counter() - started) * 1000))
-    return ("" if empty else str(text or "")), elapsed
+def score_variant(runner, refs, workdir, profile, lang, unit):
+    """一个变体跑完全部段，返回逐段结果 + 汇总。
 
-
-def score_variant(model, refs, workdir, spec, lang, unit, silence_floor):
-    """一个变体跑完全部段，返回逐段结果 + 汇总。"""
+    <p>走的是 {@link ReplayRunner}：前置降噪 → 引擎分发 → 识别，与产线同一条链。
+    """
     rows = []
     for row in refs:
         audio = read_pcm(workdir / "segments" / row["file"])
         if int(row.get("dur_ms") or 0) <= 0 and audio.size == 0:
             continue
-        text, ms = transcribe_clip(model, audio, spec, lang, silence_floor)
+        text, dropped, ms = runner.run(audio, profile, lang)
         scores = asr_score.track_scores(row["truth"], text, unit=unit,
                                         drop_interjections=True, collapse_repeats=True)
         rows.append({
@@ -745,6 +769,7 @@ def score_variant(model, refs, workdir, spec, lang, unit, silence_floor):
             "reference": row["truth"],
             "hypothesis": text,
             "ms": ms,
+            "dropped": dropped,
             "scores": scores,
         })
     aggregate = asr_score.aggregate_tracks([one["scores"] for one in rows]) if rows else {}
@@ -845,15 +870,15 @@ def format_report(args, variants, results, refs, unit, terms):
     return "\n".join(lines) + "\n"
 
 
-def run_variant(model, rows, workdir, spec, lang, silence_floor):
+def run_variant(runner, rows, workdir, profile, lang):
     """跑一个配置，返回逐段识别结果（**不打分** —— 这条路的判据是人眼）。"""
     out = []
     for row in rows:
         audio = read_pcm(workdir / "segments" / str(row["file"]))
         if audio.size == 0:
             continue
-        text, ms = transcribe_clip(model, audio, spec, lang, silence_floor)
-        out.append({"seg": int(row["seg"]), "text": text, "ms": ms})
+        text, dropped, ms = runner.run(audio, profile, lang)
+        out.append({"seg": int(row["seg"]), "text": text, "ms": ms, "dropped": dropped})
     return out
 
 
@@ -929,8 +954,8 @@ def format_diff_report(args, rows, results, baseline_name, baseline_rows, terms,
     lines.append("")
 
     by_seg_base = {one["seg"]: one for one in baseline_rows}
-    lines.append("| 配置 | 有差异的段 | 变短 / 变长 | 整句变空 | 幻听命中 | 平均耗时 | p95 |")
-    lines.append("|---|---|---|---|---|---|---|")
+    lines.append("| 配置 | 有差异的段 | 变短 / 变长 | 整句变空 | 幻听命中 | 前置 VAD 丢弃 | 平均耗时 | p95 |")
+    lines.append("|---|---|---|---|---|---|---|---|")
     detail = {}
     for name, rows_of in results.items():
         changed = []
@@ -959,9 +984,13 @@ def format_diff_report(args, rows, results, baseline_name, baseline_rows, terms,
         mean_ms = (sum(times) / len(times)) if times else 0
         p95 = asr_score.percentile(times, 0.95) if times else 0
         detail[name] = changed
+        # 5.198：前置 VAD 判成"没有人声"而被丢掉、**根本没送去识别**的段数。
+        # 这一列必须单独给出来 —— 它是"漏了一句"与"这一段本来没说话"的分界线。
+        vad_dropped = sum(1 for one in rows_of if one.get("dropped") is not None)
         lines.append("| `" + name + "` | " + str(len(changed)) + " / " + str(len(rows_of))
                      + " | " + str(shorter) + " / " + str(longer) + " | " + str(emptied)
                      + " | " + ("+" + str(halluc) if halluc >= 0 else str(halluc))
+                     + " | " + (str(vad_dropped) if vad_dropped > 0 else "—")
                      + " | {:.0f} ms | {:.0f} ms |".format(mean_ms, p95))
     lines.append("")
 
@@ -1043,12 +1072,11 @@ def command_compare(args):
         names = list(dict.fromkeys(names + [baseline_name]))
 
     specs = dict(variant_specs(names, profile, terms))
-    cache = {}
+    runner = ReplayRunner(args, np)
     results = {}
     for name, spec in specs.items():
-        model = load_model(spec, args, cache)
         started = time.perf_counter()
-        results[name] = run_variant(model, rows, workdir, spec, args.lang, silence_floor)
+        results[name] = run_variant(runner, rows, workdir, variant_profile(profile, spec), args.lang)
         print("[replay] ▶ " + name + "：" + str(len(results[name])) + " 段，"
               + "{:.0f}s".format(time.perf_counter() - started), flush=True)
         if baseline_name != "prod" and name == baseline_name:
@@ -1095,7 +1123,7 @@ def command_score(args):
 
     print(f"[replay] 计分单位 {unit}；{len(refs)} 段；变体 "
           f"{'、'.join(name for name, _spec in specs)}")
-    cache = {}
+    runner = ReplayRunner(args, np)
     results = {}
     base_spec = dict(specs[0][1]) if specs else {}
     for name, spec in specs:
@@ -1105,15 +1133,17 @@ def command_score(args):
             print("[replay] ⚠️ " + name + " 与 base 的配置**完全相同**（表里本来就是这个值）"
                   "→ 它只能证明『没测到差别』，不能证明『没影响』；"
                   "顺带还能验一件事：两边输出应当逐字一致，不一致说明解码有随机性", flush=True)
-        model = load_model(spec, args, cache)
-        said = ("[replay] ▶ " + name + "：模型的 " + str(spec["model"]) + "/"
-                 + str(spec["compute_type"]) + "，beam " + str(spec["beam_size"])
-                 + "，高通 " + format(float(spec["highpass_hz"]), "g")
-                 + "，VAD " + ("开" if spec["vad"] else "关")
+        one = variant_profile(profile, spec)
+        said = ("[replay] ▶ " + name + "：引擎 " + str(one.get("engine") or "whisper")
+                 + " / 模型 " + str(one.get("model")) + " / " + str(one.get("compute_type"))
+                 + "，beam " + str(one.get("beam_size"))
+                 + "，高通 " + format(float(one.get("highpass_hz") or 0.0), "g")
+                 + "，VAD " + ("开" if one.get("vad") else "关")
                  + ("，带术语提示词" if spec.get("initial_prompt") else ""))
         print(said, flush=True)
         started = time.perf_counter()
-        results[name] = score_variant(model, refs, workdir, spec, args.lang, unit, silence_floor)
+        results[name] = score_variant(runner, refs, workdir, variant_profile(profile, spec),
+                                       args.lang, unit)
         normal = results[name]["aggregate"].get("normalized", {})
         print(f"[replay]   规范化错误率 {normal.get('rate', float('nan')) * 100:.2f}%"
               f"（{time.perf_counter() - started:.0f}s）", flush=True)
