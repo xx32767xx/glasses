@@ -21,6 +21,7 @@ import {
   chooseActiveRoom, describeSwitchReason, readRoomActivity,
   ttsStep,
   pickRoomsWithDenied, pipelineStatePath, writePipelineState, clearPipelineState,
+  apiStep,
 } from '../scripts/start-multi.mjs'
 import { createInterpreterSession, createRoom, joinRoom } from '../lib/rooms.mjs'
 import { roomAudioPath, roomTrackDir } from '../relay/lan-relay.mjs'
@@ -137,13 +138,25 @@ export async function runStartMultiSuite({ it, check, assert }) {
 
   // 这一条是被 harness-side 的缺省值坑过的：它的 proofread 缺省是**开**的，
   // 而 start-all 的 --proofread 缺省是关。如果这里不显式传，就会变成
-  // "我明明没开校对，它却在每句之后多调一次模型"（多场并行时是成倍的浪费）。
-  await it('校对开关**显式**传给大脑（harness-side 自己是缺省开着的）', async () => {
+  // 5.190：用户拍板"校对默认开，生产与测试都一样"。而 harness-side 自己的缺省**也是开**，
+  // 所以这里必须**显式**传 —— 否则"缺省"和"显式"两个来源会打架，
+  // 而且 `--no-proofread` 必须真的能把大脑关掉（那是唯一的关法）。
+  await it('校对缺省开着、显式传给大脑，--no-proofread 能关掉', async () => {
     const off = pipelineSteps(parseArgs([]), { id: ROOM_A }).find(step => step.role === 'brain')
-    check('缺省带 --no-proofread', argsOf(off).includes('--no-proofread'), argsOf(off))
-    check('缺省不带 --proofread', argsOf(off).includes('--proofread') === false, argsOf(off))
+    check('缺省带 --proofread（用户要求默认开）', argsOf(off).includes('--proofread'), argsOf(off))
+    check('缺省不带 --no-proofread', argsOf(off).includes('--no-proofread') === false, argsOf(off))
+    const closed = pipelineSteps(parseArgs(['--no-proofread']), { id: ROOM_A })
+      .find(step => step.role === 'brain')
+    check('--no-proofread 真的能关掉（每句少一次模型调用）',
+      argsOf(closed).includes('--no-proofread') && argsOf(closed).includes('--proofread') === false,
+      argsOf(closed))
     const on = pipelineSteps(parseArgs(['--proofread']), { id: ROOM_A }).find(step => step.role === 'brain')
-    check('开了才带 --proofread', argsOf(on).includes('--proofread'), argsOf(on))
+    check('显式给 --proofread 也是开（幂等）', argsOf(on).includes('--proofread'), argsOf(on))
+    // 「大脑·API」那条也要跟着（外部调用方的翻译链路用的是同一个大脑实现）
+    check('大脑·API 那一步同样跟着开/关',
+      apiStep(parseArgs([])).args.includes('--proofread')
+      && apiStep(parseArgs(['--no-proofread'])).args.includes('--no-proofread'),
+      apiStep(parseArgs([])).args.join(' '))
     const offline = pipelineSteps(parseArgs(['--offline', '--terms-rescue']), { id: ROOM_A })
       .find(step => step.role === 'brain')
     check('--offline / --terms-rescue 也真的传下去',

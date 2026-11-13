@@ -105,7 +105,8 @@ const HELP = `start-multi —— 一条命令起「多场会并行」
   --poll-ms <n>          房间轮询间隔（缺省 3000）
   --grace-ms <n>         房间没人了之后等多久才收管线（缺省 60000）
   --offline              大脑用离线例句表（不联网，只认得剧本那 14 句）
-  --proofread            打开大模型校对（缺省关；多场并行时每句多一次模型调用，自己权衡）
+  --proofread            打开大模型校对（**缺省已开**；空闲时跑，不占关键路径）
+  --no-proofread         关掉大模型校对（每句少一次模型调用；听错就别关它）
   --terms-rescue         打开热词临时修正（实验，缺省关，见 docs/15 §18）
   --translate-deadline-ms <n>
                          每份译文最长等多久（缺省 20000；0 = 不设截止）。
@@ -223,7 +224,7 @@ export function parseArgs(argv = []) {
     logLevel: 'summary',
     includeEmpty: false,
     offline: false,
-    proofread: false,
+    proofread: true,
     termsRescue: false,
     transcriber: true,
     /**
@@ -283,6 +284,7 @@ export function parseArgs(argv = []) {
     if (key === 'cpu') { options.device = 'cpu'; options.computeType = 'int8'; options.computeExplicit = true; continue }
     if (key === 'offline') { options.offline = true; continue }
     if (key === 'proofread') { options.proofread = true; continue }
+    if (key === 'no-proofread') { options.proofread = false; continue }
     if (key === 'terms-rescue') { options.termsRescue = true; continue }
     if (key === 'no-transcriber') { options.transcriber = false; continue }
     if (key === 'no-api-translate') { options.apiTranslate = false; continue }
@@ -1258,7 +1260,9 @@ export async function main(argv = process.argv.slice(2)) {
   console.log(`  收件箱     ${options.dataDir.replace(/\\/g, '/')}/asr-inbox-<房间id>.jsonl`)
   console.log(`  分流音频   ${options.dataDir.replace(/\\/g, '/')}/audio/<房间id>/<说话人>.pcm  ← 分轨（5.175 起只有这一份）`)
   console.log(`  翻译后端   ${options.offline ? '离线例句表（只认得剧本 14 句）' : '真实模型（deepseek-official）'}`)
-  console.log(`  校对       ${options.proofread ? '开启（每句多一次模型调用）' : '关闭（加 --proofread 打开）'}`)
+  console.log(`  校对       ${options.proofread
+    ? '开启（空闲时回头改；每句可能多一次模型调用）'
+    : '关闭（--no-proofread；识别错了就把它打开）'}`)
   console.log(`  外部接口   ${options.apiTranslate === false
     ? 'POST /translate 已关（--no-api-translate）：调用会回 503'
     : `POST /translate（一句文字 → 译文；请求头 X-Leion-Secret 与手机同一个密钥）`

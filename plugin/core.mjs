@@ -182,9 +182,13 @@ export const CONFIG_DEFAULTS = {
    *   （docs/07 §5.3 有实测：初译把 Qualcomm 泛化成 "alta capacidade"，校对补回来）。
    *   代价要说清：**每句可能多一次模型调用**。所以：
    *     · 它是"空闲才跑"，不占关键路径；
-   *     · 手机上有一个开关（设置 → 校对），关掉后这台设备就不再排校对；
-   *     · 手机开关通过 `var/live/settings.json` 生效（见 refreshRuntimeSettings）——
-   *       一份数据两处可改时，**以手机为准**（用户当场能摸到的那个更可信）。
+   *     · ⚠️ 原设计是"手机上有一个开关（设置 → 校对）"，但**那个开关并没有接进界面**：
+   *       字符串（`settings_proofread_*`）与 `LanClient.settingsPutProofread()` 都在，
+   *       却没有任何一处渲染或调用它（2026-11-13 全仓核过）。所以实际上只有
+   *       `settings.json` 里**手写**的 `{"proofread": true/false}` 才生效；
+   *     · 那份 `settings.json` 一旦写了值就**覆盖**配置（两个方向都覆盖），
+   *       见 `refreshRuntimeSettings()` 与 `proofreadWanted()`。
+   * 5.190：`start-multi` 的缺省已改成**开**（生产与测试一致）；要关用 `--no-proofread`。
    */
   proofread: 'idle',
   /** 校对结果超过这个年龄（毫秒）就丢弃 —— 屏幕早换页了，改了也没人看。 */
