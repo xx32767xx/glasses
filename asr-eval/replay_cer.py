@@ -411,7 +411,17 @@ def take_sampled(items, sample, limit):
 
 def command_sheet(args):
     track = pick_track(args)
-    workdir = Path(args.workdir) if args.workdir else (DEFAULT_WORKROOT / track.stem)
+    # ⚠️ 5.200：给了 --out 就把段放在**表的旁边**。
+    # 2026-11-13 实机踩到：--out 指到 /var/lib/leion/test/replay/170359.tsv，
+    # 而段默认落到了仓库里的 var/asr-eval/replay/<文件名>/segments/ —— 于是随后
+    # compare 按"表旁边的 segments/"去找，报 FileNotFoundError: seg-0001.pcm。
+    # 表和段本来就是一个整体（表里写的就是段文件名），不该分居两地。
+    if args.workdir:
+        workdir = Path(args.workdir)
+    elif args.out:
+        workdir = Path(args.out).parent
+    else:
+        workdir = DEFAULT_WORKROOT / track.stem
     segments_dir = workdir / "segments"
     segments_dir.mkdir(parents=True, exist_ok=True)
     for stale in segments_dir.glob("*.pcm"):
@@ -493,13 +503,44 @@ def command_sheet(args):
         rows.append(row)
     out = Path(args.out) if args.out else (workdir / "sheet.tsv")
     write_sheet(out, rows)
+    # 记下段目录的绝对路径：表被挪到别处、或者段被整目录搬走时，工具还能找回来
+    try:
+        Path(str(out) + ".segments").write_text(str(segments_dir.resolve()) + "\n", encoding="utf-8")
+    except OSError:
+        pass
     print(f"[replay] 对照表已写出：{out}")
     print(f"[replay] 每段音频在：{segments_dir}")
+    print("[replay]   ⚠️ 段目录和对照表必须在一起（compare 默认按「表旁边的 segments/」找）；"
+          "要挪就整目录一起挪，或挪完传 --workdir")
     suspicious = sum(1 for row in rows if str(row.get("suspect") or "") != "")
     print(f"[replay] 其中可疑段 {suspicious} 段（碎片 / 电平低 / 产线无此句 / 像幻听）")
     print("[replay] 下一步：跑 review 子命令生成**审听页**（本地浏览器里点着听、点着确认），"
           "或者在 tsv 里手工填 truth 列")
     return 0
+
+
+def resolve_workdir(sheet_path, given=None):
+    """段目录在哪：给的 > 表旁边的 segments/ > sidecar 里记的绝对路径。
+
+    <p>为什么要三层：段和表是**两份东西**，人是会挪的（尤其"表放到数据目录、段留在仓库"）。
+    找不到就报一句"缺什么、去哪找"，而不是一个孤零零的 FileNotFoundError。
+    """
+    candidates = []
+    if given is not None:
+        candidates.append(Path(given))
+    candidates.append(Path(sheet_path).parent)
+    sidecar = Path(str(sheet_path) + ".segments")
+    if sidecar.exists():
+        try:
+            recorded = sidecar.read_text(encoding="utf-8").strip()
+            if recorded != "":
+                candidates.append(Path(recorded).parent)
+        except OSError:
+            pass
+    for one in candidates:
+        if (one / "segments").is_dir():
+            return one
+    return candidates[0]
 
 
 def _cell(value):
@@ -1042,6 +1083,7 @@ def command_compare(args):
     sheet_path = Path(args.sheet) if args.sheet else (workdir / "sheet.tsv")
     if not sheet_path.exists():
         sys.exit("没有对照表：" + str(sheet_path) + "（先跑 sheet 子命令）")
+    workdir = resolve_workdir(sheet_path, workdir)
     # 报告里要写出**真正用的**那份表（调用方没给 --sheet 时是推导出来的）
     args.sheet = str(sheet_path)
     rows = read_sheet(sheet_path)
@@ -1103,7 +1145,7 @@ def command_score(args):
     refs = [row for row in read_sheet(args.refs) if str(row.get("truth") or "").strip() != ""]
     if not refs:
         sys.exit("对照表里没有一行填了 truth —— 至少填几段再跑（留空的段会被跳过）")
-    workdir = Path(args.workdir) if args.workdir else Path(args.refs).parent
+    workdir = resolve_workdir(Path(args.refs), Path(args.workdir) if args.workdir else None)
     missing = [row["file"] for row in refs if not (workdir / "segments" / row["file"]).exists()]
     if missing:
         sys.exit(f"缺音频文件：{missing[:3]}（先用 sheet 子命令切段，并给同一个 --workdir）")

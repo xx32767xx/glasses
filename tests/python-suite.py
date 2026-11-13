@@ -4629,6 +4629,36 @@ def main():
                                      _default_variants.split(",")) == "parakeet",
               _default_variants)
 
+    # ⑥f 段目录定位（2026-11-13 实机：sheet 用 --out 指到数据目录，段却落在仓库里，
+    # 于是 compare 报 FileNotFoundError: seg-0001.pcm）
+    _wd_root = _sheet_dir / "wd"
+    _wd_segments = _wd_root / "segments"
+    _wd_segments.mkdir(parents=True, exist_ok=True)
+    _wd_sheet = _wd_root / "sheet.tsv"
+    _replay.write_sheet(_wd_sheet, [{"seg": 1, "file": "seg-0001.pcm", "dur_ms": 1000}])
+    check("resolve_workdir：表旁边有 segments/ 就用它",
+          _replay.resolve_workdir(_wd_sheet) == _wd_root, str(_replay.resolve_workdir(_wd_sheet)))
+    # 显式给的优先
+    check("resolve_workdir：显式给的 --workdir 优先",
+          _replay.resolve_workdir(_wd_sheet, _wd_root) == _wd_root)
+
+    # 段被搬到别处、表留在原地：靠 sidecar 找回来
+    _moved = _sheet_dir / "wd-moved"
+    _moved_segments = _moved / "segments"
+    _moved_segments.mkdir(parents=True, exist_ok=True)
+    (_sheet_dir / "orphan").mkdir(parents=True, exist_ok=True)
+    _orphan_sheet = _sheet_dir / "orphan" / "sheet.tsv"
+    _replay.write_sheet(_orphan_sheet, [{"seg": 1, "file": "seg-0001.pcm", "dur_ms": 1000}])
+    Path(str(_orphan_sheet) + ".segments").write_text(str(_moved_segments.resolve()) + "\n",
+                                                      encoding="utf-8")
+    check("resolve_workdir：表旁边的 segments/ 不在时，跟着 sidecar 找到搬走的段",
+          _replay.resolve_workdir(_orphan_sheet) == _moved, str(_replay.resolve_workdir(_orphan_sheet)))
+    _orphan_sheet2 = _sheet_dir / "orphan2" / "sheet.tsv"
+    _orphan_sheet2.parent.mkdir(parents=True, exist_ok=True)
+    _replay.write_sheet(_orphan_sheet2, [{"seg": 1, "file": "seg-0001.pcm", "dur_ms": 1000}])
+    check("resolve_workdir：什么都没有时退回表旁边（不抛异常，后面报错才说清缺什么）",
+          _replay.resolve_workdir(_orphan_sheet2) == _orphan_sheet2.parent)
+
     # ⑦ 抽样：想先拿 20 段试一组配置时，要均匀取而不是只取开头
     _items = list(range(100))
     check("--sample 均匀分布（不是只取前 N 个）",
