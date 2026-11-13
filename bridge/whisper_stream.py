@@ -525,42 +525,42 @@ def _write_segment(queue_dir, tag, samplerate, audio, np, language=None, speaker
     return base
 
 
-# 5.167：**全局切句旋钮**（管理台可写 `<data-dir>/segmentation.json`）。
-# 为什么要它：同传延迟 ≈「一句攒多久」+ 识别 + 翻译，而「攒多久」全由这几个数决定。
-# 现场调它原来要改命令行重启整条管线 —— 现在管理员在管理台改完，下一段录音就生效。
+# 5.192：**全局切句旋钮已删除**（原来读 `<data-dir>/segmentation.json`）。
 #
-# 优先级：内置缺省 < 识别策略表里的 segmentation < **这份全局文件** < 命令行。
-# 即"现场应急"压过"按语种的长期设定"，而命令行仍然最强（排障时用）。
-_GLOBAL_SEG_CACHE = {"path": None, "mtime": None, "values": {}}
+# 为什么删：同一组参数有了两个来源，而全局文件**压过**识别策略表里按语种的设定 ——
+# 管理台上于是永远挂着「⚠️ 全局旋钮正压着：silence_ms、min_speech_ms…」，
+# 意思等于"你按语种调的值其实没生效"。而策略表本来就热读（改完下一段生效），
+# "现场应急调一下"在表里同样做得到，不需要第二个文件。
+#
+# 现在只有一条链：内置缺省 → default → strategies[名字] → languages[语种] → 命令行（最强）。
 
 
-def load_global_segmentation(data_dir):
-    """读 `<data-dir>/segmentation.json`，按 mtime 缓存。
+def legacy_segmentation_file(data_dir):
+    """数据目录里是否还躺着一份废弃的 `segmentation.json`（返回路径，没有就空串）。
 
-    <p>读不到 / 读坏了都退化成"没有全局覆盖"（并打一行），绝不因此拖停切句。
+    <p>**不删它**：里面可能有管理员手调过的值，悄悄删掉等于悄悄丢配置。
+    只是提示一次，并把人指到对的地方（识别策略表）。
     """
     if not data_dir:
-        return {}
+        return ""
     path = os.path.join(str(data_dir), "segmentation.json")
-    try:
-        mtime = os.stat(path).st_mtime
-    except OSError:
-        return {}
-    if _GLOBAL_SEG_CACHE["path"] == path and _GLOBAL_SEG_CACHE["mtime"] == mtime:
-        return _GLOBAL_SEG_CACHE["values"]
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            raw = json.load(handle)
-    except Exception as error:                       # noqa: BLE001
-        print(f"[切句] ⚠️ 读不了全局切句设置（{path}）：{type(error).__name__}: {error}"
-              " —— 这一轮沿用原参数", flush=True)
-        return {}
-    values = {key: int(value) for key, value in _numbers_or_skip(raw, SEGMENTATION_FIELDS).items()}
-    if values:
-        print("[切句] 全局设置生效：" + "、".join(f"{k}={v}" for k, v in values.items())
-              + "（来自 " + path + "）", flush=True)
-    _GLOBAL_SEG_CACHE.update({"path": path, "mtime": mtime, "values": values})
-    return values
+    return path if os.path.exists(path) else ""
+
+
+def warn_legacy_segmentation(flag, data_dir):
+    """废弃文件只提示一次（每进程一次，别每段刷一行）。"""
+    if flag.get("done") is True:
+        return
+    path = legacy_segmentation_file(data_dir)
+    if path == "":
+        return
+    flag["done"] = True
+    print(f"[切句] ⚠️ {path} 已废弃，**不再被读取**（5.192 起全局旋钮删除）。"
+          "要保留其中的值，请写进识别策略表的 segmentation（管理台「识别模型」里按语种填），"
+          "这份文件可以删掉了", file=sys.stderr, flush=True)
+
+
+_LEGACY_SEG_WARNED = {"done": False}
 
 
 def _new_segmenter(args, np, segmentation=None, rms_threshold=None, rms_floor=None,
@@ -580,9 +580,8 @@ def _new_segmenter(args, np, segmentation=None, rms_threshold=None, rms_floor=No
     """
     seg = dict(SEGMENTATION_DEFAULTS)
     seg.update(_numbers_or_skip(segmentation, SEGMENTATION_FIELDS))
-    # 5.167：**全局旋钮最后覆盖**（管理台现场调的值优先于按语种的策略表）——
-    # 数据目录存在时才读；没有这个文件就是"没覆盖"，行为与以前逐字一致。
-    seg.update(load_global_segmentation(getattr(args, 'data_dir', None)))
+    # 5.192：全局旋钮（`<data-dir>/segmentation.json`）已删除，这里不再叠加任何文件。
+    # 命令行那几项仍然最强 —— 它们走的是 _new_segmenter 的参数（rms_* / 各 ms），不是这里。
     threshold = args.rms_threshold
     if isinstance(rms_threshold, (int, float)) and rms_threshold > 0:
         threshold = float(rms_threshold)
@@ -654,6 +653,8 @@ def run_segment_producer_dir(args, np):
                  if args.adaptive else f"固定 {args.rms_threshold}")
     print(f"[切句] {args.tag or '?'} 多久没新音频就交半句：{args.idle_flush_ms}ms"
           f"；能量门槛：{gate_mode}", file=sys.stderr, flush=True)
+    # 5.192：数据目录里那份废弃的 segmentation.json 只提示一次（它已经不再被读取）
+    warn_legacy_segmentation(_LEGACY_SEG_WARNED, getattr(args, "data_dir", None))
 
     idle = IdleTracker(args.idle_flush_ms, args.follow_poll_ms)
     idle_stop_ms = (None if args.stop_after_idle is None
@@ -2741,6 +2742,8 @@ def run_queue_consumer(args, np, pool):
     print(f"[识别] 队列模式：{args.queue_dir}（按段自带的语种选模型；"
           f"模型池上限 {pool.max_models} 份；按到达顺序取，不丢数据）",
           file=sys.stderr, flush=True)
+    # 5.192：数据目录里那份废弃的 segmentation.json 只提示一次（它已经不再被读取）
+    warn_legacy_segmentation(_LEGACY_SEG_WARNED, getattr(args, "data_dir", None))
     if args.model_map:
         print(f"[识别] 模型表 {args.model_map}（改了会自动重新读，不用重启）",
               file=sys.stderr, flush=True)
@@ -2929,9 +2932,12 @@ def run_queue_consumer(args, np, pool):
                 seg_id = str(meta.get("segId") or "")
                 # 5.177："等静音"那一段也要带上 —— 摘要把 ⇒ 定义成
                 # **说完到手机**（静音判定 + 排队 + 识别 + 翻译 + 推送），少了它就少算一截。
+                # 5.192：这个段的"等静音"取**它自己那份策略**里的值
+                # （以前从全局文件拿，那份文件已删除；从策略里拿也更准确：
+                #  同一场会里不同语种可以用不同的 silence_ms）
                 try:
-                    global_seg_now = load_global_segmentation(getattr(args, "data_dir", None))
-                    silence_ms_now = int(global_seg_now.get("silence_ms", args.silence_ms))
+                    profile_seg = profile.get("segmentation") or {}
+                    silence_ms_now = int(profile_seg.get("silence_ms") or args.silence_ms)
                 except Exception:                              # noqa: BLE001
                     silence_ms_now = int(getattr(args, "silence_ms", 0) or 0)
                 payload = {"room": meta.get("room"), "text": text,
@@ -2973,10 +2979,11 @@ def run_queue_consumer(args, np, pool):
                     # 切句那一段这里量不到（它是"等静音 / 等到上限"，发生在切句进程里），
                     # 所以把**配置值**写出来 —— 一眼就知道该不该去管理台调小。
                     try:
-                        # 切句参数取"命令行 + 全局旋钮"的合成值（策略表里的按语种覆盖是少数情况，不在这里猜）
-                        global_seg = load_global_segmentation(getattr(args, "data_dir", None))
-                        silence_ms = global_seg.get("silence_ms", args.silence_ms)
-                        max_ms = global_seg.get("max_speech_ms", args.max_speech_ms)
+                        # 5.192：切句参数取**这一段自己那份策略**里的值（全局旋钮已删除；
+                        # 而且同一场会里不同语种可以用不同的 silence/max，猜命令行反而错）
+                        profile_seg = profile.get("segmentation") or {}
+                        silence_ms = profile_seg.get("silence_ms", args.silence_ms)
+                        max_ms = profile_seg.get("max_speech_ms", args.max_speech_ms)
                         print(f"[延迟] 房间 {meta.get('room')}：音频 {seg_ms / 1000.0:.1f}s"
                               f"｜排队 {queue_ms / 1000.0:.2f}s｜识别 {elapsed:.2f}s"
                               f"｜切句 silence={silence_ms}ms/max={max_ms}ms",

@@ -2214,6 +2214,8 @@ export async function runAndroidOrderSuite({ it, check }) {
       '切句参数越界，已拒绝保存',
       // 5.187：降噪四项同理（管理台「降噪」面板专用），报错正文是给管理员看的技术细节。
       '降噪参数不合法，已拒绝保存',
+      // 5.192：全局切句旋钮删除后只剩一句 410 + 指路 —— 只可能出现在管理台网页上。
+      '全局切句旋钮已删除', '去「识别模型」里按语种改',
     ]
     const ignore = (raw) => IGNORE.some((i) => raw.startsWith(i))
     const matched = (raw) => exact.includes(raw) || pre.some((p) => raw.startsWith(p))

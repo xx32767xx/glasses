@@ -29,7 +29,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { loadStrategyTable, saveStrategyTable, validateStrategyTable } from '../lib/asr-engines.mjs'
 import {
-  SEGMENTATION_DEFAULTS, SEGMENTATION_FIELDS, SEGMENTATION_RULES, loadSegmentation, saveSegmentation,
+  SEGMENTATION_DEFAULTS, SEGMENTATION_FIELDS, SEGMENTATION_RULES, legacySegmentationFile,
   validateSegmentation,
 } from '../lib/segmentation.mjs'
 import { audioUsage, purgeAllAudio, purgeRoomAudio } from '../lib/audio-usage.mjs'
@@ -603,11 +603,14 @@ export async function handleOrg(input) {
   /**
    * 5.185：每门语言**实际生效**的切句参数（以及它们各自从哪一层来）。
    *
-   * <p>为什么要算这个：界面上要能显示"不填就是继承到 X"和"这一项正被全局旋钮压着"。
+   * <p>为什么要算这个：管理台每一行都用它当占位符（"不填就继承到这个值"），
+   * 界面因此能直接显示**现在到底是多少**。
    * 优先级（与 whisper_stream.py 的 _new_segmenter 一致）：
-   * 内置缺省 < default < strategies[名字] < languages[语种] < **全局 segmentation.json** < 命令行。
+   * 内置缺省 < default < strategies[名字] < languages[语种] < 命令行。
+   * ⚠️ 5.192：原来还有一层「全局 segmentation.json 压过一切」，已删除（见 lib/segmentation.mjs）。
    *
    * @returns {{values: object, layers: object, global: string[]}} layers 记每个字段来自哪一层
+   * （`global` 现在永远是空数组，只为老客户端不崩而保留）
    */
   /** 5.185：表里各语种切句参数的校验（与面板同一份规则）。@returns {string[]} 问题清单 */
   const collectSegmentationProblems = (table) => {
@@ -646,23 +649,10 @@ export async function handleOrg(input) {
       : 'default'
     if (strategyName !== 'default') take('strategy', table?.strategies?.[strategyName], `策略 ${strategyName}`)
     take('language', table?.languages?.[lang], `语言 ${lang}`)
-    // 全局旋钮（管理台「切句参数」面板）压过上面所有层
-    // ⚠️ 只有**文件真的存在**（source==='file'）时才算全局覆盖：
-    // loadSegmentation 在没有文件时会返回"内置缺省合并后的值"（source=defaults），
-    // 照单全收就会把每门语言自己设的值冲成缺省 —— 第一版就这么错了。
-    const loaded = loadSegmentation(root)
-    const global = []
-    const fromFile = loaded.source === 'file' && loaded.values && typeof loaded.values === 'object'
-      ? loaded.values
-      : {}
-    for (const key of SEGMENTATION_FIELDS) {
-      const value = fromFile[key]
-      if (typeof value !== 'number' || Number.isFinite(value) !== true) continue
-      values[key] = value
-      layers[key] = '全局旋钮'
-      global.push(key)
-    }
-    return { values, layers, global, strategy: strategyName }
+    // 5.192：**没有"全局旋钮"这一层了**（`<data-dir>/segmentation.json` 已删除）。
+    // 那条链现在到这里就结束：内置缺省 → default → 策略 → 语言（命令行仍最强，但它不进表）。
+    // `global: []` 保留只是为了老客户端不会因为字段缺失而崩 —— 它永远是空的。
+    return { values, layers, global: [], strategy: strategyName }
   }
 
   // ── 识别策略表（5.148）：管理员改全局表；**只影响之后新建的会议** ─────────
@@ -728,48 +718,23 @@ export async function handleOrg(input) {
     }
   }
 
-  // ── 5.167：切句（分段）参数的全局旋钮 ────────────────────────────────
-  // 为什么放管理台：同传延迟 ≈「一句攒多久」+ 识别 + 翻译，而「攒多久」全由这几个数决定。
-  // 现场要调它却得改命令行重启整条管线，代价太大 —— 所以给管理员一个不用重启的旋钮。
+  // ── 5.192：全局切句旋钮**已删除**（见 lib/segmentation.mjs 头部的说明）───────
+  // 原来的 `/org/segmentation` 会给出一份"压过所有语种"的设置，管理台于是永远挂着
+  // 「⚠️ 全局旋钮正压着：…」——等于告诉管理员"你按语种调的值没生效"。
+  // 现在只留一条链：default → strategies → languages（命令行仍最强）。
+  // 这里回 410 而不是 404：老的管理页/脚本还在调它，**要告诉人去哪改**，别让人以为接口挂了。
   if (segments[1] === 'segmentation') {
-    if (method === 'GET' && segments.length === 2) {
-      const loaded = loadSegmentation(root)
-      return {
-        status: 200,
-        json: {
-          ok: true,
-          values: loaded.values,
-          source: loaded.source,
-          defaults: { ...SEGMENTATION_DEFAULTS },
-          rules: SEGMENTATION_RULES,
-          path: loaded.path,
-          note: '改完在**下一段录音 / 下一场会**生效（切句器是按音频流创建的，不在句子中间重建）',
-        },
-      }
+    const legacy = legacySegmentationFile(root)
+    return {
+      status: 410,
+      json: {
+        ok: false,
+        error: '全局切句旋钮已删除',
+        hint: '去「识别模型」里按语种改：每门语言那一行的「切句」六个框就是生效值；'
+          + '留空 = 继承上层（default → 策略 → 语言）',
+        legacyFile: legacy === '' ? null : legacy,
+      },
     }
-    if (method === 'POST' && segments[2] === 'validate') {
-      const checked = validateSegmentation(body)
-      return { status: 200, json: { ok: checked.ok, problems: checked.problems, warnings: checked.warnings, values: checked.values } }
-    }
-    if (method === 'PUT' && segments.length === 2) {
-      if (allowed(role, 'model.write') !== true) return deny(role, 'model.write')
-      // 支持 {reset:true} 一键回到缺省（现场调坏了要有退路）
-      const payload = body !== null && body.reset === true ? { ...SEGMENTATION_DEFAULTS } : body
-      const saved = saveSegmentation(root, payload, { now })
-      if (saved.ok !== true) return bad(400, saved.error)
-      return {
-        status: 200,
-        json: {
-          ok: true,
-          values: saved.values,
-          path: saved.path,
-          backup: saved.backup,
-          warnings: saved.warnings,
-          note: '已保存；下一段录音 / 下一场会生效',
-        },
-      }
-    }
-    return bad(405, '只支持 GET /org/segmentation、POST /org/segmentation/validate、PUT /org/segmentation')
   }
 
   if (segments[1] === 'asr' && segments[2] === 'models') {

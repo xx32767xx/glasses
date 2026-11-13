@@ -350,7 +350,7 @@ export async function runAsrModelsApiSuite({ it, check }) {
       JSON.stringify(stillGood.json.table.languages['zh-CN']))
   })
 
-  await it('5.185：管理台有"每语种一行"的切句输入框，并说明全局旋钮会压过它', async () => {
+  await it('5.185/5.192：管理台有"每语种一行"的切句输入框，并显示当前生效值', async () => {
     const html = readFileSync(join(ROOT, 'scripts', 'admin-ui.html'), 'utf-8')
     check('每门语言一行切句输入框（id 带语种与字段名）',
       /'segLang_' \+ lang \+ '_' \+ key/.test(html), '缺输入框构造')
@@ -358,9 +358,10 @@ export async function runAsrModelsApiSuite({ it, check }) {
     check('留空 = 继承（占位符显示实际生效值）', /input\.placeholder = String\(effective\[key\]/.test(html))
     check('保存时写进 languages[语种].segmentation',
       /layer\.segmentation = seg/.test(html) && /delete layer\.segmentation/.test(html))
-    check('被全局旋钮压住时界面会标出来', /全局旋钮正压着/.test(html))
-    check('全局面板明写"压过所有语种"并指向按语种入口',
-      /压过所有语种/.test(html) && /识别模型/.test(html))
+    // 5.192：全局旋钮删除后，这一行改成**直接显示生效值**（用户要的就是这个）
+    check('每门语言那一行显示当前生效值', /生效：/.test(html) && /effective\[key\]/.test(html))
+    check('面板位置指向按语种入口，并说清"留空 = 继承"',
+      /已并入「识别模型」/.test(html) && /留空 = 继承/.test(html))
   })
 
   // 5.187：用户拍板"高通默认打开、VAD 做成和切句参数一样的配法、管理台手动开关"。

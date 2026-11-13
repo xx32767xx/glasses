@@ -208,24 +208,16 @@
     </section>
 
     <section class="panel" style="grid-column:1/-1" id="segPanel">
-      <h2>切句参数（分段） <span class="tag" id="segMeta">—</span></h2>
+      <h2>切句参数 <span class="tag">已并入「识别模型」</span></h2>
       <div class="body">
         <div class="mono">
-          同传延迟 ≈ <b>一句话攒多久</b> + 静音判定 + 识别 + 翻译，而「攒多久」全由这几个数决定。
-          ⚠️ 这里的值<b>压过所有语种</b>（也压过「识别模型」里每门语言各自的切句参数），
-          是现场应急旋钮；要按语种分别调，请去上面「识别模型」里每门语言那一行的「切句」输入框。
-          写的是服务器上的 <code>&lt;data-dir&gt;/segmentation.json</code>，
-          <b>在下一段录音 / 下一场会生效</b>（切句器是按音频流创建的，不在句子中间重建）。
-          ⚠️ 这里的值<b>压过</b>识别策略表里的同名项（现场应急优先），只有命令行仍然最强。
+          同传延迟 ≈ <b>一句话攒多久</b> + 静音判定 + 识别 + 翻译，而「攒多久」全由这六个参数决定。
+          <br>⚠️ <b>原来的「全局旋钮」已经删除</b>（5.192）：它压过所有语种，于是上面那行永远写着
+          「你的设置正在被覆盖」—— 等于说"你按语种调的值没生效"。
+          <br>现在只有一条链：<b>内置缺省 → default → 策略 → 每门语言</b>（命令行仍最强）。
+          请到上面「识别模型」里每门语言那一行的「切句」改；<b>留空 = 继承</b>，
+          每行末尾那行小字写的就是<b>现在实际生效的值</b>。
         </div>
-        <div id="segForm"></div>
-        <div class="row" style="margin-top:8px">
-          <button class="btn ghost" onclick="validateSeg()">校验（不保存）</button>
-          <button class="btn ok" onclick="saveSeg()">保存</button>
-          <button class="btn ghost" onclick="resetSeg()">恢复缺省</button>
-          <button class="btn ghost" onclick="loadSeg()">重新读取</button>
-        </div>
-        <div class="mono" id="segWarn" style="white-space:pre-wrap"></div>
       </div>
     </section>
 
@@ -384,7 +376,6 @@ function enterConsole() {
   loadDataset(); loadMeeting(); loadRooms(); loadLibraries(); loadPending(); loadAccounts();
   loadHistoryAdmin();
   loadModels();
-loadSeg();
 loadAudio();
 }
 
@@ -396,8 +387,10 @@ let modelTable = null;
 /** 5.185：切句参数的字段顺序（与「切句参数」面板同一份 rules，这里只要键名）。 */
 const SEG_FIELDS = ['silence_ms', 'min_speech_ms', 'max_speech_ms',
   'short_utterance_ms', 'short_silence_ms', 'cut_pause_ms'];
-/** 5.185：每门语言"现在实际生效"的切句值（服务端算好的），用于输入框占位与覆盖提示。 */
+/** 5.185：每门语言"现在实际生效"的切句值（服务端算好的），用于占位符与"生效值"那一行。 */
 let segStateByLang = {};
+/** 5.192：六个字段的规则（min/max/label/step），来自 /org/asr/models 的 segmentationRules。 */
+let segState = { rules: {} };
 /**
  * 5.187：降噪四项（高通 + VAD）——**和切句参数同一套做法**：全局 default 一行 + 每门语言一行，
  * 留空 = 继承上一层。两项代价不同，所以缺省不同：
@@ -474,7 +467,8 @@ function buildLanguageRow(lang, label, current) {
     const input = document.createElement('input');
     input.type = 'number';
     input.id = 'segLang_' + lang + '_' + key;
-    input.title = (rule.label || key) + '（留空 = 继承；范围 ' + (rule.min ?? '?') + '~' + (rule.max ?? '?') + '）';
+    input.title = (rule.label || key) + '（留空 = 继承上一层；范围 '
+      + (rule.min ?? '?') + '~' + (rule.max ?? '?') + '）现在生效 ' + (effective[key] ?? '?');
     input.style.width = '92px';
     input.placeholder = String(effective[key] ?? '');
     input.value = (current.segmentation && current.segmentation[key] !== undefined)
@@ -488,14 +482,24 @@ function buildLanguageRow(lang, label, current) {
     segBox.appendChild(tag);
     segBox.appendChild(input);
   }
-  const overrideNote = (effective.global || []).length > 0
-    ? '⚠️ 全局旋钮正压着：' + effective.global.join('、')
-    : '';
-  if (overrideNote !== '') {
-    const note = document.createElement('span');
-    note.className = 'tag';
-    note.style.color = '#c47f00';
-    note.textContent = overrideNote;
+  const overrideNote = '';
+  void overrideNote;
+  // 5.192：全局面板删除之后，这里改为**直接写出"现在实际生效的值"**——
+  // 用户的原话是"管理员界面能显示当前的参数具体是多少"。所以不再只是占位符（灰色小字），
+  // 而是行尾一行明确的文字：`生效：silence 900 · min_speech 700 · …（来源：语言 zh-CN）`。
+  const shown = SEG_FIELDS
+    .filter((key) => effective[key] !== undefined)
+    .map((key) => key.replace('_ms', '') + ' ' + effective[key])
+    .join(' · ');
+  if (shown !== '') {
+    const note = document.createElement('div');
+    note.className = 'mono';
+    note.style.fontSize = '11px';
+    note.style.opacity = '.7';
+    note.style.marginLeft = '52px';
+    const layers = Object.values(effective.layers || {});
+    const from = layers.length > 0 ? [...new Set(layers)].join(' / ') : '内置缺省';
+    note.textContent = '生效：' + shown + '（来源：' + from + '）';
     segBox.appendChild(note);
   }
   row.appendChild(segBox);
@@ -709,103 +713,17 @@ function renderModels(data) {
   document.getElementById('modelsWarn').textContent = notes.join('\n');
 }
 
-/** 5.167：切句参数（全局旋钮）。只放这 6 个字段 —— 它们直接决定字幕多晚出现。 */
-let segState = { values: {}, defaults: {}, rules: {}, source: 'defaults' };
-
-function segFieldName(key) {
-  return 'seg_' + key;
-}
-
-function renderSegForm() {
-  const host = document.getElementById('segForm');
-  if (!host) return;
-  host.innerHTML = '';
-  const rules = segState.rules || {};
-  for (const key of Object.keys(rules)) {
-    const rule = rules[key];
-    const row = document.createElement('div');
-    row.className = 'row';
-    row.style.marginTop = '6px';
-    const label = document.createElement('label');
-    label.style.minWidth = '260px';
-    label.innerHTML = '<code>' + key + '</code> · ' + rule.label;
-    const input = document.createElement('input');
-    input.type = 'number';
-    input.id = segFieldName(key);
-    input.step = String(rule.step || 50);
-    input.min = String(rule.min);
-    input.max = String(rule.max);
-    input.style.width = '120px';
-    input.value = String(segState.values[key]);
-    const note = document.createElement('span');
-    note.className = 'mono';
-    note.style.opacity = '0.75';
-    note.textContent = rule.note + '（' + rule.min + '~' + rule.max + '，缺省 ' + segState.defaults[key] + '）';
-    row.appendChild(label);
-    row.appendChild(input);
-    row.appendChild(note);
-    host.appendChild(row);
-  }
-  const meta = document.getElementById('segMeta');
-  if (meta) meta.textContent = segState.source === 'file' ? '来自服务器设置' : '内置缺省（还没改过）';
-}
-
-function segPayload() {
-  const payload = {};
-  for (const key of Object.keys(segState.rules || {})) {
-    const input = document.getElementById(segFieldName(key));
-    if (input !== null) payload[key] = Number(input.value);
-  }
-  return payload;
-}
-
-async function loadSeg() {
-  try {
-    const data = await api('/org/segmentation');
-    segState = { values: data.values || {}, defaults: data.defaults || {},
-      rules: data.rules || {}, source: data.source || 'defaults' };
-    renderSegForm();
-    document.getElementById('segWarn').textContent = data.note || '';
-  } catch (error) {
-    document.getElementById('segWarn').textContent = '读不到切句设置：' + error.message;
-  }
-}
-
-async function validateSeg() {
-  try {
-    const data = await api('/org/segmentation/validate', { method: 'POST', body: segPayload() });
-    const warn = document.getElementById('segWarn');
-    warn.textContent = data.ok === true
-      ? ('✅ 参数合法' + ((data.warnings || []).length ? '\n⚠️ ' + data.warnings.join('\n⚠️ ') : ''))
-      : ('❌ ' + (data.problems || []).join('\n❌ '));
-  } catch (error) {
-    document.getElementById('segWarn').textContent = '校验失败：' + error.message;
-  }
-}
-
-async function saveSeg() {
-  try {
-    const data = await api('/org/segmentation', { method: 'PUT', body: segPayload() });
-    const warn = document.getElementById('segWarn');
-    warn.textContent = '✅ 已保存到 ' + data.path + '（' + (data.note || '') + '）'
-      + ((data.warnings || []).length ? '\n⚠️ ' + data.warnings.join('\n⚠️ ') : '')
-      + (data.backup ? '\n上一版备份：' + data.backup : '');
-    await loadSeg();
-  } catch (error) {
-    document.getElementById('segWarn').textContent = '保存失败：' + error.message;
-  }
-}
-
-async function resetSeg() {
-  if (!confirm('恢复成内置缺省？会覆盖当前的切句参数。')) return;
-  try {
-    const data = await api('/org/segmentation', { method: 'PUT', body: { reset: true } });
-    document.getElementById('segWarn').textContent = '✅ 已恢复缺省（' + (data.note || '') + '）';
-    await loadSeg();
-  } catch (error) {
-    document.getElementById('segWarn').textContent = '恢复失败：' + error.message;
-  }
-}
+/**
+ * 5.192：**全局切句旋钮的界面已删除**（原来的「切句参数（分段）」面板）。
+ *
+ * <p>删掉的理由（用户就是看着那条警告问的）：它压过所有语种，于是每门语言那一行永远挂着
+ * 一行黄字，列出六个字段全被全局值覆盖 —— 等于告诉管理员"你按语种调的值没生效"。
+ * 同一组参数有两个来源、而且优先级相反，是最容易把人带错的那种设计。
+ *
+ * <p>现在只剩一条链：内置缺省 → default → 策略 → 每门语言（命令行仍最强）。
+ * 界面把这条链算出来的**生效值**直接写在每门语言那一行末尾（见 buildLanguageRow）。
+ * 规则（min/max/label）仍然来自 /org/asr/models 的 segmentationRules —— 一份规则，一处来源。
+ */
 
 function humanMb(bytes) {
   const value = Number(bytes) || 0;
