@@ -183,8 +183,17 @@
           <b>VAD</b> 是二次确认，会<b>剪掉不像人声的头尾</b>，短句上可能吃掉第一个音节 ——
           所以<b>缺省关</b>：先开着一门语言跑一场，看会议记录里有没有"少词"再决定。
           留空 = 继承上一层；这里是<b>逐语种</b>的，改哪一行只影响哪一门语言。
+          <br>改完点<b>下面那排「保存」</b>（它和「策略定义」后面那个保存是同一个动作：
+          把整张 <code>asr-models.json</code> 一次写入）；不点保存只在页面上好看。
         </div>
         <div id="noisePanel"></div>
+        <!-- 5.193：**就地**放一排按钮。用户报过：降噪这块"根本没有保存按钮"——
+             其实整表保存的按钮在下面「策略定义」之后，隔了两个小节，谁都找不到。 -->
+        <div class="row" style="margin-top:8px">
+          <button class="btn ok" onclick="saveModels()">保存（切句 + 降噪 + 策略，整表写入）</button>
+          <button class="btn ghost" onclick="loadModels()">放弃改动 / 重新读取</button>
+          <span class="mono" id="noiseDirty" style="opacity:.8"></span>
+        </div>
 
         <h2>策略定义（模型 + 精度） <span class="tag">换策略 = 换模型</span></h2>
         <div class="mono">
@@ -197,7 +206,7 @@
 
         <div class="row" style="margin-top:8px">
           <button class="btn ghost" onclick="validateModels()">验证（不保存）</button>
-          <button class="btn ok" onclick="saveModels()">保存（只影响新会议）</button>
+          <button class="btn ok" onclick="saveModels()">保存（整张表 · 只影响新会议）</button>
           <button class="btn ghost" onclick="seedModels()">初始化示例表</button>
           <button class="btn ghost" onclick="loadModels()">重新读取</button>
         </div>
@@ -643,6 +652,28 @@ function buildStrategyRow(name, layer, problemsFor) {
   return row;
 }
 
+/**
+ * 5.193：改过东西但还没保存时，在保存按钮旁边亮一句 —— 这是用户报的那个 bug 的另一半：
+ * 按钮在别处、改完也没个提示，人自然以为"这块没有保存"。
+ *
+ * <p>用**事件委托**挂在稳定的容器上：`#models` / `#noisePanel` 每次渲染都会重建 innerHTML，
+ * 挂在里面的输入框上会随重建一起丢掉。
+ */
+let dirtyWired = false;
+function wireDirtyHint() {
+  if (dirtyWired) return;
+  const anchor = document.getElementById('models');
+  const body = anchor ? anchor.parentElement : null;
+  if (!body) return;
+  const mark = () => {
+    const box = document.getElementById('noiseDirty');
+    if (box) box.textContent = '● 有未保存改动（点左边「保存」才会写进服务器）';
+  };
+  body.addEventListener('input', mark);
+  body.addEventListener('change', mark);
+  dirtyWired = true;
+}
+
 function renderModels(data) {
   const table = modelTable || {};
   const strategies = (table.strategies && typeof table.strategies === 'object') ? table.strategies : {};
@@ -873,6 +904,9 @@ async function loadModels() {
     noiseRules = data.noiseRules || noiseRules;
     noiseDefaults = data.noiseDefaults || noiseDefaults;
     renderModels(data);
+    const dirty = document.getElementById('noiseDirty');
+    if (dirty) dirty.textContent = '';
+    wireDirtyHint();
     loadModelHistory();
   } catch (error) {
     document.getElementById('modelsMeta').textContent = '读不到：' + String(error.message || error);

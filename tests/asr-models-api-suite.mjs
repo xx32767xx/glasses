@@ -469,6 +469,29 @@ export async function runAsrModelsApiSuite({ it, check }) {
       /Array\.isArray\(data\.problems\)/.test(html), 'problems 没带出来')
   })
 
+  await it('5.193：降噪那一块**就地**有保存按钮（用户报过"根本找不到保存"）', async () => {
+    const html = readFileSync(join(ROOT, 'scripts', 'admin-ui.html'), 'utf-8')
+    // 用户原话：界面里「降噪（逐语种）」根本没有保存按钮。
+    // 事实是整表保存的按钮在「策略定义」之后，隔了两个小节 —— 找得到才怪。
+    const noiseAt = html.indexOf('id="noisePanel"')
+    check('降噪面板还在', noiseAt > 0)
+    const after = html.slice(noiseAt, noiseAt + 1200)
+    check('降噪面板**紧跟着**就有一排按钮（不是隔两个小节）',
+      /onclick="saveModels\(\)"/.test(after), '降噪那一块附近没有保存按钮')
+    check('那个按钮写明它保存的是什么（切句 + 降噪 + 策略，整表）',
+      /切句 \+ 降噪 \+ 策略/.test(after), '按钮文案没说清保存范围')
+    check('旁边还有"放弃改动 / 重新读取"',
+      /onclick="loadModels\(\)"/.test(after))
+    check('说明里点明"改完点下面那排保存，不点只在页面上好看"',
+      /不点保存只在页面上好看/.test(html))
+    check('改过东西会在按钮旁提示"有未保存改动"',
+      /id="noiseDirty"/.test(html) && /有未保存改动/.test(html))
+    check('提示用事件委托挂（innerHTML 重建也不会掉）',
+      /body\.addEventListener\('input', mark\)/.test(html), '监听挂在会重建的节点上了')
+    check('底部那排按钮也写明"整张表"（两处是同一个动作，别让人以为范围不同）',
+      /保存（整张表 · 只影响新会议）/.test(html))
+  })
+
   await it('5.187：界面渲染出的 id 与保存时读的 id 对得上（最小 DOM 桩真跑一遍）', () => {
     // 这条不能只靠正则：`noiseDefault_x` / `noiseLang_<语种>_x` 是**渲染**与**保存**两处各写一遍的
     // 字符串，写歪了界面上一片正常、保存时却把值悄悄丢了 —— 最难查的一类。
