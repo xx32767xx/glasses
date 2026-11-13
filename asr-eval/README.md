@@ -166,6 +166,7 @@ CORAA 只有一句一条的片段（中位 3.04 秒），元数据没有时间�
 | `context_overlap.py` | **上下文引擎**：提示词续传 vs 左邻/右邻重叠，逐段配对 + 拼接分歧 | 由 `test-asr.mjs --context` 调 |
 | `pt_context_proxy.py` | 🔴 **葡语代理实验（数字不能当证据）**：把不同人的相邻片段当成一段上文，只测"提示词续传在葡语短片段上有没有用" —— 它算出过 −2.2p 的"收益"，但真实对话的上文不是这么构成的，所以**别引用它的数字** | `python asr-eval/pt_context_proxy.py --groups 10` |
 | `carry_attribution.py` | **归因**：上下文续传为什么帮忙/帮倒忙 —— 按「句内位置 × 误差方向(S/D/I)」拆，并统计"抄上文"比例（只读已存结果，不重跑模型） | `python asr-eval/carry_attribution.py --kinds` |
+| `replay_cer.py` | **真实会议录音的重放对比（5.188）**：拿一场**已经在服务器上跑过的会**的分轨录音，按产线同一套切句重切，然后每个段用 N 组配置（精度 / beam / 高通 / VAD / 术语提示词）各识别一次，按人工对照文本比 CER —— 回答"哪个旋钮让错字变少" | 见下面「重放对比」那一节 |
 
 数据不在这个目录里（`var/` 整个不进版本库），对应关系是一一对应的：
 
@@ -294,6 +295,38 @@ node asr-eval/test-asr.mjs --set zh-speech-dev --errors-above 0.2
 
 > 原来的报告只有"随机看 N 条对照"—— **随机看对排查没有用**（多半是好的）。
 > 这个清单是用户提出来的，改法也按他要的来：日志里能一眼筛。
+
+### 重放对比：拿**真实会议录音**比几组识别配置（`replay_cer.py`，5.188）
+
+上面那些工具用的都是评测包（干净录音）。而现场的问题出现在**真实课堂录音**上
+（口音、术语、有人名、有"uh"）。这一节的做法是：把一场**已经跑过的会**的分轨录音
+重新切一遍，同一个段喂给 N 组配置，按人工对照文本比 CER。
+
+```powershell
+# ① 切段 + 出对照表（**不需要模型/GPU**）：每段落成单独一个 pcm，方便逐条听
+python asr-eval/replay_cer.py sheet --data-dir <data-dir> --room room-xxxx `
+  --lang en-US --meeting-log <data-dir>/logs/rooms/<邀请码>-<房间>.jsonl `
+  --out var/asr-eval/replay/170359.tsv
+
+# ② 打开 tsv，把 truth 那一列填上人工对照（**留空的段会被跳过**，不用全填）
+
+# ③ 跑多组配置并打分（需要模型；服务器上跑）
+python asr-eval/replay_cer.py score --refs var/asr-eval/replay/170359.tsv `
+  --data-dir <data-dir> --variants base,float16,beam8,hp0,vad,terms `
+  --terms-file var/asr-eval/replay/terms.txt --out var/asr-eval/replay/report.md
+```
+
+可用变体：`base`（产线当前配置）/ `float16` / `int8` / `beam8` / `hp0` / `hp100` / `vad` / `terms`。
+
+三条口径上的规矩（与这一层其它工具一致，别自己改）：
+
+1. **只统计填了 truth 的段**，报告里如实写"跳过了多少段"—— 没参考文本的段不是"识别对"；
+2. **严格 + 规范化两条口径并列报**，差值大说明错主要是写法（数字/繁简）而不是听错；
+3. 切段用的是**产线那个 `UtteranceSegmenter`**，识别用的是**产线那个 `transcribe()`**
+   （四道闸都在里面）—— 这样量出来的差才是"改配置的差"。
+
+⚠️ 它能回答"哪组识别配置更准"，**不能**回答"当时为什么慢了 300ms"：现场还有
+`--idle-flush-ms` 与实时排队，重放没有这两样。
 
 ### 切句基准的识别结果可以「只重打分」（`--dump` / `--rescore`）
 

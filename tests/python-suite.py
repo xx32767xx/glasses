@@ -4291,6 +4291,173 @@ def main():
     finally:
         whisper_stream.highpass_biquad = _real_highpass
 
+    # ── 5.188：重放对比（拿一场会的真实录音，比几组识别配置的错字率）────────────
+    #
+    # 用户 2026-11-13 纠正过一次判断：「更多的是识别错误」。那之后"哪个旋钮让错字变少"
+    # 就必须是**量出来的**。这一节钉住的是这个工具的骨架：
+    # 对照表能往返、变体映射对、跳过没填参考的段、以及"变好/变差"的方向别搞反。
+    heading("重放对比 · 用真实会议录音比多组识别配置（5.188）")
+    import importlib.util as _ilu
+
+    _replay_spec = _ilu.spec_from_file_location("replay_cer", ROOT / "asr-eval" / "replay_cer.py")
+    _replay = _ilu.module_from_spec(_replay_spec)
+    _replay_spec.loader.exec_module(_replay)
+
+    # ① 对照表往返：制表符/换行不能把表错位（识别文本偶尔带换行）
+    _sheet_dir = Path(ROOT / "var" / "test" / "replay-suite")
+    shutil.rmtree(_sheet_dir, ignore_errors=True)
+    _sheet_path = _sheet_dir / "sheet.tsv"
+    _replay.write_sheet(_sheet_path, [
+        {"seg": 1, "file": "seg-0001.pcm", "start_ms": 1000, "end_ms": 4200, "dur_ms": 3200,
+         "rms": 0.1072, "prodSeg": 3, "prod": "we use the\tcompiler", "truth": "we use the compiler"},
+        {"seg": 2, "file": "seg-0002.pcm", "start_ms": 5400, "end_ms": 20500, "dur_ms": 15100,
+         "rms": 0.26, "prodSeg": 4, "prod": "line one\nline two", "truth": ""},
+    ])
+    _back = _replay.read_sheet(_sheet_path)
+    check("对照表能写能读，列数一致",
+          len(_back) == 2 and set(_back[0]) == set(_replay.SHEET_HEADER), str(list(_back[0])))
+    check("制表符被压成空格（否则整张表会错位）",
+          "\t" not in _back[0]["prod"] and "compiler" in _back[0]["prod"], _back[0]["prod"])
+    check("换行也被压平（一行就是一条记录）", "\n" not in _back[1]["prod"], repr(_back[1]["prod"]))
+    # 手工编辑时 Windows 工具常加 BOM：带 BOM 也要能读（否则报"表头不对"，很不讲道理）
+    _bom_path = _sheet_dir / "sheet-bom.tsv"
+    _bom_path.write_text("\ufeff" + _sheet_path.read_text(encoding="utf-8"), encoding="utf-8")
+    _bom_rows = []
+    try:
+        _bom_rows = _replay.read_sheet(_bom_path)
+    except SystemExit:
+        _bom_rows = []
+    _bom_ok = len(_bom_rows) == 2 and _bom_rows[0]["seg"] == "1"
+    check("带 BOM 的对照表也能读（Excel/记事本存过之后不会莫名报错）", _bom_ok, str(len(_bom_rows)))
+    check("truth 原样保留（留空 = 这一段先不参与计分）",
+          _back[0]["truth"] == "we use the compiler" and _back[1]["truth"] == "")
+
+    # ② 变体映射：每个名字对应哪些字段的差，缺省全部继承策略表
+    _profile = {"model": "large-v3", "compute_type": "int8_float32", "beam_size": 5,
+                "highpass_hz": 100, "vad": False}
+    _specs = dict(_replay.variant_specs(
+        ["base", "float16", "beam8", "hp0", "vad", "terms"], _profile, ["interpreter", "reserved word"]))
+    check("base = 照抄产线配置", _specs["base"]["compute_type"] == "int8_float32"
+          and _specs["base"]["highpass_hz"] == 100, str(_specs["base"]))
+    check("float16 只改精度", _specs["float16"]["compute_type"] == "float16"
+          and _specs["float16"]["model"] == "large-v3")
+    check("beam8 只改解码宽度", _specs["beam8"]["beam_size"] == 8
+          and _specs["beam8"]["compute_type"] == "int8_float32")
+    check("hp0 只关高通", _specs["hp0"]["highpass_hz"] == 0
+          and _specs["hp0"]["compute_type"] == "int8_float32")
+    check("vad 只开二次确认", _specs["vad"]["vad"] is True and _specs["vad"]["highpass_hz"] == 100)
+    check("terms 把术语拼成一句提示词（不是裸词串）",
+          "interpreter" in str(_specs["terms"]["initial_prompt"])
+          and str(_specs["terms"]["initial_prompt"]).startswith("以下是"), str(_specs["terms"]["initial_prompt"]))
+    check("要了 terms 却没给词表 → 直接跳过这个变体（不假装测过）",
+          "terms" not in dict(_replay.variant_specs(["terms"], _profile, [])),
+          str(list(dict(_replay.variant_specs(["terms"], _profile, [])))))
+
+    # ③ 方向别搞反：正值 = 比 base 更差
+    _worse = {"normalized": {"rate": 0.20}}
+    _base = {"normalized": {"rate": 0.15}}
+    check("变差是正数", abs(_replay.delta_of(_worse, _base) - 5.0) < 1e-9, str(_replay.delta_of(_worse, _base)))
+    check("变好是负数", _replay.delta_of(_base, _worse) < 0, str(_replay.delta_of(_base, _worse)))
+    check("没有 base 时给 None（不编一个数出来）", _replay.delta_of(_worse, None) is None)
+
+    # ④ 真正跑一遍打分：用假模型（不加载任何权重），确认"跳过没填参考的段"和汇总口径
+    class _ReplaySeg:
+        def __init__(self, text):
+            self.text = text
+            self.no_speech_prob = 0.05
+            self.avg_logprob = -0.2
+            self.compression_ratio = 1.1
+
+    class _ReplayInfo:
+        language = "en"
+        language_probability = 0.99
+        duration = 1.0
+
+    class _ReplayModel:
+        """按"第几段"返回不同文本，模拟两组配置在同一段上的差别。"""
+
+        def __init__(self, texts):
+            self.texts = texts
+            self.calls = 0
+
+        def transcribe(self, data, **kwargs):
+            text = self.texts[min(self.calls, len(self.texts) - 1)]
+            self.calls += 1
+            return [_ReplaySeg(text)], _ReplayInfo()
+
+        def detect_language(self, data):
+            return "en", 0.99, {"en": 0.99}
+
+    _seg_dir = _sheet_dir / "segments"
+    _seg_dir.mkdir(parents=True, exist_ok=True)
+    _clips = [("seg-0001.pcm", "we use the interpreter"),
+              ("seg-0002.pcm", "it is a reserved word")]
+    for _name, _text in _clips:
+        _tone = (np.sin(2 * np.pi * 300 * np.arange(24000) / 16000.0) * 0.3).astype(np.float32)
+        _replay.write_pcm(_seg_dir / _name, _tone)
+    _refs = [
+        {"seg": "1", "file": "seg-0001.pcm", "dur_ms": "1500", "truth": "we use the interpreter"},
+        {"seg": "2", "file": "seg-0002.pcm", "dur_ms": "1500", "truth": "it is a reserved word"},
+    ]
+    _good = _replay.score_variant(_ReplayModel(["we use the interpreter", "it is a reserved word"]),
+                                  _refs, _sheet_dir, {"beam_size": 5, "highpass_hz": 0.0, "vad": False,
+                                                      "vad_max_ms": 2000, "vad_threshold": 0.5},
+                                  "en-US", "word", 0.02)
+    _bad = _replay.score_variant(_ReplayModel(["we use the creature", "it is a reserved award"]),
+                                 _refs, _sheet_dir, {"beam_size": 5, "highpass_hz": 0.0, "vad": False,
+                                                     "vad_max_ms": 2000, "vad_threshold": 0.5},
+                                 "en-US", "word", 0.02)
+    check("全对的配置错误率是 0", _good["aggregate"]["normalized"]["rate"] == 0.0,
+          str(_good["aggregate"]["normalized"]))
+    check("两个词听错的配置错误率 > 0", _bad["aggregate"]["normalized"]["rate"] > 0,
+          str(_bad["aggregate"]["normalized"]))
+    check("同一段换了词，报告里两侧都留着原文（能照着去听）",
+          _bad["rows"][0]["hypothesis"] == "we use the creature"
+          and _bad["rows"][0]["reference"] == "we use the interpreter",
+          str(_bad["rows"][0]))
+    check("每段都记了识别耗时（延迟预算要能对上）", _bad["mean_ms"] >= 0, str(_bad["mean_ms"]))
+
+    _empty = _replay.score_variant(_ReplayModel(["x"]), [], _sheet_dir, {"beam_size": 5, "highpass_hz": 0.0,
+                                                                        "vad": False, "vad_max_ms": 2000,
+                                                                        "vad_threshold": 0.5},
+                                   "en-US", "word", 0.02)
+    check("一段都没填参考时不报错（只是没有结论）", _empty["rows"] == [], str(_empty["rows"]))
+
+    # ⑤ 报告：表在、跳过多少段要说清、并且明写"不能说明什么"
+    class _Args:
+        refs = str(_sheet_path)
+
+    _report = _replay.format_report(_Args(), [], {"base": _good, "float16": _bad}, _refs, "word",
+                                    ["interpreter", "reserved word"])
+    check("报告带总表（配置 ↔ 规范化错误率）",
+          "| `base` |" in _report and "规范化错误率" in _report, _report[:200])
+    check("报告写明参与计分的段数（没参考的段不算识别对）", "参与计分的段：**2**" in _report)
+    check("报告列出逐段差异（变差的那几句原话都在）",
+          "we use the creature" in _report and "we use the interpreter" in _report)
+    check("报告明写局限（重放不是现场 / 不能当绝对准确率）",
+          "不能说明现场延迟" in _report and "不能说明绝对准确率" in _report)
+
+    # ⑥ 会议记录：只取句子、按 seg 排序（prod 列靠它带出产线原文）
+    _log_path = _sheet_dir / "meeting.jsonl"
+    _log_path.write_text(json.dumps({
+        "t": "2026-11-13T07:50:40Z", "kind": "meeting", "event": "start", "code": "170359"},
+        ensure_ascii=False) + "\n" + "\n".join(json.dumps({
+            "kind": "sentence", "seg": _n, "src": f"line {_n}", "segMs": 1000 * _n},
+            ensure_ascii=False) for _n in (3, 1, 2)) + "\n", encoding="utf-8")
+    _rows = _replay.read_meeting_sentences(str(_log_path))
+    check("会议记录只取句子（会议本身那条不算）", len(_rows) == 3, str(len(_rows)))
+    check("按 seg 排序（不依赖文件里恰好是顺序写的）", [one["seg"] for one in _rows] == [1, 2, 3],
+          str([one["seg"] for one in _rows]))
+    check("读不到记录时返回空、不抛异常", _replay.read_meeting_sentences("") == [])
+
+    # ⑦ 抽样：想先拿 20 段试一组配置时，要均匀取而不是只取开头
+    _items = list(range(100))
+    check("--sample 均匀分布（不是只取前 N 个）",
+          _replay.take_sampled(_items, 10, 0) == [0, 10, 20, 30, 40, 50, 60, 70, 80, 90],
+          str(_replay.take_sampled(_items, 10, 0)))
+    check("--limit 取最前面 N 段", _replay.take_sampled(_items, 0, 3) == [0, 1, 2])
+    shutil.rmtree(_sheet_dir, ignore_errors=True)
+
     heading("丢掉音节时必须说话（5.52 诊断：用户报「academic 被识别成 Islamic」）")
     # 这句错法的机制：词的**前半截**被切走 / 被当成静音，模型只看到 "-demic" 这种残片，
     # 于是补成另一个以 -ic 结尾的常见词。以前这类丢失**日志里一个字都没有**（只在内存里记账），
