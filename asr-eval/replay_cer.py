@@ -594,9 +594,31 @@ def build_prompt(terms):
 
 
 def read_terms(path):
+    """读术语清单（**一行一个词**，`#` 开头是注释）。
+
+    <p>⚠️ 这份文件是**使用者自己写的**，仓库里没有、也不会替你生成 —— 它回答的是
+    "这节课里会出现哪些行话/专名"，而那个只有讲课的人知道。
+    所以这里对"给了一个不存在的路径"要说明白，而不是甩一段 FileNotFoundError：
+    它有两个用途，缺了它后果不同（见下），人得知道自己在放弃什么。
+
+    <p>两个用途：
+    <ol>
+      <li>`--variants` 里有 `terms` 时：这些词会被拼成一句提示词喂给模型
+          （**真的改变识别结果**，所以是"被测的对象"）；</li>
+      <li>报告里那张「术语命中」表：只统计**写出了正确写法的段数**（**不改识别**，只是记分）。</li>
+    </ol>
+    """
     if not path:
         return []
-    text = Path(path).read_text(encoding="utf-8")
+    target = Path(path)
+    if not target.exists():
+        sys.exit("没有这份术语清单：" + str(target) + "\n"
+                 "  它是**你自己写的**纯文本（一行一个词，`#` 开头是注释），仓库里没有。\n"
+                 "  两个选择：\n"
+                 "    ① 建一个：printf '%s\\n' Python interpreter compiler > " + str(target) + "\n"
+                 "    ② 不用它：把 --terms-file 去掉，并把 terms 从 --variants 里删掉\n"
+                 "       （那就只剩 精度 / beam / 高通 / VAD 这些不依赖术语表的配置）")
+    text = target.read_text(encoding="utf-8")
     return [line.strip() for line in text.split("\n")
             if line.strip() != "" and not line.strip().startswith("#")]
 

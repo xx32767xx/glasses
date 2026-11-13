@@ -4450,6 +4450,26 @@ def main():
           str([one["seg"] for one in _rows]))
     check("读不到记录时返回空、不抛异常", _replay.read_meeting_sentences("") == [])
 
+    # ⑥b 术语清单：文件是**使用者自己写的**，给错路径要说清"你能怎么办"
+    _terms_dir = _sheet_dir / "terms"
+    _terms_dir.mkdir(parents=True, exist_ok=True)
+    _terms_ok = _terms_dir / "terms.txt"
+    _terms_ok.write_text("# 这节课的行话\nPython\ninterpreter\n\ncompiler\n", encoding="utf-8")
+    check("术语清单按行读，跳过空行与注释",
+          _replay.read_terms(str(_terms_ok)) == ["Python", "interpreter", "compiler"],
+          str(_replay.read_terms(str(_terms_ok))))
+    check("不给路径就是空清单（= 不按术语统计，也不加提示词）", _replay.read_terms("") == [])
+    try:
+        _replay.read_terms(str(_terms_dir / "nope.txt"))
+        _missing_said = ""
+    except SystemExit as _exit:
+        _missing_said = str(_exit)
+    check("给了一个不存在的路径：说清「这是你自己写的文件」并给出两条出路",
+          "自己写的" in _missing_said and "--terms-file" in _missing_said
+          and "terms" in _missing_said, _missing_said[:160])
+    check("提示里不是 FileNotFoundError 的 traceback（那是甩锅给用户）",
+          "Traceback" not in _missing_said, _missing_said[:120])
+
     # ⑦ 抽样：想先拿 20 段试一组配置时，要均匀取而不是只取开头
     _items = list(range(100))
     check("--sample 均匀分布（不是只取前 N 个）",
