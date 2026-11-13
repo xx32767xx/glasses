@@ -108,8 +108,12 @@ def parse_args(argv=None):
     compare = sub.add_parser(
         "compare", help="**不需要参考文本**：跑几组配置，把输出并排摆出来用人眼比（快）")
     compare.add_argument("--sheet", default=None, help="对照表（缺省 <workdir>/sheet.tsv）")
-    compare.add_argument("--variants", default="base,float16",
-                         help="要对比的配置（逗号分隔）")
+    # ⚠️ 缺省只能写 base。2026-11-13 踩到：缺省当初写了 "base,float16"，
+    # 于是"什么都不给、就跑当前配置"这条最常用的路，会因为 float16 是 whisper 专属
+    # 而在 parakeet 机器上被硬挡下来 —— 用户看到的是"我明明只要跑当前配置"。
+    # 缺省值也是一种"我替你决定"，它必须能跑得通。
+    compare.add_argument("--variants", default="base",
+                         help="要对比的配置（逗号分隔；缺省只跑策略表里的现状）")
     compare.add_argument("--baseline", default="prod",
                          help="拿谁当对照：prod = 用对照表里**产线当时**的原文（零额外推理）；"
                               "base = 重新跑一遍当前配置；也可以写某个变体名")

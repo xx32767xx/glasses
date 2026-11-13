@@ -4609,6 +4609,26 @@ def main():
           and _replay.variant_profile({"engine": "parakeet", "model": "x.nemo"},
                                       {"highpass_hz": 0})["highpass_hz"] == 0)
 
+    # ⑥e 缺省变体必须能在**任何引擎**上跑通（2026-11-13 实机踩到）
+    # 当初 compare 的 --variants 缺省写成 "base,float16"，于是"什么都不给、就跑当前配置"
+    # 这条最常用的路，在 parakeet 机器上被 float16（whisper 专属）硬挡下来 ——
+    # 用户看到的是"我明明只要跑当前配置"。缺省值也是一种替用户做的决定，必须跑得通。
+    _no_args = type("A", (), {"model": None})()
+    for _name, _parser_args in (("compare", ["compare"]), ("score", ["score", "--refs", "x"])):
+        try:
+            _parsed = _replay.parse_args(_parser_args)
+            _default_variants = str(_parsed.variants)
+        except SystemExit:
+            _default_variants = ""
+        _whisper_only_in_default = [one for one in _default_variants.split(",")
+                                    if one.strip() in _replay.WHISPER_ONLY_VARIANTS]
+        check("%s 的缺省变体里没有 whisper 专属项（否则 parakeet 机器上会被挡下）" % _name,
+              _whisper_only_in_default == [], _default_variants)
+        check("%s 的缺省变体在 parakeet 上也放行" % _name,
+              _replay.require_engine(_no_args, {"engine": "parakeet", "model": "x.nemo"},
+                                     _default_variants.split(",")) == "parakeet",
+              _default_variants)
+
     # ⑦ 抽样：想先拿 20 段试一组配置时，要均匀取而不是只取开头
     _items = list(range(100))
     check("--sample 均匀分布（不是只取前 N 个）",
