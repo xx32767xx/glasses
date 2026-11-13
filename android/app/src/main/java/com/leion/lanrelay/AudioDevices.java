@@ -126,6 +126,140 @@ public final class AudioDevices {
                 || type == AudioDeviceInfo.TYPE_USB_ACCESSORY;
     }
 
+    // ── 5.195：把"现在连着哪些外设"做成机器能读的结果，界面自己翻译成字 ────────
+    //
+    // 为什么不在这个类里直接拼中文：它没有 Context，拿不到 strings.xml，
+    // 拼出来的字也没法做三语。所以这里只回答"是什么种类 + 叫什么名字"，
+    // 由 RoomActivity（有 getString）去选那一句。
+
+    /** 蓝牙（耳机/助听器都是它）。 */
+    public static final String KIND_BT = "bt";
+    /** 有线耳机。 */
+    public static final String KIND_WIRED = "wired";
+    /** USB 设备（眼镜就是它）。 */
+    public static final String KIND_USB = "usb";
+    /** 手机内置麦克风。 */
+    public static final String KIND_BUILTIN_IN = "builtin-in";
+    /** 手机喇叭/听筒。 */
+    public static final String KIND_BUILTIN_OUT = "builtin-out";
+    /** 其它（不确定的）。 */
+    public static final String KIND_OTHER = "other";
+
+    /** 设备类型 → 种类。界面据此选一句人话，产品名再拼上去。 */
+    public static String kindOf(int type) {
+        switch (type) {
+            // ⚠️ A2DP 只出不进（它是"高质量放音"那条通道），所以它对**收音**没有意义；
+            //    但作为"扩声接在哪"它是最常见的答案，所以这里统一归到蓝牙。
+            case AudioDeviceInfo.TYPE_BLUETOOTH_A2DP:
+            case AudioDeviceInfo.TYPE_BLUETOOTH_SCO:
+            case AudioDeviceInfo.TYPE_BLE_HEADSET:
+            case AudioDeviceInfo.TYPE_BLE_SPEAKER:
+            case AudioDeviceInfo.TYPE_HEARING_AID:
+                return KIND_BT;
+            case AudioDeviceInfo.TYPE_WIRED_HEADSET:
+            case AudioDeviceInfo.TYPE_WIRED_HEADPHONES:
+                return KIND_WIRED;
+            case AudioDeviceInfo.TYPE_USB_DEVICE:
+            case AudioDeviceInfo.TYPE_USB_HEADSET:
+            case AudioDeviceInfo.TYPE_USB_ACCESSORY:
+                return KIND_USB;
+            case AudioDeviceInfo.TYPE_BUILTIN_MIC:
+                return KIND_BUILTIN_IN;
+            case AudioDeviceInfo.TYPE_BUILTIN_SPEAKER:
+            case AudioDeviceInfo.TYPE_BUILTIN_EARPIECE:
+                return KIND_BUILTIN_OUT;
+            default:
+                return KIND_OTHER;
+        }
+    }
+
+    /**
+     * 现在**声音会从哪出**（蓝牙 > 有线 > USB > 手机）。
+     *
+     * <p>顺序不是随便排的：接了蓝牙耳机时系统就是走它，界面上再写"手机喇叭"就
+     * 又变成了一句假话 —— 用户报的那类"显示不对"，十个有八个是这种。
+     */
+    public static AudioDeviceInfo currentOutput(AudioManager manager) {
+        if (manager == null) return null;
+        try {
+            AudioDeviceInfo[] devices = manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS);
+            if (devices == null) return null;
+            AudioDeviceInfo fallback = null;
+            for (AudioDeviceInfo device : devices) {
+                String kind = kindOf(device.getType());
+                if (KIND_BT.equals(kind)) return device;
+                if (KIND_WIRED.equals(kind) && fallback == null) fallback = device;
+                else if (KIND_USB.equals(kind) && fallback == null) fallback = device;
+                else if (KIND_BUILTIN_OUT.equals(kind) && fallback == null) fallback = device;
+                else if (fallback == null) fallback = device;
+            }
+            return fallback;
+        } catch (Throwable error) {
+            return null;
+        }
+    }
+
+    /**
+     * 现在**最容易用上的麦克风**（蓝牙 > 有线 > USB > 手机）。
+     *
+     * <p>⚠️ 这只是"有哪个"，**不是"正在用哪个"**。真要写"正在用"，必须用
+     * {@link #actualInput(AudioManager)}（它问的是录音配置，不会撒谎）。
+     */
+    public static AudioDeviceInfo bestInput(AudioManager manager) {
+        if (manager == null) return null;
+        try {
+            AudioDeviceInfo[] devices = manager.getDevices(AudioManager.GET_DEVICES_INPUTS);
+            if (devices == null) return null;
+            AudioDeviceInfo fallback = null;
+            for (AudioDeviceInfo device : devices) {
+                String kind = kindOf(device.getType());
+                if (KIND_BT.equals(kind)) return device;
+                if ((KIND_WIRED.equals(kind) || KIND_USB.equals(kind)) && fallback == null) {
+                    fallback = device;
+                } else if (fallback == null) {
+                    fallback = device;
+                }
+            }
+            return fallback;
+        } catch (Throwable error) {
+            return null;
+        }
+    }
+
+    /**
+     * 正在录音的这一路**实际**用的是哪个输入设备（没在录音就 null）。
+     *
+     * <p>为什么界面要用它而不是 {@link #bestInput}：接了蓝牙耳机、而录音器实际还在用
+     * 手机麦（`AudioSource.MIC` 未必跟着蓝牙走），这时写"蓝牙麦"就是骗人 ——
+     * 而用户拿这个界面正是要判断"我到底用的是哪个麦"。
+     */
+    public static AudioDeviceInfo actualInput(AudioManager manager) {
+        if (manager == null) return null;
+        try {
+            java.util.List<AudioRecordingConfiguration> configs =
+                    manager.getActiveRecordingConfigurations();
+            if (configs == null) return null;
+            for (AudioRecordingConfiguration config : configs) {
+                AudioDeviceInfo device = config.getAudioDevice();
+                if (device != null) return device;
+            }
+            return null;
+        } catch (Throwable error) {
+            return null;
+        }
+    }
+
+    /** 产品名（有些设备没有名字，给个空串，界面会退回只说种类）。 */
+    public static String productNameOf(AudioDeviceInfo device) {
+        if (device == null) return "";
+        try {
+            CharSequence name = device.getProductName();
+            return name == null ? "" : name.toString().trim();
+        } catch (Throwable error) {
+            return "";
+        }
+    }
+
     private static String typeName(int type) {
         switch (type) {
             case AudioDeviceInfo.TYPE_USB_DEVICE: return "USB 音频设备";

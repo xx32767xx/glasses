@@ -117,6 +117,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
     /** 我是不是发起者（决定抽屉里显不显示"移出成员/解除锁定"）。 */
     private boolean iAmHost = false;
 
+    /** 5.195：「扩声 / 收音」两行要跟着设备变，这里缓存一次 AudioManager（查询很轻）。 */
+    private android.media.AudioManager audioManager = null;
+
     /** 抽屉打开期间的刷新间隔：成员变化没有推送，只能轮询，但只在抽屉开着时轮。 */
     private static final long DRAWER_REFRESH_MS = 2500L;
     private final Runnable drawerTick = new Runnable() {
@@ -124,6 +127,9 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         public void run() {
             if (drawer.getVisibility() != View.VISIBLE || isFinishing()) return;
             loadRoomHeader();
+            // 5.195：抽屉开着时也刷一次外设 —— 2.5 秒的轮询本来就在跑，顺手对齐，
+            // 这样"戴着蓝牙耳机连上来"这件事最迟 2.5 秒就能在界面上看到。
+            refreshAudioState();
             ui.postDelayed(this, DRAWER_REFRESH_MS);
         }
     };
@@ -317,6 +323,11 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         if (mic == null) UiLang.trackShown(this);
         // 5.140：回到本页时刷一次投屏状态，并挂上监听（投屏中途开始/停止也能实时反映）
         refreshCastState();
+        // 5.195：外设（蓝牙耳机/麦、有线、USB）也要在回到前台时重新问一次 ——
+        // 用户很可能是**切出去连了耳机再切回来**，这时界面上那两行必须跟着变。
+        refreshAudioState();
+        // 5.195：注册回调（幂等：registerDeviceCallback 会先摘掉旧的）
+        registerDeviceCallback();
         // 5.143：回到本页立刻同步一次发言权与房间信息。WS 断线重连的空档里，
         // "谁拿着麦 / 锁没锁"可能已经变了，光靠 10 秒看门狗会让界面停在旧状态上。
         if (client != null) scheduleFloorPoll(0L);
@@ -343,6 +354,78 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
             drawerDevices.setText(getString(casting ? R.string.room_devices_rokid : R.string.room_devices_detail));
         }
     }
+
+    /**
+     * 5.195：侧边栏「扩声 / 收音」两行 —— **按真实设备写**，而且跟着变化刷新。
+     *
+     * <p>用户报的现象：蓝牙耳机和麦克风连上了，侧边栏还是写「未接入 / 手机麦」。
+     * 原因是这两行**只在进房那一刻写死一次**（`room_audio_none` / `room_mic_phone`），
+     * 之后再没问过系统。投屏那一行 5.140 已经改成按真实状态写了，这两行漏了。
+     *
+     * <p>三条判据都要经得起现场：
+     * <ul>
+     *   <li><b>扩声</b>：问系统"当前输出设备"，蓝牙/有线/USB/喇叭分别写清楚；</li>
+     *   <li><b>收音</b>：**正在录音时**用 {@code getActiveRecordingConfigurations()} 里的
+     *       真实设备 —— 接了蓝牙却还在用手机麦时，写"蓝牙麦"就是骗人；</li>
+     *   <li>没在录音就写"有哪些可用"（并明确是"可用"，不是"正在用"）。</li>
+     * </ul>
+     */
+    private void refreshAudioState() {
+        if (audioState == null && micState == null) return;
+        if (audioManager == null) {
+            audioManager = (android.media.AudioManager) getSystemService(android.content.Context.AUDIO_SERVICE);
+        }
+        android.media.AudioDeviceInfo output = AudioDevices.currentOutput(audioManager);
+        if (audioState != null) {
+            audioState.setText(output == null
+                    ? getString(R.string.room_audio_none)
+                    : describeOutput(output));
+        }
+        if (micState != null) {
+            android.media.AudioDeviceInfo actual = AudioDevices.actualInput(audioManager);
+            if (actual != null) {
+                micState.setText(describeInput(actual));
+            } else {
+                android.media.AudioDeviceInfo best = AudioDevices.bestInput(audioManager);
+                micState.setText(best == null
+                        ? getString(R.string.room_mic_none)
+                        : getString(R.string.room_mic_available, describeInput(best)));
+            }
+        }
+    }
+
+    /** 输出设备 → 一句话（蓝牙/有线/USB/喇叭）。 */
+    private String describeOutput(android.media.AudioDeviceInfo device) {
+        String name = AudioDevices.productNameOf(device);
+        String kind = AudioDevices.kindOf(device.getType());
+        if (AudioDevices.KIND_BT.equals(kind)) {
+            return name.isEmpty() ? getString(R.string.room_audio_bt)
+                    : getString(R.string.room_audio_bt_fmt, name);
+        }
+        if (AudioDevices.KIND_WIRED.equals(kind)) return getString(R.string.room_audio_wired);
+        if (AudioDevices.KIND_USB.equals(kind)) {
+            return name.isEmpty() ? getString(R.string.room_audio_usb)
+                    : getString(R.string.room_audio_usb_fmt, name);
+        }
+        return getString(R.string.room_audio_speaker);
+    }
+
+    /** 输入设备 → 一句话（蓝牙麦/有线麦/USB/手机麦）。 */
+    private String describeInput(android.media.AudioDeviceInfo device) {
+        String name = AudioDevices.productNameOf(device);
+        String kind = AudioDevices.kindOf(device.getType());
+        if (AudioDevices.KIND_BT.equals(kind)) {
+            return name.isEmpty() ? getString(R.string.room_mic_bt)
+                    : getString(R.string.room_mic_bt_fmt, name);
+        }
+        if (AudioDevices.KIND_WIRED.equals(kind)) return getString(R.string.room_mic_wired);
+        if (AudioDevices.KIND_USB.equals(kind)) {
+            return name.isEmpty() ? getString(R.string.room_mic_usb)
+                    : getString(R.string.room_mic_usb_fmt, name);
+        }
+        return getString(R.string.room_mic_phone);
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -395,11 +478,12 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
 
         addSystemEvent(getString(R.string.sys_meeting_started));
 
-        // 外设（投屏/扩声）：**按真实状态写**，不写死。
-        // 5.140：原来这里写死"手机屏 / 未接入"—— 用户开了 Rokid 投屏，侧边栏还显示手机，
-        //        原因是它压根没去问投屏状态（也拿不到：Rokid 实例以前是每页各建一个）。
-        audioState.setText(getString(R.string.room_audio_none));
-        micState.setText(getString(R.string.room_mic_phone));
+        // 外设（投屏/扩声/收音）：**按真实状态写**，一律不写死。
+        // 5.140：投屏那一行原来写死"手机屏"，用户开着 Rokid 投屏也显示手机。
+        // 5.195：扩声/收音这两行原来同样写死（"未接入 / 手机麦"），蓝牙耳机与麦克风
+        //        连上了也不变 —— 用户报的就是这个。现在进房先刷一次，并挂上设备回调。
+        refreshAudioState();
+        registerDeviceCallback();
         refreshCastState();
         startedAtMs = System.currentTimeMillis();
         startTimer();
@@ -1137,6 +1221,10 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         if (ttsSpeaker != null) ttsSpeaker.setAllowSpeaker(attendRemote);
         updateNoEarphoneWarn();
         applyListenState();
+        // 5.195：设备一变（插拔耳机 / 蓝牙连上 / 眼镜接上），侧边栏那两行**也要跟着变**。
+        // 挂在 refreshNearEar 里而不是另注册一个回调：一个回调、一处刷新，才不会又出现
+        // "某一半刷新了、另一半还停在旧状态"。
+        refreshAudioState();
     }
 
     /** 侧边栏那条红色告警：面对面且没有耳机/眼镜时亮起（其余情况隐藏）。 */
@@ -1148,11 +1236,26 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         warn.setVisibility(blocked ? android.view.View.VISIBLE : android.view.View.GONE);
     }
 
-    /** 注册音频设备变化（插拔耳机 / 蓝牙连上 / 眼镜接上都会回调）。 */
+    /**
+     * 注册音频设备变化（插拔耳机 / 蓝牙连上 / 眼镜接上都会回调）。
+     *
+     * <p>5.195：改成**幂等**（先摘旧的再挂新的）。原来每调一次就多挂一个回调：
+     * `onResume` 每回到前台都会调它，于是回调越堆越多 —— 而那些回调做的正是
+     * `refreshNearEar()` → 重新算能不能外放。重复挂的表现是"插一次耳机刷新好几次"，
+     * 难查又难复现。
+     */
     private void registerDeviceCallback() {
         android.media.AudioManager manager =
                 (android.media.AudioManager) getSystemService(AUDIO_SERVICE);
         if (manager == null) return;
+        if (deviceCallback != null) {
+            try {
+                manager.unregisterAudioDeviceCallback(deviceCallback);
+            } catch (Exception ignored) {
+                // 摘不掉就算了，下面照样注册新的
+            }
+            deviceCallback = null;
+        }
         try {
             deviceCallback = new android.media.AudioDeviceCallback() {
                 @Override

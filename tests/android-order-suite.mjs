@@ -1500,8 +1500,11 @@ export async function runAndroidOrderSuite({ it, check }) {
     for (const id of ['roomCastState', 'roomAudioState', 'roomMicState']) {
       check(`右侧条有 ${id}`, new RegExp(`@\\+id/${id}\\b`).test(room), id)
     }
+    // 5.195：原来这里断言"进房就写死一句未接入"，而用户报的正是"蓝牙连上了还写未接入"。
+    // 现在的要求反过来：**查不到输出设备时**才说未接入，查得到就报真设备。
     check('外设没接入就直说"未接入"（不做假开关）',
-      /audioState\.setText\(getString\(R\.string\.room_audio_none\)\)/.test(activity), '没有真实设备时不许假装可用')
+      /describeOutput|refreshAudioState/.test(activity) && /R\.string\.room_audio_none/.test(activity),
+      '没有真实设备时不许假装可用')
     check('点右侧条开抽屉', /infoBar\.setOnClickListener\(v -> toggleDrawer\(\)\)/.test(activity))
 
     // 底部：开麦胶囊（红/蓝绿两态 + 呼吸）
@@ -3032,4 +3035,49 @@ export async function runAndroidOrderSuite({ it, check }) {
       check(`${label}`, problems.length === 0, problems.slice(0, 4).join('；'))
     }
   })
+
+  await it('5.195：蓝牙耳机/麦克风连上之后，侧边栏那两行必须跟着变', () => {
+    // 用户报：蓝牙耳机和麦克风连上了，侧边栏还是「未接入 / 手机麦」。
+    // 真因：那两行**只在进房那一刻写死一次**（5.140 改了投屏那一行，这两行漏了）。
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+    const devices = readFileSync(join(javaDir, 'AudioDevices.java'), 'utf-8')
+    const resDir = join(ROOT, 'android', 'app', 'src', 'main', 'res')
+
+    check('进房不再写死那两行（改成按真实设备刷一次）',
+      /refreshAudioState\(\);/.test(room)
+      && /audioState\.setText\(getString\(R\.string\.room_audio_none\)\);\s*\n\s*micState\.setText\(getString\(R\.string\.room_mic_phone\)\);/.test(room) === false)
+    check('设备一变就刷（挂在 5.164 那个回调里，而不是再挂第二个）',
+      /private void refreshNearEar\(\)[\s\S]{0,600}?refreshAudioState\(\);/.test(room))
+    check('回到前台也刷一次（用户常是切出去连耳机再切回来）',
+      /protected void onResume\(\)[\s\S]{0,1200}?refreshAudioState\(\);/.test(room))
+    check('侧边栏开着时也跟着 2.5 秒轮询刷',
+      /private final Runnable drawerTick[\s\S]{0,400}?refreshAudioState\(\);/.test(room))
+    check('注册设备回调是**幂等**的（先摘旧的再挂新的，否则回调越堆越多）',
+      /private void registerDeviceCallback\(\)[\s\S]{0,700}?unregisterAudioDeviceCallback\(deviceCallback\)[\s\S]{0,1200}?registerAudioDeviceCallback/.test(room))
+
+    // 收音那一行必须问"**实际**在用的设备"，不能拿"有哪个"冒充
+    check('正在录音时用 getActiveRecordingConfigurations 的真实设备',
+      /actualInput\(/.test(room) && /getActiveRecordingConfigurations\(\)/.test(devices))
+    check('没在录音时明说"可用（未在录音）"，不假装正在用',
+      /room_mic_available/.test(room))
+    check('蓝牙几种类型都认得（A2DP / SCO / BLE / 助听器）',
+      /TYPE_BLUETOOTH_A2DP/.test(devices) && /TYPE_BLUETOOTH_SCO/.test(devices)
+      && /TYPE_BLE_HEADSET/.test(devices) && /TYPE_HEARING_AID/.test(devices))
+    check('输出按 蓝牙 > 有线 > USB > 手机 排（接了蓝牙还写"手机喇叭"就是假话）',
+      /public static AudioDeviceInfo currentOutput[\s\S]{0,900}?KIND_BT\.equals\(kind\)\) return device/.test(devices))
+
+    // 三条文案在三套资源里都得有（少一套就是某种语言下露 key）
+    const keys = ['room_audio_bt', 'room_audio_bt_fmt', 'room_audio_wired', 'room_audio_usb',
+      'room_audio_usb_fmt', 'room_audio_speaker', 'room_mic_bt', 'room_mic_bt_fmt',
+      'room_mic_wired', 'room_mic_usb', 'room_mic_usb_fmt', 'room_mic_none', 'room_mic_available']
+    for (const dir of ['values', 'values-en', 'values-pt-rBR']) {
+      const xml = readFileSync(join(resDir, dir, 'strings.xml'), 'utf-8')
+      for (const key of keys) {
+        check(`${key} 在 ${dir} 里有`, new RegExp('name="' + key + '"').test(xml), key)
+      }
+    }
+  })
+
+
 }
