@@ -4826,6 +4826,28 @@ def main():
           _lid_defaults.lid_window_ms == 10000 and _lid_defaults.lid_gap_ms == 1500,
           f"{_lid_defaults.lid_window_ms} / {_lid_defaults.lid_gap_ms}")
 
+    # 5.211 回归：`meta.queuedAt` 是**段尾**（段收完才写），第一版当成段首用，
+    # 静音间隔被算成 `实际静音 - 上段长` → 几乎总是 0 → "静音 1.5 秒才重判"**从不触发**，
+    # 实际只有"兜底重判"在起作用（换人后最多 20 秒还在用旧语种，日志上却一切正常）。
+    _gap = whisper_stream.lid_gap_of
+    check("没有历史 → 静音记 0（第一次判，不看静音）", _gap(10000, 2000, None) == 0)
+    check("同一人连说、中间静 600ms → 静音就是 600（不是 2600）",
+          _gap(12600, 2000, {"end": 10000, "judged_at": 10000}) == 600,
+          str(_gap(12600, 2000, {"end": 10000, "judged_at": 10000})))
+    check("静了 2 秒 → 静音 2000（超过 1.5 秒门槛，该重判了）",
+          _gap(14000, 2000, {"end": 10000, "judged_at": 10000}) == 2000,
+          str(_gap(14000, 2000, {"end": 10000, "judged_at": 10000})))
+    check("段首就紧挨着上段尾 → 静音 0（连续说话不能用负数）",
+          _gap(12000, 2000, {"end": 12000, "judged_at": 12000}) == 0)
+    check("静音 600ms 不该触发重判（否则等于每段都判，白花 340ms）",
+          _j({"end": 10000, "judged_at": 10000}, 12600, 2000,
+             _gap(12600, 2000, {"end": 10000, "judged_at": 10000}), 1500) is False)
+    check("静音 2 秒该触发（换人几乎都发生在这里）",
+          _j({"end": 10000, "judged_at": 10000}, 14000, 2000,
+             _gap(14000, 2000, {"end": 10000, "judged_at": 10000}), 1500) is True)
+    check("兜底重判是 12 秒（换人没静音时最多 6 句还用旧语种）",
+          whisper_stream.LID_MAX_AGE_MS == 12000, str(whisper_stream.LID_MAX_AGE_MS))
+
     _tag4, _conf4, _ = whisper_stream.detect_lang(
         _probe, 16000, _Model(_R("de", ["de"], [0.99])), ("zh-CN", "en-US", "pt-BR"), np)
     check("判成完全不支持的语言时返回 None（不硬塞一个候选）", _tag4 is None, str(_tag4))

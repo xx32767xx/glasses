@@ -2892,8 +2892,10 @@ _LID_NOTES = {"count": 0, "seen": set()}
 #     宁可用上一次的判定，也别拿一句"嗯/好"去改整路语种；
 #   · 一路连着说很久（中间没有静音）时，隔这么久兜底重判一次，
 #     否则"同一个人中途换了语言"永远发现不了。
+#     12 秒是拿延迟换来的：判一次 ≈340ms（10 秒窗口），摊到 12 秒的连续说话上
+#     约合 +55ms/句（按 2 秒一句算），而"换人后最多 6 句还用着旧语种"。
 LID_MIN_JUDGE_MS = 1200
-LID_MAX_AGE_MS = 20000
+LID_MAX_AGE_MS = 12000
 # 语言码（sherpa-onnx / whisper 都可能是两字母码）→ 我们系统里的语种标签
 _LID_TAG = {
     "zh": "zh-CN", "cmn": "zh-CN", "yue": "zh-CN",
@@ -3252,6 +3254,23 @@ def detect_lang(audio, samplerate, model, candidates, np):
         return None, 0.0, int(round((time.perf_counter() - started) * 1000))
 
 
+def lid_gap_of(seg_end, seg_ms, seen):
+    """这一段**前面静了多久**（毫秒）。
+
+    <p>⚠️ 5.211 修的一个 bug：`meta.queuedAt` 是段**收完才写**的，所以它是**段尾**
+    而不是段首。第一版把状态记成 `queuedAt + ms`（多算了一个段长），于是静音间隔
+    被算成 `实际静音 - 上段长`、几乎总是 0 —— `--lid-gap-ms 1.5 秒`这个条件**从不触发**，
+    真正生效的只有"兜底重判"。表现是"换人之后最多 20 秒还在用旧语种"，
+    而日志上看起来一切正常（这条 bug 是自查时对着时间轴手算才发现的）。
+
+    <p>现在：`段首 = 段尾 - 段长`，`静音 = 本段段首 - 上段段尾`。
+    """
+    if seen is None:
+        return 0
+    seg_start = seg_end - max(0, int(seg_ms or 0))
+    return max(0, seg_start - int(seen.get("end") or 0))
+
+
 def lid_should_judge(seen, seg_end, seg_ms, gap_ms, gap_threshold_ms):
     """这一段要不要**重新判**语种（5.210 的时机规则，单独成函数是为了能测）。
 
@@ -3271,10 +3290,10 @@ def lid_should_judge(seen, seg_end, seg_ms, gap_ms, gap_threshold_ms):
     另外：**太短的段不判** —— 实测 1~3 秒的段会给出 `nn`（挪威语新诺斯克）这种码，
     宁可用上一次的判定，也别拿一句"嗯/好"去改整路语种。
 
-    @param {object|null} seen 上一状态 `{end, judged_at}`（毫秒时间戳）；没判过是 null
-    @param {number} seg_end 这一段的结束时刻（meta.queuedAt，段是收完才写的）
+    @param {object|null} seen 上一状态 `{end, judged_at}`（毫秒时间戳，**都是段尾**）；没判过是 null
+    @param {number} seg_end 这一段的**段尾**（meta.queuedAt，段是收完才写的）
     @param {number} seg_ms 这一段有多长
-    @param {number} gap_ms 与上一段之间静了多久
+    @param {number} gap_ms 与上一段之间静了多久（用 {@link lid_gap_of} 算）
     @param {number} gap_threshold_ms 静音门槛；<=0 表示不做这个限制
     """
     if seg_ms < LID_MIN_JUDGE_MS:
@@ -3413,7 +3432,8 @@ def run_queue_consumer(args, np, pool):
             room_id = meta.get("room")
             lid_key = (str(room_id), str(meta.get("speaker") or ""))
             seg_ms = int(meta.get("ms") or 0)
-            # 段是**收完才写**的，所以 queuedAt ≈ 这一段的结束时刻 —— 用它算"中间静了多久"
+            # 段是**收完才写**的，所以 queuedAt 是**段尾**（不是段首）。
+            # ⚠️ 5.211：状态里存的就是段尾；静音间隔要用 lid_gap_of 算（段首 - 上段尾）。
             seg_end = int(meta.get("queuedAt") or 0)
             seen = lid_seen.get(lid_key)
             if lid_model is not None and seg_mode != "remote":
@@ -3427,7 +3447,9 @@ def run_queue_consumer(args, np, pool):
                 # 而语种是**按人/按话题**变的，不是按句变的，所以只在三种时刻判：
                 #   ① 这一路第一次；② 中间隔着一段明显静音（换人几乎都发生在这里）；
                 #   ③ 连着说了很久（没静音）也隔 LID_MAX_AGE_MS 兜底重判一次。
-                gap_ms = 0 if seen is None else max(0, seg_end - seen["end"])
+                # ⚠️ 5.211：静音间隔 = 本段**段首** - 上段**段尾**（见 lid_gap_of 的说明，
+                # 第一版这里把段尾当段首用，导致"静音 1.5 秒才重判"从不触发）。
+                gap_ms = lid_gap_of(seg_end, seg_ms, seen)
                 due = lid_should_judge(seen, seg_end, seg_ms, gap_ms,
                                        int(getattr(args, "lid_gap_ms", 0) or 0))
                 if due:
@@ -3456,7 +3478,9 @@ def run_queue_consumer(args, np, pool):
                                 lid_pending.pop(lid_key, None)
                             else:
                                 lid_pending[lid_key] = (detected, count)
-                    lid_seen[lid_key] = {"end": seg_end + seg_ms, "judged_at": seg_end}
+                    # ⚠️ 5.211：`end` 与 `judged_at` 存的都是**段尾**（queuedAt 的语义），
+                    # 别再 + seg_ms —— 那正是静音间隔算错、gap 门槛从不触发的根因。
+                    lid_seen[lid_key] = {"end": seg_end, "judged_at": seg_end}
                     language = lid_last.get(lid_key) or declared_language
                     if language != declared_language:
                         lid_differs += 1
@@ -3483,7 +3507,7 @@ def run_queue_consumer(args, np, pool):
                     # 只有"判过的那一路"才更新进度；没判过的（比如开场一句"嗯"）
                     # 不建状态 —— 这样下一段仍然会当"第一次"去判。
                     if seen is not None:
-                        seen["end"] = seg_end + seg_ms
+                        seen["end"] = seg_end
             elif seg_mode == "remote" and declared_language:
                 # 远程：**无条件相信**（用户口径：远程的人选的语种就是准的）。
                 # 仍然记一笔，好让事后能对上"哪些句是判出来的、哪些句是声明的"。
