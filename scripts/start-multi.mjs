@@ -113,6 +113,9 @@ const HELP = `start-multi —— 一条命令起「多场会并行」
                          于是"谁开麦都行、说哪种语言就按哪种认"。
                          不传 = 完全不做，行为与以前一模一样。
   --lid-switch-after <n> LID 连续几次判成同一个新语种才切换（缺省 2，防抖）
+  --lid-threads <n>      语种判定的线程数（缺省 0 = 自动 min(4, CPU 核数)）。
+                         实测 int8 + 4 线程 ≈ 139ms、单线程 ≈ 411ms，而这一步
+                         就压在每句的延迟预算里 —— 别用 1
   --translate-deadline-ms <n>
                          每份译文最长等多久（缺省 20000；0 = 不设截止）。
                          超时就放弃这一份、队列继续 —— 大脑收件箱是**串行**的，
@@ -281,8 +284,8 @@ export function parseArgs(argv = []) {
     'queue-dir', 'depth-report-s', 'translate-mode', 'model-map', 'max-models',
     'interpreter-idle-min', 'silence-skip-level', 'idle-flush-ms', 'rms-threshold',
     'tts-port', 'tts-voice-dir', 'translate-deadline-ms',
-    // 5.202：语种识别模型目录 + 防抖次数
-    'lid-model', 'lid-switch-after'])
+    // 5.202：语种识别模型目录 + 防抖次数；5.209：线程数
+    'lid-model', 'lid-switch-after', 'lid-threads'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -401,6 +404,7 @@ export function parseArgs(argv = []) {
     else if (key === 'translate-deadline-ms') options.translateDeadlineMs = Number(value)
     else if (key === 'lid-model') options.lidModel = value
     else if (key === 'lid-switch-after') options.lidSwitchAfter = Number(value)
+    else if (key === 'lid-threads') options.lidThreads = Number(value)
     else options.busesDir = value
   }
   if (options.help === true) return options
@@ -715,6 +719,10 @@ export function workerStep(options) {
     args.push('--lid-model', options.lidModel)
     if (Number.isInteger(options.lidSwitchAfter) && options.lidSwitchAfter > 0) {
       args.push('--lid-switch-after', String(options.lidSwitchAfter))
+    }
+    // 5.209：线程数（不给就用 python 那边的自动值 min(4, CPU 核数)）
+    if (Number.isInteger(options.lidThreads) && options.lidThreads > 0) {
+      args.push('--lid-threads', String(options.lidThreads))
     }
   }
   if (options.vad === true) args.push('--vad')

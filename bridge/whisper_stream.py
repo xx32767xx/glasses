@@ -354,6 +354,10 @@ def parse_args(argv=None):
     parser.add_argument("--lid-switch-after", type=int, default=2,
                         help="LID 连续几次判成同一个新语种才切换（缺省 2：防抖。"
                              "一路会场麦里判错一次就可能把整句送错引擎）")
+    parser.add_argument("--lid-threads", type=int, default=0,
+                        help="语种判定的线程数（缺省 0 = 自动 min(4, CPU 核数)）。"
+                             "实测一台 4 核机器上 int8 + 4 线程 ≈ 139ms，单线程 ≈ 411ms —— "
+                             "这一步就压在每句的延迟预算里，别用 1")
     parser.add_argument("--vad-threshold", type=float, default=0.5,
                         help="VAD 判人声的门槛（缺省 0.5，越大越严：0.6 更少幻听、可能漏轻话）")
     parser.add_argument("--silence-skip-level", type=float, default=SILENCE_SKIP_RMS,
@@ -2890,7 +2894,7 @@ def lid_available(args):
     return bool(_os.environ.get("LEION_LID_MODEL", "").strip())
 
 
-def _lid_config_attempts(sherpa_onnx, encoder, decoder):
+def _lid_config_attempts(sherpa_onnx, encoder, decoder, threads=1):
     """按 sherpa-onnx 的版本，列出"怎么造 LID 配置"的几种写法（新 → 旧）。
 
     <p>为什么不是一句话就能写死：LID 的配置类**换过形状**，实机踩到过 ——
@@ -2910,10 +2914,14 @@ def _lid_config_attempts(sherpa_onnx, encoder, decoder):
     """
     attempts = []
 
+    # 5.209：线程数由调用方给（缺省 min(4, CPU 核数)）—— 实测单线程 411ms、4 线程 139ms，
+    # 这一步的耗时直接算在每句延迟里，别用 1。
+    threads = max(1, int(threads or 1))
+
     def outer_variants():
         """外层配置的两种写法：带 num_threads/debug/provider，或只给 whisper。"""
         return (
-            ("", {"num_threads": 1, "debug": False, "provider": "cpu"}),
+            ("", {"num_threads": threads, "debug": False, "provider": "cpu"}),
             ("（外层最少参数）", {}),
         )
 
@@ -2921,7 +2929,7 @@ def _lid_config_attempts(sherpa_onnx, encoder, decoder):
     if whisper_cls is not None:
         for inner_label, inner in (
             ("（全参数）", {"encoder": encoder, "decoder": decoder,
-                            "num_threads": 1, "debug": False, "provider": "cpu"}),
+                            "num_threads": threads, "debug": False, "provider": "cpu"}),
             ("（最少参数）", {"encoder": encoder, "decoder": decoder}),
             # 兜底：某些版本的内层只要 encoder（解码器那份在某版里换成了内置分类头）
             ("（只有 encoder）", {"encoder": encoder}),
@@ -2967,20 +2975,23 @@ def load_lid(args):
         import os as _os2
 
         def _pick(pattern_list):
-            """在模型目录里挑一个文件；同一族里**优先全精度**（int8 是备选）。
+            """在模型目录里挑一个文件；同一族里**优先 int8**（速度，见下）。
 
-            <p>为什么先挑全精度：`sherpa-onnx-whisper-*` 那个包里两种都有，而按文件名
-            排序 `xxx.int8.onnx` 会排在 `xxx.onnx` **前面**（'.i' < '.o'）—— 于是"默认"
-            悄悄变成了 int8。语音识别用 int8 是权衡，语种判定这一步只有几十毫秒，
-            没必要为了省这点时间去吃量化带来的精度损失。
+            <p>为什么优先 int8（5.209 改了 5.205 的选择）：实测同一段 20 秒课堂音频，
+            `tiny-encoder.onnx` 单线程 **550ms**、`tiny-encoder.int8.onnx` 单线程 **411ms**、
+            int8 + 4 线程 **139ms**。语种判定是个**粗任务**（100 多种里挑一种），
+            int8 掉的那点精度对它的影响远小于这 400ms 对延迟的影响 ——
+            这 400ms 是直接压在每一句上的。
             """
             for pattern in pattern_list:
                 hits = sorted(glob.glob(_os2.path.join(model_dir, pattern)))
                 if hits:
+                    quantized = [one for one in hits
+                                 if "int8" in _os2.path.basename(one).lower()
+                                 or "quant" in _os2.path.basename(one).lower()]
                     plain = [one for one in hits
-                             if "int8" not in _os2.path.basename(one).lower()
-                             and "quant" not in _os2.path.basename(one).lower()]
-                    return (plain or hits)[0]
+                             if one not in quantized]
+                    return (quantized or plain)[0]
             return ""
 
         encoder = _pick(["*encoder*.onnx", "*encoder*.ort"])
@@ -2991,7 +3002,12 @@ def load_lid(args):
         if encoder == "" or decoder == "":
             raise FileNotFoundError(
                 f"{model_dir} 里找不到 encoder/decoder（LID 用的是 whisper 那种编码器+解码器）")
-        attempts = _lid_config_attempts(sherpa_onnx, encoder, decoder)
+        # 5.209：线程数 —— 缺省 min(4, CPU 核数)。这一步的耗时直接算在每句延迟里，
+        # 用 1 线程就是白等（实测 411ms vs 139ms）。
+        threads = int(getattr(args, "lid_threads", 0) or 0)
+        if threads <= 0:
+            threads = min(4, _os.cpu_count() or 1)
+        attempts = _lid_config_attempts(sherpa_onnx, encoder, decoder, threads)
         if not attempts:
             raise RuntimeError("这份 sherpa-onnx 里既没有 SpokenLanguageIdentificationWhisperConfig，"
                                "也没有 OfflineWhisperModelConfig —— 版本太老，装不上 LID")
@@ -3015,7 +3031,7 @@ def load_lid(args):
         # "sherpa-onnx 版本与代码里的写法不一致"，这两行以后一眼能看出来。
         print(f"[识别] 语种识别已启用：{model_dir}"
               f"（{_os2.path.basename(encoder)} + {_os2.path.basename(decoder)}；"
-              f"sherpa-onnx {version}，配置写法 {tried[-1]}；"
+              f"{threads} 线程；sherpa-onnx {version}，配置写法 {tried[-1]}；"
               "CPU；只在切句之后、分发之前用）", file=sys.stderr, flush=True)
         return LID_STATE["model"]
     except Exception as error:                                  # noqa: BLE001
@@ -3271,6 +3287,14 @@ def run_queue_consumer(args, np, pool):
               file=sys.stderr, flush=True)
     # 5.202：语种识别（可选）。开了才加载模型 —— 没给模型就是老行为，一个字都不变。
     lid_model = load_lid(args) if lid_available(args) else None
+    if lid_model is not None:
+        # 5.209：**预热**。第一次 accept/compute 会带上 ONNX Runtime 的会话初始化
+        # （实测多花 ~0.5s），不能让第一段真实音频替我们付这笔钱 —— 那一段的延迟会
+        # 莫名其妙多出半秒，而且只有**这一场的第一句**慢，最难查的那种。
+        try:
+            detect_lang(np.zeros(16000, dtype=np.float32), 16000, lid_model, (), np)
+        except Exception:                                      # noqa: BLE001
+            pass
     # 5.204：粘滞按 **(房间, 说话人)** 记 —— 一路一判，互不污染（见下面那段说明）
     lid_last = {}        # (房间, 人) → 上一次的语种（粘滞用）
     lid_pending = {}     # (房间, 人) → (候选语种, 连续次数)

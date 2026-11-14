@@ -525,6 +525,14 @@ export async function runStartMultiSuite({ it, check, assert }) {
     check('给了之后 python 真的收到 --lid-model',
       on[on.indexOf('--lid-model') + 1] === '/opt/leion/models/lid', on.slice(-120))
     check('防抖次数也传下去', on[on.indexOf('--lid-switch-after') + 1] === '3', on.slice(-120))
+    // 5.209：线程数 —— 实测单线程 411ms、4 线程 139ms，这 270ms 是直接压在每句上的，
+    // 所以必须能现场调（不给就交给 python 那边的自动值 min(4, CPU 核数)）。
+    const withThreads = pyOf(['--data-dir', 'var/x', '--lid-model', '/opt/leion/models/lid',
+      '--lid-threads', '4'])
+    check('线程数也传到 python（不给就用自动值）',
+      withThreads[withThreads.indexOf('--lid-threads') + 1] === '4', withThreads.slice(-120))
+    check('不传 --lid-threads 时 python 那边自己决定（不在 JS 里写死数字）',
+      quiet.includes('--lid-threads') === false, quiet.slice(-100))
   })
 
   await it('5.189：译文硬截止能从 start-multi 一路传到大脑（0 = 关掉）', async () => {

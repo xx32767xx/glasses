@@ -4873,11 +4873,25 @@ def main():
             check("只有 encoder/decoder（没有 tokens.txt）也能加载",
                   _picked is not None)
             _wf = _picked.config.kw["whisper"].kw if _picked is not None else {}
-            check("同族两种精度都在时**挑全精度**（不是文件名排在前面的 int8）",
-                  os.path.basename(_wf.get("encoder", "")) == "tiny-encoder.onnx"
-                  and os.path.basename(_wf.get("decoder", "")) == "tiny-decoder.onnx",
+            check("同族两种精度都在时**优先 int8**（实测 411ms vs 550ms，这一步就压在每句延迟里）",
+                  os.path.basename(_wf.get("encoder", "")) == "tiny-encoder.int8.onnx"
+                  and os.path.basename(_wf.get("decoder", "")) == "tiny-decoder.int8.onnx",
                   f"{os.path.basename(_wf.get('encoder', ''))} + "
                   f"{os.path.basename(_wf.get('decoder', ''))}")
+            # 线程数：缺省自动（min(4, CPU 核数)），给了 --lid-threads 就用它。
+            # 之前写死 1 线程 —— 实测那份要 411ms，4 线程 139ms，等于白等 270ms/句。
+            _threads_used = (_picked.config.kw.get("num_threads")
+                             if _picked is not None else None)
+            check("线程数缺省 = min(4, CPU 核数)（不是写死的 1）",
+                  _threads_used == min(4, os.cpu_count() or 1),
+                  f"用了 {_threads_used}，期望 {min(4, os.cpu_count() or 1)}")
+            # 线程数也要现场可调 —— 但 load_lid 有缓存，得先复位再试
+            whisper_stream.LID_STATE.update({"model": None, "failed": False, "warned": False, "path": None})
+            _picked6 = whisper_stream.load_lid(whisper_stream.parse_args(
+                ["--lid-model", str(_lid_dir), "--lid-threads", "6"]))
+            check("--lid-threads 能覆盖（调优不用改代码）",
+                  _picked6 is not None and _picked6.config.kw.get("num_threads") == 6,
+                  str(None if _picked6 is None else _picked6.config.kw.get("num_threads")))
         finally:
             if _saved_sherpa is None:
                 sys.modules.pop("sherpa_onnx", None)
