@@ -2856,15 +2856,24 @@ def preprocess_segment(audio, samplerate, profile, np):
 # 要解决的问题（用户原话）：「在面对面情况下…无论谁开麦，我们都去接收当前的声音，
 # 然后在分发之前做一个语种的识别，这样就不需要两个人切来切去了」。
 #
-# 为什么不用 whisper 的 detect_language：实测它要把短音频补到 30 秒窗口跑一遍编码器，
+# 为什么不用 whisper 的 detect_language：它要把短音频补到 30 秒窗口跑一遍编码器，
 # 1.63 秒的段要 **507ms**；而我们给整段的延迟预算才 1.3~2.2 秒，这一项吃掉四分之一不划算。
-# 专用 LID 模型（sherpa-onnx 的 SpokenLanguageIdentification）在 CPU 上只要几十毫秒。
 #
-# 为什么判定结果要**按房间带粘滞（hysteresis）**：一路会场麦里语种会随人切换，
+# ⚠️ 5.207 更正一句实话：专用 LID（sherpa-onnx 的 SpokenLanguageIdentification）
+# **并不比那 507ms 快** —— 它用的就是 whisper 编码器、同样补到 30 秒窗口，
+# 实机 fp32/单线程量到 **约 480~540ms**（教室里 20 秒的段）。当初写"只要几十毫秒"是估算，错了。
+# 它真正值钱的地方是**候选集收窄**：只在"本场有人说的那几种语言"里挑，
+# 而不是在 100 多种里挑（实测不限定语种时，20 条巴葡口语有 1 条被判成希伯来语、整句报废）。
+# 所以用法上要认账：这 0.5 秒要么用 int8/多线程压下去，要么按"每 N 段判一次"摊销，
+# 两者都是后续要量的（见 docs/21 §5.207）。
+#
+# 为什么判定结果要**按 (房间, 说话人) 带粘滞（hysteresis）**：一路会场麦里语种会随人切换，
 # 但 LID 在句边、口音重、句子短时会抖 —— 每段都跟着抖，就会出现"同一个人忽中忽英"，
 # 而"判成英文就送 parakeet（只认英文）"，判错一次就是整句乱码。
-# 所以：**新判定要明显赢过旧判定才切换**（margin），否则沿用上一次。
+# 所以：**新判定要连续赢过旧判定才切换**（见 lid_switch_after），否则沿用上一次。
 LID_STATE = {"model": None, "failed": False, "warned": False, "path": None}
+# 5.207：判定出问题时的一次性提示（每进程最多三条，见 _lid_note）
+_LID_NOTES = {"count": 0, "seen": set()}
 # 语言码（sherpa-onnx / whisper 都可能是两字母码）→ 我们系统里的语种标签
 _LID_TAG = {
     "zh": "zh-CN", "cmn": "zh-CN", "yue": "zh-CN",
@@ -3064,10 +3073,64 @@ def lid_candidates_for(data_dir, room, fallback=("zh-CN", "en-US", "pt-BR")):
     return list(dict.fromkeys(keep)) or list(fallback)
 
 
+def _lid_pick_code(raw):
+    """从 LID 的返回值里取语种码（几种形态都认）。
+
+    ⚠️ 实机踩过（5.207）：`model.compute(stream)` 返回的是**结果对象**
+    （`.lang` / `.languages` / `.probs`），而这里原来写的是 `str(raw)` ——
+    于是永远对不上映射表、永远返回 None。表现是"语种判定：判成（不确定）"，
+    看着像"音频听不出来"，其实是**代码根本没读结果**。
+    """
+    code = getattr(raw, "lang", None)
+    if code is None and isinstance(raw, dict):
+        code = raw.get("lang")
+    if code is None:
+        code = raw
+    return str(code or "").strip().lower()
+
+
+def _lid_prob_table(raw):
+    """结果对象里的 `(语种码, 概率)` 表；拿不到就返回空表。
+
+    <p>有了概率表才能做一件关键的事：**在候选集里挑最可能的那个**，
+    而不是"全局第一名不在候选里就判不出来"（后者在候选只有中/英/葡时会把
+    "葡语被读成西语"直接变成一次失败的判定）。
+    """
+    probs = getattr(raw, "probs", None)
+    langs = getattr(raw, "languages", None)
+    if probs is None or langs is None:
+        return []
+    try:
+        return [(str(lang).strip().lower(), float(prob)) for lang, prob in zip(langs, probs)]
+    except (TypeError, ValueError):
+        return []
+
+
+def _lid_note(message):
+    """LID 出问题时的**一次性**提示（每进程最多三条，别刷屏）。
+
+    <p>为什么必须说出来：原来 `except Exception: return None` 把一切都吞掉了 ——
+    "模型抛错"和"这段音频真的听不出语种"在日志里长得**完全一样**，
+    于是第一版就踩了"结果对象当成字符串"这种 bug 而现场毫无线索。
+    """
+    if message in _LID_NOTES["seen"]:
+        return
+    if _LID_NOTES["count"] >= 3:
+        return
+    _LID_NOTES["count"] += 1
+    _LID_NOTES["seen"].add(message)
+    print(f"[识别] ⚠️ 语种判定没能出结果：{message}"
+          "（这一段沿用上一次/段自带的语种，不影响识别）", file=sys.stderr, flush=True)
+
+
 def detect_lang(audio, samplerate, model, candidates, np):
     """跑一次 LID，返回 (语种标签或 None, 置信度 0~1, 耗时 ms)。
 
     <p>判定不出 / 模型抛错都返回 None —— 调用方沿用上一次的语种，绝不因为"这次没判出来"改语种。
+
+    <p>候选集给了就**只在这几个语种里挑最可能的那个**（用户要求：候选 = 本场说话人语种的并集）。
+    这比"先取全局第一名、再看它在不在候选里"稳得多：全局第一名是西语、候选中只有葡语时，
+    前者判不出来，后者直接给出葡语（且概率是真实的那个数）。
     """
     if model is None:
         return None, 0.0, 0
@@ -3077,12 +3140,37 @@ def detect_lang(audio, samplerate, model, candidates, np):
         stream.accept_waveform(sample_rate=int(samplerate), waveform=np.asarray(audio, dtype=np.float32))
         stream.input_finished()
         raw = model.compute(stream)
-        tag = _LID_TAG.get(str(raw).strip().lower())
         elapsed = int(round((time.perf_counter() - started) * 1000))
-        if tag is None or (candidates and tag not in candidates):
+        code = _lid_pick_code(raw)
+        tag = _LID_TAG.get(code)
+        allowed = [one for one in (candidates or ()) if one in _LID_TAG.values()]
+        table = _lid_prob_table(raw)
+        # ① 有概率表 + 有候选集：**只在候选里挑最可能的那个**（这是候选集收窄的正解）。
+        #    注意顺序：先按候选挑，再看"全局第一名是什么" —— 否则"葡语被读成西语"时
+        #    会因为西语不在支持范围而直接判不出来（那正好丢掉了最有用的一次判定）。
+        if allowed and table:
+            best_tag, best_prob = None, 0.0
+            for one_code, prob in table:
+                mapped = _LID_TAG.get(one_code)
+                if mapped in allowed and prob > best_prob:
+                    best_tag, best_prob = mapped, prob
+            if best_tag is not None:
+                return best_tag, best_prob, elapsed
+        if tag is None:
+            _lid_note(f"判出的语种码是 {code or '（空）'}，不在支持范围（我们只有 zh-CN / en-US / pt-BR）")
             return None, 0.0, elapsed
-        return tag, 1.0, elapsed
-    except Exception:                                          # noqa: BLE001
+        # ② 有候选但拿不到概率表（老版本只给一个码）：不在候选里就只能认命
+        if allowed and tag not in allowed:
+            _lid_note(f"判成 {tag}，但这一场的候选只有 {'/'.join(allowed)}")
+            return None, 0.0, elapsed
+        confidence = 1.0
+        for one_code, prob in table:
+            if _LID_TAG.get(one_code) == tag:
+                confidence = prob
+                break
+        return tag, confidence, elapsed
+    except Exception as error:                                  # noqa: BLE001
+        _lid_note(f"{type(error).__name__}: {error}")
         return None, 0.0, int(round((time.perf_counter() - started) * 1000))
 
 

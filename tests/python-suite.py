@@ -4697,6 +4697,72 @@ def main():
     check("判不出时沿用上一次", whisper_stream.sticky_language("zh-CN", None) == "zh-CN")
     check("同一个语种不变", whisper_stream.sticky_language("pt-BR", "pt-BR") == "pt-BR")
 
+    # 判定结果的**读法**（5.207，服务器上真踩到）：
+    # sherpa-onnx 的 `model.compute(stream)` 返回的是**结果对象**（.lang/.languages/.probs），
+    # 而代码里原来写的是 `str(raw)` —— 于是永远对不上映射表、永远返回 None，
+    # 日志只有"判成（不确定）"，看起来像"这段音频听不出来"，其实是没读结果。
+    class _R:
+        def __init__(self, lang, languages=None, probs=None):
+            self.lang = lang
+            self.languages = languages
+            self.probs = probs
+
+    class _Stream:
+        def accept_waveform(self, sample_rate=None, waveform=None):
+            pass
+
+        def input_finished(self):
+            pass
+
+    class _Model:
+        def __init__(self, result):
+            self.result = result
+
+        def create_stream(self):
+            return _Stream()
+
+        def compute(self, stream):
+            if isinstance(self.result, Exception):
+                raise self.result
+            return self.result
+
+    _probe = np.zeros(1600, dtype=np.float32)
+    _tag, _conf, _ms = whisper_stream.detect_lang(
+        _probe, 16000,
+        _Model(_R("pt", ["pt", "es", "zh"], [0.91, 0.05, 0.02])),
+        ("zh-CN", "en-US", "pt-BR"), np)
+    check("结果对象里读得出语种（不是把对象当字符串）", _tag == "pt-BR", str(_tag))
+    check("置信度是真的概率（不是恒等于 1）", abs(_conf - 0.91) < 1e-6, str(_conf))
+
+    _tag2, _conf2, _ = whisper_stream.detect_lang(
+        _probe, 16000,
+        _Model(_R("es", ["es", "pt", "zh"], [0.50, 0.44, 0.06])),
+        ("zh-CN", "pt-BR"), np)
+    check("全局第一名不在候选里时，**在候选里挑最可能的那个**（葡语 0.44），不是判不出来",
+          _tag2 == "pt-BR" and abs(_conf2 - 0.44) < 1e-6, f"{_tag2} {_conf2}")
+
+    _tag3, _conf3, _ = whisper_stream.detect_lang(_probe, 16000, _Model("zh"), None, np)
+    check("老版本只回一个语种码时也认（置信度记 1.0）", _tag3 == "zh-CN" and _conf3 == 1.0,
+          f"{_tag3} {_conf3}")
+
+    _tag4, _conf4, _ = whisper_stream.detect_lang(
+        _probe, 16000, _Model(_R("de", ["de"], [0.99])), ("zh-CN", "en-US", "pt-BR"), np)
+    check("判成完全不支持的语言时返回 None（不硬塞一个候选）", _tag4 is None, str(_tag4))
+
+    # 模型抛错必须**说出来**（原来 except 全吞掉，"模型坏了"和"听不出来"长得一样）
+    import contextlib as _ctx
+    import io as _io
+    whisper_stream._LID_NOTES.update({"count": 0, "seen": set()})
+    _note_err = _io.StringIO()
+    with _ctx.redirect_stderr(_note_err):
+        _tag5, _, _ = whisper_stream.detect_lang(
+            _probe, 16000, _Model(RuntimeError("boom")), None, np)
+        whisper_stream.detect_lang(_probe, 16000, _Model(RuntimeError("boom")), None, np)
+    check("模型抛错时返回 None，但**打出原因**（不再静默）",
+          _tag5 is None and "RuntimeError: boom" in _note_err.getvalue(), _note_err.getvalue()[-200:])
+    check("同一句原因只喊一次（不刷屏）", _note_err.getvalue().count("RuntimeError: boom") == 1,
+          _note_err.getvalue()[-200:])
+
     # 没给模型 = 老行为（一个字都不做）
     _no_lid_args = whisper_stream.parse_args([])
     check("缺省不启用 LID（没给 --lid-model 也没有环境变量）",
