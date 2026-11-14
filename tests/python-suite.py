@@ -4758,6 +4758,96 @@ def main():
     finally:
         shutil.rmtree(_lid_dir, ignore_errors=True)
 
+    # LID 配置的**写法会随 sherpa-onnx 版本变**（5.206，服务器上真踩到）：
+    # 服务器那份里外层只吃 `SpokenLanguageIdentificationWhisperConfig`，而我们写的是
+    # 语音识别那套 `OfflineWhisperModelConfig` → pybind 报 "incompatible constructor
+    # arguments"，长得像"模型没装好"，人就会跑去重下模型。
+    # 所以按"新 → 旧"列几种写法逐个试；这里用一个**只认新 API**的假模块钉住它。
+    _lid_dir2 = Path(ROOT / "var" / "test" / "lid-model-api")
+    shutil.rmtree(_lid_dir2, ignore_errors=True)
+    _lid_dir2.mkdir(parents=True, exist_ok=True)
+    try:
+        (_lid_dir2 / "tiny-encoder.onnx").write_bytes(b"x")
+        (_lid_dir2 / "tiny-decoder.onnx").write_bytes(b"x")
+
+        class _ApiMismatch(TypeError):
+            pass
+
+        class _NewWhisperCfg:
+            """新版内层：只认 encoder/decoder，传 num_threads 之类就"不认识"。"""
+
+            def __init__(self, *, encoder=None, decoder=None, **_extra):
+                if _extra:
+                    raise _ApiMismatch("__init__(): incompatible constructor arguments")
+                self.kw = {"encoder": encoder, "decoder": decoder}
+
+        class _NewOuterCfg:
+            """新版外层：whisper 只认新版内层那个类（旧的就抛，与实机一致）。"""
+
+            def __init__(self, whisper=None, num_threads=None, debug=None, provider=None):
+                if not isinstance(whisper, _NewWhisperCfg):
+                    raise _ApiMismatch("__init__(): incompatible constructor arguments. "
+                                       "Invoked with: kwargs: whisper=<OfflineWhisperModelConfig …>")
+                self.kw = {"whisper": whisper, "num_threads": num_threads,
+                           "debug": debug, "provider": provider}
+
+        class _OldWhisperCfg:
+            def __init__(self, **kw):
+                self.kw = kw
+
+        class _NewLid:
+            def __init__(self, config):
+                self.config = config
+
+        class _OnlyNewApi:
+            SpokenLanguageIdentificationWhisperConfig = _NewWhisperCfg
+            OfflineWhisperModelConfig = _OldWhisperCfg
+            SpokenLanguageIdentificationConfig = _NewOuterCfg
+            SpokenLanguageIdentification = _NewLid
+            __version__ = "9.9.9-test"
+
+        class _TooOld:
+            SpokenLanguageIdentificationConfig = _NewOuterCfg
+            SpokenLanguageIdentification = _NewLid
+
+        _saved2 = sys.modules.get("sherpa_onnx")
+        try:
+            sys.modules["sherpa_onnx"] = _OnlyNewApi
+            whisper_stream.LID_STATE.update({"model": None, "failed": False, "warned": False, "path": None})
+            import contextlib as _ctx
+            import io as _io
+            _err = _io.StringIO()
+            with _ctx.redirect_stderr(_err):
+                _ok = whisper_stream.load_lid(whisper_stream.parse_args(["--lid-model", str(_lid_dir2)]))
+            check("新 API（SpokenLanguageIdentificationWhisperConfig）也能加载（不再只认旧写法）",
+                  _ok is not None, _err.getvalue()[-400:])
+            check("加载成功时会打出实际用的配置写法（下次一眼看出是哪种 API）",
+                  "SpokenLanguageIdentificationWhisperConfig" in _err.getvalue(),
+                  _err.getvalue()[-400:])
+            # 顺序：先试新 API（实机装的就是新的），旧写法留作兜底
+            _labels = [one[0] for one in whisper_stream._lid_config_attempts(_OnlyNewApi, "e", "d")]
+            check("先试新 API、再试旧写法（不是反过来）",
+                  _labels[0].startswith("SpokenLanguageIdentificationWhisperConfig")
+                  and any(one.startswith("OfflineWhisperModelConfig") for one in _labels),
+                  str(_labels))
+
+            # 两者都造不出来（版本太老）→ 返回 None，且报错要**说清不是模型的问题**
+            sys.modules["sherpa_onnx"] = _TooOld
+            whisper_stream.LID_STATE.update({"model": None, "failed": False, "warned": False, "path": None})
+            _err2 = _io.StringIO()
+            with _ctx.redirect_stderr(_err2):
+                _none = whisper_stream.load_lid(whisper_stream.parse_args(["--lid-model", str(_lid_dir2)]))
+            check("版本太老时返回 None，且报错点名「版本太老」而不是怪模型",
+                  _none is None and "版本太老" in _err2.getvalue(), _err2.getvalue()[-400:])
+        finally:
+            if _saved2 is None:
+                sys.modules.pop("sherpa_onnx", None)
+            else:
+                sys.modules["sherpa_onnx"] = _saved2
+            whisper_stream.LID_STATE.update({"model": None, "failed": False, "warned": False, "path": None})
+    finally:
+        shutil.rmtree(_lid_dir2, ignore_errors=True)
+
     # 消费者里这三件事的顺序必须对：前置降噪 → **判语种** → 选策略/分发
     _csrc = (ROOT / "bridge" / "whisper_stream.py").read_text(encoding="utf-8")
     _csrc = _csrc[_csrc.index("def run_queue_consumer"):]

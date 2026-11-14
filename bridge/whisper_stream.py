@@ -2881,6 +2881,59 @@ def lid_available(args):
     return bool(_os.environ.get("LEION_LID_MODEL", "").strip())
 
 
+def _lid_config_attempts(sherpa_onnx, encoder, decoder):
+    """按 sherpa-onnx 的版本，列出"怎么造 LID 配置"的几种写法（新 → 旧）。
+
+    <p>为什么不是一句话就能写死：LID 的配置类**换过形状**，实机踩到过 ——
+    服务器上那份 sherpa-onnx 里，外层 `SpokenLanguageIdentificationConfig` 只吃
+    `SpokenLanguageIdentificationWhisperConfig`，而我们代码里写的是语音识别那套
+    `OfflineWhisperModelConfig`，于是 pybind 直接拒绝：
+
+        TypeError: __init__(): incompatible constructor arguments … Invoked with:
+        kwargs: whisper=<OfflineWhisperModelConfig …>
+
+    这类错误**不是"模型没装好"**，但报出来长得就像，最后人跑去重下模型。
+    而 pybind 的构造函数只认关键字、不认"多余参数"，所以这里把已知的几种形状
+    都列出来逐个试（含"只传最少参数"的兜底），谁成了就用谁，全失败才报错 ——
+    并且在报错里**列出试过哪些写法**，别再让人去猜。
+
+    @returns {Array<[string, Function]>} `[说明, 造配置的闭包]`，按可能性从高到低
+    """
+    attempts = []
+
+    def outer_variants():
+        """外层配置的两种写法：带 num_threads/debug/provider，或只给 whisper。"""
+        return (
+            ("", {"num_threads": 1, "debug": False, "provider": "cpu"}),
+            ("（外层最少参数）", {}),
+        )
+
+    whisper_cls = getattr(sherpa_onnx, "SpokenLanguageIdentificationWhisperConfig", None)
+    if whisper_cls is not None:
+        for inner_label, inner in (
+            ("（全参数）", {"encoder": encoder, "decoder": decoder,
+                            "num_threads": 1, "debug": False, "provider": "cpu"}),
+            ("（最少参数）", {"encoder": encoder, "decoder": decoder}),
+            # 兜底：某些版本的内层只要 encoder（解码器那份在某版里换成了内置分类头）
+            ("（只有 encoder）", {"encoder": encoder}),
+        ):
+            for outer_label, outer in outer_variants():
+                attempts.append((
+                    f"SpokenLanguageIdentificationWhisperConfig{inner_label}{outer_label}",
+                    lambda inner=inner, outer=outer: sherpa_onnx.SpokenLanguageIdentificationConfig(
+                        whisper=whisper_cls(**inner), **outer)))
+
+    offline_cls = getattr(sherpa_onnx, "OfflineWhisperModelConfig", None)
+    if offline_cls is not None:
+        for outer_label, outer in outer_variants():
+            attempts.append((
+                f"OfflineWhisperModelConfig{outer_label}",
+                lambda outer=outer: sherpa_onnx.SpokenLanguageIdentificationConfig(
+                    whisper=offline_cls(encoder=encoder, decoder=decoder, language="",
+                                        task="transcribe", tail_paddings=-1), **outer)))
+    return attempts
+
+
 def load_lid(args):
     """加载 LID 模型（懒加载 + 失败只喊一次）。返回对象或 None。"""
     if LID_STATE["failed"]:
@@ -2929,15 +2982,31 @@ def load_lid(args):
         if encoder == "" or decoder == "":
             raise FileNotFoundError(
                 f"{model_dir} 里找不到 encoder/decoder（LID 用的是 whisper 那种编码器+解码器）")
-        config = sherpa_onnx.SpokenLanguageIdentificationConfig(
-            whisper=sherpa_onnx.OfflineWhisperModelConfig(
-                encoder=encoder, decoder=decoder, language="", task="transcribe", tail_paddings=-1),
-            num_threads=1, debug=False, provider="cpu")
+        attempts = _lid_config_attempts(sherpa_onnx, encoder, decoder)
+        if not attempts:
+            raise RuntimeError("这份 sherpa-onnx 里既没有 SpokenLanguageIdentificationWhisperConfig，"
+                               "也没有 OfflineWhisperModelConfig —— 版本太老，装不上 LID")
+        config = None
+        tried = []
+        last_error = ""
+        for label, factory in attempts:
+            try:
+                config = factory()
+                tried.append(label + " → 成")
+                break
+            except Exception as error:                          # noqa: BLE001
+                tried.append(f"{label} → {type(error).__name__}")
+                last_error = f"{type(error).__name__}: {error}"
+        if config is None:
+            raise RuntimeError(f"造不出 LID 配置（试过：{'；'.join(tried)}）。最后一次：{last_error}")
         LID_STATE["model"] = sherpa_onnx.SpokenLanguageIdentification(config)
         LID_STATE["path"] = model_dir
-        # 报出**实际用哪两个文件**：现场最常出错的是"目录里有两个包，挑错了那个"
+        version = str(getattr(sherpa_onnx, "__version__", "") or "未知版本")
+        # 报出**实际用哪两个文件 + 哪种配置写法**：现场最常出错的是"挑错了包"和
+        # "sherpa-onnx 版本与代码里的写法不一致"，这两行以后一眼能看出来。
         print(f"[识别] 语种识别已启用：{model_dir}"
               f"（{_os2.path.basename(encoder)} + {_os2.path.basename(decoder)}；"
+              f"sherpa-onnx {version}，配置写法 {tried[-1]}；"
               "CPU；只在切句之后、分发之前用）", file=sys.stderr, flush=True)
         return LID_STATE["model"]
     except Exception as error:                                  # noqa: BLE001
