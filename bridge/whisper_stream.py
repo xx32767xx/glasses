@@ -3016,13 +3016,20 @@ def load_lid_ecapa(args, model_dir):
         LID_STATE["failed"] = True
         return None
     try:
+        # ⚠️ 5.215：**强制 CPU**。两个理由，都是实机踩出来的：
+        #   ① 这台机器的 GPU 被 whisper 大模型占着（显存就那么点），
+        #      ECAPA 再抢一块就是"识别突然 OOM"；语种判定这点计算量 CPU 完全够；
+        #   ② 驱动/CUDA 版本一变（例如装其他包顺手升级了 torch），
+        #      speechbrain 会先试 GPU 再失败 —— 那条路上报的错看起来像"模型坏了"。
         # 目录里已经有模型文件 → 纯离线加载；否则当成"下载缓存目录"，
         # 用 HF 上的仓库名下到那里（第一次联网，之后离线可用）。
         if os.path.isfile(os.path.join(model_dir, "hyperparams.yaml")):
-            handle = EncoderClassifier.from_hparams(source=model_dir, savedir=model_dir)
+            handle = EncoderClassifier.from_hparams(
+                source=model_dir, savedir=model_dir, run_opts={"device": "cpu"})
         else:
             handle = EncoderClassifier.from_hparams(
-                source="speechbrain/lang-id-voxlingua107-ecapa", savedir=model_dir)
+                source="speechbrain/lang-id-voxlingua107-ecapa", savedir=model_dir,
+                run_opts={"device": "cpu"})
         handle.eval()
         labels = {}
         encoder = getattr(getattr(handle, "hparams", None), "label_encoder", None)

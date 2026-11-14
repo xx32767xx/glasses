@@ -4865,8 +4865,15 @@ def main():
         _sb_inf = _types.ModuleType("speechbrain.inference")
         _sb_cls = _types.ModuleType("speechbrain.inference.classifiers")
         _sb_cls.EncoderClassifier = _types.SimpleNamespace(
-            from_hparams=lambda source=None, savedir=None: _Handle(
+            from_hparams=lambda source=None, savedir=None, run_opts=None: _Handle(
                 [0.10, 0.75, 0.15], ["en: English", "pt: Portuguese", "zh: Chinese"]))
+        # 记录传进来的 run_opts，用来钉住"必须强制 CPU"（GPU 要留给 whisper 大模型）
+        _run_opts_seen = {}
+
+        def _from_hparams(source=None, savedir=None, run_opts=None):
+            _run_opts_seen["run_opts"] = run_opts
+            return _Handle([0.10, 0.75, 0.15], ["en: English", "pt: Portuguese", "zh: Chinese"])
+        _sb_cls.EncoderClassifier = _types.SimpleNamespace(from_hparams=_from_hparams)
         _sk_kwargs = {}
         for mod, name, value in ((_fake_torch, "torch", _fake_torch),
                                  (_sb, "speechbrain", _sb),
@@ -4882,6 +4889,9 @@ def main():
                   isinstance(_ec, dict) and _ec.get("engine") == "ecapa"
                   and set(_ec.get("labels", {})) == {"en-US", "pt-BR", "zh-CN"},
                   str(None if not isinstance(_ec, dict) else _ec.get("labels")))
+            check("ECAPA **强制跑在 CPU 上**（GPU 显存要留给 whisper 大模型，抢一块就是识别 OOM）",
+                  (_run_opts_seen.get("run_opts") or {}).get("device") == "cpu",
+                  str(_run_opts_seen.get("run_opts")))
             # 概率表：en 0.10 / pt 0.75 / zh 0.15。先关掉门槛，只为验证"候选内 argmax"。
             _ec_free = dict(_ec)
             _ec_free["minConfidence"] = 0.0
