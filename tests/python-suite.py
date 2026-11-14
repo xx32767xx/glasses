@@ -4927,6 +4927,60 @@ def main():
     check("置信度门槛缺省 0.30（够宽，不至于把正常判定全挡掉）",
           abs(_lid_conf_args.lid_min_confidence - 0.30) < 1e-9,
           str(_lid_conf_args.lid_min_confidence))
+
+    # 5.216：speechbrain 的 label_encoder 形态不固定（实机踩到：`认出的候选： []`）。
+    # 读不出来时**不报错、只降级**，所以要专门钉住"三种形态都能读"，以及读不出来时会说一句。
+    import types as _types2
+
+    def _handle_with(**attrs):
+        enc = _types2.SimpleNamespace(**attrs)
+        return _types2.SimpleNamespace(hparams=_types2.SimpleNamespace(label_encoder=enc))
+
+    _m_list = whisper_stream.ecapa_label_map(
+        _handle_with(ind2lab=["en: English", "pt: Portuguese", "zh: Chinese", "de: German"]))
+    check("标签表是 list 时能读出三种（`en: English` 这种写法）",
+          _m_list == {"en-US": 0, "pt-BR": 1, "zh-CN": 2}, str(_m_list))
+    _m_ind2lab = whisper_stream.ecapa_label_map(
+        _handle_with(ind2lab={0: "en: English", 1: "pt", 2: "zh"}))
+    check("标签表是 `{序号: 标签}` 的 dict 时也能读（这是实机那份的形态之一）",
+          _m_ind2lab == {"en-US": 0, "pt-BR": 1, "zh-CN": 2}, str(_m_ind2lab))
+    _m_lab2ind = whisper_stream.ecapa_label_map(
+        _handle_with(lab2ind={"en: English": 5, "pt: Portuguese": 9, "zh: Chinese": 12}))
+    check("标签表是 `{标签: 序号}` 的 dict 时也能读",
+          _m_lab2ind == {"en-US": 5, "pt-BR": 9, "zh-CN": 12}, str(_m_lab2ind))
+    whisper_stream._LID_NOTES.update({"count": 0, "seen": set()})
+    _map_err = _io.StringIO()
+    with _ctx.redirect_stderr(_map_err):
+        _m_none = whisper_stream.ecapa_label_map(_handle_with(ind2lab=[]))
+    check("读不出来时返回空表，并**把实际结构说出来**（别再靠猜是 list 还是 dict）",
+          _m_none == {} and "标签表读不出来" in _map_err.getvalue(), _map_err.getvalue()[-160:])
+    whisper_stream._LID_NOTES.update({"count": 0, "seen": set()})
+
+    # 标签表读不出来时，置信度也不能谎报 1.0（否则门槛失效）
+    class _HandleNoLabels:
+        hparams = _types2.SimpleNamespace(label_encoder=_types2.SimpleNamespace(ind2lab=[]))
+
+        def classify_batch(self, _wav):
+            return np.asarray([0.05, 0.20, 0.75], dtype=np.float32), 0.75, [2], ["pt: Portuguese"]
+
+    _no_labels = {"engine": "ecapa", "handle": _HandleNoLabels(), "labels": {}, "minConfidence": 0.9}
+    import types as _types3
+    _fake_torch2 = _types3.ModuleType("torch")
+    _fake_torch2.from_numpy = lambda array: _Wav(array)
+    _saved_torch = sys.modules.get("torch")
+    sys.modules["torch"] = _fake_torch2
+    try:
+        whisper_stream._LID_NOTES.update({"count": 0, "seen": set()})
+        _tagN, _confN, _ = whisper_stream.detect_lang(
+            np.zeros(1600, dtype=np.float32), 16000, _no_labels, ("pt-BR",), np)
+        check("没有标签表时按「模型第一名」，但置信度用**真实概率**（0.75），并受门槛约束",
+              _tagN is None and abs(_confN - 0.75) < 1e-5, f"{_tagN} {_confN}")
+    finally:
+        if _saved_torch is None:
+            sys.modules.pop("torch", None)
+        else:
+            sys.modules["torch"] = _saved_torch
+        whisper_stream._LID_NOTES.update({"count": 0, "seen": set()})
     _lid_defaults = _lid_conf_args
     check("缺省：窗口 10 秒、静音门槛 4 秒（按实测调的，见下）",
           _lid_defaults.lid_window_ms == 10000 and _lid_defaults.lid_gap_ms == 4000,

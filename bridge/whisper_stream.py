@@ -2996,6 +2996,48 @@ def lid_engine_of(model_dir):
     return "sherpa-whisper"
 
 
+def ecapa_label_map(handle):
+    """从 speechbrain 的 label_encoder 里建 `{系统标签: 索引}`（5.216）。
+
+    <p>⚠️ 实机踩到：`ind2lab` 的形态**不是固定的** —— 可能是 list、可能是 dict，
+    也可能要等 `load()` 之后才有内容。第一版只按 list 遍历，结果启动横幅打出
+    `候选可用（认不出标签）`、`labels = {}`，于是"候选内 argmax"退化成"用模型自己的
+    第一名"，置信度也只能谎报 1.0 —— 而这一切**不报错**，只是判定质量悄悄变差。
+
+    <p>所以这里三种形态都试，并且**解析不出来时把实际结构打出来**（带样本），
+    这样下一次就不必再猜是 list 还是 dict。
+    """
+    encoder = getattr(getattr(handle, "hparams", None), "label_encoder", None)
+    pairs = []
+    lab2ind = getattr(encoder, "lab2ind", None)
+    ind2lab = getattr(encoder, "ind2lab", None)
+    if isinstance(lab2ind, dict) and len(lab2ind) > 0:
+        pairs = list(lab2ind.items())                       # {标签: 序号}
+    elif isinstance(ind2lab, dict) and len(ind2lab) > 0:
+        pairs = [(lab, index) for index, lab in ind2lab.items()]   # {序号: 标签}
+    elif isinstance(ind2lab, (list, tuple)) and len(ind2lab) > 0:
+        pairs = [(lab, index) for index, lab in enumerate(ind2lab)]  # [标签, ...]
+    labels = {}
+    for lab, index in pairs:
+        # 标签可能是 `pt` 也可能写成 `pt: Portuguese` —— 两种都认
+        tag = lid_tag_of(str(lab).split(":")[0])
+        if tag != "" and tag not in labels:
+            try:
+                labels[tag] = int(index)
+            except (TypeError, ValueError):
+                continue
+    if not labels:
+        sample = ""
+        if pairs:
+            sample = f"，样本 {pairs[:3]!r}"
+        elif ind2lab is not None or lab2ind is not None:
+            sample = (f"，ind2lab={type(ind2lab).__name__}/{len(ind2lab or ())} 项，"
+                      f"lab2ind={type(lab2ind).__name__}/{len(lab2ind or ())} 项")
+        _lid_note(f"ECAPA 的标签表读不出来（encoder={type(encoder).__name__}{sample}）"
+                  "→ 只能用模型自己给的第一名，候选内挑选和置信度门槛都用不上")
+    return labels
+
+
 def load_lid_ecapa(args, model_dir):
     """加载 VoxLingua107 ECAPA（speechbrain）。返回 `{"engine","handle","labels"}` 或 None。
 
@@ -3031,14 +3073,7 @@ def load_lid_ecapa(args, model_dir):
                 source="speechbrain/lang-id-voxlingua107-ecapa", savedir=model_dir,
                 run_opts={"device": "cpu"})
         handle.eval()
-        labels = {}
-        encoder = getattr(getattr(handle, "hparams", None), "label_encoder", None)
-        for index, lab in enumerate(getattr(encoder, "ind2lab", []) or []):
-            # 标签可能是 `pt` 也可能写成 `pt: Portuguese` —— 两种都认
-            code = str(lab).split(":")[0].strip().lower()
-            tag = lid_tag_of(code)
-            if tag != "" and tag not in labels:
-                labels[tag] = index
+        labels = ecapa_label_map(handle)
         LID_STATE["model"] = {"engine": "ecapa", "handle": handle, "labels": labels,
                               "minConfidence": float(getattr(args, "lid_min_confidence", 0) or 0)}
         LID_STATE["path"] = model_dir
@@ -3341,13 +3376,23 @@ def detect_lang_ecapa(audio, samplerate, model, candidates, np, min_confidence=0
             if prob > best_prob:
                 best_tag, best_prob = tag, prob
         if best_tag is None:
-            # 连索引都对不上（标签表不认识）→ 退回模型自己的第一名
+            # 连索引都对不上（标签表不认识）→ 退回模型自己的第一名。
+            # ⚠️ 5.216：这时**置信度不能再谎报 1.0** —— 用"全局第一名的概率"，
+            # 这样即使标签表读不出来，`--lid-min-confidence` 这道门槛仍然有效。
             top = str(text_lab[0] if isinstance(text_lab, (list, tuple)) else text_lab)
             tag = lid_tag_of(top.split(":")[0])
+            conf = 0.0
+            try:
+                conf = float(probs[int(_index[0])])
+            except (TypeError, ValueError, IndexError):
+                conf = 0.0
             if tag == "":
-                _lid_note(f"ECAPA 判出 {top!r}，不在支持范围")
-                return None, 0.0, elapsed
-            return tag, 1.0, elapsed
+                _lid_note(f"ECAPA 判出 {top!r}（{conf:.2f}），不在支持范围")
+                return None, conf, elapsed
+            if min_confidence > 0 and conf < float(min_confidence):
+                _lid_note(f"ECAPA 第一名 {tag} 只有 {conf:.2f}（门槛 {min_confidence}）→ 这次不算数")
+                return None, conf, elapsed
+            return tag, conf, elapsed
         if min_confidence > 0 and best_prob < float(min_confidence):
             _lid_note(f"ECAPA 最高只有 {best_prob:.2f}（门槛 {min_confidence}）→ 这次不算数")
             return None, best_prob, elapsed
