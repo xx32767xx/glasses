@@ -3123,6 +3123,53 @@ def _lid_note(message):
           "（这一段沿用上一次/段自带的语种，不影响识别）", file=sys.stderr, flush=True)
 
 
+def _lid_compute(model, audio, samplerate, np):
+    """跑一次 LID，返回 `(原始结果对象, 用的是哪种写法)`。
+
+    <p>**签名在版本之间变过，已经踩到两次**（都长得像"模型/音频有问题"）：
+      <ol>
+        <li>`stream.accept_waveform(...)` + `stream.input_finished()` + `model.compute(stream)`
+            —— 第一版这么写，而实机里 LID 的流是 `OfflineStream`，**没有 `input_finished`**
+            （`AttributeError: 'OfflineStream' object has no attribute 'input_finished'`）；</li>
+        <li>`model.compute(waveform, sample_rate)` —— 直接给数组的签名。</li>
+      </ol>
+    所以这里按"最可能 → 次可能"逐个试，成功即返回；全失败就把三种写法的错误一起报出来。
+
+    @returns {[object, string]} 结果对象 + 用了哪种写法（写进 detail 日志，便于下次一眼认出）
+    """
+    samples = np.asarray(audio, dtype=np.float32)
+    rate = int(samplerate)
+
+    def via_stream_kwargs():
+        stream = model.create_stream()
+        stream.accept_waveform(sample_rate=rate, waveform=samples)
+        finish = getattr(stream, "input_finished", None)
+        if callable(finish):
+            finish()
+        return model.compute(stream)
+
+    def via_array():
+        return model.compute(samples, rate)
+
+    def via_stream_positional():
+        stream = model.create_stream()
+        stream.accept_waveform(rate, samples)
+        finish = getattr(stream, "input_finished", None)
+        if callable(finish):
+            finish()
+        return model.compute(stream)
+
+    problems = []
+    for label, run in (("流式（create_stream → compute）", via_stream_kwargs),
+                       ("直接给数组（compute(waveform, rate)）", via_array),
+                       ("流式（位置参数）", via_stream_positional)):
+        try:
+            return run(), label
+        except Exception as error:                              # noqa: BLE001
+            problems.append(f"{label}: {type(error).__name__}: {error}")
+    raise RuntimeError("；".join(problems))
+
+
 def detect_lang(audio, samplerate, model, candidates, np):
     """跑一次 LID，返回 (语种标签或 None, 置信度 0~1, 耗时 ms)。
 
@@ -3136,11 +3183,10 @@ def detect_lang(audio, samplerate, model, candidates, np):
         return None, 0.0, 0
     started = time.perf_counter()
     try:
-        stream = model.create_stream()
-        stream.accept_waveform(sample_rate=int(samplerate), waveform=np.asarray(audio, dtype=np.float32))
-        stream.input_finished()
-        raw = model.compute(stream)
+        raw, how = _lid_compute(model, audio, samplerate, np)
         elapsed = int(round((time.perf_counter() - started) * 1000))
+        if log_level_at_least("trace"):
+            print(f"[识别] 语种判定的调用方式：{how}（{elapsed}ms）", file=sys.stderr, flush=True)
         code = _lid_pick_code(raw)
         tag = _LID_TAG.get(code)
         allowed = [one for one in (candidates or ()) if one in _LID_TAG.values()]

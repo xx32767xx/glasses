@@ -4701,6 +4701,9 @@ def main():
     # sherpa-onnx 的 `model.compute(stream)` 返回的是**结果对象**（.lang/.languages/.probs），
     # 而代码里原来写的是 `str(raw)` —— 于是永远对不上映射表、永远返回 None，
     # 日志只有"判成（不确定）"，看起来像"这段音频听不出来"，其实是没读结果。
+    import contextlib as _ctx
+    import io as _io
+
     class _R:
         def __init__(self, lang, languages=None, probs=None):
             self.lang = lang
@@ -4745,6 +4748,64 @@ def main():
     check("老版本只回一个语种码时也认（置信度记 1.0）", _tag3 == "zh-CN" and _conf3 == 1.0,
           f"{_tag3} {_conf3}")
 
+    # 调用签名也换过（5.208，实机踩到第二次）：
+    # 第一版写的是 `stream.input_finished()`，而 LID 的流是 OfflineStream —— **没有这个方法**
+    # （AttributeError: 'OfflineStream' object has no attribute 'input_finished'）。
+    # 所以三种写法都要能跑通：流式（可无 input_finished）、直接给数组。
+    class _StreamWithFinish:
+        def __init__(self):
+            self.finished = False
+
+        def accept_waveform(self, *args, **kwargs):
+            pass
+
+        def input_finished(self):
+            self.finished = True
+
+    class _FinishModel:
+        def __init__(self):
+            self.stream = None
+
+        def create_stream(self):
+            self.stream = _StreamWithFinish()
+            return self.stream
+
+        def compute(self, stream):
+            return _R("en", ["en"], [0.8])
+
+    _fin = _FinishModel()
+    _tagF, _confF, _ = whisper_stream.detect_lang(_probe, 16000, _fin, None, np)
+    check("流的 compute 也不需要 input_finished（OfflineStream 就没有它）",
+          _tagF == "en-US" and _fin.stream is not None, str(_tagF))
+
+    class _ArrayOnlyModel:
+        def create_stream(self):
+            return _Stream()
+
+        def compute(self, arg=None, rate=None):
+            if rate is None:
+                raise TypeError("compute(): incompatible function arguments")
+            return _R("en", ["en", "pt"], [0.8, 0.2])
+
+    _tagAr, _confAr, _ = whisper_stream.detect_lang(_probe, 16000, _ArrayOnlyModel(), ("en-US",), np)
+    check("只接受 compute(waveform, rate) 的版本也能跑（第二种写法兜住）",
+          _tagAr == "en-US" and abs(_confAr - 0.8) < 1e-6, f"{_tagAr} {_confAr}")
+
+    class _BrokenModel:
+        def create_stream(self):
+            raise RuntimeError("cannot create stream")
+
+        def compute(self, *args, **kwargs):
+            raise RuntimeError("cannot compute")
+
+    whisper_stream._LID_NOTES.update({"count": 0, "seen": set()})
+    _err_try = _io.StringIO()
+    with _ctx.redirect_stderr(_err_try):
+        _tagBr, _, _ = whisper_stream.detect_lang(_probe, 16000, _BrokenModel(), None, np)
+    check("三种写法都失败时返回 None，且报错里**列出试过哪几种**",
+          _tagBr is None and "直接给数组" in _err_try.getvalue(), _err_try.getvalue()[-300:])
+    whisper_stream._LID_NOTES.update({"count": 0, "seen": set()})
+
     _tag4, _conf4, _ = whisper_stream.detect_lang(
         _probe, 16000, _Model(_R("de", ["de"], [0.99])), ("zh-CN", "en-US", "pt-BR"), np)
     check("判成完全不支持的语言时返回 None（不硬塞一个候选）", _tag4 is None, str(_tag4))
@@ -4760,8 +4821,10 @@ def main():
         whisper_stream.detect_lang(_probe, 16000, _Model(RuntimeError("boom")), None, np)
     check("模型抛错时返回 None，但**打出原因**（不再静默）",
           _tag5 is None and "RuntimeError: boom" in _note_err.getvalue(), _note_err.getvalue()[-200:])
-    check("同一句原因只喊一次（不刷屏）", _note_err.getvalue().count("RuntimeError: boom") == 1,
-          _note_err.getvalue()[-200:])
+    # 一次提示里会把"试过哪几种写法"都列上（所以 boom 会出现三次），
+    # 这条判的是**提示行数**：同一段原因只喊一行，不刷屏。
+    check("同一句原因只喊一次（不刷屏）",
+          _note_err.getvalue().count("语种判定没能出结果") == 1, _note_err.getvalue()[-300:])
 
     # 没给模型 = 老行为（一个字都不做）
     _no_lid_args = whisper_stream.parse_args([])
