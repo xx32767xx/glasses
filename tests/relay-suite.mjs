@@ -44,7 +44,10 @@ function frame(text, extra = {}) {
 }
 
 export async function runRelaySuite({ it, check, assert }) {
-  await rm(TMP, { recursive: true, force: true })
+  // Windows 上 `rm` 偶尔会撞上"文件刚被异步写进去"的 ENOTEMPTY（转发进程里有
+  // `void writeFile(...)` 的旁文件链），而这一下会把整轮测试打成红的 —— 假的失败
+  // 比没有测试更糟。maxRetries 让 fs.rm 自己退避重试（ENOTEMPTY 在重试名单里）。
+  await rm(TMP, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   await mkdir(TMP, { recursive: true })
 
   // 5.179：现场「息屏之后新字幕不会推给他，连上之后之前的字幕会消失」。
@@ -759,6 +762,48 @@ export async function runRelaySuite({ it, check, assert }) {
         roomSpeakerAudioPath(dir, 'room-A', '../../etc/passwd')
           .startsWith(roomTrackDir(dir, 'room-A') + sep),
         roomSpeakerAudioPath(dir, 'room-A', '../../etc/passwd'))
+    } finally {
+      relay.close?.()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  await it('5.204：参会方式随音频写进旁文件 —— 远程无条件相信，面对面才判语种', async () => {
+    // 用户定的规则：**远程的人自己选的语言就是可信的**（他在自己机器前说话）；
+    // 面对面的会场麦里谁开口、说什么语言都随机，手机上的语种只是"机主说什么"，
+    // 必须由识别端在"切句之后、分发之前"判。relay 只负责把"这段声音是哪种
+    // 参会方式的人说的"写进旁文件 —— 判定留在有模型的那一侧。
+    const dir = mkdtempSync(join(tmpdir(), 'roommode-'))
+    const secret = 's3cret-0123456789abcdef'
+    const room = createRoom(dir, { name: '面对面会', host: 'alice', lang: 'zh-CN', mode: 'onsite' })
+    joinRoom(dir, { roomId: room.room.id, username: 'bob', lang: 'en-US', mode: 'remote' })
+    const relay = await startRelay({ dataDir: dir, port: 0, host: '127.0.0.1', secret, quiet: true })
+    try {
+      const base = `http://127.0.0.1:${relay.port}`
+      const post = (speaker, lang) => fetch(
+        `${base}/audio?rate=16000&lang=${encodeURIComponent(lang)}`
+        + `&room=${encodeURIComponent(room.room.id)}&speaker=${encodeURIComponent(speaker)}`,
+        { method: 'POST', headers: { 'X-Leion-Secret': secret }, body: Buffer.alloc(320, 1) })
+      await post('alice', 'zh-CN')
+      await post('bob', 'en-US')
+      await post('carla', 'pt-BR')          // 没在成员表里的人
+      await sleep(300)
+
+      const modeOf = (speaker) => readFileSync(
+        roomSpeakerAudioPath(dir, room.room.id, speaker) + '.mode', 'utf-8').trim()
+      check('面对面的人 → onsite（识别端会判语种）', modeOf('alice') === 'onsite', modeOf('alice'))
+      check('远程的人 → remote（识别端无条件相信他选的语种）', modeOf('bob') === 'remote', modeOf('bob'))
+      check('没登记的人 → unknown（当面对面处理：该判还得判，绝不悄悄相信兜底语种）',
+        modeOf('carla') === 'unknown', modeOf('carla'))
+
+      // 侧车：识别端拿它当**候选语种**（收窄候选不会把真语种挡外面，但能避免
+      // "九十九种里挑一种"的离谱错判），也让人事后一眼看出谁在哪一侧。
+      const sidecar = JSON.parse(readFileSync(join(dir, 'room-langs', `${room.room.id}.json`), 'utf-8'))
+      check('room-langs 侧车带 speakLangs（本场**有人说的**语言，不是想读的）',
+        JSON.stringify(sidecar.speakLangs) === '["en-US","zh-CN"]', JSON.stringify(sidecar.speakLangs))
+      check('侧车带 modes（谁面对面、谁远程 —— 排障不用再查库）',
+        sidecar.modes?.alice === 'onsite' && sidecar.modes?.bob === 'remote',
+        JSON.stringify(sidecar.modes))
     } finally {
       relay.close?.()
       rmSync(dir, { recursive: true, force: true })
@@ -1795,5 +1840,5 @@ export async function runRelaySuite({ it, check, assert }) {
   })
 
   await relay.close()
-  await rm(TMP, { recursive: true, force: true })
+  await rm(TMP, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
 }

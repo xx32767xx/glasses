@@ -485,7 +485,7 @@ def log_level_at_least(level):
 
 
 def _write_segment(queue_dir, tag, samplerate, audio, np, language=None, speaker=None,
-                   strategy=None, room_code=None):
+                   strategy=None, room_code=None, mode=None):
     """把一段话落进队列：裸 PCM + 一份 meta。返回写出的文件名（供日志/测试）。"""
     os.makedirs(queue_dir, exist_ok=True)
     # 文件名按**时间戳**排：消费者直接按名字排序就是"到达顺序"（FIFO），
@@ -512,6 +512,9 @@ def _write_segment(queue_dir, tag, samplerate, audio, np, language=None, speaker
         "lang": None if language is None else str(language),
         # 5.08：这段话是谁说的。分轨之后这是**数据自带的**，不用下游再猜"最近的说话人"。
         "speaker": None if speaker is None else str(speaker),
+        # 5.204：说这段话的人是**面对面**还是**远程**（`onsite`/`remote`，读不到是 None）。
+        # 识别端据此决定要不要判语种 —— 远程的语种本人选的，无条件相信。
+        "mode": None if not mode else str(mode),
         # 5.41：这一段是用哪份**识别策略**切的（名字）。随数据一路往下走，
         # 这样 A/B 报告能按策略分组，而不是事后靠时间顺序猜"这几句是改之前还是之后"。
         "strategy": None if strategy is None else str(strategy),
@@ -622,6 +625,25 @@ def _read_lang_sidecar(pcm_path):
     except OSError:
         return None
     return whisper_language_of(tag)
+
+
+def _read_mode_sidecar(pcm_path):
+    """读 `<pcm>.mode` 里的参会方式（`onsite` / `remote`），读不到返回 `""`。
+
+    <p>5.204：这一路是**面对面**（一部手机当会场麦）还是**远程**（他自己一个人说话），
+    决定识别端要不要判语种：
+      · `remote` —— 无条件相信他入会时选的语种（先验是准的，再判一次只会引入错判）；
+      · 其它（`onsite` / 读不到 / 老数据）—— 切句之后由识别端判语种。
+
+    ⚠️ 读不到时**返回空串（= 该判还得判）**，绝不返回 `remote`：
+    relay 那边没登记参会方式时（老 APK、token 缺失）语种是上游兜底填的
+    （`pt-BR`），把它当"本人声明"正是"说中文被按葡语解码"的老病根。
+    """
+    try:
+        text = Path(str(pcm_path) + ".mode").read_text(encoding="utf-8").strip().lower()
+    except OSError:
+        return ""
+    return text if text in ("onsite", "remote") else ""
 
 
 def run_segment_producer_dir(args, np):
@@ -751,11 +773,18 @@ def run_segment_producer_dir(args, np):
         follower.lang_notice = None
         state = {"follower": follower, "segmenter": segmenter, "language": language,
                  "reported": None, "unknown": False,
+                 # 5.204：参会方式（`onsite`/`remote`/空）。跟着旁文件走，一路传进每段的 meta。
+                 "mode": _read_mode_sidecar(path),
                  "strategy": strategy, "segmenter_key": segmenter_key(strategy)}
         tracks[name] = state
         print(f"[切句] {args.tag or '?'} {name} 策略 = {strategy['strategy']}"
               f"（切句 {', '.join(f'{k}={v}' for k, v in strategy['segmentation'].items())}）",
               file=sys.stderr, flush=True)
+        if state["mode"] != "":
+            print(f"[切句] {args.tag or '?'} {name} 参会方式 = "
+                  + ("远程（他选的语种就当真的，不判语种）" if state["mode"] == "remote"
+                     else "面对面（谁开口不一定 —— 切句之后由识别端判语种）"),
+                  file=sys.stderr, flush=True)
         return state
 
     def flush(name, state, utterance, why=None):
@@ -772,7 +801,8 @@ def run_segment_producer_dir(args, np):
         base = _write_segment(args.segment_dir, args.tag, args.samplerate, utterance, np,
                               state["language"], speaker=name,
                               strategy=state["strategy"]["strategy"],
-                              room_code=getattr(args, "room_code", None))
+                              room_code=getattr(args, "room_code", None),
+                              mode=state.get("mode") or None)
         produced += 1
         # 5.177：切出一段就清零"丢弃突发"计数 —— 恢复正常了，不该继续累计旧账
         burst = getattr(state["segmenter"], "drop_burst", None)
@@ -846,6 +876,17 @@ def run_segment_producer_dir(args, np):
                 if not args.no_sidecar_lang:
                     state["language"] = state["follower"].read_language(default=state["language"])
                     report(name, state)
+                # 5.204：参会方式跟着旁文件走（改一次生效一次，不用重启）。
+                # 为什么值得每轮读：手机上换人用、或者老客户端补登记时，
+                # 这一路该不该判语种是会变的 —— 而"变了却没生效"正是本项目最贵的那类 bug。
+                fresh_mode = _read_mode_sidecar(root / f"{name}.pcm")
+                if fresh_mode != (state.get("mode") or ""):
+                    state["mode"] = fresh_mode
+                    print(f"[切句] {args.tag or '?'} {name} 参会方式 → "
+                          + {"remote": "远程（不判语种）",
+                             "onsite": "面对面（判语种）",
+                             "": "未知（按面对面处理：判语种）"}[fresh_mode],
+                          file=sys.stderr, flush=True)
                 # 语种或策略表变了 → 这一路换参数。**只在没在说话时换**：
                 # 手上正攒着的那句话必须按旧参数收尾，否则同一句会被两套阈值判两次
                 # （那正是"半句旧参数半句新参数"的噪声，A/B 时最难解释的一种）。
@@ -938,13 +979,16 @@ def run_segment_producer(args, np):
     unknown_noticed = False
 
     produced = 0
+    # 5.204：单文件模式也要带参会方式（老模式/`--try-audio` 之外的现场排障用）
+    single_mode = {"value": _read_mode_sidecar(args.follow)}
 
     def flush(utterance):
         nonlocal produced
         if utterance is None or len(utterance) == 0:
             return
         name = _write_segment(args.segment_dir, args.tag, args.samplerate, utterance, np, language,
-                              room_code=getattr(args, "room_code", None))
+                              room_code=getattr(args, "room_code", None),
+                              mode=single_mode["value"] or None)
         produced += 1
         if log_level_at_least("detail"):
             print(f"[切句] {args.tag or '?'} → {name}"
@@ -978,6 +1022,7 @@ def run_segment_producer(args, np):
             if not args.no_sidecar_lang:
                 language = follower.read_language(default=language)
                 report_language()
+            single_mode["value"] = _read_mode_sidecar(args.follow)
             if blocks:
                 idle.saw_data()
                 for block in blocks:
@@ -2907,7 +2952,9 @@ def lid_tags_of(raw_codes, fallback=("zh-CN", "en-US", "pt-BR")):
 def lid_candidates_for(data_dir, room, fallback=("zh-CN", "en-US", "pt-BR")):
     """这一场的候选语种 = **本场说话人语种的并集**（用户要求）。
 
-    <p>来源是 relay 写的侧车 `<data-dir>/room-langs/<房间>.json`（成员各自的 lang 去重）。
+    <p>来源是 relay 写的侧车 `<data-dir>/room-langs/<房间>.json`。两个字段：
+      · `speakLangs`（5.204）：本场**有人说的**语言（成员 `lang` 的并集）—— 首选；
+      · `langs`：本场**有人想读的**语言（可能比说的多，更早的版本只有它）。
     读不到就退回三种都给 —— 宁可多给一个候选，也不要把真语种挡在外面。
     """
     import json as _json
@@ -2920,10 +2967,15 @@ def lid_candidates_for(data_dir, room, fallback=("zh-CN", "en-US", "pt-BR")):
             payload = _json.load(handle)
     except (OSError, ValueError):
         return list(fallback)
-    langs = payload.get("langs") if isinstance(payload, dict) else None
-    if not isinstance(langs, list):
-        return list(fallback)
-    tags = [str(one).strip() for one in langs if isinstance(one, str) and str(one).strip() != ""]
+    tags = []
+    if isinstance(payload, dict):
+        for field in ("speakLangs", "langs"):
+            value = payload.get(field)
+            if isinstance(value, list) and value:
+                tags = [str(one).strip() for one in value
+                        if isinstance(one, str) and str(one).strip() != ""]
+                if tags:
+                    break
     # 只留下我们支持的三种，保持顺序稳定
     keep = [one for one in tags if one in _LID_TAG.values()]
     return list(dict.fromkeys(keep)) or list(fallback)
@@ -3002,10 +3054,12 @@ def run_queue_consumer(args, np, pool):
               file=sys.stderr, flush=True)
     # 5.202：语种识别（可选）。开了才加载模型 —— 没给模型就是老行为，一个字都不变。
     lid_model = load_lid(args) if lid_available(args) else None
-    lid_last = {}        # 房间 → 上一次的语种（粘滞用）
-    lid_pending = {}     # 房间 → (候选语种, 连续次数)
+    # 5.204：粘滞按 **(房间, 说话人)** 记 —— 一路一判，互不污染（见下面那段说明）
+    lid_last = {}        # (房间, 人) → 上一次的语种（粘滞用）
+    lid_pending = {}     # (房间, 人) → (候选语种, 连续次数)
     lid_used = 0         # 这段判出了语种
     lid_differs = 0      # 判定结果与段自带语种不同
+    lid_trusted = 0      # 远程的段：按他选的语种直接走，**没判**（5.204）
     processed = 0
     # 5.197：被"前置 VAD 判定这段没有人声"丢掉的段数。
     # 单独记一个数、而不是混进 processed：这正是"漏了一句"和"这一段本来就没说话"
@@ -3045,41 +3099,59 @@ def run_queue_consumer(args, np, pool):
             # 5.169：延迟账要用"这一段什么时候被取走"（排队的终点）
             picked_at_ms = int(time.time() * 1000)
             waited_ms_max = max(waited_ms_max, int(time.time() * 1000) - int(meta.get("queuedAt") or 0))
-            # 5.202：**先判语种，再选策略** —— 顺序就是用户要的"插在切句-分发之间"。
-            # 手机声明/旁文件的语种退化成"参考"，判定结果才是分发依据。
+            # 5.202/5.204：**先判语种，再选策略** —— 顺序就是用户要的"插在切句-分发之间"。
+            #
+            # 5.204 起只对**该判的那些段**判：用户定的规则是
+            #   · 远程的人：他入会时选的语种**无条件相信**（他在自己机器前说话，
+            #     选的什么就说什么；再判一次只会引入新的错判，还白花几十毫秒）；
+            #   · 面对面的会场麦：谁开口、说什么语言都随机，手机上的语种只是"机主说什么"，
+            #     必须由这里判（切句之后、分发之前）。
+            # 参会方式由 relay 写进 `audio/<房间>/<人>.pcm.mode`，随段 meta 一路带过来。
             declared_language = meta.get("lang") or args.language
             language = declared_language
             lid_note = None
-            if lid_model is not None:
+            seg_mode = str(meta.get("mode") or "").strip().lower()
+            if lid_model is not None and seg_mode != "remote":
+                # ⚠️ 粘滞（hysteresis）按 **(房间, 说话人)** 记，不是按房间：
+                # 一场会里两个面对面的人各用一部手机（各一路），按房间记会互相污染
+                # —— 甲刚把这一路判成英文，乙的中文段就跟着"英文"了。
                 room_id = meta.get("room")
+                lid_key = (str(room_id), str(meta.get("speaker") or ""))
                 rate_now = int(meta.get("rate") or args.samplerate)
                 candidates = lid_candidates_for(getattr(args, "data_dir", None), room_id)
                 detected, _score, lid_ms = detect_lang(audio, rate_now, lid_model, candidates, np)
-                previous = lid_last.get(room_id)
+                previous = lid_last.get(lid_key)
                 if detected is not None:
                     lid_used += 1
                     if detected == previous or previous is None:
-                        lid_last[room_id] = detected
-                        lid_pending.pop(room_id, None)
+                        lid_last[lid_key] = detected
+                        lid_pending.pop(lid_key, None)
                     else:
-                        want, count = lid_pending.get(room_id, (detected, 0))
+                        want, count = lid_pending.get(lid_key, (detected, 0))
                         count = count + 1 if want == detected else 1
                         need = max(1, int(getattr(args, "lid_switch_after", 2) or 1))
                         if count >= need:
-                            lid_last[room_id] = detected
-                            lid_pending.pop(room_id, None)
+                            lid_last[lid_key] = detected
+                            lid_pending.pop(lid_key, None)
                         else:
-                            lid_pending[room_id] = (detected, count)
-                language = lid_last.get(room_id) or declared_language
+                            lid_pending[lid_key] = (detected, count)
+                language = lid_last.get(lid_key) or declared_language
                 if language != declared_language:
                     lid_differs += 1
                 lid_note = {"lang": language, "detected": detected,
                             "declared": declared_language, "ms": lid_ms,
-                            "candidates": candidates}
+                            "candidates": candidates, "mode": seg_mode or "unknown"}
                 if log_level_at_least("detail"):
                     print(f"[识别] 语种判定：判成 {detected or '（不确定）'} → 用 "
                           f"{language}（段自带 {declared_language}；候选 {'/'.join(candidates)}；"
                           f"{lid_ms}ms）", file=sys.stderr, flush=True)
+            elif seg_mode == "remote" and declared_language:
+                # 远程：**无条件相信**（用户口径：远程的人选的语种就是准的）。
+                # 仍然记一笔，好让事后能对上"哪些句是判出来的、哪些句是声明的"。
+                lid_trusted += 1
+                lid_note = {"lang": language, "detected": None,
+                            "declared": declared_language, "ms": 0,
+                            "candidates": [], "mode": "remote", "trusted": True}
             # 5.148：**这一场（建房时）冻结的识别策略**优先于全局表。
             # 读不到是正常情况（老会议/建房时没写成）→ 回落全局表；
             # 文件在但坏了要说一次（否则又变成"日志说假话"）。
@@ -3328,6 +3400,8 @@ def run_queue_consumer(args, np, pool):
                       + (f"，前置 VAD 丢掉 {vad_dropped} 段" if vad_dropped > 0 else "")
                       + (f"，语种判定 {lid_used} 段（与段自带不同 {lid_differs} 段）"
                          if lid_used > 0 else "")
+                      + (f"，远程按声明语种 {lid_trusted} 段（不判）"
+                         if lid_trusted > 0 else "")
                       + "）", file=sys.stderr, flush=True)
                 # 5.40：把"哪一级决定了哪个模型、各处理了多少段"摊开 ——
                 # 没有这一行，A/B 时根本说不清"这些字幕到底是哪个模型出的"

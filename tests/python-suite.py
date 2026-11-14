@@ -4722,6 +4722,74 @@ def main():
     check("判定过程随数据走（payload 里有 lid，会议记录/重放报告能看到）",
           'payload["lid"] = lid_note' in _csrc)
 
+    # ⑥g-2 参会方式（5.204）：**远程无条件相信他选的语种，面对面才判**
+    #
+    # 用户纠正的口径：「我们无条件信任远程的人选择的语种，其他的保持现状」。
+    # 所以判语种这件事只对"会场麦"有意义；远程的人在自己机器前说话，
+    # 他选的语种就是他要说的语种 —— 再判一次只会引入新的错判（还有几十毫秒）。
+    _mode_root = Path(ROOT / "var" / "test" / "mode-suite")
+    shutil.rmtree(_mode_root, ignore_errors=True)
+    _mode_root.mkdir(parents=True, exist_ok=True)
+    try:
+        def _mode_file(name, text):
+            pcm = _mode_root / f"{name}.pcm"
+            pcm.write_bytes(b"")
+            (Path(str(pcm) + ".mode")).write_text(text, encoding="utf-8")
+            return str(pcm)
+
+        check("旁文件 remote → remote",
+              whisper_stream._read_mode_sidecar(_mode_file("m-remote", "remote\n")) == "remote")
+        check("旁文件 onsite → onsite",
+              whisper_stream._read_mode_sidecar(_mode_file("m-onsite", "ONSITE\n")) == "onsite")
+        check("读不到 → 空串（= 该判还得判，绝不悄悄当远程）",
+              whisper_stream._read_mode_sidecar(str(_mode_root / "nope.pcm")) == "")
+        check("乱值 → 空串（同样按面对面处理）",
+              whisper_stream._read_mode_sidecar(_mode_file("m-junk", "??")) == "")
+
+        # 参会方式必须随段走：识别端是**另一个进程**，只能靠 meta 知道这一段属于哪一类
+        _mode_q = _mode_root / "queue"
+        _mode_audio = np.zeros(16000, dtype=np.float32)
+        _mode_audio[1000:15000] = 0.3
+        _remote_seg = whisper_stream._write_segment(
+            str(_mode_q), "room-M", 16000, _mode_audio, np, "en-US", speaker="bob", mode="remote")
+        _remote_meta = json.load(open(os.path.join(str(_mode_q), _remote_seg + ".json"), encoding="utf-8"))
+        check("段的 meta 里带 mode（识别端据此决定要不要判）",
+              _remote_meta.get("mode") == "remote", json.dumps(_remote_meta, ensure_ascii=False))
+        _plain_seg = whisper_stream._write_segment(
+            str(_mode_q), "room-M", 16000, _mode_audio, np, "en-US", speaker="bob")
+        _plain_meta = json.load(open(os.path.join(str(_mode_q), _plain_seg + ".json"), encoding="utf-8"))
+        check("不知道该段参会方式时写 None（不是编一个 remote 出来）",
+              _plain_meta.get("mode") is None, str(_plain_meta.get("mode")))
+
+        # 消费者：远程的段**跳过判定**，面对面的段才判
+        check("远程的段跳过语种判定（无条件相信声明）", 'seg_mode != "remote"' in _csrc)
+        check("被相信的段单独记账（事后能分清哪些句是判的、哪些是声明的）",
+              "lid_trusted += 1" in _csrc)
+        # 粘滞必须按 (房间, 说话人)：一场会里两个面对面的人各一路，按房间记会互相污染
+        check("粘滞按 (房间, 说话人) 记，不是按房间",
+              "lid_key = (str(room_id)" in _csrc and "lid_last.get(room_id)" not in _csrc,
+              "还是按房间记 —— 两路人会互相污染")
+        check("远程的段不花 LID 的时间（判定在 `lid_model is not None and seg_mode != \"remote\"` 之下）",
+              'if lid_model is not None and seg_mode != "remote":' in _csrc)
+
+        # 候选集优先用 speakLangs（"有人说的"），老侧车只有 langs 时仍然能用
+        _speak_dir = _mode_root / "room-langs"
+        _speak_dir.mkdir(parents=True, exist_ok=True)
+        (_speak_dir / "room-speak.json").write_text(json.dumps({
+            "langs": ["zh-CN", "en-US", "pt-BR"], "speakLangs": ["zh-CN", "pt-BR"],
+        }), encoding="utf-8")
+        check("候选集优先 speakLangs（本场有人**说**的），不是「想读的」",
+              whisper_stream.lid_candidates_for(str(_mode_root), "room-speak") == ["zh-CN", "pt-BR"],
+              str(whisper_stream.lid_candidates_for(str(_mode_root), "room-speak")))
+        (_speak_dir / "room-old.json").write_text(json.dumps({
+            "langs": ["zh-CN", "en-US"],
+        }), encoding="utf-8")
+        check("老侧车没有 speakLangs 时退回 langs（升级不用等侧车重写）",
+              whisper_stream.lid_candidates_for(str(_mode_root), "room-old") == ["zh-CN", "en-US"],
+              str(whisper_stream.lid_candidates_for(str(_mode_root), "room-old")))
+    finally:
+        shutil.rmtree(_mode_root, ignore_errors=True)
+
     # ⑥h audio-listen：把"按当前参数切出来的段"变成能听的 WAV + 一个 zip
     #
     # 用户要的是"切分之后的结果"，因为整条音轨听着正常、而每段都被切碎的问题，

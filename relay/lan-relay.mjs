@@ -1155,6 +1155,14 @@ export async function startRelay(rawOptions = {}) {
      * 所以这里在**值变化时**打一行，把"这一场的语种到底是什么"钉在转发日志里。
      */
     roomLangWritten: new Map(),
+    /**
+     * 每一路**已经写进 `<pcm>.mode` 的参会方式**（5.204）。
+     *
+     * <p>与 {@link roomLangWritten} 同理：旁文件是识别端唯一看得到的东西，
+     * "这一路到底是面对面还是远程"决定了它要不要做语种识别 ——
+     * 这件事必须能在转发日志里查到，不能只靠事后去查数据库。
+     */
+    roomModeWritten: new Map(),
     /** 复位日志限流用（4.81） */
     resetLogAt: 0,
     resetBurst: 0,
@@ -1361,6 +1369,35 @@ export async function startRelay(rawOptions = {}) {
    * <p>与 {@link roomLangsByUser}（每个人**说什么**语言）分开：
    * 说一种、想看多种是真实需求。`langs` 取所有人的并集 —— 大脑据此决定"这一句要译成几种"。
    */
+  /**
+   * 这个房间里"每个人是面对面还是远程"（5.204）。
+   *
+   * <p>为什么要传到识别端：两种参会方式的可信度**不一样**。
+   * <ul>
+   *   <li>远程：他在自己的机器前说话，入会时选的语种就是他要说的语种 ——
+   *       **无条件相信**，再做一次判定只会引入新的错判；</li>
+   *   <li>面对面：一部手机当会场麦，谁开口、说什么语言都是随机的，
+   *       手机上选的那个语种只是"这个手机的主人说什么"，**不是这一段声音的语种** ——
+   *       必须由识别端判。</li>
+   * </ul>
+   * relay 只把"这个人属于哪一类"写进旁文件（`audio/<房间>/<人>.pcm.mode`），
+   * 判定留给识别端 —— 那里才有模型，也才在"切句之后、分发之前"。
+   *
+   * @returns {Map<string, string>} 用户名 → `onsite` / `remote`（没登记的不在表里）
+   */
+  function roomModesByUser(roomId) {
+    const map = new Map()
+    try {
+      for (const member of listMembers(options.dataDir, roomId)) {
+        const mode = String(member.mode ?? '').trim()
+        if (mode !== '') map.set(String(member.username), mode)
+      }
+    } catch (error) {
+      debug(`[参会方式] 读成员参会方式失败（不影响字幕）：${error?.message ?? error}`)
+    }
+    return map
+  }
+
   function roomHearLangsByUser(roomId) {
     const map = new Map()
     try {
@@ -1389,19 +1426,28 @@ export async function startRelay(rawOptions = {}) {
     // 老成员没有 hear_lang 时，listMembers 已经回退成"只有他自己那门"，所以这里不用再兜底。
     const byUser = roomLangsByUser(roomId)
     const hearByUser = roomHearLangsByUser(roomId)
+    // 5.204：`speakLangs` = 本场**实际有人说的**语言（并集）。
+    // 识别端做语种识别时用它当候选集 —— 比 `langs`（想读的）更贴近"这一场会出现哪些语言"，
+    // 候选集收窄才不会把一句中文判成九十九种语言里的某一种（见 lid_tags_of 的注释）。
+    const speakLangs = [...new Set([...byUser.values()])].sort()
+    const modesByUser = roomModesByUser(roomId)
     const heard = new Set()
     for (const list of hearByUser.values()) for (const one of list) heard.add(one)
     // 兼容：老数据里 hear 为空但 lang 有值的成员（listMembers 已回退，这里再兜一次底）
     if (heard.size === 0) for (const one of byUser.values()) heard.add(one)
     const langs = [...heard].sort()
-    const key = `${langs.join('|')}#${[...hearByUser.entries()].map(([u, l]) => `${u}:${l.join(',')}`).join(';')}`
+    const key = `${langs.join('|')}#${speakLangs.join('|')}`
+      + `#${[...hearByUser.entries()].map(([u, l]) => `${u}:${l.join(',')}`).join(';')}`
+      + `#${[...byUser.entries()].map(([u, l]) => `${u}:${l}`).join(';')}`
+      + `#${[...modesByUser.entries()].map(([u, m]) => `${u}:${m}`).join(';')}`
     if (state.roomLangsSent.get(roomId) !== key) {
       state.roomLangsSent.set(roomId, key)
       const file = join(options.dataDir, 'room-langs', `${String(roomId).replace(/[^A-Za-z0-9_-]/g, '_')}.json`)
       void mkdir(dirname(file), { recursive: true })
         .then(() => writeFile(file, JSON.stringify({
-          roomId, langs, byUser: Object.fromEntries(byUser),
-          hearByUser: Object.fromEntries(hearByUser), at: Date.now(),
+          roomId, langs, speakLangs, byUser: Object.fromEntries(byUser),
+          hearByUser: Object.fromEntries(hearByUser),
+          modes: Object.fromEntries(modesByUser), at: Date.now(),
         }), 'utf-8'))
         .catch((error) => debug(`[语言] 写侧车失败（不影响字幕）：${error?.message ?? error}`))
       debug(`[语言] ${roomId} 的听者语言：${langs.length === 0 ? '（还没登记）' : langs.join(' / ')}`
@@ -2581,13 +2627,29 @@ export async function startRelay(rawOptions = {}) {
               try {
                 await writeFile(`${target}.rate`, String(rate) + '\n', 'utf-8')
                 await writeFile(`${target}.lang`, String(lang) + '\n', 'utf-8')
+                // 5.204：**参会方式**也按人写一份（`onsite` / `remote` / `unknown`）。
+                //
+                // 识别端拿它决定"这一路要不要判语种"：远程的人自己选的语言就是可信的
+                // （无条件相信），面对面的会场麦必须靠识别判。写 `unknown` 而不是不写 ——
+                // 没登记的（老 APK、token 缺失）按"面对面"处理，也就是"该判还得判"，
+                // 绝不能因为缺个字段就悄悄相信一个上游兜底填进去的语种（`pt-BR`）。
+                const track = `${audioRoom}/${audioSpeaker === '' ? 'unknown' : audioSpeaker}`
+                const mode = (audioSpeaker === '' ? '' : (roomModesByUser(audioRoom).get(audioSpeaker) ?? ''))
+                  || 'unknown'
+                await writeFile(`${target}.mode`, mode + '\n', 'utf-8')
                 // 5.05：语种只在**变化时**报一行 —— 旁文件写的是识别端唯一看得到的东西，
                 // "手机到底有没有上报语种"必须能在转发日志里查到（否则只能猜）。
                 // 5.08：按 (房间, 人) 记 —— 两个说话人各有一条旁文件，混在一起记会互相掩盖。
-                const track = `${audioRoom}/${audioSpeaker === '' ? 'unknown' : audioSpeaker}`
                 if (state.roomLangWritten.get(track) !== lang) {
                   state.roomLangWritten.set(track, lang)
                   debug(`🗣 分轨语种：${track} → ${lang}（已写 ${target}.lang，识别端按它解码）`)
+                }
+                if (state.roomModeWritten.get(track) !== mode) {
+                  state.roomModeWritten.set(track, mode)
+                  debug(`🪑 参会方式：${track} → ${mode}`
+                    + (mode === 'remote'
+                      ? '（远程：无条件相信他选的语种，不判语种）'
+                      : '（面对面/未知：切句之后由识别端判语种）'))
                 }
               } catch (error) {
                 debug(`🎙 写分轨旁文件失败（不影响音频）：${error && error.message ? error.message : error}`)
