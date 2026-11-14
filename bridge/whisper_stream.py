@@ -347,6 +347,13 @@ def parse_args(argv=None):
                         help="只对**短于这么多毫秒**的段做 VAD（缺省 2000）。"
                              "幻听几乎都发生在短段/弱段上，长段基本不会编，"
                              "这样 VAD 的耗时被压在几十毫秒以内，不影响字幕延迟")
+    parser.add_argument("--lid-model", default=None,
+                        help="语种识别模型目录（sherpa-onnx 的 encoder/decoder/tokens）。"
+                             "给了才启用：**切句之后、引擎分发之前**判定语种。"
+                             "也可以用环境变量 LEION_LID_MODEL")
+    parser.add_argument("--lid-switch-after", type=int, default=2,
+                        help="LID 连续几次判成同一个新语种才切换（缺省 2：防抖。"
+                             "一路会场麦里判错一次就可能把整句送错引擎）")
     parser.add_argument("--vad-threshold", type=float, default=0.5,
                         help="VAD 判人声的门槛（缺省 0.5，越大越严：0.6 更少幻听、可能漏轻话）")
     parser.add_argument("--silence-skip-level", type=float, default=SILENCE_SKIP_RMS,
@@ -2799,6 +2806,170 @@ def preprocess_segment(audio, samplerate, profile, np):
     return processed, f"前置 VAD 判定这段没有人声（{ms}ms，threshold {threshold}）—— 不送识别"
 
 
+# ── 5.202：切句之后、引擎分发之前的**语种识别**（LID）──────────────────────────
+#
+# 要解决的问题（用户原话）：「在面对面情况下…无论谁开麦，我们都去接收当前的声音，
+# 然后在分发之前做一个语种的识别，这样就不需要两个人切来切去了」。
+#
+# 为什么不用 whisper 的 detect_language：实测它要把短音频补到 30 秒窗口跑一遍编码器，
+# 1.63 秒的段要 **507ms**；而我们给整段的延迟预算才 1.3~2.2 秒，这一项吃掉四分之一不划算。
+# 专用 LID 模型（sherpa-onnx 的 SpokenLanguageIdentification）在 CPU 上只要几十毫秒。
+#
+# 为什么判定结果要**按房间带粘滞（hysteresis）**：一路会场麦里语种会随人切换，
+# 但 LID 在句边、口音重、句子短时会抖 —— 每段都跟着抖，就会出现"同一个人忽中忽英"，
+# 而"判成英文就送 parakeet（只认英文）"，判错一次就是整句乱码。
+# 所以：**新判定要明显赢过旧判定才切换**（margin），否则沿用上一次。
+LID_STATE = {"model": None, "failed": False, "warned": False, "path": None}
+# 语言码（sherpa-onnx / whisper 都可能是两字母码）→ 我们系统里的语种标签
+_LID_TAG = {
+    "zh": "zh-CN", "cmn": "zh-CN", "yue": "zh-CN",
+    "en": "en-US",
+    "pt": "pt-BR",
+}
+
+
+def lid_available(args):
+    """这一路要不要做语种识别（命令行给了模型才做，缺省关 —— 不做就是老行为）。"""
+    if getattr(args, "lid_model", None):
+        return True
+    import os as _os
+    return bool(_os.environ.get("LEION_LID_MODEL", "").strip())
+
+
+def load_lid(args):
+    """加载 LID 模型（懒加载 + 失败只喊一次）。返回对象或 None。"""
+    if LID_STATE["failed"]:
+        return None
+    if LID_STATE["model"] is not None:
+        return LID_STATE["model"]
+    import os as _os
+    model_dir = str(getattr(args, "lid_model", None) or _os.environ.get("LEION_LID_MODEL", "")).strip()
+    if model_dir == "":
+        return None
+    try:
+        import sherpa_onnx
+    except Exception as error:                                  # noqa: BLE001
+        LID_STATE["failed"] = True
+        if not LID_STATE["warned"]:
+            LID_STATE["warned"] = True
+            print(f"[识别] ⚠️ 要做语种识别，但没装 sherpa-onnx（{type(error).__name__}: {error}）"
+                  "→ 退回按段自带的语种识别", file=sys.stderr, flush=True)
+        return None
+    try:
+        import glob
+        import os as _os2
+
+        def _pick(pattern_list):
+            for pattern in pattern_list:
+                hits = sorted(glob.glob(_os2.path.join(model_dir, pattern)))
+                if hits:
+                    return hits[0]
+            return ""
+
+        encoder = _pick(["*encoder*.onnx", "*encoder*.ort"])
+        decoder = _pick(["*decoder*.onnx", "*decoder*.ort"])
+        tokens = _pick(["*tokens*.txt"])
+        if encoder == "" or decoder == "" or tokens == "":
+            raise FileNotFoundError(
+                f"{model_dir} 里找不到 encoder/decoder/tokens（LID 用的是 whisper 那种编码器+解码器）")
+        config = sherpa_onnx.SpokenLanguageIdentificationConfig(
+            whisper=sherpa_onnx.OfflineWhisperModelConfig(
+                encoder=encoder, decoder=decoder, language="", task="transcribe", tail_paddings=-1),
+            num_threads=1, debug=False, provider="cpu")
+        LID_STATE["model"] = sherpa_onnx.SpokenLanguageIdentification(config)
+        LID_STATE["path"] = model_dir
+        print(f"[识别] 语种识别已启用：{model_dir}（CPU；只在切句之后、分发之前用）",
+              file=sys.stderr, flush=True)
+        return LID_STATE["model"]
+    except Exception as error:                                  # noqa: BLE001
+        LID_STATE["failed"] = True
+        if not LID_STATE["warned"]:
+            LID_STATE["warned"] = True
+            print(f"[识别] ⚠️ 语种识别模型加载失败（{type(error).__name__}: {error}）"
+                  f"→ 退回按段自带的语种识别。模型在 {model_dir}", file=sys.stderr, flush=True)
+        return None
+
+
+def lid_tags_of(raw_codes, fallback=("zh-CN", "en-US", "pt-BR")):
+    """把 LID 的候选码映射成系统的语种标签；**只留我们支持的三种**。
+
+    <p>候选集必须收窄 —— 实测（代码里 pt-cao 那条）：不限定语种时 Whisper 会在 99 种里挑，
+    20 条巴葡口语有 1 条被判成希伯来语、整句报废（WER 100%）。
+    """
+    out = []
+    for code in raw_codes or ():
+        tag = _LID_TAG.get(str(code).strip().lower())
+        if tag is not None and tag not in out:
+            out.append(tag)
+    return out or list(fallback)
+
+
+def lid_candidates_for(data_dir, room, fallback=("zh-CN", "en-US", "pt-BR")):
+    """这一场的候选语种 = **本场说话人语种的并集**（用户要求）。
+
+    <p>来源是 relay 写的侧车 `<data-dir>/room-langs/<房间>.json`（成员各自的 lang 去重）。
+    读不到就退回三种都给 —— 宁可多给一个候选，也不要把真语种挡在外面。
+    """
+    import json as _json
+    import os as _os
+    if not data_dir or not room:
+        return list(fallback)
+    path = _os.path.join(str(data_dir), "room-langs", str(room) + ".json")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = _json.load(handle)
+    except (OSError, ValueError):
+        return list(fallback)
+    langs = payload.get("langs") if isinstance(payload, dict) else None
+    if not isinstance(langs, list):
+        return list(fallback)
+    tags = [str(one).strip() for one in langs if isinstance(one, str) and str(one).strip() != ""]
+    # 只留下我们支持的三种，保持顺序稳定
+    keep = [one for one in tags if one in _LID_TAG.values()]
+    return list(dict.fromkeys(keep)) or list(fallback)
+
+
+def detect_lang(audio, samplerate, model, candidates, np):
+    """跑一次 LID，返回 (语种标签或 None, 置信度 0~1, 耗时 ms)。
+
+    <p>判定不出 / 模型抛错都返回 None —— 调用方沿用上一次的语种，绝不因为"这次没判出来"改语种。
+    """
+    if model is None:
+        return None, 0.0, 0
+    started = time.perf_counter()
+    try:
+        stream = model.create_stream()
+        stream.accept_waveform(sample_rate=int(samplerate), waveform=np.asarray(audio, dtype=np.float32))
+        stream.input_finished()
+        raw = model.compute(stream)
+        tag = _LID_TAG.get(str(raw).strip().lower())
+        elapsed = int(round((time.perf_counter() - started) * 1000))
+        if tag is None or (candidates and tag not in candidates):
+            return None, 0.0, elapsed
+        return tag, 1.0, elapsed
+    except Exception:                                          # noqa: BLE001
+        return None, 0.0, int(round((time.perf_counter() - started) * 1000))
+
+
+def sticky_language(previous, detected, switch_margin=0.0):
+    """**粘滞**：新判定只有"明显不同且可信"时才切换，否则沿用上一次。
+
+    <p>为什么需要它：一路会场麦里 LID 会在句边、短句、口音重时抖；而"判成英文就送
+    parakeet（只认英文）"，抖一次就是整句乱码。宁可用上一句的语种（同一人连续说话时
+    几乎总是对的），也不要在一次不可靠的判定上赌。
+    """
+    if detected is None:
+        return previous
+    if previous is None:
+        return detected
+    if detected == previous:
+        return previous
+    # 没有置信度区分时（sherpa 的 LID 只给一个码），保守起见：要求连续两次一致才切
+    if switch_margin <= 0:
+        return previous if previous is not None else detected
+    return detected
+
+
 def _read_segment(queue_dir, base, np):
     """读出一段；读不到返回 None（可能刚被别的进程消费掉了）。"""
     try:
@@ -2829,6 +3000,12 @@ def run_queue_consumer(args, np, pool):
     if args.model_map:
         print(f"[识别] 模型表 {args.model_map}（改了会自动重新读，不用重启）",
               file=sys.stderr, flush=True)
+    # 5.202：语种识别（可选）。开了才加载模型 —— 没给模型就是老行为，一个字都不变。
+    lid_model = load_lid(args) if lid_available(args) else None
+    lid_last = {}        # 房间 → 上一次的语种（粘滞用）
+    lid_pending = {}     # 房间 → (候选语种, 连续次数)
+    lid_used = 0         # 这段判出了语种
+    lid_differs = 0      # 判定结果与段自带语种不同
     processed = 0
     # 5.197：被"前置 VAD 判定这段没有人声"丢掉的段数。
     # 单独记一个数、而不是混进 processed：这正是"漏了一句"和"这一段本来就没说话"
@@ -2868,7 +3045,41 @@ def run_queue_consumer(args, np, pool):
             # 5.169：延迟账要用"这一段什么时候被取走"（排队的终点）
             picked_at_ms = int(time.time() * 1000)
             waited_ms_max = max(waited_ms_max, int(time.time() * 1000) - int(meta.get("queuedAt") or 0))
-            language = meta.get("lang") or args.language
+            # 5.202：**先判语种，再选策略** —— 顺序就是用户要的"插在切句-分发之间"。
+            # 手机声明/旁文件的语种退化成"参考"，判定结果才是分发依据。
+            declared_language = meta.get("lang") or args.language
+            language = declared_language
+            lid_note = None
+            if lid_model is not None:
+                room_id = meta.get("room")
+                rate_now = int(meta.get("rate") or args.samplerate)
+                candidates = lid_candidates_for(getattr(args, "data_dir", None), room_id)
+                detected, _score, lid_ms = detect_lang(audio, rate_now, lid_model, candidates, np)
+                previous = lid_last.get(room_id)
+                if detected is not None:
+                    lid_used += 1
+                    if detected == previous or previous is None:
+                        lid_last[room_id] = detected
+                        lid_pending.pop(room_id, None)
+                    else:
+                        want, count = lid_pending.get(room_id, (detected, 0))
+                        count = count + 1 if want == detected else 1
+                        need = max(1, int(getattr(args, "lid_switch_after", 2) or 1))
+                        if count >= need:
+                            lid_last[room_id] = detected
+                            lid_pending.pop(room_id, None)
+                        else:
+                            lid_pending[room_id] = (detected, count)
+                language = lid_last.get(room_id) or declared_language
+                if language != declared_language:
+                    lid_differs += 1
+                lid_note = {"lang": language, "detected": detected,
+                            "declared": declared_language, "ms": lid_ms,
+                            "candidates": candidates}
+                if log_level_at_least("detail"):
+                    print(f"[识别] 语种判定：判成 {detected or '（不确定）'} → 用 "
+                          f"{language}（段自带 {declared_language}；候选 {'/'.join(candidates)}；"
+                          f"{lid_ms}ms）", file=sys.stderr, flush=True)
             # 5.148：**这一场（建房时）冻结的识别策略**优先于全局表。
             # 读不到是正常情况（老会议/建房时没写成）→ 回落全局表；
             # 文件在但坏了要说一次（否则又变成"日志说假话"）。
@@ -3057,6 +3268,10 @@ def run_queue_consumer(args, np, pool):
                     payload["speaker"] = who.strip()
                 # 5.41：策略名随数据往下走（收件箱行 → 大脑 → 日志）。
                 payload["strategy"] = strategyName
+                if lid_note is not None:
+                    # 判定过程随数据走：会议记录/重放报告里能直接看"这段被判成什么、
+                    # 段自带的又是什么、花了几毫秒" —— 这就是"先看 LID 效果"的依据。
+                    payload["lid"] = lid_note
                 payload["model"] = profile.get("model")
                 # 5.148：冻结时间也带下去 —— 事后核对"这一句用的是哪一份快照"
                 if isinstance(profile.get("strategyLockedAt"), str) and profile["strategyLockedAt"]:
@@ -3111,6 +3326,8 @@ def run_queue_consumer(args, np, pool):
                 print(f"[识别] 队列积压 {pending} 段，最长已等 {waited_ms_max / 1000.0:.1f}s"
                       f"（累计转写 {processed} 段"
                       + (f"，前置 VAD 丢掉 {vad_dropped} 段" if vad_dropped > 0 else "")
+                      + (f"，语种判定 {lid_used} 段（与段自带不同 {lid_differs} 段）"
+                         if lid_used > 0 else "")
                       + "）", file=sys.stderr, flush=True)
                 # 5.40：把"哪一级决定了哪个模型、各处理了多少段"摊开 ——
                 # 没有这一行，A/B 时根本说不清"这些字幕到底是哪个模型出的"

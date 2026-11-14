@@ -509,6 +509,24 @@ export async function runStartMultiSuite({ it, check, assert }) {
     check('所有组合都能被识别进程接受，并透传给 python', failures.length === 0, failures.join(' | '))
   })
 
+  await it('5.202：语种识别能从 start-multi 一路传到 python（不给就完全不做）', async () => {
+    // 用户的设计：面对面时"谁开麦都行"，用一部手机当会场麦，由系统在**分发之前**判语种。
+    // 判出来的语种决定"送哪个引擎"——所以这个参数必须真的到得了识别进程；
+    // 而不给的时候必须**完全不做**（老行为一个字都不变）。
+    const { parseArgs: workerParse, consumerCommand } = await import('../bridge/asr-worker.mjs')
+    const pyOf = argv => consumerCommand(workerParse(workerStep(parseArgs(argv)).args)).args
+
+    const quiet = pyOf(['--data-dir', 'var/x'])
+    check('缺省不传 --lid-model（不做语种识别）', quiet.includes('--lid-model') === false,
+      quiet.slice(-100))
+
+    const on = pyOf(['--data-dir', 'var/x', '--lid-model', '/opt/leion/models/lid',
+      '--lid-switch-after', '3'])
+    check('给了之后 python 真的收到 --lid-model',
+      on[on.indexOf('--lid-model') + 1] === '/opt/leion/models/lid', on.slice(-120))
+    check('防抖次数也传下去', on[on.indexOf('--lid-switch-after') + 1] === '3', on.slice(-120))
+  })
+
   await it('5.189：译文硬截止能从 start-multi 一路传到大脑（0 = 关掉）', async () => {
     // 这条护栏的意义是"一句卡住不许拖住整场"：实测卡过 121 秒、整段字幕停 2 分钟。
     // 所以参数必须真的到得了大脑 —— 否则现场调不到、也关不掉。

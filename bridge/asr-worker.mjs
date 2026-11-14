@@ -97,7 +97,9 @@ export function parseArgs(argv = []) {
     // 5.177：日志档位（透传给 python 消费者）
     'log-level',
     // 5.186：高通滤波与 VAD 二次确认（教室/会议室降噪用）
-    'highpass-hz', 'vad-max-ms', 'vad-threshold'])
+    'highpass-hz', 'vad-max-ms', 'vad-threshold',
+    // 5.202：语种识别（切句之后、引擎分发之前）
+    'lid-model', 'lid-switch-after'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -121,6 +123,8 @@ export function parseArgs(argv = []) {
     else if (key === 'highpass-hz') options.highpassHz = Number(value)
     else if (key === 'vad-max-ms') options.vadMaxMs = Number(value)
     else if (key === 'vad-threshold') options.vadThreshold = Number(value)
+    else if (key === 'lid-model') options.lidModel = value
+    else if (key === 'lid-switch-after') options.lidSwitchAfter = Number(value)
     else if (key === 'model') options.model = value
     else if (key === 'device') options.device = value
     else if (key === 'compute-type') options.computeType = value
@@ -306,6 +310,13 @@ export function consumerCommand(options) {
   // 5.186：降噪相关的三项（给了才传；不给就用识别进程的缺省 = 全关）
   if (Number.isFinite(options.highpassHz) && options.highpassHz > 0) {
     args.push('--highpass-hz', String(options.highpassHz))
+  }
+  // 5.202：语种识别（不传 = 不做，行为与以前逐字一致）
+  if (typeof options.lidModel === 'string' && options.lidModel !== '') {
+    args.push('--lid-model', options.lidModel)
+    if (Number.isInteger(options.lidSwitchAfter) && options.lidSwitchAfter > 0) {
+      args.push('--lid-switch-after', String(options.lidSwitchAfter))
+    }
   }
   if (options.vad === true) {
     args.push('--vad')

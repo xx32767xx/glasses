@@ -4659,6 +4659,69 @@ def main():
     check("resolve_workdir：什么都没有时退回表旁边（不抛异常，后面报错才说清缺什么）",
           _replay.resolve_workdir(_orphan_sheet2) == _orphan_sheet2.parent)
 
+    # ⑥g 语种识别（LID）：插在切句之后、引擎分发之前
+    #
+    # 用户的设计：面对面时"谁开麦都行"，用**一部手机当会场麦**，由系统在分发前判语种 ——
+    # 这样不用两个人切来切去，也不用每句都靠手机声明。三条判据：
+    #   ① 候选集 = 本场说话人语种的**并集**（用户要求）；
+    #   ② 判定要**防抖**（一路麦里判错一次就可能把整句送错引擎）；
+    #   ③ 判不出/模型坏 → 沿用上一次，绝不因为"这次没判出来"就改语种。
+    check("两字母码 → 系统语种标签（zh/en/pt，其它语言被丢掉）",
+          _replay_lid_tags := whisper_stream.lid_tags_of(["zh", "en", "pt", "de"]),
+          str(_replay_lid_tags))
+    check("一个都认不出时退回三种都给（宁可多给，不要把真语种挡外面）",
+          whisper_stream.lid_tags_of(["de", "fr"]) == ["zh-CN", "en-US", "pt-BR"],
+          str(whisper_stream.lid_tags_of(["de", "fr"])))
+
+    _langs_dir = Path(ROOT / "var" / "test" / "lid-suite" / "room-langs")
+    shutil.rmtree(_langs_dir.parent, ignore_errors=True)
+    _langs_dir.mkdir(parents=True, exist_ok=True)
+    (_langs_dir / "room-a.json").write_text(
+        json.dumps({"langs": ["zh-CN", "en-US"], "byUser": {}}), encoding="utf-8")
+    check("候选集 = 本场说话人语种的并集（zh + en，不含没人说的葡语）",
+          whisper_stream.lid_candidates_for(str(_langs_dir.parent), "room-a") == ["zh-CN", "en-US"],
+          str(whisper_stream.lid_candidates_for(str(_langs_dir.parent), "room-a")))
+    check("侧车读不到时退回三种都给（不能因为缺个文件就不判）",
+          whisper_stream.lid_candidates_for(str(_langs_dir.parent), "room-none") ==
+          ["zh-CN", "en-US", "pt-BR"])
+    check("侧车坏了也不炸", (lambda: (
+        (_langs_dir / "room-broken.json").write_text("{ 不是 JSON", encoding="utf-8"),
+        whisper_stream.lid_candidates_for(str(_langs_dir.parent), "room-broken"))[1])()
+          == ["zh-CN", "en-US", "pt-BR"])
+    shutil.rmtree(_langs_dir.parent, ignore_errors=True)
+
+    # 粘滞：同一人连续说话时，单次抖动不许换语种（换了就可能把中文送进只认英文的 parakeet）
+    check("第一次判出来就用它", whisper_stream.sticky_language(None, "en-US") == "en-US")
+    check("抖成另一个语种时**不切**（沿用上一次）",
+          whisper_stream.sticky_language("zh-CN", "en-US") == "zh-CN")
+    check("判不出时沿用上一次", whisper_stream.sticky_language("zh-CN", None) == "zh-CN")
+    check("同一个语种不变", whisper_stream.sticky_language("pt-BR", "pt-BR") == "pt-BR")
+
+    # 没给模型 = 老行为（一个字都不做）
+    _no_lid_args = whisper_stream.parse_args([])
+    check("缺省不启用 LID（没给 --lid-model 也没有环境变量）",
+          whisper_stream.lid_available(_no_lid_args) is False)
+    _lid_args = whisper_stream.parse_args(["--lid-model", "/tmp/nope"])
+    check("给了 --lid-model 才算启用", whisper_stream.lid_available(_lid_args) is True)
+    check("模型不存在时不炸、返回 None（退回按段自带的语种）",
+          whisper_stream.load_lid(_lid_args) is None)
+
+    # 消费者里这三件事的顺序必须对：前置降噪 → **判语种** → 选策略/分发
+    _csrc = (ROOT / "bridge" / "whisper_stream.py").read_text(encoding="utf-8")
+    _csrc = _csrc[_csrc.index("def run_queue_consumer"):]
+    # ⚠️ 真实顺序（第一版这条写错了，值得留着）：**判语种 → 选策略 → 前置降噪 → 分发**。
+    # 前置降噪必须排在策略之后，因为它要读 profile 里的 highpass/vad；
+    # 而 LID 必须排在策略之前，因为"选哪份策略"就是由它判出来的语种决定的。
+    _i_lid = _csrc.index("detect_lang(audio")
+    _i_resolve = _csrc.index("resolve_strategy(language")
+    _i_pre = _csrc.index("preprocess_segment(")
+    _i_dispatch = _csrc.index("pool.get(profile")
+    check("顺序：判语种 → 按语种选策略 → 前置降噪 → 引擎分发",
+          _i_lid < _i_resolve < _i_pre < _i_dispatch,
+          f"lid={_i_lid} resolve={_i_resolve} pre={_i_pre} dispatch={_i_dispatch}")
+    check("判定过程随数据走（payload 里有 lid，会议记录/重放报告能看到）",
+          'payload["lid"] = lid_note' in _csrc)
+
     # ⑦ 抽样：想先拿 20 段试一组配置时，要均匀取而不是只取开头
     _items = list(range(100))
     check("--sample 均匀分布（不是只取前 N 个）",

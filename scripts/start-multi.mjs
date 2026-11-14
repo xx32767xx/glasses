@@ -108,6 +108,11 @@ const HELP = `start-multi —— 一条命令起「多场会并行」
   --proofread            打开大模型校对（**缺省已开**；空闲时跑，不占关键路径）
   --no-proofread         关掉大模型校对（每句少一次模型调用；听错就别关它）
   --terms-rescue         打开热词临时修正（实验，缺省关，见 docs/15 §18）
+  --lid-model <dir>      语种识别模型目录（sherpa-onnx 的 encoder/decoder/tokens）。
+                         **给了才启用**：切句之后、引擎分发之前判定语种，
+                         于是"谁开麦都行、说哪种语言就按哪种认"。
+                         不传 = 完全不做，行为与以前一模一样。
+  --lid-switch-after <n> LID 连续几次判成同一个新语种才切换（缺省 2，防抖）
   --translate-deadline-ms <n>
                          每份译文最长等多久（缺省 20000；0 = 不设截止）。
                          超时就放弃这一份、队列继续 —— 大脑收件箱是**串行**的，
@@ -275,7 +280,9 @@ export function parseArgs(argv = []) {
     'max-rooms', 'only', 'whisper-model', 'compute', 'switch-idle-ms', 'min-hold-ms',
     'queue-dir', 'depth-report-s', 'translate-mode', 'model-map', 'max-models',
     'interpreter-idle-min', 'silence-skip-level', 'idle-flush-ms', 'rms-threshold',
-    'tts-port', 'tts-voice-dir', 'translate-deadline-ms'])
+    'tts-port', 'tts-voice-dir', 'translate-deadline-ms',
+    // 5.202：语种识别模型目录 + 防抖次数
+    'lid-model', 'lid-switch-after'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -392,6 +399,8 @@ export function parseArgs(argv = []) {
     else if (key === 'port') options.port = Number(value)
     else if (key === 'data-dir') options.dataDir = value
     else if (key === 'translate-deadline-ms') options.translateDeadlineMs = Number(value)
+    else if (key === 'lid-model') options.lidModel = value
+    else if (key === 'lid-switch-after') options.lidSwitchAfter = Number(value)
     else options.busesDir = value
   }
   if (options.help === true) return options
@@ -700,6 +709,13 @@ export function workerStep(options) {
   // 5.186：降噪三项（缺省全关；策略表里也能按语种开，见 config/asr-models.json）
   if (Number.isFinite(options.highpassHz) && options.highpassHz > 0) {
     args.push('--highpass-hz', String(options.highpassHz))
+  }
+  // 5.202：语种识别（给了模型才启用；不传就完全不做）
+  if (typeof options.lidModel === 'string' && options.lidModel !== '') {
+    args.push('--lid-model', options.lidModel)
+    if (Number.isInteger(options.lidSwitchAfter) && options.lidSwitchAfter > 0) {
+      args.push('--lid-switch-after', String(options.lidSwitchAfter))
+    }
   }
   if (options.vad === true) args.push('--vad')
   if (options.vad === false) args.push('--no-vad')
