@@ -4722,6 +4722,95 @@ def main():
     check("判定过程随数据走（payload 里有 lid，会议记录/重放报告能看到）",
           'payload["lid"] = lid_note' in _csrc)
 
+    # ⑥h audio-listen：把"按当前参数切出来的段"变成能听的 WAV + 一个 zip
+    #
+    # 用户要的是"切分之后的结果"，因为整条音轨听着正常、而每段都被切碎的问题，
+    # 听整条是听不出来的。所以这个工具的价值全在两点：**用产线那套参数切**、**能直接听**。
+    import wave as _wave
+
+    _listen_spec = importlib.util.spec_from_file_location(
+        "audio_listen", ROOT / "scripts" / "audio-listen.py")
+    _listen = importlib.util.module_from_spec(_listen_spec)
+    _listen_spec.loader.exec_module(_listen)
+
+    _listen_dir = Path(ROOT / "var" / "test" / "listen-suite")
+    shutil.rmtree(_listen_dir, ignore_errors=True)
+    _listen_dir.mkdir(parents=True, exist_ok=True)
+
+    # ① WAV：裸 PCM 没有文件头，加了头播放器才认 —— 这是这个工具最核心的一步
+    _tone = (np.sin(2 * np.pi * 300 * np.arange(16000) / 16000.0) * 0.3).astype(np.float32)
+    _wav = _listen_dir / "a.wav"
+    _listen.write_wav(_wav, _tone, rate=16000)
+    with _wave.open(str(_wav)) as _handle:
+        check("写出来的是 16k/16bit/单声道 WAV（播放器认）",
+              _handle.getframerate() == 16000 and _handle.getsampwidth() == 2
+              and _handle.getnchannels() == 1,
+              str((_handle.getframerate(), _handle.getsampwidth(), _handle.getnchannels())))
+        check("样本数一个不少", _handle.getnframes() == 16000, str(_handle.getnframes()))
+    # ⚠️ 读回来要用 wave 解（read_track 是**裸 PCM** 的读法，直接喂它 wav 会把 44 字节文件头
+    # 当样本读进来 —— 第一版就这么错，峰值读出 0.977 那种怪数）。
+    def _wav_peak(path):
+        with _wave.open(str(path)) as handle:
+            raw = handle.readframes(handle.getnframes())
+        data = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        return float(np.max(np.abs(data)))
+
+    _peak_default = _wav_peak(_wav)
+    check("默认**不动音量**（峰值还是 0.3，才能用来判断收音够不够）",
+          abs(_peak_default - 0.3) < 0.02, str(_peak_default))
+
+    _wav_norm = _listen_dir / "b.wav"
+    _listen.write_wav(_wav_norm, _tone, rate=16000, normalize=True)
+    _peak_norm = _wav_peak(_wav_norm)
+    check("--normalize 把峰值拉到 0.9（听着清楚，但不再反映原始电平）",
+          abs(_peak_norm - 0.9) < 0.03, str(_peak_norm))
+
+    # ② 时间戳：人能读到 mm:ss
+    check("毫秒 → mm:ss", _listen.mmss(0) == "00:00" and _listen.mmss(125000) == "02:05",
+          _listen.mmss(125000))
+
+    # ③ 找音轨：同目录多路时取**体积最大**的（通常是主要说话人）
+    _audio_dir = _listen_dir / "audio" / "room-x"
+    _audio_dir.mkdir(parents=True, exist_ok=True)
+    (_audio_dir / "small.pcm").write_bytes(b"\x00\x00" * 100)
+    (_audio_dir / "big.pcm").write_bytes(b"\x00\x00" * 1000)
+    check("不给 --speaker 时取体积最大的那一路",
+          _listen.pick_track(str(_listen_dir), "room-x", None).name == "big.pcm",
+          str(_listen.pick_track(str(_listen_dir), "room-x", None)))
+    check("给了 --speaker 就用它",
+          _listen.pick_track(str(_listen_dir), "room-x", "small").name == "small.pcm")
+    check("房间不存在时返回 None（不抛异常，交给调用方去报错）",
+          _listen.pick_track(str(_listen_dir), "room-nope", None) is None)
+
+    # ④ 切段用的是**给它的那套参数**（这才是"按现在正在跑的配置切"）
+    _clip = np.zeros(16000 * 8, dtype=np.float32)
+    _clip[8000:24000] = 0.3            # 0.5s~1.5s 说话
+    _clip[80000:96000] = 0.3           # 5s~6s 说话
+    _fast = _listen.cut_segments(_clip, 16000, {"silence_ms": 300, "min_speech_ms": 300,
+                                               "max_speech_ms": 8000, "short_utterance_ms": 800,
+                                               "short_silence_ms": 400, "cut_pause_ms": 200})
+    _slow = _listen.cut_segments(_clip, 16000, {"silence_ms": 1500, "min_speech_ms": 300,
+                                               "max_speech_ms": 8000, "short_utterance_ms": 800,
+                                               "short_silence_ms": 1600, "cut_pause_ms": 200})
+    check("短静音切得更碎（参数真的生效，不是写死的）",
+          len(_fast) >= 2 and len(_slow) >= 1, f"{len(_fast)} / {len(_slow)}")
+    check("段里带着起止与电平（index 与 manifest 要用）",
+          all({"start_ms", "end_ms", "dur_ms", "rms"} <= set(one) for one in _fast),
+          str(sorted(_fast[0])))
+
+    # ⑤ index.html：能直接点播放，产线原文要转义
+    _index = _listen_dir / "index.html"
+    _listen.write_index(_index, [{"seg": 1, "file": "seg-0001.wav", "start_ms": 0,
+                                  "end_ms": 1000, "dur_ms": 1000, "rms": 0.01,
+                                  "prod": "a < b & c"}], "测试", False, True)
+    _html = _index.read_text(encoding="utf-8")
+    check("页面里有 audio 标签（点了就放）", "<audio controls" in _html and "seg-0001.wav" in _html)
+    check("产线原文做了转义（& < > 不能原样进 HTML）",
+          "a &lt; b &amp; c" in _html and "a < b & c" not in _html, _html[-200:])
+    check("页面上写明音量是原始电平（不然人会以为是坏的）",
+          "原始电平" in _html and "--normalize" in _html)
+    shutil.rmtree(_listen_dir, ignore_errors=True)
+
     # ⑦ 抽样：想先拿 20 段试一组配置时，要均匀取而不是只取开头
     _items = list(range(100))
     check("--sample 均匀分布（不是只取前 N 个）",
