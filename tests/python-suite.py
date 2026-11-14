@@ -4928,6 +4928,22 @@ def main():
           abs(_lid_conf_args.lid_min_confidence - 0.30) < 1e-9,
           str(_lid_conf_args.lid_min_confidence))
 
+    # 5.217：`classify_batch()` 返回的是 **logits（可为负）**，不是概率。
+    # 直接当概率用 → 门槛 `>=0.30` 把所有判定都否决（实测那六行全是 `-`，
+    # 而日志上跟"这段音频太吵"长得一模一样，看不出根因）。
+    _soft = whisper_stream._lid_probabilities([-2.35, -0.04, -0.50], np)
+    check("负数 logits 会过 softmax 变成概率（和为 1、落在 [0,1]）",
+          abs(float(_soft.sum()) - 1.0) < 1e-6
+          and float(_soft.min()) >= 0 and float(_soft.max()) <= 1.0, str(list(_soft)))
+    check("softmax 之后第一名仍是原来 logits 最大的那个（排序不变）",
+          int(np.argmax(_soft)) == 1, str(list(_soft)))
+    _same = whisper_stream._lid_probabilities([0.10, 0.75, 0.15], np)
+    check("已经是概率的原样返回（不能被再 softmax 一次）",
+          abs(float(_same[1]) - 0.75) < 1e-9, str(list(_same)))
+    _logp = np.log(np.asarray([0.10, 0.75, 0.15]))
+    _restored = whisper_stream._lid_probabilities(_logp, np)
+    check("log 概率也能认（全 ≤0 且 exp 之后和为 1）",
+          abs(float(_restored[1]) - 0.75) < 1e-6, str(list(_restored)))
     # 5.216：speechbrain 的 label_encoder 形态不固定（实机踩到：`认出的候选： []`）。
     # 读不出来时**不报错、只降级**，所以要专门钉住"三种形态都能读"，以及读不出来时会说一句。
     import types as _types2

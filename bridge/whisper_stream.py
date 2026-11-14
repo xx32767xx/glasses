@@ -3342,6 +3342,38 @@ def _lid_numpy(value, np):
     return np.asarray(value, dtype=np.float32)
 
 
+def _lid_probabilities(values, np):
+    """把分类器输出变成**概率**（必要时做 softmax）。
+
+    <p>⚠️ 5.217 踩到的坑：speechbrain 的 `classify_batch()` 返回的 `out_prob`
+    是分类器的**原始输出（logits）**，不是概率 —— 实测拿到的是 `-2.35`、`-0.04`
+    这种负数，而门槛 `>= 0.30` 天然把**所有**判定都否决掉（那六行全是 `-`）。
+    光看"判不出来"是看不出根因的：日志上它和"这段音频太吵"长得一模一样。
+
+    <p>判据：真正的概率一定 **落在 [0,1] 且和为 1**；否则按 logits 做 softmax。
+    """
+    arr = np.asarray(values, dtype=np.float64).reshape(-1)
+    if arr.size == 0:
+        return arr
+    # ① 已经是概率：落在 [0,1] 且和为 1
+    if (float(arr.min()) >= -1e-6 and float(arr.max()) <= 1.0 + 1e-6
+            and abs(float(arr.sum()) - 1.0) < 0.02):
+        return arr
+    # ② 是 log 概率（全 ≤ 0，而且 exp 之后和为 1）—— 有些实现直接给 log_softmax
+    if float(arr.max()) <= 1e-6:
+        exponent = np.exp(arr)
+        total = float(exponent.sum())
+        if total > 0 and abs(total - 1.0) < 0.05:
+            return exponent / total
+    # ③ 其余按 logits 做 softmax
+    shifted = arr - arr.max()
+    exponent = np.exp(shifted)
+    total = float(exponent.sum())
+    if total <= 0:
+        return np.zeros_like(arr)
+    return exponent / total
+
+
 def detect_lang_ecapa(audio, samplerate, model, candidates, np, min_confidence=0.0):
     """ECAPA（VoxLingua107）判一次：**在候选里挑概率最大的**，并给出真实置信度。
 
@@ -3365,7 +3397,8 @@ def detect_lang_ecapa(audio, samplerate, model, candidates, np, min_confidence=0
         wav = torch.from_numpy(np.asarray(audio, dtype=np.float32)).unsqueeze(0)
         out_prob, _score, _index, text_lab = handle.classify_batch(wav)
         elapsed = int(round((time.perf_counter() - started) * 1000))
-        probs = _lid_numpy(out_prob, np).reshape(-1)
+        # ⚠️ 5.217：这里拿到的是 **logits**，必须过 softmax 才是概率（见 _lid_probabilities）
+        probs = _lid_probabilities(_lid_numpy(out_prob, np), np)
         allowed = [one for one in (candidates or ()) if one in _LID_TAG.values()]
         best_tag, best_prob = None, 0.0
         for tag in (allowed or list(labels)):
