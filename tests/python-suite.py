@@ -4706,6 +4706,58 @@ def main():
     check("模型不存在时不炸、返回 None（退回按段自带的语种）",
           whisper_stream.load_lid(_lid_args) is None)
 
+    # LID 模型目录里挑文件（5.205）：
+    #   · `sherpa-onnx-whisper-*` 那个包里 fp32 与 int8 两种都有，按文件名排序
+    #     `xxx.int8.onnx` 会排在 `xxx.onnx` 前面 → "默认"会悄悄变成 int8；
+    #   · 语种判定**不用 tokenizer**，所以没有 tokens.txt 不该判成"模型加载失败"。
+    _lid_dir = Path(ROOT / "var" / "test" / "lid-model-pick")
+    shutil.rmtree(_lid_dir, ignore_errors=True)
+    _lid_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        for one in ("tiny-encoder.int8.onnx", "tiny-encoder.onnx",
+                    "tiny-decoder.int8.onnx", "tiny-decoder.onnx"):
+            (_lid_dir / one).write_bytes(b"x")
+
+        class _FakeWhisperCfg:
+            def __init__(self, **kw):
+                self.kw = kw
+
+        class _FakeLidCfg:
+            def __init__(self, **kw):
+                self.kw = kw
+
+        class _FakeLid:
+            def __init__(self, config):
+                self.config = config
+
+        class _FakeSherpa:
+            OfflineWhisperModelConfig = _FakeWhisperCfg
+            SpokenLanguageIdentificationConfig = _FakeLidCfg
+            SpokenLanguageIdentification = _FakeLid
+
+        _saved_sherpa = sys.modules.get("sherpa_onnx")
+        sys.modules["sherpa_onnx"] = _FakeSherpa
+        # 上一条用例把 LID_STATE 置成"失败"了 —— 这里显式复位（懒加载的状态不该跨用例传染）
+        whisper_stream.LID_STATE.update({"model": None, "failed": False, "warned": False, "path": None})
+        try:
+            _picked = whisper_stream.load_lid(whisper_stream.parse_args(["--lid-model", str(_lid_dir)]))
+            check("只有 encoder/decoder（没有 tokens.txt）也能加载",
+                  _picked is not None)
+            _wf = _picked.config.kw["whisper"].kw if _picked is not None else {}
+            check("同族两种精度都在时**挑全精度**（不是文件名排在前面的 int8）",
+                  os.path.basename(_wf.get("encoder", "")) == "tiny-encoder.onnx"
+                  and os.path.basename(_wf.get("decoder", "")) == "tiny-decoder.onnx",
+                  f"{os.path.basename(_wf.get('encoder', ''))} + "
+                  f"{os.path.basename(_wf.get('decoder', ''))}")
+        finally:
+            if _saved_sherpa is None:
+                sys.modules.pop("sherpa_onnx", None)
+            else:
+                sys.modules["sherpa_onnx"] = _saved_sherpa
+            whisper_stream.LID_STATE.update({"model": None, "failed": False, "warned": False, "path": None})
+    finally:
+        shutil.rmtree(_lid_dir, ignore_errors=True)
+
     # 消费者里这三件事的顺序必须对：前置降噪 → **判语种** → 选策略/分发
     _csrc = (ROOT / "bridge" / "whisper_stream.py").read_text(encoding="utf-8")
     _csrc = _csrc[_csrc.index("def run_queue_consumer"):]

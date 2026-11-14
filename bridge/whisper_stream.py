@@ -2905,26 +2905,40 @@ def load_lid(args):
         import os as _os2
 
         def _pick(pattern_list):
+            """在模型目录里挑一个文件；同一族里**优先全精度**（int8 是备选）。
+
+            <p>为什么先挑全精度：`sherpa-onnx-whisper-*` 那个包里两种都有，而按文件名
+            排序 `xxx.int8.onnx` 会排在 `xxx.onnx` **前面**（'.i' < '.o'）—— 于是"默认"
+            悄悄变成了 int8。语音识别用 int8 是权衡，语种判定这一步只有几十毫秒，
+            没必要为了省这点时间去吃量化带来的精度损失。
+            """
             for pattern in pattern_list:
                 hits = sorted(glob.glob(_os2.path.join(model_dir, pattern)))
                 if hits:
-                    return hits[0]
+                    plain = [one for one in hits
+                             if "int8" not in _os2.path.basename(one).lower()
+                             and "quant" not in _os2.path.basename(one).lower()]
+                    return (plain or hits)[0]
             return ""
 
         encoder = _pick(["*encoder*.onnx", "*encoder*.ort"])
         decoder = _pick(["*decoder*.onnx", "*decoder*.ort"])
-        tokens = _pick(["*tokens*.txt"])
-        if encoder == "" or decoder == "" or tokens == "":
+        # ⚠️ tokens **不是必需的**：语种判定只跑 whisper 编码器 + 语言分类头，
+        # 根本不用 tokenizer。原来要求它，结果"模型包里有 encoder/decoder 但没有
+        # tokens"就会判成"模型加载失败"—— 那是错的失败（人会被指去重下模型）。
+        if encoder == "" or decoder == "":
             raise FileNotFoundError(
-                f"{model_dir} 里找不到 encoder/decoder/tokens（LID 用的是 whisper 那种编码器+解码器）")
+                f"{model_dir} 里找不到 encoder/decoder（LID 用的是 whisper 那种编码器+解码器）")
         config = sherpa_onnx.SpokenLanguageIdentificationConfig(
             whisper=sherpa_onnx.OfflineWhisperModelConfig(
                 encoder=encoder, decoder=decoder, language="", task="transcribe", tail_paddings=-1),
             num_threads=1, debug=False, provider="cpu")
         LID_STATE["model"] = sherpa_onnx.SpokenLanguageIdentification(config)
         LID_STATE["path"] = model_dir
-        print(f"[识别] 语种识别已启用：{model_dir}（CPU；只在切句之后、分发之前用）",
-              file=sys.stderr, flush=True)
+        # 报出**实际用哪两个文件**：现场最常出错的是"目录里有两个包，挑错了那个"
+        print(f"[识别] 语种识别已启用：{model_dir}"
+              f"（{_os2.path.basename(encoder)} + {_os2.path.basename(decoder)}；"
+              "CPU；只在切句之后、分发之前用）", file=sys.stderr, flush=True)
         return LID_STATE["model"]
     except Exception as error:                                  # noqa: BLE001
         LID_STATE["failed"] = True
