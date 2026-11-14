@@ -320,14 +320,14 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         }
         // 4.56：换语言会 recreate 本页，而本顿重建会**打断正在进行的发言**。
         // 所以只有没开麦时才自检；开着麦就先用旧语言，等这一段说完再说。
-        if (mic == null) UiLang.trackShown(this);
+        safeInit("ui-lang", () -> { if (mic == null) UiLang.trackShown(this); });
         // 5.140：回到本页时刷一次投屏状态，并挂上监听（投屏中途开始/停止也能实时反映）
-        refreshCastState();
+        safeInit("cast-state", this::refreshCastState);
         // 5.195：外设（蓝牙耳机/麦、有线、USB）也要在回到前台时重新问一次 ——
         // 用户很可能是**切出去连了耳机再切回来**，这时界面上那两行必须跟着变。
-        refreshAudioState();
+        safeInit("audio-state", this::refreshAudioState);
         // 5.195：注册回调（幂等：registerDeviceCallback 会先摘掉旧的）
-        registerDeviceCallback();
+        safeInit("audio-device-callback", this::registerDeviceCallback);
         // 5.143：回到本页立刻同步一次发言权与房间信息。WS 断线重连的空档里，
         // "谁拿着麦 / 锁没锁"可能已经变了，光靠 10 秒看门狗会让界面停在旧状态上。
         if (client != null) scheduleFloorPoll(0L);
@@ -352,6 +352,30 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         castState.setText(getString(casting ? R.string.room_cast_rokid : R.string.room_cast_phone));
         if (drawerDevices != null) {
             drawerDevices.setText(getString(casting ? R.string.room_devices_rokid : R.string.room_devices_detail));
+        }
+    }
+
+    /**
+     * 5.201：把"锦上添花"的初始化包起来 —— **挂了只记一行日志，绝不让页面崩**。
+     *
+     * <p>为什么必须是 {@code Throwable} 而不是 {@code Exception}：厂商 SDK / 音频 HAL
+     * 在某些机型上抛的是 {@code NoClassDefFoundError}、{@code UnsatisfiedLinkError}、
+     * {@code SecurityException}（Android 14 的前台服务限制）。这些都是 {@code Error} 或
+     * 只在特定 ROM 上出现，而它们**全都不影响开会这件事本身**。
+     *
+     * <p>实测线索：Xiaomi 2106118C / Android 14 上"建房成功但 App 闪退"——
+     * 那时页面初始化里任何一处抛出都能让用户以为"开会失败了"，其实会好好地建好了。
+     */
+    private void safeInit(String label, Runnable action) {
+        try {
+            action.run();
+        } catch (Throwable error) {
+            try {
+                android.util.Log.w("LeionRoom", "⚠️ " + label + " 初始化失败（跳过，不影响开会）："
+                        + error.getClass().getSimpleName() + ": " + error);
+            } catch (Throwable ignored) {
+                // 连日志都打不出去也不能崩
+            }
         }
     }
 
@@ -482,7 +506,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // 5.140：投屏那一行原来写死"手机屏"，用户开着 Rokid 投屏也显示手机。
         // 5.195：扩声/收音这两行原来同样写死（"未接入 / 手机麦"），蓝牙耳机与麦克风
         //        连上了也不变 —— 用户报的就是这个。现在进房先刷一次，并挂上设备回调。
-        refreshAudioState();
+        safeInit("audio-state", this::refreshAudioState);
         registerDeviceCallback();
         refreshCastState();
         startedAtMs = System.currentTimeMillis();
@@ -562,8 +586,12 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
         // 5.164：**这一场能不能外放**只看两件事：参会方式 + 有没有近耳设备。
         // 判据统一在 AudioPolicy 里（面对面只认耳机/眼镜；远程允许喇叭）。
         attendRemote = AudioPolicy.allowsSpeaker(AudioPolicy.attendMode(this));
-        refreshNearEar();
-        registerDeviceCallback();
+        // 5.201：这三处都摸了**厂商相关**的东西（Rokid SDK / 音频 HAL / 系统服务），
+        // 在某些 ROM 上会抛 Exception **甚至 Error**（NoClassDefFoundError / UnsatisfiedLinkError）。
+        // 它们全是"锦上添花"：任何一处挂了都不该让整个房间页闪退 ——
+        // 用户看到的会是"会议建好了但 App 崩了"，而会议其实好好的。
+        safeInit("near-ear", this::refreshNearEar);
+        safeInit("audio-device-callback", this::registerDeviceCallback);
         // 5.152：朗读（TTS）—— 老师要求加上，所以 5.38 的总开关已经打开
         // （{@link TtsFeature#enabled()}）。队列策略（积压丢弃/过期不播/关掉立刻闭嘴）
         // 与"只在耳机上播"这些规矩一条没动 —— 它们本来就是这层做对的。
@@ -1269,7 +1297,7 @@ public class RoomActivity extends android.app.Activity implements LanClient.List
                 }
             };
             manager.registerAudioDeviceCallback(deviceCallback, ui);
-        } catch (Exception error) {
+        } catch (Throwable error) {
             android.util.Log.w("LeionRoom", "注册音频设备回调失败（插拔耳机不会自动刷新）：" + error);
         }
     }

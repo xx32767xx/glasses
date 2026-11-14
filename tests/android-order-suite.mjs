@@ -3036,6 +3036,33 @@ export async function runAndroidOrderSuite({ it, check }) {
     }
   })
 
+  await it('5.201：建房成功但 App 闪退 —— 设备相关的初始化不许崩掉整个页面', () => {
+    // 实机线索：Xiaomi 2106118C / Android 14，点"创建会议"→ 会议真的建好了，但 App 闪退。
+    // 崩溃点必然在"收到响应之后"：弹 Toast → 进房间页 → 房间页初始化。
+    // 而房间页初始化里有几处**摸厂商相关东西**的调用（Rokid SDK / 音频 HAL / 前台服务）。
+    // 它们全是"锦上添花"，任何一处抛异常（甚至是 Error）都不该让整个会崩掉。
+    const javaDir = join(ROOT, 'android', 'app', 'src', 'main', 'java', 'com', 'leion', 'lanrelay')
+    const room = readFileSync(join(javaDir, 'RoomActivity.java'), 'utf-8')
+    const service = readFileSync(join(javaDir, 'MeetingMicService.java'), 'utf-8')
+
+    check('房间页有 safeInit（catch Throwable，只记一行日志）',
+      /private void safeInit\(String label, Runnable action\)/.test(room)
+      && /catch \(Throwable error\)/.test(room))
+    check('外设/音频/语言跟踪/投屏这些初始化都走 safeInit',
+      ['near-ear', 'audio-device-callback', 'audio-state', 'cast-state', 'ui-lang']
+        .every((label) => room.includes('safeInit("' + label + '"')), '有初始化没被包起来')
+    check('注册设备回调的 catch 是 Throwable（音频 HAL 可能抛 Error）',
+      /registerDeviceCallback\(\)[\s\S]{0,1600}?catch \(Throwable error\)/.test(room))
+
+    // 前半段：会议真的建好了（服务端那条路正常），崩在客户端
+    check('前台服务的 startForeground 不再裸调（Android 14 + 未授权麦克风会抛 SecurityException）',
+      /private boolean safeForeground\(\)/.test(service)
+      && /if \(!safeForeground\(\)\)/.test(service))
+    check('起不来时降级：放弃前台服务、会议照常（不是崩）',
+      /stopSelf\(\);[\s\S]{0,120}?return START_NOT_STICKY;/.test(service)
+      && /前台服务起不来/.test(service))
+  })
+
   await it('5.195：蓝牙耳机/麦克风连上之后，侧边栏那两行必须跟着变', () => {
     // 用户报：蓝牙耳机和麦克风连上了，侧边栏还是「未接入 / 手机麦」。
     // 真因：那两行**只在进房那一刻写死一次**（5.140 改了投屏那一行，这两行漏了）。
@@ -3050,7 +3077,7 @@ export async function runAndroidOrderSuite({ it, check }) {
     check('设备一变就刷（挂在 5.164 那个回调里，而不是再挂第二个）',
       /private void refreshNearEar\(\)[\s\S]{0,600}?refreshAudioState\(\);/.test(room))
     check('回到前台也刷一次（用户常是切出去连耳机再切回来）',
-      /protected void onResume\(\)[\s\S]{0,1200}?refreshAudioState\(\);/.test(room))
+      /protected void onResume\(\)[\s\S]{0,1600}?refreshAudioState/.test(room))
     check('侧边栏开着时也跟着 2.5 秒轮询刷',
       /private final Runnable drawerTick[\s\S]{0,400}?refreshAudioState\(\);/.test(room))
     check('注册设备回调是**幂等**的（先摘旧的再挂新的，否则回调越堆越多）',

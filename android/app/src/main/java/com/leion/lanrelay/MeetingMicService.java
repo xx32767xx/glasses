@@ -86,11 +86,43 @@ public class MeetingMicService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        startForeground(NOTIFICATION_ID, buildNotification());
+        // 5.201：这里必须包起来（不要在注释里写反引号，构建脚本会当成模板串）。
+        // 实测 Xiaomi 2106118C / Android 14：建房后在房间页起这个前台服务，
+        // 若 RECORD_AUDIO 还没授权（新装或用户拒过），startForeground 会抛 SecurityException
+        // （Starting FGS with type microphone ... requires permissions）。
+        // 而它是在 onStartCommand 里抛的：调用方的 try/catch 接不住，主线程直接崩 ——
+        // 用户看到的就是"会议建好了但 App 闪退"。
+        // 这个服务只是"息屏后别断"的降级手段，绝不能因为它把整个会开不成。
+        if (!safeForeground()) {
+            Log.w(TAG, "前台服务起不来（多半是没给麦克风权限）→ 放弃它，会议照常进行");
+            stopSelf();
+            return START_NOT_STICKY;
+        }
         acquireWakeLock();
         // 不被系统随手杀掉（杀了就等于息屏后又断了）；但**不**自动重启 ——
         // 会议是用户主动结束的，进程被杀后再自己爬起来录音是没人预期的事。
         return START_NOT_STICKY;
+    }
+
+    /**
+     * 起前台服务；起不来就返回 false（由调用方降级），绝不往上抛。
+     *
+     * <p>为什么 catch Throwable 而不只是 Exception：这类系统调用在不同 ROM 上会抛出
+     * 各种东西（SecurityException / ForegroundServiceStartNotAllowedException，
+     * 个别 ROM 甚至抛 Error），而"一个可选的后台保活手段"不该有能力杀掉整个会。
+     */
+    private boolean safeForeground() {
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification());
+            return true;
+        } catch (Throwable error) {
+            try {
+                Log.w(TAG, "startForeground 失败（" + error.getClass().getSimpleName() + "）：" + error);
+            } catch (Throwable ignored) {
+                // 连日志都打不出去也不能崩
+            }
+            return false;
+        }
     }
 
     @Override
