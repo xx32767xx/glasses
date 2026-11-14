@@ -363,10 +363,11 @@ def parse_args(argv=None):
                              "实测成本按秒线性长：accept ≈ 27ms/秒 + compute ≈ 7ms/秒，"
                              "20 秒的段要 ~680ms；截到 10 秒省一半且照样判得准"
                              "（实测 10s → zh 正确，3s → nn 错误）")
-    parser.add_argument("--lid-gap-ms", type=int, default=1500,
-                        help="只在**前面静了这么多毫秒**之后才重判（缺省 1500；0 = 每段都判）。"
-                             "语种是按人/按话题变的、不是按句变的：换人几乎都发生在静音之后，"
-                             "所以没必要每段都花那 0.3 秒")
+    parser.add_argument("--lid-gap-ms", type=int, default=4000,
+                        help="只在**前面静了这么多毫秒**之后才重判（缺省 4000；0 = 每段都判）。"
+                             "语种是按人/按话题变的、不是按句变的：换人几乎都发生在静音之后。"
+                             "⚠️ 原来缺省 1.5 秒，实测产线根本不省 —— 教室里句与句本来就停 1.5~3 秒"
+                             "（日志里静音=2132/2566/2292ms 到处都是），等于每句都判")
     parser.add_argument("--vad-threshold", type=float, default=0.5,
                         help="VAD 判人声的门槛（缺省 0.5，越大越严：0.6 更少幻听、可能漏轻话）")
     parser.add_argument("--silence-skip-level", type=float, default=SILENCE_SKIP_RMS,
@@ -3107,9 +3108,15 @@ def lid_candidates_for(data_dir, room, fallback=("zh-CN", "en-US", "pt-BR")):
                         if isinstance(one, str) and str(one).strip() != ""]
                 if tags:
                     break
-    # 只留下我们支持的三种，保持顺序稳定
-    keep = [one for one in tags if one in _LID_TAG.values()]
-    return list(dict.fromkeys(keep)) or list(fallback)
+    # ⚠️ 5.213：侧车里可能是**两字母码**（`pt`，来自切句端写的 Whisper 码），
+    # 也可能是标签（`pt-BR`）。不归一化就直接和标签比，会把 `pt` 整条滤掉 →
+    # 候选退化成"全语种"（实测一场纯葡语的课就发生了，判定于是能自由给出 `nn`/`ja`）。
+    keep = []
+    for one in tags:
+        tag = lid_tag_of(one)
+        if tag != "" and tag not in keep:
+            keep.append(tag)
+    return keep or list(fallback)
 
 
 def _lid_pick_code(raw):
@@ -3258,6 +3265,40 @@ def detect_lang(audio, samplerate, model, candidates, np):
     except Exception as error:                                  # noqa: BLE001
         _lid_note(f"{type(error).__name__}: {error}")
         return None, 0.0, int(round((time.perf_counter() - started) * 1000))
+
+
+def lid_tag_of(raw):
+    """语种码/标签 → 系统标签；认不出返回空串（**不猜**）。
+
+    <p>⚠️ 5.213：为什么必须归一化。切句端写进段 meta 的是 **Whisper 码**（`pt`），
+    而判定结果和候选集用的是**标签**（`pt-BR`）。两者混用会出两个安静的错：
+    <ol>
+      <li>日志写成 `声明=pt`，人看着以为是另一种值；</li>
+      <li>`language != declared_language` 这个比较**永远成立**（`pt-BR` ≠ `pt`），
+          于是"与声明不同"的计数虚高、候选集过滤也把 `pt` 滤掉 → 候选退化成"全语种"。</li>
+    </ol>
+    实测一场纯葡语的课，候选就是空/全语种，判定于是能自由地给出 `nn`、`ja`、`ko`。
+    """
+    text = str(raw or "").strip()
+    if text == "":
+        return ""
+    mapped = _LID_TAG.get(text.lower())
+    if mapped is not None:
+        return mapped
+    return language_tag(text) or ""
+
+
+def declared_language_of(meta_lang, fallback=""):
+    """段自带的语种 → 系统标签（`pt` → `pt-BR`，`pt-BR` 原样）。
+
+    <p>认不出来就**原样返回**（不猜成某种语言）—— 这一步只做归一化，
+    要不要用它、用哪个引擎，是 {@link resolve_strategy} 的事。
+    """
+    raw = meta_lang if meta_lang not in (None, "") else fallback
+    text = str(raw or "").strip()
+    if text == "":
+        return ""
+    return language_tag(text) or text
 
 
 def lid_log_path(data_dir, room, code=""):
@@ -3496,7 +3537,7 @@ def run_queue_consumer(args, np, pool):
             #   · 面对面的会场麦：谁开口、说什么语言都随机，手机上的语种只是"机主说什么"，
             #     必须由这里判（切句之后、分发之前）。
             # 参会方式由 relay 写进 `audio/<房间>/<人>.pcm.mode`，随段 meta 一路带过来。
-            declared_language = meta.get("lang") or args.language
+            declared_language = declared_language_of(meta.get("lang"), args.language)
             language = declared_language
             lid_note = None
             seg_mode = str(meta.get("mode") or "").strip().lower()
@@ -3584,19 +3625,25 @@ def run_queue_consumer(args, np, pool):
                                          f"声明={declared_language} 静音={gap_ms}ms {lid_ms}ms"),
                             header=lid_header(candidates))
                 else:
-                    # 这一段不重判 → **沿用上一次的判定**（这正是"只在换人时判"的意思）。
-                    language = lid_last.get(lid_key) or declared_language
-                    if lid_last.get(lid_key) is not None:
+                    # 这一段不重判 → 用**上一次的判定**（这正是"只在换人时判"的意思）。
+                    # ⚠️ 5.213：如果这一路**根本还没判过**（太短、或者前面都被挡掉了），
+                    # 那这里用的是"声明"而不是"沿用" —— 记成 `沿用=` 会让日志说谎
+                    # （实测日志里 `#3 沿用=pt 静音=0ms` 就是这种，会让人以为判过）。
+                    judged_before = lid_last.get(lid_key)
+                    language = judged_before or declared_language
+                    if judged_before is not None:
                         lid_reused += 1
                     if language != declared_language:
                         lid_differs += 1
                     lid_note = {"lang": language, "detected": None,
                                 "declared": declared_language, "ms": 0,
-                                "gapMs": gap_ms, "reused": True,
+                                "gapMs": gap_ms, "reused": judged_before is not None,
                                 "candidates": candidates, "mode": seg_mode or "unknown"}
                     lid_log(getattr(args, "data_dir", None), room_id, lid_code,
                             lid_log_line(meta.get("seg"), meta.get("speaker"), seg_mode,
-                                         f"沿用={language}", f"静音={gap_ms}ms"),
+                                         (f"沿用={language}" if judged_before is not None
+                                          else f"用声明={declared_language}"),
+                                         f"静音={gap_ms}ms"),
                             header=lid_header(candidates))
                     # 只有"判过的那一路"才更新进度；没判过的（比如开场一句"嗯"）
                     # 不建状态 —— 这样下一段仍然会当"第一次"去判。

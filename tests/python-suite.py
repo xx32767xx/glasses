@@ -4822,9 +4822,37 @@ def main():
     check("--lid-gap-ms 0 = 每段都判（应急开关）",
           _j({"end": 8000, "judged_at": 6000}, 12000, 2000, 0, 0) is True)
     _lid_defaults = whisper_stream.parse_args(["--lid-model", "x"])
-    check("缺省：窗口 10 秒、静音门槛 1.5 秒（都是按实测定的）",
-          _lid_defaults.lid_window_ms == 10000 and _lid_defaults.lid_gap_ms == 1500,
+    check("缺省：窗口 10 秒、静音门槛 4 秒（按实测调的，见下）",
+          _lid_defaults.lid_window_ms == 10000 and _lid_defaults.lid_gap_ms == 4000,
           f"{_lid_defaults.lid_window_ms} / {_lid_defaults.lid_gap_ms}")
+
+    # 5.213：两字母码与标签必须归一。切句端写进 meta 的是 Whisper 码（`pt`），
+    # 而判定结果/候选集是标签（`pt-BR`）—— 混用会有两个**安静的错**：
+    #   ① 日志写 `声明=pt`；② `language != declared` 永远成立（计数虚高），
+    #      候选集把 `pt` 滤掉 → 退化成"全语种"（实测纯葡语的课就是这样，判定于是自由给出 nn/ja）。
+    check("两字母码 → 标签：pt → pt-BR", whisper_stream.lid_tag_of("pt") == "pt-BR")
+    check("已经是标签时幂等：pt-BR → pt-BR", whisper_stream.lid_tag_of("pt-BR") == "pt-BR")
+    check("大小写容忍：ZH → zh-CN", whisper_stream.lid_tag_of("ZH") == "zh-CN")
+    check("不是我们的语种 → 空串（不猜）", whisper_stream.lid_tag_of("de") == "",
+          str(whisper_stream.lid_tag_of("de")))
+    check("段自带语种归一：pt → pt-BR", whisper_stream.declared_language_of("pt") == "pt-BR")
+    check("段自带语种归一：认不出的原样返回（不硬改）",
+          whisper_stream.declared_language_of("de") == "de")
+    check("段自带语种归一：没有就退回命令行那个", 
+          whisper_stream.declared_language_of(None, "zh-CN") == "zh-CN")
+
+    _two_letter = Path(ROOT / "var" / "test" / "lid-twoletter")
+    shutil.rmtree(_two_letter, ignore_errors=True)
+    (_two_letter / "room-langs").mkdir(parents=True, exist_ok=True)
+    try:
+        (_two_letter / "room-langs" / "room-r.json").write_text(
+            json.dumps({"speakLangs": ["pt"], "langs": ["pt", "pt-BR", "en-US"]}),
+            encoding="utf-8")
+        check("候选集里的两字母码也归一（否则整条被滤掉 → 退化成全语种）",
+              whisper_stream.lid_candidates_for(str(_two_letter), "room-r") == ["pt-BR"],
+              str(whisper_stream.lid_candidates_for(str(_two_letter), "room-r")))
+    finally:
+        shutil.rmtree(_two_letter, ignore_errors=True)
 
     # 5.211 回归：`meta.queuedAt` 是**段尾**（段收完才写），第一版当成段首用，
     # 静音间隔被算成 `实际静音 - 上段长` → 几乎总是 0 → "静音 1.5 秒才重判"**从不触发**，
@@ -5110,7 +5138,10 @@ def main():
     check("不重判的段沿用上一次判定，并单独计数（省下的时间要能算出来）",
           "lid_reused += 1" in _csrc, "没有沿用计数")
     check("沿用上一次判定时会标 reused（事后能分清哪些句是判的、哪些是沿用）",
-          '"reused": True' in _csrc, "payload 里看不出这一个是沿用的")
+          '"reused": judged_before is not None' in _csrc, "payload 里看不出这一个是沿用的")
+    # 5.213：没判过的段用的是"声明"，不是"沿用"—— 记成沿用会让日志说谎
+    check("没判过就写「用声明=」，别谎称「沿用=」",
+          'f"用声明={declared_language}"' in _csrc, "日志里分不清沿用与用声明")
 
     # ⑥g-2 参会方式（5.204）：**远程无条件相信他选的语种，面对面才判**
     #
