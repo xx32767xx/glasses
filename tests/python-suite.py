@@ -4821,7 +4821,103 @@ def main():
           _j({"end": 26000, "judged_at": 6000}, 30000, 2000, 2000, 1500) is True)
     check("--lid-gap-ms 0 = 每段都判（应急开关）",
           _j({"end": 8000, "judged_at": 6000}, 12000, 2000, 0, 0) is True)
-    _lid_defaults = whisper_stream.parse_args(["--lid-model", "x"])
+    # 5.214：换 VoxLingua107 ECAPA —— 它**返回全语种概率**，于是两件事终于做得到：
+    #   ① 在候选里挑概率最大的（不是"全局第一名不在候选里就放弃"）；
+    #   ② 按置信度设门槛（压住"候选之内、置信度为零"的错判：实测葡语课里 6% 的段被判成 en-US 并被采纳）。
+    # 一个旋钮（--lid-model 指向哪个目录）决定用哪套，判据是目录内容。
+    _ecapa_root = Path(ROOT / "var" / "test" / "lid-ecapa")
+    shutil.rmtree(_ecapa_root, ignore_errors=True)
+    (_ecapa_root / "sb").mkdir(parents=True, exist_ok=True)
+    (_ecapa_root / "sb" / "hyperparams.yaml").write_text("x: 1\n", encoding="utf-8")
+    (_ecapa_root / "whisper").mkdir(parents=True, exist_ok=True)
+    (_ecapa_root / "whisper" / "tiny-encoder.onnx").write_bytes(b"x")
+    try:
+        check("按目录内容认引擎：有 hyperparams.yaml → ecapa",
+              whisper_stream.lid_engine_of(str(_ecapa_root / "sb")) == "ecapa")
+        check("按目录内容认引擎：只有 onnx → sherpa-whisper（老目录照旧能用）",
+              whisper_stream.lid_engine_of(str(_ecapa_root / "whisper")) == "sherpa-whisper")
+
+        import types as _types
+
+        class _Wav:
+            def __init__(self, array):
+                self.array = array
+
+            def unsqueeze(self, _dim):
+                return self
+
+        class _Handle:
+            def __init__(self, probs, ind2lab):
+                self.probs = np.asarray(probs, dtype=np.float32)
+                self.hparams = _types.SimpleNamespace(
+                    label_encoder=_types.SimpleNamespace(ind2lab=ind2lab))
+
+            def eval(self):
+                return self
+
+            def classify_batch(self, wav):
+                top = int(np.argmax(self.probs))
+                return self.probs, float(self.probs[top]), [top], ["pt: Portuguese"]
+
+        _fake_torch = _types.ModuleType("torch")
+        _fake_torch.from_numpy = lambda array: _Wav(array)
+        _sb = _types.ModuleType("speechbrain")
+        _sb_inf = _types.ModuleType("speechbrain.inference")
+        _sb_cls = _types.ModuleType("speechbrain.inference.classifiers")
+        _sb_cls.EncoderClassifier = _types.SimpleNamespace(
+            from_hparams=lambda source=None, savedir=None: _Handle(
+                [0.10, 0.75, 0.15], ["en: English", "pt: Portuguese", "zh: Chinese"]))
+        _sk_kwargs = {}
+        for mod, name, value in ((_fake_torch, "torch", _fake_torch),
+                                 (_sb, "speechbrain", _sb),
+                                 (_sb_inf, "speechbrain.inference", _sb_inf),
+                                 (_sb_cls, "speechbrain.inference.classifiers", _sb_cls)):
+            _sk_kwargs[name] = sys.modules.get(name)
+            sys.modules[name] = value
+        whisper_stream.LID_STATE.update({"model": None, "failed": False, "warned": False, "path": None})
+        try:
+            _ec = whisper_stream.load_lid(whisper_stream.parse_args(
+                ["--lid-model", str(_ecapa_root / "sb"), "--lid-min-confidence", "0.5"]))
+            check("ECAPA 能加载，且从标签表里认出我们支持的三种",
+                  isinstance(_ec, dict) and _ec.get("engine") == "ecapa"
+                  and set(_ec.get("labels", {})) == {"en-US", "pt-BR", "zh-CN"},
+                  str(None if not isinstance(_ec, dict) else _ec.get("labels")))
+            # 概率表：en 0.10 / pt 0.75 / zh 0.15。先关掉门槛，只为验证"候选内 argmax"。
+            _ec_free = dict(_ec)
+            _ec_free["minConfidence"] = 0.0
+            _tagE, _confE, _ = whisper_stream.detect_lang(
+                np.zeros(1600, dtype=np.float32), 16000, _ec_free, ("pt-BR",), np)
+            check("候选内 argmax：候选只有 pt-BR 时给出 pt-BR 和**真实概率**",
+                  _tagE == "pt-BR" and abs(_confE - 0.75) < 1e-6, f"{_tagE} {_confE}")
+            _tagF, _confF, _ = whisper_stream.detect_lang(
+                np.zeros(1600, dtype=np.float32), 16000, _ec_free, ("zh-CN", "en-US"), np)
+            check("候选换成 zh/en 时挑候选里最高的（zh 0.15，不是全局第一名 pt）",
+                  _tagF == "zh-CN" and abs(_confF - 0.15) < 1e-5, f"{_tagF} {_confF}")
+            whisper_stream._LID_NOTES.update({"count": 0, "seen": set()})
+            _ec_strict = dict(_ec)
+            _ec_strict["minConfidence"] = 0.5
+            _conf_err = _io.StringIO()
+            with _ctx.redirect_stderr(_conf_err):
+                _tagG, _confG, _ = whisper_stream.detect_lang(
+                    np.zeros(1600, dtype=np.float32), 16000, _ec_strict, ("zh-CN", "en-US"), np)
+            check("低置信度（0.15 < 门槛 0.5）判「这次不算数」，而不是硬给一个语种",
+                  _tagG is None and abs(_confG - 0.15) < 1e-5, f"{_tagG} {_confG}")
+            check("低置信度时也说一句原因（不然以后没法查）",
+                  "门槛" in _conf_err.getvalue(), _conf_err.getvalue()[-120:])
+        finally:
+            for name, old in _sk_kwargs.items():
+                if old is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = old
+            whisper_stream.LID_STATE.update({"model": None, "failed": False, "warned": False, "path": None})
+    finally:
+        shutil.rmtree(_ecapa_root, ignore_errors=True)
+    _lid_conf_args = whisper_stream.parse_args(["--lid-model", "x"])
+    check("置信度门槛缺省 0.30（够宽，不至于把正常判定全挡掉）",
+          abs(_lid_conf_args.lid_min_confidence - 0.30) < 1e-9,
+          str(_lid_conf_args.lid_min_confidence))
+    _lid_defaults = _lid_conf_args
     check("缺省：窗口 10 秒、静音门槛 4 秒（按实测调的，见下）",
           _lid_defaults.lid_window_ms == 10000 and _lid_defaults.lid_gap_ms == 4000,
           f"{_lid_defaults.lid_window_ms} / {_lid_defaults.lid_gap_ms}")

@@ -368,6 +368,12 @@ def parse_args(argv=None):
                              "语种是按人/按话题变的、不是按句变的：换人几乎都发生在静音之后。"
                              "⚠️ 原来缺省 1.5 秒，实测产线根本不省 —— 教室里句与句本来就停 1.5~3 秒"
                              "（日志里静音=2132/2566/2292ms 到处都是），等于每句都判")
+    parser.add_argument("--lid-min-confidence", type=float, default=0.30,
+                        help="语种判定的置信度门槛（缺省 0.30；0 = 不设门槛）。"
+                             "**只有能给概率的模型才用得上**（VoxLingua107 ECAPA）；"
+                             "低于门槛就判「这次不算数」→ 沿用上一次。"
+                             "实测纯葡语的课里有 6% 的段被判成 en-US 并**被采纳**（葡语进 parakeet"
+                             "= 整句乱码），这道门槛就是挡这类「候选之内、置信度为零」的错判的")
     parser.add_argument("--vad-threshold", type=float, default=0.5,
                         help="VAD 判人声的门槛（缺省 0.5，越大越严：0.6 更少幻听、可能漏轻话）")
     parser.add_argument("--silence-skip-level", type=float, default=SILENCE_SKIP_RMS,
@@ -2975,6 +2981,72 @@ def _lid_config_attempts(sherpa_onnx, encoder, decoder, threads=1):
     return attempts
 
 
+def lid_engine_of(model_dir):
+    """这个目录是哪一种 LID 模型（`ecapa` / `sherpa-whisper`）。
+
+    <p>5.214：**一个旋钮**（`--lid-model <目录>`），引擎按目录内容自动认出来 ——
+    不让用户再记第二个参数，也不会出现"模型换了、引擎参数忘了换"这种错。
+
+    <p>判据：speechbrain 的模型目录一定带 `hyperparams.yaml`（VoxLingua107 ECAPA 就是）；
+    sherpa-onnx 那份是 `*encoder*.onnx` + `*decoder*.onnx`。
+    """
+    path = str(model_dir or "")
+    if path != "" and os.path.isfile(os.path.join(path, "hyperparams.yaml")):
+        return "ecapa"
+    return "sherpa-whisper"
+
+
+def load_lid_ecapa(args, model_dir):
+    """加载 VoxLingua107 ECAPA（speechbrain）。返回 `{"engine","handle","labels"}` 或 None。
+
+    <p>为什么换它（5.214）：whisper-tiny 兼职做 LID 有两个结构性毛病 ——
+    ① 只返回一个语种码、**没有概率**，所以"候选内 argmax"和"置信度门槛"都做不了；
+    ② 实测一段纯葡语的课，28% 的段被判成 `nn`/`ja`/`ko` 这类离群语言，
+    6% 被判成 `en-US` 并**被采纳**（葡语进 parakeet = 整句乱码）。
+    VoxLingua107 是**专门为语种识别训练**的 ECAPA 模型：3 秒窗口、107 种语言、
+    返回**全语种概率**，于是那两件事都能做。
+    """
+    try:
+        import torch                                              # noqa: F401
+        from speechbrain.inference.classifiers import EncoderClassifier
+    except Exception as error:                                    # noqa: BLE001
+        print(f"[识别] ⚠️ 要用 VoxLingua107（ECAPA），但没装 speechbrain/torch"
+              f"（{type(error).__name__}: {error}）→ 退回按段自带的语种识别。"
+              "装法：/opt/leion/venv/bin/pip install speechbrain", file=sys.stderr, flush=True)
+        LID_STATE["failed"] = True
+        return None
+    try:
+        # 目录里已经有模型文件 → 纯离线加载；否则当成"下载缓存目录"，
+        # 用 HF 上的仓库名下到那里（第一次联网，之后离线可用）。
+        if os.path.isfile(os.path.join(model_dir, "hyperparams.yaml")):
+            handle = EncoderClassifier.from_hparams(source=model_dir, savedir=model_dir)
+        else:
+            handle = EncoderClassifier.from_hparams(
+                source="speechbrain/lang-id-voxlingua107-ecapa", savedir=model_dir)
+        handle.eval()
+        labels = {}
+        encoder = getattr(getattr(handle, "hparams", None), "label_encoder", None)
+        for index, lab in enumerate(getattr(encoder, "ind2lab", []) or []):
+            # 标签可能是 `pt` 也可能写成 `pt: Portuguese` —— 两种都认
+            code = str(lab).split(":")[0].strip().lower()
+            tag = lid_tag_of(code)
+            if tag != "" and tag not in labels:
+                labels[tag] = index
+        LID_STATE["model"] = {"engine": "ecapa", "handle": handle, "labels": labels,
+                              "minConfidence": float(getattr(args, "lid_min_confidence", 0) or 0)}
+        LID_STATE["path"] = model_dir
+        pkg = "speechbrain"
+        print(f"[识别] 语种识别已启用：{model_dir}（VoxLingua107 ECAPA，{pkg}；"
+              f"候选可用 {', '.join(sorted(labels)) or '（认不出标签）'}；"
+              "CPU；只在切句之后、分发之前用）", file=sys.stderr, flush=True)
+        return LID_STATE["model"]
+    except Exception as error:                                    # noqa: BLE001
+        LID_STATE["failed"] = True
+        print(f"[识别] ⚠️ VoxLingua107（ECAPA）加载失败（{type(error).__name__}: {error}）"
+              f"→ 退回按段自带的语种识别。模型目录 {model_dir}", file=sys.stderr, flush=True)
+        return None
+
+
 def load_lid(args):
     """加载 LID 模型（懒加载 + 失败只喊一次）。返回对象或 None。"""
     if LID_STATE["failed"]:
@@ -2985,6 +3057,9 @@ def load_lid(args):
     model_dir = str(getattr(args, "lid_model", None) or _os.environ.get("LEION_LID_MODEL", "")).strip()
     if model_dir == "":
         return None
+    # 5.214：目录内容就是"用哪一套"的判据（见 lid_engine_of）—— 一个参数管到底
+    if lid_engine_of(model_dir) == "ecapa":
+        return load_lid_ecapa(args, model_dir)
     try:
         import sherpa_onnx
     except Exception as error:                                  # noqa: BLE001
@@ -3216,6 +3291,65 @@ def _lid_compute(model, audio, samplerate, np):
     raise RuntimeError("；".join(problems))
 
 
+def _lid_numpy(value, np):
+    """把 torch 张量 / 列表 / 数组统一成 numpy（torch 不在时也能用）。"""
+    for step in ("detach", "cpu"):
+        method = getattr(value, step, None)
+        if callable(method):
+            value = method()
+    return np.asarray(value, dtype=np.float32)
+
+
+def detect_lang_ecapa(audio, samplerate, model, candidates, np, min_confidence=0.0):
+    """ECAPA（VoxLingua107）判一次：**在候选里挑概率最大的**，并给出真实置信度。
+
+    <p>这正是 whisper-tiny 那条路做不到的两件事（它只回一个字符串）：
+    <ol>
+      <li>**候选内 argmax**：不是"全局第一名在不在候选里"，而是"候选里谁的概率最高"。
+          全局第一名是西语、候选只有葡语时，这条路照样能给出葡语 + 真实概率；</li>
+      <li>**置信度门槛**：低于 `min_confidence` 就判"这次不算数"（沿用上一次）。
+          葡语课里被判成 `en-US` 那 6% 就是靠这道门槛挡的。</li>
+    </ol>
+
+    @returns {[string|null, number, number]} `(标签, 置信度, 耗时 ms)`
+    """
+    if isinstance(model, dict) is not True:
+        return None, 0.0, 0
+    started = time.perf_counter()
+    try:
+        import torch
+        handle = model.get("handle")
+        labels = model.get("labels") or {}
+        wav = torch.from_numpy(np.asarray(audio, dtype=np.float32)).unsqueeze(0)
+        out_prob, _score, _index, text_lab = handle.classify_batch(wav)
+        elapsed = int(round((time.perf_counter() - started) * 1000))
+        probs = _lid_numpy(out_prob, np).reshape(-1)
+        allowed = [one for one in (candidates or ()) if one in _LID_TAG.values()]
+        best_tag, best_prob = None, 0.0
+        for tag in (allowed or list(labels)):
+            index = labels.get(tag)
+            if index is None or index >= len(probs):
+                continue
+            prob = float(probs[index])
+            if prob > best_prob:
+                best_tag, best_prob = tag, prob
+        if best_tag is None:
+            # 连索引都对不上（标签表不认识）→ 退回模型自己的第一名
+            top = str(text_lab[0] if isinstance(text_lab, (list, tuple)) else text_lab)
+            tag = lid_tag_of(top.split(":")[0])
+            if tag == "":
+                _lid_note(f"ECAPA 判出 {top!r}，不在支持范围")
+                return None, 0.0, elapsed
+            return tag, 1.0, elapsed
+        if min_confidence > 0 and best_prob < float(min_confidence):
+            _lid_note(f"ECAPA 最高只有 {best_prob:.2f}（门槛 {min_confidence}）→ 这次不算数")
+            return None, best_prob, elapsed
+        return best_tag, best_prob, elapsed
+    except Exception as error:                                  # noqa: BLE001
+        _lid_note(f"ECAPA 出错：{type(error).__name__}: {error}")
+        return None, 0.0, int(round((time.perf_counter() - started) * 1000))
+
+
 def detect_lang(audio, samplerate, model, candidates, np):
     """跑一次 LID，返回 (语种标签或 None, 置信度 0~1, 耗时 ms)。
 
@@ -3224,7 +3358,14 @@ def detect_lang(audio, samplerate, model, candidates, np):
     <p>候选集给了就**只在这几个语种里挑最可能的那个**（用户要求：候选 = 本场说话人语种的并集）。
     这比"先取全局第一名、再看它在不在候选里"稳得多：全局第一名是西语、候选中只有葡语时，
     前者判不出来，后者直接给出葡语（且概率是真实的那个数）。
+
+    <p>⚠️ 5.214：最后那句"概率是真实的那个数"只有 **ECAPA** 这条路做得到；
+    sherpa-onnx 的 whisper 版 `compute()` 只返回一个语种码（没有概率表），
+    所以那条路只能"否决"，不能"挑"。两条路由 {@link detect_lang_ecapa} 分流。
     """
+    if isinstance(model, dict) and model.get("engine") == "ecapa":
+        return detect_lang_ecapa(audio, samplerate, model, candidates, np,
+                                 float(model.get("minConfidence") or 0.0))
     if model is None:
         return None, 0.0, 0
     started = time.perf_counter()

@@ -99,7 +99,8 @@ export function parseArgs(argv = []) {
     // 5.186：高通滤波与 VAD 二次确认（教室/会议室降噪用）
     'highpass-hz', 'vad-max-ms', 'vad-threshold',
     // 5.202：语种识别（切句之后、引擎分发之前）；5.209：线程数
-    'lid-model', 'lid-switch-after', 'lid-threads', 'lid-window-ms', 'lid-gap-ms'])
+    'lid-model', 'lid-switch-after', 'lid-threads', 'lid-window-ms', 'lid-gap-ms',
+    'lid-min-confidence'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -128,6 +129,7 @@ export function parseArgs(argv = []) {
     else if (key === 'lid-threads') options.lidThreads = Number(value)
     else if (key === 'lid-window-ms') options.lidWindowMs = Number(value)
     else if (key === 'lid-gap-ms') options.lidGapMs = Number(value)
+    else if (key === 'lid-min-confidence') options.lidMinConfidence = Number(value)
     else if (key === 'model') options.model = value
     else if (key === 'device') options.device = value
     else if (key === 'compute-type') options.computeType = value
@@ -330,6 +332,10 @@ export function consumerCommand(options) {
     }
     if (Number.isInteger(options.lidGapMs) && options.lidGapMs >= 0) {
       args.push('--lid-gap-ms', String(options.lidGapMs))
+    }
+    // 5.214：置信度门槛（只有能给概率的模型才用得上，见 python 那边的说明）
+    if (Number.isFinite(options.lidMinConfidence) && options.lidMinConfidence >= 0) {
+      args.push('--lid-min-confidence', String(options.lidMinConfidence))
     }
   }
   if (options.vad === true) {

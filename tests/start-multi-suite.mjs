@@ -539,6 +539,11 @@ export async function runStartMultiSuite({ it, check, assert }) {
     check('窗口与静音门槛都传到 python',
       withWindow[withWindow.indexOf('--lid-window-ms') + 1] === '10000'
       && withWindow[withWindow.indexOf('--lid-gap-ms') + 1] === '1500', withWindow.slice(-140))
+    // 5.214：置信度门槛（换 VoxLingua107 ECAPA 之后才有意义 —— 那条路会给概率）
+    const withConf = pyOf(['--data-dir', 'var/x', '--lid-model', '/opt/leion/models/voxlingua',
+      '--lid-min-confidence', '0.45'])
+    check('置信度门槛也传到 python',
+      withConf[withConf.indexOf('--lid-min-confidence') + 1] === '0.45', withConf.slice(-140))
   })
 
   await it('5.189：译文硬截止能从 start-multi 一路传到大脑（0 = 关掉）', async () => {
