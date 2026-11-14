@@ -99,7 +99,7 @@ export function parseArgs(argv = []) {
     // 5.186：高通滤波与 VAD 二次确认（教室/会议室降噪用）
     'highpass-hz', 'vad-max-ms', 'vad-threshold',
     // 5.202：语种识别（切句之后、引擎分发之前）；5.209：线程数
-    'lid-model', 'lid-switch-after', 'lid-threads'])
+    'lid-model', 'lid-switch-after', 'lid-threads', 'lid-window-ms', 'lid-gap-ms'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -126,6 +126,8 @@ export function parseArgs(argv = []) {
     else if (key === 'lid-model') options.lidModel = value
     else if (key === 'lid-switch-after') options.lidSwitchAfter = Number(value)
     else if (key === 'lid-threads') options.lidThreads = Number(value)
+    else if (key === 'lid-window-ms') options.lidWindowMs = Number(value)
+    else if (key === 'lid-gap-ms') options.lidGapMs = Number(value)
     else if (key === 'model') options.model = value
     else if (key === 'device') options.device = value
     else if (key === 'compute-type') options.computeType = value
@@ -321,6 +323,13 @@ export function consumerCommand(options) {
     // 5.209：线程数（不给就用 python 那边的自动值 min(4, CPU 核数)）
     if (Number.isInteger(options.lidThreads) && options.lidThreads > 0) {
       args.push('--lid-threads', String(options.lidThreads))
+    }
+    // 5.210：判定的"量"和"时机"（缺省值在 python 那边：10 秒窗口、静音 1.5 秒才重判）
+    if (Number.isInteger(options.lidWindowMs) && options.lidWindowMs >= 0) {
+      args.push('--lid-window-ms', String(options.lidWindowMs))
+    }
+    if (Number.isInteger(options.lidGapMs) && options.lidGapMs >= 0) {
+      args.push('--lid-gap-ms', String(options.lidGapMs))
     }
   }
   if (options.vad === true) {

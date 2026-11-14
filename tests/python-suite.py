@@ -4806,6 +4806,26 @@ def main():
           _tagBr is None and "直接给数组" in _err_try.getvalue(), _err_try.getvalue()[-300:])
     whisper_stream._LID_NOTES.update({"count": 0, "seen": set()})
 
+    # 5.210 判定的**时机**：不是每段都判。
+    # 成本按音频秒数线性长（accept ≈27ms/秒 + compute ≈7ms/秒），20 秒的段 ~680ms，
+    # 占 p50 总延迟 1.93s 的三分之一 —— 每段都判不能上线。
+    _j = whisper_stream.lid_should_judge
+    check("这一路第一次 → 判", _j(None, 10000, 2000, 0, 1500) is True)
+    check("太短的段不判（实测 1~3 秒的段会给出 nn 这种码）",
+          _j(None, 10000, 800, 0, 1500) is False)
+    check("同一人连着说、没静音 → 不重判",
+          _j({"end": 8000, "judged_at": 6000}, 12000, 2000, 0, 1500) is False)
+    check("静音 1.5 秒之后 → 重判（换人几乎都发生在这里）",
+          _j({"end": 8000, "judged_at": 6000}, 12000, 2000, 4000, 1500) is True)
+    check("连着说很久（>20 秒没判过）→ 兜底重判（否则中途换语言发现不了）",
+          _j({"end": 26000, "judged_at": 6000}, 30000, 2000, 2000, 1500) is True)
+    check("--lid-gap-ms 0 = 每段都判（应急开关）",
+          _j({"end": 8000, "judged_at": 6000}, 12000, 2000, 0, 0) is True)
+    _lid_defaults = whisper_stream.parse_args(["--lid-model", "x"])
+    check("缺省：窗口 10 秒、静音门槛 1.5 秒（都是按实测定的）",
+          _lid_defaults.lid_window_ms == 10000 and _lid_defaults.lid_gap_ms == 1500,
+          f"{_lid_defaults.lid_window_ms} / {_lid_defaults.lid_gap_ms}")
+
     _tag4, _conf4, _ = whisper_stream.detect_lang(
         _probe, 16000, _Model(_R("de", ["de"], [0.99])), ("zh-CN", "en-US", "pt-BR"), np)
     check("判成完全不支持的语言时返回 None（不硬塞一个候选）", _tag4 is None, str(_tag4))
@@ -4997,7 +5017,12 @@ def main():
     # ⚠️ 真实顺序（第一版这条写错了，值得留着）：**判语种 → 选策略 → 前置降噪 → 分发**。
     # 前置降噪必须排在策略之后，因为它要读 profile 里的 highpass/vad；
     # 而 LID 必须排在策略之前，因为"选哪份策略"就是由它判出来的语种决定的。
-    _i_lid = _csrc.index("detect_lang(audio")
+    # ⚠️ 5.210：判语种喂的是**截过的**采样（samples），不是整段 audio；
+    # 而且消费者开头还有一次"预热"（`detect_lang(np.zeros…`），所以定位要跳过它。
+    _i_warm = _csrc.index("detect_lang(np.zeros")
+    _i_lid = _csrc.index("detect_lang(", _i_warm + 1)
+    check("启动时预热一次（第一次 accept 会带上会话初始化 ~0.5s，别让第一句替我们付）",
+          0 <= _i_warm < _i_lid, f"warm={_i_warm} lid={_i_lid}")
     _i_resolve = _csrc.index("resolve_strategy(language")
     _i_pre = _csrc.index("preprocess_segment(")
     _i_dispatch = _csrc.index("pool.get(profile")
@@ -5006,6 +5031,13 @@ def main():
           f"lid={_i_lid} resolve={_i_resolve} pre={_i_pre} dispatch={_i_dispatch}")
     check("判定过程随数据走（payload 里有 lid，会议记录/重放报告能看到）",
           'payload["lid"] = lid_note' in _csrc)
+    # 5.210：判之前要把音频截到 window（成本按音频秒数线性长：≈34ms/秒）
+    check("喂给 LID 的音频会截到 window（20 秒段截到 10 秒省一半）",
+          "samples[len(samples) - limit:]" in _csrc, "看不出在哪里截的")
+    check("不重判的段沿用上一次判定，并单独计数（省下的时间要能算出来）",
+          "lid_reused += 1" in _csrc, "没有沿用计数")
+    check("沿用上一次判定时会标 reused（事后能分清哪些句是判的、哪些是沿用）",
+          '"reused": True' in _csrc, "payload 里看不出这一个是沿用的")
 
     # ⑥g-2 参会方式（5.204）：**远程无条件相信他选的语种，面对面才判**
     #

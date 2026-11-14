@@ -358,6 +358,15 @@ def parse_args(argv=None):
                         help="语种判定的线程数（缺省 0 = 自动 min(4, CPU 核数)）。"
                              "实测一台 4 核机器上 int8 + 4 线程 ≈ 139ms，单线程 ≈ 411ms —— "
                              "这一步就压在每句的延迟预算里，别用 1")
+    parser.add_argument("--lid-window-ms", type=int, default=10000,
+                        help="判语种时只喂**最后这么多毫秒**的音频（缺省 10000；0 = 整段都喂）。"
+                             "实测成本按秒线性长：accept ≈ 27ms/秒 + compute ≈ 7ms/秒，"
+                             "20 秒的段要 ~680ms；截到 10 秒省一半且照样判得准"
+                             "（实测 10s → zh 正确，3s → nn 错误）")
+    parser.add_argument("--lid-gap-ms", type=int, default=1500,
+                        help="只在**前面静了这么多毫秒**之后才重判（缺省 1500；0 = 每段都判）。"
+                             "语种是按人/按话题变的、不是按句变的：换人几乎都发生在静音之后，"
+                             "所以没必要每段都花那 0.3 秒")
     parser.add_argument("--vad-threshold", type=float, default=0.5,
                         help="VAD 判人声的门槛（缺省 0.5，越大越严：0.6 更少幻听、可能漏轻话）")
     parser.add_argument("--silence-skip-level", type=float, default=SILENCE_SKIP_RMS,
@@ -2878,6 +2887,13 @@ def preprocess_segment(audio, samplerate, profile, np):
 LID_STATE = {"model": None, "failed": False, "warned": False, "path": None}
 # 5.207：判定出问题时的一次性提示（每进程最多三条，见 _lid_note）
 _LID_NOTES = {"count": 0, "seen": set()}
+# 5.210：判定的**时机**常量（不是旋钮，按实测定的，见 docs/21 §5.210）
+#   · 短于这个毫秒数的段不判：1~3 秒的段实测会给出 `nn`（挪威语新诺斯克）这种码，
+#     宁可用上一次的判定，也别拿一句"嗯/好"去改整路语种；
+#   · 一路连着说很久（中间没有静音）时，隔这么久兜底重判一次，
+#     否则"同一个人中途换了语言"永远发现不了。
+LID_MIN_JUDGE_MS = 1200
+LID_MAX_AGE_MS = 20000
 # 语言码（sherpa-onnx / whisper 都可能是两字母码）→ 我们系统里的语种标签
 _LID_TAG = {
     "zh": "zh-CN", "cmn": "zh-CN", "yue": "zh-CN",
@@ -3236,6 +3252,42 @@ def detect_lang(audio, samplerate, model, candidates, np):
         return None, 0.0, int(round((time.perf_counter() - started) * 1000))
 
 
+def lid_should_judge(seen, seg_end, seg_ms, gap_ms, gap_threshold_ms):
+    """这一段要不要**重新判**语种（5.210 的时机规则，单独成函数是为了能测）。
+
+    <p>为什么不能每段都判：实测成本按音频秒数线性长 ——
+    `accept_waveform` ≈ **27ms/秒**（sherpa-onnx 内部逐样本重采样/特征搬运，
+    与模型精度、线程数都无关），`compute` ≈ **7ms/秒**（这部分吃 int8/线程）。
+    一段 20 秒 = ~680ms，占 p50 总延迟 1.93s 的三分之一。
+
+    <p>而语种是**按人 / 按话题**变的，不是按句变的。所以只在三种时刻判：
+    <ol>
+      <li>这一路第一次（`seen is None`）；</li>
+      <li>中间隔着一段明显静音（`gap_ms >= gap_threshold_ms`，缺省 1.5 秒）——
+          换人几乎都发生在这里；`gap_threshold_ms <= 0` 表示"每段都判"（应急开关）；</li>
+      <li>连着说了很久、一直没有静音，那也隔 {@link LID_MAX_AGE_MS} 兜底重判一次，
+          否则"同一个人中途换了语言"就永远发现不了。</li>
+    </ol>
+    另外：**太短的段不判** —— 实测 1~3 秒的段会给出 `nn`（挪威语新诺斯克）这种码，
+    宁可用上一次的判定，也别拿一句"嗯/好"去改整路语种。
+
+    @param {object|null} seen 上一状态 `{end, judged_at}`（毫秒时间戳）；没判过是 null
+    @param {number} seg_end 这一段的结束时刻（meta.queuedAt，段是收完才写的）
+    @param {number} seg_ms 这一段有多长
+    @param {number} gap_ms 与上一段之间静了多久
+    @param {number} gap_threshold_ms 静音门槛；<=0 表示不做这个限制
+    """
+    if seg_ms < LID_MIN_JUDGE_MS:
+        return False
+    if seen is None:
+        return True
+    if gap_threshold_ms <= 0:
+        return True
+    if gap_ms >= gap_threshold_ms:
+        return True
+    return (seg_end - seen["judged_at"]) >= LID_MAX_AGE_MS
+
+
 def sticky_language(previous, detected, switch_margin=0.0):
     """**粘滞**：新判定只有"明显不同且可信"时才切换，否则沿用上一次。
 
@@ -3301,6 +3353,9 @@ def run_queue_consumer(args, np, pool):
     lid_used = 0         # 这段判出了语种
     lid_differs = 0      # 判定结果与段自带语种不同
     lid_trusted = 0      # 远程的段：按他选的语种直接走，**没判**（5.204）
+    # 5.210：每一路"上一次判定的时间 / 上一次判到哪一段"（决定这一段要不要重判）
+    lid_seen = {}
+    lid_reused = 0       # 沿用上一次判定的段数（不重判，省下的那 0.3 秒）
     processed = 0
     # 5.197：被"前置 VAD 判定这段没有人声"丢掉的段数。
     # 单独记一个数、而不是混进 processed：这正是"漏了一句"和"这一段本来就没说话"
@@ -3352,40 +3407,83 @@ def run_queue_consumer(args, np, pool):
             language = declared_language
             lid_note = None
             seg_mode = str(meta.get("mode") or "").strip().lower()
+            # ⚠️ 粘滞（hysteresis）与"该不该重判"都按 **(房间, 说话人)** 记，不是按房间：
+            # 一场会里两个面对面的人各用一部手机（各一路），按房间记会互相污染
+            # —— 甲刚把这一路判成英文，乙的中文段就跟着"英文"了。
+            room_id = meta.get("room")
+            lid_key = (str(room_id), str(meta.get("speaker") or ""))
+            seg_ms = int(meta.get("ms") or 0)
+            # 段是**收完才写**的，所以 queuedAt ≈ 这一段的结束时刻 —— 用它算"中间静了多久"
+            seg_end = int(meta.get("queuedAt") or 0)
+            seen = lid_seen.get(lid_key)
             if lid_model is not None and seg_mode != "remote":
-                # ⚠️ 粘滞（hysteresis）按 **(房间, 说话人)** 记，不是按房间：
-                # 一场会里两个面对面的人各用一部手机（各一路），按房间记会互相污染
-                # —— 甲刚把这一路判成英文，乙的中文段就跟着"英文"了。
-                room_id = meta.get("room")
-                lid_key = (str(room_id), str(meta.get("speaker") or ""))
                 rate_now = int(meta.get("rate") or args.samplerate)
                 candidates = lid_candidates_for(getattr(args, "data_dir", None), room_id)
-                detected, _score, lid_ms = detect_lang(audio, rate_now, lid_model, candidates, np)
-                previous = lid_last.get(lid_key)
-                if detected is not None:
-                    lid_used += 1
-                    if detected == previous or previous is None:
-                        lid_last[lid_key] = detected
-                        lid_pending.pop(lid_key, None)
-                    else:
-                        want, count = lid_pending.get(lid_key, (detected, 0))
-                        count = count + 1 if want == detected else 1
-                        need = max(1, int(getattr(args, "lid_switch_after", 2) or 1))
-                        if count >= need:
+                # ── 5.210：**不是每段都判** ────────────────────────────────────────
+                # 实测（4 核机器，同一段 20 秒课堂音频）：
+                #   accept ≈ 27ms/秒音频（sherpa-onnx 内部逐样本重采样/特征搬运，
+                #                     与精度、线程都无关），compute ≈ 7ms/秒（这部分吃 int8/线程）。
+                #   一段 20 秒 = ~680ms，占 p50 总延迟 1.93s 的三分之一 —— 每段都判不能上线。
+                # 而语种是**按人/按话题**变的，不是按句变的，所以只在三种时刻判：
+                #   ① 这一路第一次；② 中间隔着一段明显静音（换人几乎都发生在这里）；
+                #   ③ 连着说了很久（没静音）也隔 LID_MAX_AGE_MS 兜底重判一次。
+                gap_ms = 0 if seen is None else max(0, seg_end - seen["end"])
+                due = lid_should_judge(seen, seg_end, seg_ms, gap_ms,
+                                       int(getattr(args, "lid_gap_ms", 0) or 0))
+                if due:
+                    # 只喂**最后 window 毫秒**：成本按秒线性长，20 秒段截到 10 秒能省一半，
+                    # 而 10 秒已经足够判准（实测 10s → zh 正确，3s → nn 错误）。
+                    lid_window_ms = int(getattr(args, "lid_window_ms", 0) or 0)
+                    samples = audio
+                    if lid_window_ms > 0:
+                        limit = int(rate_now * lid_window_ms / 1000.0)
+                        if len(samples) > limit:
+                            samples = samples[len(samples) - limit:]
+                    detected, _score, lid_ms = detect_lang(
+                        samples, rate_now, lid_model, candidates, np)
+                    previous = lid_last.get(lid_key)
+                    if detected is not None:
+                        lid_used += 1
+                        if detected == previous or previous is None:
                             lid_last[lid_key] = detected
                             lid_pending.pop(lid_key, None)
                         else:
-                            lid_pending[lid_key] = (detected, count)
-                language = lid_last.get(lid_key) or declared_language
-                if language != declared_language:
-                    lid_differs += 1
-                lid_note = {"lang": language, "detected": detected,
-                            "declared": declared_language, "ms": lid_ms,
-                            "candidates": candidates, "mode": seg_mode or "unknown"}
-                if log_level_at_least("detail"):
-                    print(f"[识别] 语种判定：判成 {detected or '（不确定）'} → 用 "
-                          f"{language}（段自带 {declared_language}；候选 {'/'.join(candidates)}；"
-                          f"{lid_ms}ms）", file=sys.stderr, flush=True)
+                            want, count = lid_pending.get(lid_key, (detected, 0))
+                            count = count + 1 if want == detected else 1
+                            need = max(1, int(getattr(args, "lid_switch_after", 2) or 1))
+                            if count >= need:
+                                lid_last[lid_key] = detected
+                                lid_pending.pop(lid_key, None)
+                            else:
+                                lid_pending[lid_key] = (detected, count)
+                    lid_seen[lid_key] = {"end": seg_end + seg_ms, "judged_at": seg_end}
+                    language = lid_last.get(lid_key) or declared_language
+                    if language != declared_language:
+                        lid_differs += 1
+                    lid_note = {"lang": language, "detected": detected,
+                                "declared": declared_language, "ms": lid_ms,
+                                "windowMs": 0 if lid_window_ms <= 0 else lid_window_ms,
+                                "gapMs": gap_ms,
+                                "candidates": candidates, "mode": seg_mode or "unknown"}
+                    if log_level_at_least("detail"):
+                        print(f"[识别] 语种判定：判成 {detected or '（不确定）'} → 用 "
+                              f"{language}（段自带 {declared_language}；候选 {'/'.join(candidates)}；"
+                              f"静音 {gap_ms}ms；{lid_ms}ms）", file=sys.stderr, flush=True)
+                else:
+                    # 这一段不重判 → **沿用上一次的判定**（这正是"只在换人时判"的意思）。
+                    language = lid_last.get(lid_key) or declared_language
+                    if lid_last.get(lid_key) is not None:
+                        lid_reused += 1
+                    if language != declared_language:
+                        lid_differs += 1
+                    lid_note = {"lang": language, "detected": None,
+                                "declared": declared_language, "ms": 0,
+                                "gapMs": gap_ms, "reused": True,
+                                "candidates": candidates, "mode": seg_mode or "unknown"}
+                    # 只有"判过的那一路"才更新进度；没判过的（比如开场一句"嗯"）
+                    # 不建状态 —— 这样下一段仍然会当"第一次"去判。
+                    if seen is not None:
+                        seen["end"] = seg_end + seg_ms
             elif seg_mode == "remote" and declared_language:
                 # 远程：**无条件相信**（用户口径：远程的人选的语种就是准的）。
                 # 仍然记一笔，好让事后能对上"哪些句是判出来的、哪些句是声明的"。
@@ -3643,6 +3741,8 @@ def run_queue_consumer(args, np, pool):
                          if lid_used > 0 else "")
                       + (f"，远程按声明语种 {lid_trusted} 段（不判）"
                          if lid_trusted > 0 else "")
+                      + (f"，沿用上一次判定 {lid_reused} 段（省下的那 0.3 秒）"
+                         if lid_reused > 0 else "")
                       + "）", file=sys.stderr, flush=True)
                 # 5.40：把"哪一级决定了哪个模型、各处理了多少段"摊开 ——
                 # 没有这一行，A/B 时根本说不清"这些字幕到底是哪个模型出的"

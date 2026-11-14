@@ -533,6 +533,12 @@ export async function runStartMultiSuite({ it, check, assert }) {
       withThreads[withThreads.indexOf('--lid-threads') + 1] === '4', withThreads.slice(-120))
     check('不传 --lid-threads 时 python 那边自己决定（不在 JS 里写死数字）',
       quiet.includes('--lid-threads') === false, quiet.slice(-100))
+    // 5.210：判定的"量"和"时机"也要能现场调（成本 ≈34ms/秒音频、20 秒段 ~680ms）
+    const withWindow = pyOf(['--data-dir', 'var/x', '--lid-model', '/opt/leion/models/lid',
+      '--lid-window-ms', '10000', '--lid-gap-ms', '1500'])
+    check('窗口与静音门槛都传到 python',
+      withWindow[withWindow.indexOf('--lid-window-ms') + 1] === '10000'
+      && withWindow[withWindow.indexOf('--lid-gap-ms') + 1] === '1500', withWindow.slice(-140))
   })
 
   await it('5.189：译文硬截止能从 start-multi 一路传到大脑（0 = 关掉）', async () => {

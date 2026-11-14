@@ -116,6 +116,10 @@ const HELP = `start-multi —— 一条命令起「多场会并行」
   --lid-threads <n>      语种判定的线程数（缺省 0 = 自动 min(4, CPU 核数)）。
                          实测 int8 + 4 线程 ≈ 139ms、单线程 ≈ 411ms，而这一步
                          就压在每句的延迟预算里 —— 别用 1
+  --lid-window-ms <n>    判语种时只喂最后这么多毫秒（缺省 10000；0 = 整段）。
+                         成本按音频秒数线性长（≈34ms/秒），20 秒的段要 ~680ms
+  --lid-gap-ms <n>       只在前面静了这么多毫秒之后才重判（缺省 1500；0 = 每段都判）。
+                         语种按人/按话题变、不按句变；换人几乎都发生在静音之后
   --translate-deadline-ms <n>
                          每份译文最长等多久（缺省 20000；0 = 不设截止）。
                          超时就放弃这一份、队列继续 —— 大脑收件箱是**串行**的，
@@ -285,7 +289,7 @@ export function parseArgs(argv = []) {
     'interpreter-idle-min', 'silence-skip-level', 'idle-flush-ms', 'rms-threshold',
     'tts-port', 'tts-voice-dir', 'translate-deadline-ms',
     // 5.202：语种识别模型目录 + 防抖次数；5.209：线程数
-    'lid-model', 'lid-switch-after', 'lid-threads'])
+    'lid-model', 'lid-switch-after', 'lid-threads', 'lid-window-ms', 'lid-gap-ms'])
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
     if (!token.startsWith('--')) throw new Error(`看不懂的参数：${token}（用 --help 看用法）`)
@@ -405,6 +409,8 @@ export function parseArgs(argv = []) {
     else if (key === 'lid-model') options.lidModel = value
     else if (key === 'lid-switch-after') options.lidSwitchAfter = Number(value)
     else if (key === 'lid-threads') options.lidThreads = Number(value)
+    else if (key === 'lid-window-ms') options.lidWindowMs = Number(value)
+    else if (key === 'lid-gap-ms') options.lidGapMs = Number(value)
     else options.busesDir = value
   }
   if (options.help === true) return options
@@ -723,6 +729,13 @@ export function workerStep(options) {
     // 5.209：线程数（不给就用 python 那边的自动值 min(4, CPU 核数)）
     if (Number.isInteger(options.lidThreads) && options.lidThreads > 0) {
       args.push('--lid-threads', String(options.lidThreads))
+    }
+    // 5.210：判定的"量"和"时机"（缺省值在 python 那边：10 秒窗口、静音 1.5 秒才重判）
+    if (Number.isInteger(options.lidWindowMs) && options.lidWindowMs >= 0) {
+      args.push('--lid-window-ms', String(options.lidWindowMs))
+    }
+    if (Number.isInteger(options.lidGapMs) && options.lidGapMs >= 0) {
+      args.push('--lid-gap-ms', String(options.lidGapMs))
     }
   }
   if (options.vad === true) args.push('--vad')
