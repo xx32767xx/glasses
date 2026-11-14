@@ -2887,6 +2887,11 @@ def preprocess_segment(audio, samplerate, profile, np):
 LID_STATE = {"model": None, "failed": False, "warned": False, "path": None}
 # 5.207：判定出问题时的一次性提示（每进程最多三条，见 _lid_note）
 _LID_NOTES = {"count": 0, "seen": set()}
+# 5.212：**上一次判出来的原始语种码**（哪怕它不在支持范围）。
+# 为什么要留它：判定记录里"判=失败"如果没有原因，等于什么都没说；
+# 而 `判=失败(jw)` 立刻能看出"它以为这是爪哇语" —— 那是模型/音频的问题，
+# 不是我们候选集漏了哪种语言。单线程消费，用模块级变量就够。
+_LID_LAST = {"code": ""}
 # 5.210：判定的**时机**常量（不是旋钮，按实测定的，见 docs/21 §5.210）
 #   · 短于这个毫秒数的段不判：1~3 秒的段实测会给出 `nn`（挪威语新诺斯克）这种码，
 #     宁可用上一次的判定，也别拿一句"嗯/好"去改整路语种；
@@ -3222,6 +3227,7 @@ def detect_lang(audio, samplerate, model, candidates, np):
         if log_level_at_least("trace"):
             print(f"[识别] 语种判定的调用方式：{how}（{elapsed}ms）", file=sys.stderr, flush=True)
         code = _lid_pick_code(raw)
+        _LID_LAST["code"] = code
         tag = _LID_TAG.get(code)
         allowed = [one for one in (candidates or ()) if one in _LID_TAG.values()]
         table = _lid_prob_table(raw)
@@ -3252,6 +3258,74 @@ def detect_lang(audio, samplerate, model, candidates, np):
     except Exception as error:                                  # noqa: BLE001
         _lid_note(f"{type(error).__name__}: {error}")
         return None, 0.0, int(round((time.perf_counter() - started) * 1000))
+
+
+def lid_log_path(data_dir, room, code=""):
+    """语种判定记录文件：`<data-dir>/logs/rooms/<邀请码>-<房间>-lid.txt`（5.212）。
+
+    <p>为什么和会议识别记录**放同一个目录、同样"一场会一个文件"**：事后要查
+    "这句为什么按英语识别"，必须把两份文件并排看（都是按时间排列的一句一行）。
+    分开放两个目录就得自己记住两边在哪 —— 那种日志最后没人看。
+
+    <p>房间/邀请码照会议记录那套规则消毒（防目录穿越），只留 `[A-Za-z0-9_-]`。
+    """
+    if not data_dir:
+        return ""
+    room_safe = re.sub(r"[^A-Za-z0-9_-]", "_", str(room or ""))[:64] or "noroom"
+    code_safe = re.sub(r"[^A-Za-z0-9_-]", "_", str(code or ""))[:16]
+    name = f"{code_safe}-{room_safe}-lid.txt" if code_safe else f"{room_safe}-lid.txt"
+    return os.path.join(str(data_dir), "logs", "rooms", name)
+
+
+# 已经写过表头的文件（每进程一次；用 set 记，别每次都去 stat）
+_LID_LOG_HEADERED = set()
+
+
+def lid_log(data_dir, room, code, line, header=None):
+    """往"语种判定记录"里追加一行。**写得失败也绝不影响识别**。
+
+    <p>为什么要落盘而不是只打 stderr：判定只发生在"换人 / 兜底超时"这些时刻，
+    一场会也就几十行，可它是"这句为什么按英语识别"的**唯一直接证据**。
+    journald 会轮转、`--log-level` 一关就没了，而这件事恰恰是**事后**才要查的。
+    """
+    path = lid_log_path(data_dir, room, code)
+    if path == "":
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        write_header = path not in _LID_LOG_HEADERED
+        _LID_LOG_HEADERED.add(path)
+        with open(path, "a", encoding="utf-8") as handle:
+            if write_header and header:
+                handle.write(header + "\n")
+            handle.write(line + "\n")
+    except Exception:                                          # noqa: BLE001
+        pass                                             # 日志写不进去也不能拖停转写
+
+
+def lid_header(candidates):
+    """语种判定记录的表头（每个文件只写一次：这场会的候选语种）。"""
+    tags = "/".join(candidates or ()) or "（全语种）"
+    return f"# 语种判定记录 · 本场候选 {tags} · 每行: 时间 句号 说话人 参会方式 结论"
+
+
+def lid_log_line(seg_no, speaker, mode, verdict, extra=""):
+    """拼一行判定记录：**定宽、短、能 grep**。
+
+    <pre>
+    12:03:41 #137  alice        onsite   判=en-US 声明=zh-CN 静音=2200ms 350ms
+    12:03:47 #138  alice        onsite   沿用=en-US 静音=600ms
+    12:03:52 #139  bob          remote   信声明=pt-BR
+    12:03:57 #140  carla        unknown  判=失败(jw) 声明=zh-CN 350ms
+    </pre>
+
+    <p>常用检索：`grep 判= 文件`（只看真判过的）、`grep -v 沿用= 文件`（去掉沿用的）、
+    `grep 失败 文件`（只看判不出来的）、`grep remote 文件`（远程那些"信声明"的）。
+    """
+    stamp = time.strftime("%H:%M:%S")
+    who = (str(speaker) or "-")[:12]
+    return (f"{stamp} #{int(seg_no or 0):<5} {who:<12} {(mode or 'unknown'):<8} "
+            f"{verdict}{(' ' + extra) if extra else ''}").rstrip()
 
 
 def lid_gap_of(seg_end, seg_ms, seen):
@@ -3431,6 +3505,12 @@ def run_queue_consumer(args, np, pool):
             # —— 甲刚把这一路判成英文，乙的中文段就跟着"英文"了。
             room_id = meta.get("room")
             lid_key = (str(room_id), str(meta.get("speaker") or ""))
+            # 5.212：判定记录的**文件名要带邀请码**（与会议识别记录同一套命名），
+            # 而邀请码只在切句端写进 segId（`<邀请码>#<序号>`）—— 这里取前缀。
+            lid_code = ""
+            seg_id_text = meta.get("segId")
+            if isinstance(seg_id_text, str) and "#" in seg_id_text:
+                lid_code = seg_id_text.split("#", 1)[0]
             seg_ms = int(meta.get("ms") or 0)
             # 段是**收完才写**的，所以 queuedAt 是**段尾**（不是段首）。
             # ⚠️ 5.211：状态里存的就是段尾；静音间隔要用 lid_gap_of 算（段首 - 上段尾）。
@@ -3493,6 +3573,16 @@ def run_queue_consumer(args, np, pool):
                         print(f"[识别] 语种判定：判成 {detected or '（不确定）'} → 用 "
                               f"{language}（段自带 {declared_language}；候选 {'/'.join(candidates)}；"
                               f"静音 {gap_ms}ms；{lid_ms}ms）", file=sys.stderr, flush=True)
+                    # 5.212：**落盘**一行（与会议记录同目录、只记语种相关的事件）。
+                    # 判不出来时把原始码带上（`判=失败(jw)`）—— 否则这行等于没说。
+                    raw_code = str(_LID_LAST.get("code") or "")
+                    verdict = (f"判={detected}" if detected
+                               else f"判=失败{('(' + raw_code + ')') if raw_code else ''}")
+                    lid_log(getattr(args, "data_dir", None), room_id, lid_code,
+                            lid_log_line(meta.get("seg"), meta.get("speaker"),
+                                         seg_mode, verdict,
+                                         f"声明={declared_language} 静音={gap_ms}ms {lid_ms}ms"),
+                            header=lid_header(candidates))
                 else:
                     # 这一段不重判 → **沿用上一次的判定**（这正是"只在换人时判"的意思）。
                     language = lid_last.get(lid_key) or declared_language
@@ -3504,6 +3594,10 @@ def run_queue_consumer(args, np, pool):
                                 "declared": declared_language, "ms": 0,
                                 "gapMs": gap_ms, "reused": True,
                                 "candidates": candidates, "mode": seg_mode or "unknown"}
+                    lid_log(getattr(args, "data_dir", None), room_id, lid_code,
+                            lid_log_line(meta.get("seg"), meta.get("speaker"), seg_mode,
+                                         f"沿用={language}", f"静音={gap_ms}ms"),
+                            header=lid_header(candidates))
                     # 只有"判过的那一路"才更新进度；没判过的（比如开场一句"嗯"）
                     # 不建状态 —— 这样下一段仍然会当"第一次"去判。
                     if seen is not None:
@@ -3515,6 +3609,10 @@ def run_queue_consumer(args, np, pool):
                 lid_note = {"lang": language, "detected": None,
                             "declared": declared_language, "ms": 0,
                             "candidates": [], "mode": "remote", "trusted": True}
+                lid_log(getattr(args, "data_dir", None), room_id, lid_code,
+                        lid_log_line(meta.get("seg"), meta.get("speaker"), "remote",
+                                     f"信声明={declared_language}"),
+                        header=lid_header([]))
             # 5.148：**这一场（建房时）冻结的识别策略**优先于全局表。
             # 读不到是正常情况（老会议/建房时没写成）→ 回落全局表；
             # 文件在但坏了要说一次（否则又变成"日志说假话"）。

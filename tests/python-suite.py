@@ -4848,9 +4848,60 @@ def main():
     check("兜底重判是 12 秒（换人没静音时最多 6 句还用旧语种）",
           whisper_stream.LID_MAX_AGE_MS == 12000, str(whisper_stream.LID_MAX_AGE_MS))
 
+    # 5.212：语种判定要**落盘**（和会议识别记录同目录、只记语种事件、能 grep）
+    _lldir = Path(ROOT / "var" / "test" / "lid-log")
+    shutil.rmtree(_lldir, ignore_errors=True)
+    try:
+        _lp = whisper_stream.lid_log_path(str(_lldir), "room-ab/../x", "773598")
+        check("记录文件与会议识别记录同目录（logs/rooms/）、一场会一个文件",
+              _lp.replace("\\", "/").endswith("/logs/rooms/773598-room-ab____x-lid.txt"), _lp)
+        check("房间名被消毒（`/` `.` 都换成 `_`，不能目录穿越）",
+              ".." not in _lp.replace("\\", "/").split("/logs/rooms/")[1], _lp)
+        check("没给 data-dir 时安静返回空路径（不能拼出一个相对路径去写盘）",
+              whisper_stream.lid_log_path("", "room-x") == "")
+
+        _header = whisper_stream.lid_header(["zh-CN", "en-US"])
+        whisper_stream._LID_LOG_HEADERED = set()
+        whisper_stream.lid_log(str(_lldir), "room-a", "773598",
+                               whisper_stream.lid_log_line(137, "alice", "onsite",
+                                                           "判=en-US", "声明=zh-CN 静音=2200ms 350ms"),
+                               header=_header)
+        whisper_stream.lid_log(str(_lldir), "room-a", "773598",
+                               whisper_stream.lid_log_line(138, "alice", "onsite",
+                                                           "沿用=en-US", "静音=600ms"),
+                               header=_header)
+        _ltext = Path(whisper_stream.lid_log_path(str(_lldir), "room-a", "773598")).read_text(
+            encoding="utf-8")
+        _lines = [one for one in _ltext.splitlines() if one.strip() != ""]
+        check("表头只写一次（不是每行都重复）",
+              sum(1 for one in _lines if one.startswith("#")) == 1, _ltext)
+        check("表头写明本场候选语种（一眼知道它能在哪几个里挑）",
+              "本场候选 zh-CN/en-US" in _lines[0], _lines[0])
+        check("每段一行、带句号/说话人/参会方式/结论（grep 得动）",
+              any("#137" in one and "alice" in one and "onsite" in one and "判=en-US" in one
+                  for one in _lines)
+              and any("沿用=en-US" in one for one in _lines), _ltext)
+        check("只记语种事件、不抄原文（文件才短，能整场翻完）",
+              "声明=zh-CN" in _ltext and "静音=2200ms" in _ltext and len(_ltext) < 400, _ltext)
+
+        # 写不进去也绝不能影响识别
+        _bad = _lldir / "notdir"
+        _bad.write_text("x", encoding="utf-8")            # `logs` 被占成文件 → makedirs 必失败
+        _ok_quiet = True
+        try:
+            whisper_stream.lid_log(str(_bad), "room-a", "1", "随便一行", header="h")
+        except Exception:                                 # noqa: BLE001
+            _ok_quiet = False
+        check("写日志失败时**不抛异常**（不能因为它拖停转写）", _ok_quiet)
+    finally:
+        shutil.rmtree(_lldir, ignore_errors=True)
+
     _tag4, _conf4, _ = whisper_stream.detect_lang(
         _probe, 16000, _Model(_R("de", ["de"], [0.99])), ("zh-CN", "en-US", "pt-BR"), np)
     check("判成完全不支持的语言时返回 None（不硬塞一个候选）", _tag4 is None, str(_tag4))
+    check("判不出来时留着原始码（记录里能写「判=失败(de)」，一眼看出它以为是什么语）",
+          whisper_stream._LID_LAST.get("code") == "de",
+          str(whisper_stream._LID_LAST.get("code")))
 
     # 模型抛错必须**说出来**（原来 except 全吞掉，"模型坏了"和"听不出来"长得一样）
     import contextlib as _ctx
